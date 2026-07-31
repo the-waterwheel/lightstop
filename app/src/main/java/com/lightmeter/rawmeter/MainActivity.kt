@@ -42,6 +42,7 @@ class MainActivity : Activity(), CameraController.Callback {
                     state.frameFormat,
                     state.frameLandscape,
                     state.zoom,
+                    state.meteringMode,
                 )
             }
 
@@ -84,6 +85,12 @@ class MainActivity : Activity(), CameraController.Callback {
     override fun onPause() {
         cameraController.stop()
         super.onPause()
+    }
+
+    @Suppress("DEPRECATION")
+    override fun onBackPressed() {
+        if (meterLayout.closeSettings()) return
+        super.onBackPressed()
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {

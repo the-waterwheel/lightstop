@@ -63,11 +63,17 @@ class CameraController(
         val aperture: Float,
     )
 
+    private data class PreviewRegionStat(
+        val luma: Double,
+        val clipped: Double,
+    )
+
     private data class MeasurementAccumulator(
         val id: Int,
         val expectedFrames: Int,
         val frameAspect: Float,
         val zoom: Float,
+        val meteringMode: MeteringMode,
         val images: MutableMap<Long, Image> = TreeMap(),
         val results: MutableMap<Long, TotalCaptureResult> = TreeMap(),
         val stats: MutableList<FrameStat> = mutableListOf(),
@@ -211,9 +217,10 @@ class CameraController(
         frameFormat: FrameFormat,
         frameLandscape: Boolean,
         displayZoom: Float,
+        meteringMode: MeteringMode,
     ) {
         if (!cameraInfo.rawAvailable) {
-            measureProcessedPreview()
+            measureProcessedPreview(meteringMode)
             return
         }
         val handler = cameraHandler ?: run {
@@ -243,12 +250,13 @@ class CameraController(
                 expectedFrames = count,
                 frameAspect = sensorFrameAspect,
                 zoom = displayZoom.coerceAtLeast(1f),
+                meteringMode = meteringMode,
             )
             activeMeasurement = accumulator
             Log.e(
                 TAG,
                 "RAW metering started: frames=$count zoom=${accumulator.zoom} " +
-                    "format=${frameFormat.id} sensorAspect=$sensorFrameAspect",
+                    "format=${frameFormat.id} sensorAspect=$sensorFrameAspect mode=$meteringMode",
             )
             mainHandler.post { callback.onMeteringStarted(MeteringSource.RAW) }
             try {
@@ -266,7 +274,7 @@ class CameraController(
         }
     }
 
-    private fun measureProcessedPreview() {
+    private fun measureProcessedPreview(meteringMode: MeteringMode) {
         if (fallbackMeasuring || activeMeasurement != null) return
         val texture = textureView
         if (texture?.isAvailable != true || cameraDevice == null || captureSession == null) {
@@ -280,14 +288,18 @@ class CameraController(
         fallbackMeasuring = true
         val id = ++fallbackMeasurementId
         val samples = mutableListOf<FrameStat>()
-        Log.e(TAG, "ISP preview metering started: frames=$FALLBACK_FRAME_COUNT")
+        Log.e(
+            TAG,
+            "ISP preview metering started: frames=$FALLBACK_FRAME_COUNT mode=$meteringMode",
+        )
         callback.onMeteringStarted(MeteringSource.ISP_PREVIEW)
-        captureProcessedPreviewSample(id, samples)
+        captureProcessedPreviewSample(id, samples, meteringMode)
     }
 
     private fun captureProcessedPreviewSample(
         id: Int,
         samples: MutableList<FrameStat>,
+        meteringMode: MeteringMode,
     ) {
         if (!fallbackMeasuring || id != fallbackMeasurementId) return
         val texture = textureView
@@ -308,7 +320,7 @@ class CameraController(
         }
         handler.post {
             val stat = try {
-                analyzeProcessedPreview(bitmap, result)
+                analyzeProcessedPreview(bitmap, result, meteringMode)
             } finally {
                 bitmap.recycle()
             }
@@ -323,7 +335,7 @@ class CameraController(
                     finishProcessedPreview(id, samples)
                 } else {
                     mainHandler.postDelayed(
-                        { captureProcessedPreviewSample(id, samples) },
+                        { captureProcessedPreviewSample(id, samples, meteringMode) },
                         FALLBACK_SAMPLE_DELAY_MS,
                     )
                 }
@@ -334,9 +346,43 @@ class CameraController(
     private fun analyzeProcessedPreview(
         bitmap: Bitmap,
         result: TotalCaptureResult,
+        meteringMode: MeteringMode,
     ): FrameStat? {
         val chars = characteristics ?: return null
-        val sampleSize = (min(bitmap.width, bitmap.height) * 0.18f)
+        val spot = analyzePreviewRegion(bitmap, SPOT_ROI_FRACTION) ?: return null
+        val region = if (meteringMode == MeteringMode.CENTER_WEIGHTED) {
+            val wide = analyzePreviewRegion(bitmap, CENTER_WEIGHTED_ROI_FRACTION) ?: return null
+            PreviewRegionStat(
+                luma = spot.luma * CENTER_SPOT_WEIGHT + wide.luma * CENTER_WIDE_WEIGHT,
+                clipped = spot.clipped * CENTER_SPOT_WEIGHT +
+                    wide.clipped * CENTER_WIDE_WEIGHT,
+            )
+        } else {
+            spot
+        }
+        val luma = region.luma
+        if (!luma.isFinite() || luma <= 0.00001) return null
+
+        val exposureTime = result.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: return null
+        val sensitivity = result.get(CaptureResult.SENSOR_SENSITIVITY) ?: return null
+        val aperture = result.get(CaptureResult.LENS_APERTURE)
+            ?: chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_APERTURES)?.firstOrNull()
+            ?: return null
+        val seconds = exposureTime / 1_000_000_000.0
+        val cameraEv = log2(aperture * aperture / seconds * 100.0 / sensitivity)
+        val sceneEv = cameraEv + log2(luma / RAW_REFERENCE_LEVEL)
+        return FrameStat(
+            ev100 = sceneEv,
+            luma = luma,
+            clipped = region.clipped,
+            captureIso = sensitivity,
+            exposureTimeNs = exposureTime,
+            aperture = aperture,
+        )
+    }
+
+    private fun analyzePreviewRegion(bitmap: Bitmap, fraction: Float): PreviewRegionStat? {
+        val sampleSize = (min(bitmap.width, bitmap.height) * fraction)
             .roundToInt()
             .coerceAtLeast(8)
             .coerceAtMost(min(bitmap.width, bitmap.height))
@@ -365,23 +411,9 @@ class CameraController(
         } else {
             luminances[luminances.size / 2]
         }
-        if (!luma.isFinite() || luma <= 0.00001) return null
-
-        val exposureTime = result.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: return null
-        val sensitivity = result.get(CaptureResult.SENSOR_SENSITIVITY) ?: return null
-        val aperture = result.get(CaptureResult.LENS_APERTURE)
-            ?: chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_APERTURES)?.firstOrNull()
-            ?: return null
-        val seconds = exposureTime / 1_000_000_000.0
-        val cameraEv = log2(aperture * aperture / seconds * 100.0 / sensitivity)
-        val sceneEv = cameraEv + log2(luma / RAW_REFERENCE_LEVEL)
-        return FrameStat(
-            ev100 = sceneEv,
+        return PreviewRegionStat(
             luma = luma,
             clipped = clipped.toDouble() / pixels.size,
-            captureIso = sensitivity,
-            exposureTimeNs = exposureTime,
-            aperture = aperture,
         )
     }
 
@@ -819,28 +851,32 @@ class CameraController(
             ?: return null
         val cfa = chars.get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT)
             ?: CameraMetadata.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_RGGB
-        val roi = rawMeterRoi(
-            image.width,
-            image.height,
-            active.frameAspect,
-            active.zoom,
-        )
         val buffer = plane.buffer
-        val values = RawMeterBridge.analyzeRaw(
-            buffer = buffer,
+        val spotValues = analyzeRawRegion(
+            image = image,
             bufferOffset = buffer.position(),
-            width = image.width,
-            height = image.height,
-            rowStride = plane.rowStride,
-            pixelStride = plane.pixelStride,
             cfa = cfa,
-            blackLevels = black,
-            whiteLevel = white,
-            roiLeft = roi.left,
-            roiTop = roi.top,
-            roiWidth = roi.width(),
-            roiHeight = roi.height(),
+            black = black,
+            white = white,
+            frameAspect = active.frameAspect,
+            zoom = active.zoom,
+            roiFraction = SPOT_ROI_FRACTION,
         )
+        val values = if (active.meteringMode == MeteringMode.CENTER_WEIGHTED) {
+            val wideValues = analyzeRawRegion(
+                image = image,
+                bufferOffset = buffer.position(),
+                cfa = cfa,
+                black = black,
+                white = white,
+                frameAspect = active.frameAspect,
+                zoom = active.zoom,
+                roiFraction = CENTER_WEIGHTED_ROI_FRACTION,
+            )
+            blendRawRegions(spotValues, wideValues)
+        } else {
+            spotValues
+        }
         if (values.size < 6 || values[5] < 16.0) return null
         val rawGreen = (values[1] + values[2]) * 0.5
         val legacyLuma = 0.21 * values[0] + 0.72 * rawGreen + 0.07 * values[3]
@@ -891,7 +927,7 @@ class CameraController(
                 "black=${black.joinToString()} white=$white " +
                 "exposureNs=$exposureTime iso=$sensitivity aperture=$aperture " +
                 "postRawBoost=$postRawBoost neutral=$neutralPoint cameraEv=$cameraEv " +
-                "calibrationEv=$calibrationEv sceneEv=$sceneEv",
+                "calibrationEv=$calibrationEv sceneEv=$sceneEv mode=${active.meteringMode}",
         )
         return FrameStat(
             ev100 = sceneEv,
@@ -903,11 +939,59 @@ class CameraController(
         )
     }
 
+    private fun analyzeRawRegion(
+        image: Image,
+        bufferOffset: Int,
+        cfa: Int,
+        black: FloatArray,
+        white: Int,
+        frameAspect: Float,
+        zoom: Float,
+        roiFraction: Float,
+    ): DoubleArray {
+        val plane = image.planes[0]
+        val roi = rawMeterRoi(
+            imageWidth = image.width,
+            imageHeight = image.height,
+            frameAspect = frameAspect,
+            zoom = zoom,
+            roiFraction = roiFraction,
+        )
+        return RawMeterBridge.analyzeRaw(
+            buffer = plane.buffer,
+            bufferOffset = bufferOffset,
+            width = image.width,
+            height = image.height,
+            rowStride = plane.rowStride,
+            pixelStride = plane.pixelStride,
+            cfa = cfa,
+            blackLevels = black,
+            whiteLevel = white,
+            roiLeft = roi.left,
+            roiTop = roi.top,
+            roiWidth = roi.width(),
+            roiHeight = roi.height(),
+        )
+    }
+
+    private fun blendRawRegions(spot: DoubleArray, wide: DoubleArray): DoubleArray {
+        if (spot.size < 6) return wide
+        if (wide.size < 6) return spot
+        return DoubleArray(6) { index ->
+            if (index == 5) {
+                spot[index] + wide[index]
+            } else {
+                spot[index] * CENTER_SPOT_WEIGHT + wide[index] * CENTER_WIDE_WEIGHT
+            }
+        }
+    }
+
     private fun rawMeterRoi(
         imageWidth: Int,
         imageHeight: Int,
         frameAspect: Float,
         zoom: Float,
+        roiFraction: Float,
     ): Rect {
         val reported = cameraInfo.activeArray
         val active = if (reported != null &&
@@ -929,7 +1013,8 @@ class CameraController(
         cropWidth /= zoom
         cropHeight /= zoom
         val shortSide = min(cropWidth, cropHeight)
-        val roiSize = (shortSide * 0.08f).roundToInt().coerceIn(32, min(imageWidth, imageHeight))
+        val roiSize = (shortSide * roiFraction).roundToInt()
+            .coerceIn(32, min(imageWidth, imageHeight))
         var left = active.centerX() - roiSize / 2
         var top = active.centerY() - roiSize / 2
         left = left.coerceIn(0, imageWidth - roiSize)
@@ -1103,5 +1188,9 @@ class CameraController(
         private const val FALLBACK_BITMAP_SIZE = 96
         private const val FALLBACK_FRAME_COUNT = 3
         private const val FALLBACK_SAMPLE_DELAY_MS = 70L
+        private const val SPOT_ROI_FRACTION = 0.08f
+        private const val CENTER_WEIGHTED_ROI_FRACTION = 0.30f
+        private const val CENTER_SPOT_WEIGHT = 0.7
+        private const val CENTER_WIDE_WEIGHT = 0.3
     }
 }

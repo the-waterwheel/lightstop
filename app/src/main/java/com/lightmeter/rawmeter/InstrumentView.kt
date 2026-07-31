@@ -32,15 +32,19 @@ class InstrumentView(
     interface Listener {
         fun onMeasureRequested()
         fun onOrientationToggle()
+        fun onMoreRequested()
         fun onControlsChanged(frameChanged: Boolean)
     }
 
     var listener: Listener? = null
 
     private val density = resources.displayMetrics.density
-    private val black = Color.rgb(20, 20, 20)
+    private val lightBlack = Color.rgb(20, 20, 20)
+    private val black: Int get() = if (state.isDarkMode) Color.WHITE else lightBlack
+    private val surfaceColor: Int get() = if (state.isDarkMode) Color.BLACK else Color.WHITE
     private val red = Color.rgb(166, 27, 36)
-    private val paleGray = Color.rgb(232, 232, 229)
+    private val paleGray: Int
+        get() = if (state.isDarkMode) Color.rgb(38, 38, 36) else Color.rgb(232, 232, 229)
     private val middleGray = Color.rgb(130, 130, 126)
 
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -57,6 +61,10 @@ class InstrumentView(
     private var dialStepAccumulator = 0f
     private var lastClickTime = 0L
     private var lastScaleX = 0f
+    private var lockedScaleDragCoordinate = Double.NaN
+    private var lockedScaleDisplayCoordinate = Double.NaN
+    private var lockedScaleDragging = false
+    private var lockedScaleAnimator: ValueAnimator? = null
     private var formatMenuOpen = false
     private var animatedEv100 = Double.NaN
     private var animationTargetEv100 = Double.NaN
@@ -88,6 +96,7 @@ class InstrumentView(
             density,
             state.frameFormat,
             state.frameLandscape,
+            state.isLeftHanded,
         )
         geometry = g
         drawPanels(canvas, g)
@@ -105,7 +114,11 @@ class InstrumentView(
         canvas.drawRect(g.previewPanel, paint)
         canvas.drawRect(g.cameraFrame, paint)
         if (g.landscape) {
-            val dividerX = (g.previewPanel.right + g.apertureRow.left) / 2f
+            val dividerX = if (g.previewPanel.centerX() < g.apertureRow.centerX()) {
+                (g.previewPanel.right + g.apertureRow.left) / 2f
+            } else {
+                (g.apertureRow.right + g.previewPanel.left) / 2f
+            }
             canvas.drawLine(dividerX, 0f, dividerX, height.toFloat(), paint)
         } else {
             val dividerY = (g.previewPanel.bottom + g.apertureRow.top) / 2f
@@ -117,7 +130,7 @@ class InstrumentView(
         val spotRadius = min(g.cameraFrame.width(), g.cameraFrame.height()) * 0.045f
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1.1f * density
-        paint.color = Color.WHITE
+        paint.color = surfaceColor
         canvas.drawCircle(g.cameraFrame.centerX(), g.cameraFrame.centerY(), spotRadius + density, paint)
         paint.color = black
         paint.strokeWidth = 0.9f * density
@@ -133,6 +146,7 @@ class InstrumentView(
         if (formatMenuOpen) drawFormatMenu(canvas, g)
         drawOrientationButton(canvas, g.orientationButton, g.landscape)
         drawZoom(canvas, g.zoomTrack)
+        drawMoreButton(canvas, g.moreButton)
 
         val equivalent = state.equivalent35mm()
         val focalText = buildString {
@@ -142,7 +156,7 @@ class InstrumentView(
         }
         if (focalText.isNotBlank()) {
             paint.style = Paint.Style.FILL
-            paint.color = Color.WHITE
+            paint.color = surfaceColor
             paint.textSize = 10f * density
             paint.typeface = Typeface.DEFAULT_BOLD
             val textWidth = paint.measureText(focalText)
@@ -167,14 +181,14 @@ class InstrumentView(
         formatOptionRects(g).forEachIndexed { index, rect ->
             val selected = index == state.frameIndex
             paint.style = Paint.Style.FILL
-            paint.color = if (selected) black else Color.WHITE
+            paint.color = if (selected) black else surfaceColor
             canvas.drawRoundRect(rect, 3f * density, 3f * density, paint)
             paint.style = Paint.Style.STROKE
             paint.strokeWidth = if (selected) 1.6f * density else 1f * density
             paint.color = if (selected) red else black
             canvas.drawRoundRect(rect, 3f * density, 3f * density, paint)
             paint.style = Paint.Style.FILL
-            paint.color = if (selected) Color.WHITE else black
+            paint.color = if (selected) surfaceColor else black
             paint.textSize = 7.5f * density
             paint.typeface = Typeface.DEFAULT_BOLD
             drawCenteredText(
@@ -188,8 +202,15 @@ class InstrumentView(
     }
 
     private fun formatOptionRects(g: LayoutGeometry): List<RectF> {
-        val left = g.formatButton.right + 4f * density
-        val right = g.orientationButton.left - 4f * density
+        val left: Float
+        val right: Float
+        if (g.formatButton.centerX() < g.orientationButton.centerX()) {
+            left = g.formatButton.right + 4f * density
+            right = g.orientationButton.left - 4f * density
+        } else {
+            left = g.orientationButton.right + 4f * density
+            right = g.formatButton.left - 4f * density
+        }
         val availableWidth = (right - left).coerceAtLeast(0f)
         if (availableWidth < 8f * density) return emptyList()
         val gap = 2f * density
@@ -220,7 +241,7 @@ class InstrumentView(
 
     private fun drawOrientationButton(canvas: Canvas, rect: RectF, landscape: Boolean) {
         paint.style = Paint.Style.FILL
-        paint.color = Color.WHITE
+        paint.color = surfaceColor
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1.3f * density
@@ -247,6 +268,23 @@ class InstrumentView(
         )
         paint.color = red
         canvas.drawArc(arc, 205f, 86f, false, paint)
+    }
+
+    private fun drawMoreButton(canvas: Canvas, rect: RectF) {
+        paint.style = Paint.Style.FILL
+        paint.color = surfaceColor
+        canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 1.2f * density
+        paint.color = black
+        canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
+        paint.style = Paint.Style.FILL
+        paint.color = black
+        val spacing = rect.width() * 0.18f
+        val radius = 1.5f * density
+        canvas.drawCircle(rect.centerX() - spacing, rect.centerY(), radius, paint)
+        canvas.drawCircle(rect.centerX(), rect.centerY(), radius, paint)
+        canvas.drawCircle(rect.centerX() + spacing, rect.centerY(), radius, paint)
     }
 
     private fun drawZoom(canvas: Canvas, track: RectF) {
@@ -280,11 +318,13 @@ class InstrumentView(
         var apertureCenter: Double
         var shutterCenter: Double
         if (state.exposureLockMode == ExposureLockMode.APERTURE) {
-            apertureCenter = state.lockedApertureStop
-            shutterCenter = apertureCenter - evAtIso
+            apertureCenter = lockedScaleDisplayCoordinate.takeIf(Double::isFinite)
+                ?: state.lockedApertureStop
+            shutterCenter = state.lockedApertureStop - evAtIso
         } else {
-            shutterCenter = state.lockedShutterLogSeconds
-            apertureCenter = shutterCenter + evAtIso
+            shutterCenter = lockedScaleDisplayCoordinate.takeIf(Double::isFinite)
+                ?: state.lockedShutterLogSeconds
+            apertureCenter = state.lockedShutterLogSeconds + evAtIso
         }
         val dependentOverride = when {
             frozenDependentCoordinate.isFinite() -> frozenDependentCoordinate
@@ -325,8 +365,8 @@ class InstrumentView(
         centerCoordinate: Double,
         apertureRow: Boolean,
     ) {
-        val foreground = if (apertureRow) Color.WHITE else black
-        val background = if (apertureRow) black else Color.WHITE
+        val foreground = if (state.isDarkMode || apertureRow) Color.WHITE else lightBlack
+        val background = if (state.isDarkMode || apertureRow) Color.BLACK else Color.WHITE
         paint.style = Paint.Style.FILL
         paint.color = background
         canvas.drawRect(rect, paint)
@@ -336,28 +376,34 @@ class InstrumentView(
         canvas.drawRect(rect, paint)
 
         val titleWidth = 46f * density
-        val content = RectF(
-            rect.left + titleWidth,
-            rect.top,
-            lockTrack.left - 4f * density,
-            rect.bottom,
-        )
+        val content = exposureScaleContent(rect, lockTrack, titleWidth)
+        val titleLeft = if (state.isLeftHanded) rect.right - titleWidth else rect.left
         paint.style = Paint.Style.FILL
         paint.color = foreground
         paint.typeface = Typeface.DEFAULT_BOLD
         paint.textSize = 12f * density
-        drawCenteredText(canvas, title, rect.left + titleWidth * 0.24f, rect.centerY(), paint)
+        drawCenteredText(canvas, title, titleLeft + titleWidth * 0.24f, rect.centerY(), paint)
         paint.textSize = 8f * density
         paint.typeface = Typeface.DEFAULT
         val exactValue = if (apertureRow) {
-            formatExactAperture(ExposureMath.apertureFromStop(centerCoordinate))
+            formatExactAperture(
+                ExposureMath.apertureValueForCoordinate(
+                    centerCoordinate,
+                    state.apertureStep,
+                ),
+            )
         } else {
-            formatExactShutter(2.0.pow(centerCoordinate))
+            formatExactShutter(
+                ExposureMath.shutterValueForCoordinate(
+                    centerCoordinate,
+                    state.shutterStep,
+                ),
+            )
         }
         drawCenteredText(
             canvas,
             exactValue,
-            rect.left + titleWidth * 0.65f,
+            titleLeft + titleWidth * 0.65f,
             rect.centerY(),
             paint,
         )
@@ -375,13 +421,15 @@ class InstrumentView(
         paint.typeface = Typeface.DEFAULT
         if (apertureRow) {
             var lastLabelRight = content.left - 4f * density
-            ExposureMath.apertureStops.forEachIndexed { index, coordinate ->
+            val ticks = ExposureMath.apertureTicks(state.apertureStep)
+            ticks.forEachIndexed { index, tick ->
+                val coordinate = tick.coordinate
                 val x = content.centerX() +
                     ((coordinate - centerCoordinate) * pixelsPerStop).toFloat()
                 if (x in content.left..content.right) {
                     val label =
-                        if (index % 3 == 0) {
-                            formatApertureTick(ExposureMath.apertures[index])
+                        if (index % state.apertureStep.denominator == 0) {
+                            formatApertureTick(tick.nominalValue)
                         } else {
                             null
                         }
@@ -401,13 +449,15 @@ class InstrumentView(
             }
         } else {
             var lastLabelLeft = content.right + 4f * density
-            ExposureMath.shutterLogSeconds.forEachIndexed { index, coordinate ->
+            val ticks = ExposureMath.shutterTicks(state.shutterStep)
+            ticks.forEachIndexed { index, tick ->
+                val coordinate = tick.coordinate
                 val x = content.centerX() +
                     ((coordinate - centerCoordinate) * pixelsPerStop).toFloat()
                 if (x in content.left..content.right) {
                     val label =
-                        if (index % 3 == 0) {
-                            ExposureMath.formatShutter(ExposureMath.shutters[index])
+                        if (index % state.shutterStep.denominator == 0) {
+                            ExposureMath.formatShutter(tick.nominalValue)
                         } else {
                             null
                         }
@@ -439,6 +489,26 @@ class InstrumentView(
         canvas.restore()
     }
 
+    private fun exposureScaleContent(
+        rect: RectF,
+        lockTrack: RectF,
+        titleWidth: Float = 46f * density,
+    ): RectF = if (state.isLeftHanded) {
+        RectF(
+            lockTrack.right + 4f * density,
+            rect.top,
+            rect.right - titleWidth,
+            rect.bottom,
+        )
+    } else {
+        RectF(
+            rect.left + titleWidth,
+            rect.top,
+            lockTrack.left - 4f * density,
+            rect.bottom,
+        )
+    }
+
     private fun drawScaleTick(
         canvas: Canvas,
         x: Float,
@@ -461,7 +531,7 @@ class InstrumentView(
 
     private fun drawExposureLock(canvas: Canvas, track: RectF) {
         paint.style = Paint.Style.FILL
-        paint.color = Color.WHITE
+        paint.color = surfaceColor
         canvas.drawRect(track, paint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1.2f * density
@@ -485,7 +555,7 @@ class InstrumentView(
             knobY + knobSize / 2f,
         )
         paint.style = Paint.Style.FILL
-        paint.color = Color.WHITE
+        paint.color = surfaceColor
         canvas.drawRect(knob, paint)
         paint.style = Paint.Style.STROKE
         paint.color = black
@@ -565,7 +635,7 @@ class InstrumentView(
         val radius = min(dial.width(), dial.height()) / 2f
 
         paint.style = Paint.Style.FILL
-        paint.color = Color.WHITE
+        paint.color = surfaceColor
         canvas.drawCircle(cx, cy, radius, paint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1.4f * density
@@ -593,16 +663,18 @@ class InstrumentView(
 
         boldPaint.color = black
         boldPaint.textSize = maxOf(10f * density, radius * 0.12f)
-        drawCenteredText(canvas, "ISO", cx - centerRadius * 0.47f, cy - radius * 0.14f, boldPaint)
+        val isoX = cx + centerRadius * if (state.isLeftHanded) 0.47f else -0.47f
+        val evX = cx - centerRadius * if (state.isLeftHanded) 0.47f else -0.47f
+        drawCenteredText(canvas, "ISO", isoX, cy - radius * 0.14f, boldPaint)
         boldPaint.textSize = maxOf(15f * density, radius * 0.20f)
-        drawCenteredText(canvas, state.iso.toString(), cx - centerRadius * 0.47f, cy + radius * 0.09f, boldPaint)
+        drawCenteredText(canvas, state.iso.toString(), isoX, cy + radius * 0.09f, boldPaint)
 
         boldPaint.textSize = maxOf(10f * density, radius * 0.12f)
-        drawCenteredText(canvas, "EV", cx + centerRadius * 0.47f, cy - radius * 0.14f, boldPaint)
+        drawCenteredText(canvas, "EV", evX, cy - radius * 0.14f, boldPaint)
         boldPaint.textSize = maxOf(14f * density, radius * 0.18f)
         val comp = state.exposureCompEv
         val compText = if (comp >= 0.0) "+${"%.2f".format(comp)}" else "%.2f".format(comp)
-        drawCenteredText(canvas, compText, cx + centerRadius * 0.47f, cy + radius * 0.09f, boldPaint)
+        drawCenteredText(canvas, compText, evX, cy + radius * 0.09f, boldPaint)
 
         drawIsoModeButton(canvas, g.isoModeButton)
     }
@@ -616,14 +688,16 @@ class InstrumentView(
         // The scale windows expose roughly the outer 37% of either side. Match that
         // opening with two parallel arcs so the active control is apparent without
         // covering its ticks or labels.
-        val arcStart = if (state.isoAdjustMode) 105f else -75f
+        val isoOnRight = state.isLeftHanded
+        val activeOnRight = if (state.isoAdjustMode) isoOnRight else !isoOnRight
+        val arcStart = if (activeOnRight) -75f else 105f
         val strokeWidth = 1.4f * density
 
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = strokeWidth
         paint.strokeCap = Paint.Cap.ROUND
 
-        paint.color = Color.WHITE
+        paint.color = surfaceColor
         val accentRadius = radius + 2.2f * density
         canvas.drawArc(
             RectF(
@@ -662,17 +736,31 @@ class InstrumentView(
         radius: Float,
     ) {
         canvas.save()
-        canvas.clipRect(
-            dial.left - density,
-            dial.top - density,
-            dial.left + dial.width() * 0.37f,
-            dial.bottom + density,
-        )
+        if (state.isLeftHanded) {
+            canvas.clipRect(
+                dial.right - dial.width() * 0.37f,
+                dial.top - density,
+                dial.right + density,
+                dial.bottom + density,
+            )
+        } else {
+            canvas.clipRect(
+                dial.left - density,
+                dial.top - density,
+                dial.left + dial.width() * 0.37f,
+                dial.bottom + density,
+            )
+        }
         val spacing = 12f
         val textRadius = radius * 0.83f
         for (index in state.isoValues.indices) {
-            val angle = 180f + (index - state.isoIndex) * spacing
-            if (angle < 90f || angle > 270f) continue
+            val baseAngle = if (state.isLeftHanded) 0f else 180f
+            val angle = baseAngle + (index - state.isoIndex) * spacing
+            if (state.isLeftHanded) {
+                if (angle < -90f || angle > 90f) continue
+            } else if (angle < 90f || angle > 270f) {
+                continue
+            }
             drawDialTick(
                 canvas,
                 cx,
@@ -695,17 +783,31 @@ class InstrumentView(
         radius: Float,
     ) {
         canvas.save()
-        canvas.clipRect(
-            dial.right - dial.width() * 0.37f,
-            dial.top - density,
-            dial.right + density,
-            dial.bottom + density,
-        )
+        if (state.isLeftHanded) {
+            canvas.clipRect(
+                dial.left - density,
+                dial.top - density,
+                dial.left + dial.width() * 0.37f,
+                dial.bottom + density,
+            )
+        } else {
+            canvas.clipRect(
+                dial.right - dial.width() * 0.37f,
+                dial.top - density,
+                dial.right + density,
+                dial.bottom + density,
+            )
+        }
         val spacing = 8f
         val textRadius = radius * 0.83f
         for (step in -30..30) {
-            val angle = (step - state.exposureCompSteps) * spacing
-            if (angle < -90f || angle > 90f) continue
+            val baseAngle = if (state.isLeftHanded) 180f else 0f
+            val angle = baseAngle + (step - state.exposureCompSteps) * spacing
+            if (state.isLeftHanded) {
+                if (angle < 90f || angle > 270f) continue
+            } else if (angle < -90f || angle > 90f) {
+                continue
+            }
             val label = if (step % 6 == 0) {
                 val value = step / 6
                 if (value > 0) "+$value" else value.toString()
@@ -767,7 +869,7 @@ class InstrumentView(
 
     private fun drawIsoModeButton(canvas: Canvas, rect: RectF) {
         paint.style = Paint.Style.FILL
-        paint.color = Color.WHITE
+        paint.color = surfaceColor
         canvas.drawCircle(rect.centerX(), rect.centerY(), rect.width() / 2f, paint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1.4f * density
@@ -779,7 +881,7 @@ class InstrumentView(
             canvas.drawCircle(rect.centerX(), rect.centerY(), rect.width() * 0.34f, paint)
         }
         paint.style = Paint.Style.FILL
-        paint.color = if (state.isoAdjustMode) Color.WHITE else black
+        paint.color = if (state.isoAdjustMode) surfaceColor else black
         paint.textSize = 7f * density
         paint.typeface = Typeface.DEFAULT_BOLD
         drawCenteredText(canvas, "ISO", rect.centerX(), rect.centerY(), paint)
@@ -789,7 +891,7 @@ class InstrumentView(
         val rect = g.meterButton
         val radius = min(rect.width(), rect.height()) * 0.18f
         paint.style = Paint.Style.FILL
-        paint.color = if (state.measuring) paleGray else Color.WHITE
+        paint.color = if (state.measuring) paleGray else surfaceColor
         canvas.drawRoundRect(rect, radius, radius, paint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 2f * density
@@ -820,7 +922,7 @@ class InstrumentView(
         accented: Boolean,
     ) {
         paint.style = Paint.Style.FILL
-        paint.color = Color.WHITE
+        paint.color = surfaceColor
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1.2f * density
@@ -861,6 +963,12 @@ class InstrumentView(
                     }
                 }
                 when {
+                    g.moreButton.contains(event.x, event.y) -> {
+                        formatMenuOpen = false
+                        haptic()
+                        listener?.onMoreRequested()
+                        return true
+                    }
                     g.orientationButton.contains(event.x, event.y) -> {
                         formatMenuOpen = false
                         haptic()
@@ -977,15 +1085,25 @@ class InstrumentView(
 
     private fun updateLockedScaleDrag(x: Float, rect: RectF) {
         val lockTrack = geometry?.exposureLockTrack ?: return
-        val content = RectF(
-            rect.left + 46f * density,
-            rect.top,
-            lockTrack.left - 4f * density,
-            rect.bottom,
-        )
+        val content = exposureScaleContent(rect, lockTrack)
         val deltaX = x - lastScaleX
         lastScaleX = x
-        state.moveLockedExposureBy(-deltaX / exposurePixelsPerStop(content))
+        val before = if (state.exposureLockMode == ExposureLockMode.APERTURE) {
+            state.lockedApertureStop
+        } else {
+            state.lockedShutterLogSeconds
+        }
+        lockedScaleDragCoordinate -= deltaX / exposurePixelsPerStop(content)
+        state.setLockedExposureCoordinate(lockedScaleDragCoordinate)
+        val after = if (state.exposureLockMode == ExposureLockMode.APERTURE) {
+            state.lockedApertureStop
+        } else {
+            state.lockedShutterLogSeconds
+        }
+        if (abs(after - before) > 0.0001) {
+            animateLockedScaleTo(after)
+            haptic()
+        }
         listener?.onControlsChanged(false)
         invalidate()
     }
@@ -1003,10 +1121,25 @@ class InstrumentView(
             }
         touchTarget = target
         lastScaleX = x
+        lockedScaleDragging = true
+        lockedScaleAnimator?.cancel()
+        lockedScaleAnimator = null
+        lockedScaleDragCoordinate =
+            if (state.exposureLockMode == ExposureLockMode.APERTURE) {
+                state.lockedApertureStop
+            } else {
+                state.lockedShutterLogSeconds
+            }
+        lockedScaleDisplayCoordinate = lockedScaleDragCoordinate
     }
 
     private fun finishLockedScaleDrag() {
         state.snapLockedExposure()
+        lockedScaleDragging = false
+        lockedScaleDragCoordinate = Double.NaN
+        if (lockedScaleAnimator == null) {
+            lockedScaleDisplayCoordinate = Double.NaN
+        }
         val from = frozenDependentCoordinate
         frozenDependentCoordinate = Double.NaN
         val evAtIso = animatedExposureValue()
@@ -1034,6 +1167,42 @@ class InstrumentView(
                 override fun onAnimationEnd(animation: Animator) {
                     releasedDependentCoordinate = Double.NaN
                     dependentAnimator = null
+                    postInvalidateOnAnimation()
+                }
+            })
+            start()
+        }
+    }
+
+    private fun animateLockedScaleTo(target: Double) {
+        val start = lockedScaleDisplayCoordinate.takeIf(Double::isFinite) ?: target
+        lockedScaleAnimator?.cancel()
+        if (abs(target - start) < 0.0001) {
+            lockedScaleDisplayCoordinate = target
+            postInvalidateOnAnimation()
+            return
+        }
+        lockedScaleAnimator = ValueAnimator.ofFloat(start.toFloat(), target.toFloat()).apply {
+            duration = 130L
+            interpolator = DecelerateInterpolator()
+            addUpdateListener {
+                lockedScaleDisplayCoordinate = (it.animatedValue as Float).toDouble()
+                postInvalidateOnAnimation()
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                private var cancelled = false
+
+                override fun onAnimationCancel(animation: Animator) {
+                    cancelled = true
+                }
+
+                override fun onAnimationEnd(animation: Animator) {
+                    if (cancelled) return
+                    lockedScaleDisplayCoordinate =
+                        if (lockedScaleDragging) target else Double.NaN
+                    if (lockedScaleAnimator === animation) {
+                        lockedScaleAnimator = null
+                    }
                     postInvalidateOnAnimation()
                 }
             })
@@ -1170,6 +1339,7 @@ class InstrumentView(
         evAnimator?.cancel()
         dependentAnimator?.cancel()
         exposureLockAnimator?.cancel()
+        lockedScaleAnimator?.cancel()
         super.onDetachedFromWindow()
     }
 }

@@ -10,6 +10,7 @@ data class LayoutGeometry(
     val zoomTrack: RectF,
     val formatButton: RectF,
     val orientationButton: RectF,
+    val moreButton: RectF,
     val apertureRow: RectF,
     val shutterRow: RectF,
     val exposureLockTrack: RectF,
@@ -24,6 +25,7 @@ data class LayoutGeometry(
             density: Float,
             format: FrameFormat,
             frameLandscape: Boolean,
+            leftHanded: Boolean,
         ): LayoutGeometry {
             val w = width.toFloat()
             val h = height.toFloat()
@@ -34,9 +36,15 @@ data class LayoutGeometry(
             val previewPanel: RectF
             val controlsPanel: RectF
             if (isLandscape) {
-                val divider = w * 0.60f
-                previewPanel = RectF(pad, pad, divider - gap, h - pad)
-                controlsPanel = RectF(divider + gap, pad, w - pad, h - pad)
+                if (leftHanded) {
+                    val divider = w * 0.40f
+                    controlsPanel = RectF(pad, pad, divider - gap, h - pad)
+                    previewPanel = RectF(divider + gap, pad, w - pad, h - pad)
+                } else {
+                    val divider = w * 0.60f
+                    previewPanel = RectF(pad, pad, divider - gap, h - pad)
+                    controlsPanel = RectF(divider + gap, pad, w - pad, h - pad)
+                }
             } else {
                 val previewBottom = h * 0.58f
                 previewPanel = RectF(pad, pad, w - pad, previewBottom)
@@ -47,36 +55,87 @@ data class LayoutGeometry(
             val zoomWidth = 34f * density
             // Keep the requested offset physical-size independent across screen densities.
             val meterButtonNudge = 10f * density
-            val frameArea = RectF(
-                previewPanel.left + gap,
-                previewPanel.top + gap,
-                previewPanel.right - zoomWidth - gap,
-                previewPanel.bottom - gap,
-            )
+            val frameArea = if (leftHanded) {
+                RectF(
+                    previewPanel.left + zoomWidth + gap,
+                    previewPanel.top + gap,
+                    previewPanel.right - gap,
+                    previewPanel.bottom - gap,
+                )
+            } else {
+                RectF(
+                    previewPanel.left + gap,
+                    previewPanel.top + gap,
+                    previewPanel.right - zoomWidth - gap,
+                    previewPanel.bottom - gap,
+                )
+            }
             val screenAspect = if (frameLandscape) {
                 format.landscapeAspect
             } else {
                 1f / format.landscapeAspect
             }
             val cameraFrame = fitAspect(frameArea, screenAspect)
-            val zoomTrack = RectF(
-                previewPanel.right - zoomWidth,
-                previewPanel.top + buttonSize + gap * 2f,
-                previewPanel.right - gap,
-                previewPanel.bottom - buttonSize * 0.25f,
-            )
-            val formatButton = RectF(
-                previewPanel.left + gap,
-                previewPanel.top + gap,
-                previewPanel.left + gap + buttonSize * 2.2f,
-                previewPanel.top + gap + buttonSize,
-            )
-            val orientationButton = RectF(
-                previewPanel.right - gap - buttonSize,
-                previewPanel.top + gap,
-                previewPanel.right - gap,
-                previewPanel.top + gap + buttonSize,
-            )
+            val zoomTrack = if (leftHanded) {
+                RectF(
+                    previewPanel.left + gap,
+                    previewPanel.top + buttonSize + gap * 2f,
+                    previewPanel.left + zoomWidth,
+                    previewPanel.bottom - buttonSize * 0.25f,
+                )
+            } else {
+                RectF(
+                    previewPanel.right - zoomWidth,
+                    previewPanel.top + buttonSize + gap * 2f,
+                    previewPanel.right - gap,
+                    previewPanel.bottom - buttonSize * 0.25f,
+                )
+            }
+            val formatButton = if (leftHanded) {
+                RectF(
+                    previewPanel.right - gap - buttonSize * 2.2f,
+                    previewPanel.top + gap,
+                    previewPanel.right - gap,
+                    previewPanel.top + gap + buttonSize,
+                )
+            } else {
+                RectF(
+                    previewPanel.left + gap,
+                    previewPanel.top + gap,
+                    previewPanel.left + gap + buttonSize * 2.2f,
+                    previewPanel.top + gap + buttonSize,
+                )
+            }
+            val orientationButton = if (leftHanded) {
+                RectF(
+                    previewPanel.left + gap,
+                    previewPanel.top + gap,
+                    previewPanel.left + gap + buttonSize,
+                    previewPanel.top + gap + buttonSize,
+                )
+            } else {
+                RectF(
+                    previewPanel.right - gap - buttonSize,
+                    previewPanel.top + gap,
+                    previewPanel.right - gap,
+                    previewPanel.top + gap + buttonSize,
+                )
+            }
+            val moreButton = if (leftHanded) {
+                RectF(
+                    cameraFrame.right - gap - buttonSize,
+                    cameraFrame.bottom - gap - buttonSize,
+                    cameraFrame.right - gap,
+                    cameraFrame.bottom - gap,
+                )
+            } else {
+                RectF(
+                    cameraFrame.left + gap,
+                    cameraFrame.bottom - gap - buttonSize,
+                    cameraFrame.left + gap + buttonSize,
+                    cameraFrame.bottom - gap,
+                )
+            }
 
             val rowHeight: Float
             val apertureRow: RectF
@@ -104,20 +163,38 @@ data class LayoutGeometry(
                     controlsPanel.bottom,
                 )
                 val dialSize = min(lower.height(), lower.width() * 0.62f)
-                dial = RectF(
-                    lower.left,
-                    lower.centerY() - dialSize / 2f,
-                    lower.left + dialSize,
-                    lower.centerY() + dialSize / 2f,
-                )
+                dial = if (leftHanded) {
+                    RectF(
+                        lower.right - dialSize,
+                        lower.centerY() - dialSize / 2f,
+                        lower.right,
+                        lower.centerY() + dialSize / 2f,
+                    )
+                } else {
+                    RectF(
+                        lower.left,
+                        lower.centerY() - dialSize / 2f,
+                        lower.left + dialSize,
+                        lower.centerY() + dialSize / 2f,
+                    )
+                }
                 val meterWidth = lower.width() - dialSize - gap
                 val meterSize = min(lower.height() * 0.56f, meterWidth * 0.86f)
-                meterButton = RectF(
-                    lower.right - meterSize,
-                    lower.centerY() - meterSize / 2f - meterButtonNudge,
-                    lower.right,
-                    lower.centerY() + meterSize / 2f - meterButtonNudge,
-                )
+                meterButton = if (leftHanded) {
+                    RectF(
+                        lower.left,
+                        lower.centerY() - meterSize / 2f - meterButtonNudge,
+                        lower.left + meterSize,
+                        lower.centerY() + meterSize / 2f - meterButtonNudge,
+                    )
+                } else {
+                    RectF(
+                        lower.right - meterSize,
+                        lower.centerY() - meterSize / 2f - meterButtonNudge,
+                        lower.right,
+                        lower.centerY() + meterSize / 2f - meterButtonNudge,
+                    )
+                }
             } else {
                 rowHeight = controlsPanel.height() * 0.20f
                 apertureRow = RectF(
@@ -139,35 +216,71 @@ data class LayoutGeometry(
                     controlsPanel.bottom,
                 )
                 val dialSize = min(lower.height(), lower.width() * 0.62f)
-                dial = RectF(
-                    lower.left,
-                    lower.centerY() - dialSize / 2f,
-                    lower.left + dialSize,
-                    lower.centerY() + dialSize / 2f,
-                )
+                dial = if (leftHanded) {
+                    RectF(
+                        lower.right - dialSize,
+                        lower.centerY() - dialSize / 2f,
+                        lower.right,
+                        lower.centerY() + dialSize / 2f,
+                    )
+                } else {
+                    RectF(
+                        lower.left,
+                        lower.centerY() - dialSize / 2f,
+                        lower.left + dialSize,
+                        lower.centerY() + dialSize / 2f,
+                    )
+                }
                 val meterSize = min(lower.height() * 0.56f, lower.width() * 0.28f)
-                meterButton = RectF(
-                    lower.right - meterSize - meterButtonNudge,
-                    lower.centerY() - meterSize / 2f,
-                    lower.right - meterButtonNudge,
-                    lower.centerY() + meterSize / 2f,
-                )
+                meterButton = if (leftHanded) {
+                    RectF(
+                        lower.left + meterButtonNudge,
+                        lower.centerY() - meterSize / 2f,
+                        lower.left + meterButtonNudge + meterSize,
+                        lower.centerY() + meterSize / 2f,
+                    )
+                } else {
+                    RectF(
+                        lower.right - meterSize - meterButtonNudge,
+                        lower.centerY() - meterSize / 2f,
+                        lower.right - meterButtonNudge,
+                        lower.centerY() + meterSize / 2f,
+                    )
+                }
             }
 
             val lockWidth = 38f * density
-            val exposureLockTrack = RectF(
-                apertureRow.right - lockWidth,
-                apertureRow.top,
-                apertureRow.right,
-                shutterRow.bottom,
-            )
+            val exposureLockTrack = if (leftHanded) {
+                RectF(
+                    apertureRow.left,
+                    apertureRow.top,
+                    apertureRow.left + lockWidth,
+                    shutterRow.bottom,
+                )
+            } else {
+                RectF(
+                    apertureRow.right - lockWidth,
+                    apertureRow.top,
+                    apertureRow.right,
+                    shutterRow.bottom,
+                )
+            }
             val isoButtonSize = min(36f * density, dial.width() * 0.22f)
-            val isoModeButton = RectF(
-                dial.right - isoButtonSize * 0.65f,
-                dial.bottom - isoButtonSize * 0.85f,
-                dial.right + isoButtonSize * 0.35f,
-                dial.bottom + isoButtonSize * 0.15f,
-            )
+            val isoModeButton = if (leftHanded) {
+                RectF(
+                    dial.left - isoButtonSize * 0.35f,
+                    dial.bottom - isoButtonSize * 0.85f,
+                    dial.left + isoButtonSize * 0.65f,
+                    dial.bottom + isoButtonSize * 0.15f,
+                )
+            } else {
+                RectF(
+                    dial.right - isoButtonSize * 0.65f,
+                    dial.bottom - isoButtonSize * 0.85f,
+                    dial.right + isoButtonSize * 0.35f,
+                    dial.bottom + isoButtonSize * 0.15f,
+                )
+            }
 
             return LayoutGeometry(
                 landscape = isLandscape,
@@ -176,6 +289,7 @@ data class LayoutGeometry(
                 zoomTrack = zoomTrack,
                 formatButton = formatButton,
                 orientationButton = orientationButton,
+                moreButton = moreButton,
                 apertureRow = apertureRow,
                 shutterRow = shutterRow,
                 exposureLockTrack = exposureLockTrack,
