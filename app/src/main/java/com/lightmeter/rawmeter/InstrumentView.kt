@@ -40,7 +40,8 @@ class InstrumentView(
 
     private val density = resources.displayMetrics.density
     private val lightBlack = Color.rgb(20, 20, 20)
-    private val black: Int get() = if (state.isDarkMode) Color.WHITE else lightBlack
+    private val nightForeground = Color.rgb(210, 210, 206)
+    private val black: Int get() = if (state.isDarkMode) nightForeground else lightBlack
     private val surfaceColor: Int get() = if (state.isDarkMode) Color.BLACK else Color.WHITE
     private val red = Color.rgb(166, 27, 36)
     private val paleGray: Int
@@ -156,7 +157,12 @@ class InstrumentView(
         }
         if (focalText.isNotBlank()) {
             paint.style = Paint.Style.FILL
-            paint.color = surfaceColor
+            paint.color = Color.argb(
+                168,
+                Color.red(surfaceColor),
+                Color.green(surfaceColor),
+                Color.blue(surfaceColor),
+            )
             paint.textSize = 10f * density
             paint.typeface = Typeface.DEFAULT_BOLD
             val textWidth = paint.measureText(focalText)
@@ -365,7 +371,11 @@ class InstrumentView(
         centerCoordinate: Double,
         apertureRow: Boolean,
     ) {
-        val foreground = if (state.isDarkMode || apertureRow) Color.WHITE else lightBlack
+        val foreground = when {
+            state.isDarkMode -> nightForeground
+            apertureRow -> Color.WHITE
+            else -> lightBlack
+        }
         val background = if (state.isDarkMode || apertureRow) Color.BLACK else Color.WHITE
         paint.style = Paint.Style.FILL
         paint.color = background

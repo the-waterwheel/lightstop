@@ -42,10 +42,15 @@ class CalibrationView(
         private set
 
     private val density = resources.displayMetrics.density
-    private val foreground = Color.rgb(20, 20, 20)
+    private val foreground: Int
+        get() = if (state.isDarkMode) Color.rgb(210, 210, 206) else Color.rgb(20, 20, 20)
+    private val surfaceColor: Int
+        get() = if (state.isDarkMode) Color.BLACK else Color.WHITE
     private val red = Color.rgb(166, 27, 36)
-    private val gray = Color.rgb(218, 218, 214)
-    private val muted = Color.rgb(112, 112, 108)
+    private val gray: Int
+        get() = if (state.isDarkMode) Color.rgb(58, 58, 56) else Color.rgb(218, 218, 214)
+    private val muted: Int
+        get() = if (state.isDarkMode) Color.rgb(150, 150, 146) else Color.rgb(112, 112, 108)
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
@@ -89,6 +94,15 @@ class CalibrationView(
 
     fun setCurrentCorrection(value: Double) {
         currentCorrectionEv = value
+        invalidate()
+    }
+
+    fun applyTheme() {
+        allEditors.forEach { editor ->
+            editor.setTextColor(foreground)
+            editor.setHintTextColor(muted)
+            editor.background = editorBackground()
+        }
         invalidate()
     }
 
@@ -192,15 +206,15 @@ class CalibrationView(
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val g = geometry ?: calculateGeometry(width, height).also { geometry = it }
-        drawWhiteOutsidePreview(canvas, g.preview)
+        drawSurfaceOutsidePreview(canvas, g.preview)
         drawHeader(canvas, g)
         drawPreviewOverlay(canvas, g.preview)
         drawControls(canvas, g)
     }
 
-    private fun drawWhiteOutsidePreview(canvas: Canvas, preview: RectF) {
+    private fun drawSurfaceOutsidePreview(canvas: Canvas, preview: RectF) {
         paint.style = Paint.Style.FILL
-        paint.color = Color.WHITE
+        paint.color = surfaceColor
         canvas.drawRect(0f, 0f, width.toFloat(), preview.top, paint)
         canvas.drawRect(0f, preview.top, preview.left, preview.bottom, paint)
         canvas.drawRect(preview.right, preview.top, width.toFloat(), preview.bottom, paint)
@@ -246,7 +260,7 @@ class CalibrationView(
         paint.strokeWidth = 1.2f * density
         paint.color = foreground
         canvas.drawRect(preview, paint)
-        paint.color = Color.WHITE
+        paint.color = surfaceColor
         paint.strokeWidth = 2f * density
         canvas.drawCircle(preview.centerX(), preview.centerY(), 11f * density, paint)
         paint.color = foreground
@@ -260,7 +274,7 @@ class CalibrationView(
             preview.bottom - 7f * density,
         )
         paint.style = Paint.Style.FILL
-        paint.color = Color.WHITE
+        paint.color = surfaceColor
         canvas.drawRoundRect(badge, 3f * density, 3f * density, paint)
         paint.color = foreground
         paint.textSize = 8f * density
@@ -279,14 +293,14 @@ class CalibrationView(
             val itemMode = CalibrationReferenceMode.entries[index]
             val selected = itemMode == mode
             paint.style = Paint.Style.FILL
-            paint.color = if (selected) foreground else Color.WHITE
+            paint.color = if (selected) foreground else surfaceColor
             canvas.drawRoundRect(rect, 3f * density, 3f * density, paint)
             paint.style = Paint.Style.STROKE
             paint.strokeWidth = if (selected) 1.4f * density else 1f * density
             paint.color = if (selected) red else foreground
             canvas.drawRoundRect(rect, 3f * density, 3f * density, paint)
             paint.style = Paint.Style.FILL
-            paint.color = if (selected) Color.WHITE else foreground
+            paint.color = if (selected) surfaceColor else foreground
             paint.textSize = 8.5f * density
             paint.typeface = Typeface.DEFAULT_BOLD
             drawCenteredText(canvas, modeLabel(itemMode), rect.centerX(), rect.centerY(), paint)
@@ -344,7 +358,7 @@ class CalibrationView(
         paint.strokeWidth = 1.5f * density
         paint.color = if (isMeasuring) muted else red
         canvas.drawRoundRect(g.primary, 4f * density, 4f * density, paint)
-        boldPaint.color = if (isMeasuring) muted else Color.WHITE
+        boldPaint.color = if (isMeasuring) muted else surfaceColor
         boldPaint.textSize = 11f * density
         drawCenteredText(
             canvas,
@@ -531,14 +545,16 @@ class CalibrationView(
                 InputType.TYPE_NUMBER_FLAG_DECIMAL or InputType.TYPE_NUMBER_FLAG_SIGNED
             else -> InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
         }
-        background = GradientDrawable().apply {
-            setColor(Color.WHITE)
-            setStroke(
-                (1.2f * density).toInt().coerceAtLeast(1),
-                this@CalibrationView.foreground,
-            )
-            cornerRadius = 3f * density
-        }
+        background = editorBackground()
+    }
+
+    private fun editorBackground() = GradientDrawable().apply {
+        setColor(surfaceColor)
+        setStroke(
+            (1.2f * density).toInt().coerceAtLeast(1),
+            foreground,
+        )
+        cornerRadius = 3f * density
     }
 
     private fun clearEditorFocus() {

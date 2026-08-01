@@ -63,7 +63,11 @@ class SettingsView(
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val background = if (state.isDarkMode) Color.BLACK else Color.WHITE
-        val foreground = if (state.isDarkMode) Color.WHITE else Color.rgb(20, 20, 20)
+        val foreground = if (state.isDarkMode) {
+            Color.rgb(210, 210, 206)
+        } else {
+            Color.rgb(20, 20, 20)
+        }
         val navGray = if (state.isDarkMode) Color.rgb(102, 102, 100) else Color.rgb(226, 226, 223)
         val divider = if (state.isDarkMode) Color.rgb(72, 72, 70) else Color.rgb(205, 205, 201)
         val red = Color.rgb(166, 27, 36)

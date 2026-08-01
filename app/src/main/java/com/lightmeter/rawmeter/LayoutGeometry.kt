@@ -121,21 +121,12 @@ data class LayoutGeometry(
                     previewPanel.top + gap + buttonSize,
                 )
             }
-            val moreButton = if (leftHanded) {
-                RectF(
-                    cameraFrame.right - gap - buttonSize,
-                    cameraFrame.bottom - gap - buttonSize,
-                    cameraFrame.right - gap,
-                    cameraFrame.bottom - gap,
-                )
-            } else {
-                RectF(
-                    cameraFrame.left + gap,
-                    cameraFrame.bottom - gap - buttonSize,
-                    cameraFrame.left + gap + buttonSize,
-                    cameraFrame.bottom - gap,
-                )
-            }
+            val moreButton = RectF(
+                previewPanel.left + gap,
+                previewPanel.bottom - gap - buttonSize,
+                previewPanel.left + gap + buttonSize,
+                previewPanel.bottom - gap,
+            )
 
             val rowHeight: Float
             val apertureRow: RectF

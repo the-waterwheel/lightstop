@@ -63,6 +63,7 @@ class MeterLayout @JvmOverloads constructor(
 
                 override fun onSettingChanged(key: SettingKey) {
                     updateBackground()
+                    if (key == SettingKey.THEME) calibrationView.applyTheme()
                     val frameChanged = key == SettingKey.HANDEDNESS
                     if (frameChanged) requestLayout()
                     instrumentView.invalidate()
@@ -222,6 +223,7 @@ class MeterLayout @JvmOverloads constructor(
         settingsView.visibility = View.GONE
         isCalibrationOpen = true
         instrumentView.visibility = View.GONE
+        calibrationView.applyTheme()
         calibrationView.visibility = View.VISIBLE
         calibrationView.bringToFront()
         updateBackground()
@@ -243,7 +245,7 @@ class MeterLayout @JvmOverloads constructor(
 
     private fun updateBackground() {
         setBackgroundColor(
-            if (isCalibrationOpen || !state.isDarkMode) Color.WHITE else Color.BLACK,
+            if (state.isDarkMode) Color.BLACK else Color.WHITE,
         )
     }
 
