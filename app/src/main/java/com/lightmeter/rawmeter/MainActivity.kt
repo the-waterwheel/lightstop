@@ -22,6 +22,9 @@ class MainActivity : Activity(), CameraController.Callback {
     private lateinit var cameraController: CameraController
     private val mainHandler = Handler(Looper.getMainLooper())
     private var rawDialogVisible = false
+    private var calibrationResetDialogVisible = false
+    private var calibrationMeasurementPending = false
+    private var calibrationReferenceEv100 = Double.NaN
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -68,6 +71,28 @@ class MainActivity : Activity(), CameraController.Callback {
                     )
                 }
             }
+
+            override fun onCalibrationOpened() {
+                meterLayout.calibrationView.setCurrentCorrection(
+                    cameraController.currentUserCalibrationEv(),
+                )
+            }
+
+            override fun onCalibrationMeasureRequested(referenceEv100: Double) {
+                calibrationMeasurementPending = true
+                calibrationReferenceEv100 = referenceEv100
+                meterLayout.calibrationView.setMeasuring(true)
+                cameraController.measure(
+                    state.frameFormat,
+                    state.frameLandscape,
+                    state.zoom,
+                    state.meteringMode,
+                )
+            }
+
+            override fun onCalibrationResetRequested() {
+                showCalibrationResetDialog()
+            }
         }
         setContentView(meterLayout)
         window.decorView.post { hideSystemBars() }
@@ -89,6 +114,7 @@ class MainActivity : Activity(), CameraController.Callback {
 
     @Suppress("DEPRECATION")
     override fun onBackPressed() {
+        if (meterLayout.closeCalibration()) return
         if (meterLayout.closeSettings()) return
         super.onBackPressed()
     }
@@ -118,6 +144,11 @@ class MainActivity : Activity(), CameraController.Callback {
     override fun onCameraInfo(info: CameraUiInfo) {
         state.cameraInfo = info
         if (state.zoom > info.maxDisplayZoom) state.zoom = info.maxDisplayZoom
+        if (meterLayout.isCalibrationOpen) {
+            meterLayout.calibrationView.setCurrentCorrection(
+                cameraController.currentUserCalibrationEv(),
+            )
+        }
         meterLayout.refresh()
     }
 
@@ -126,6 +157,10 @@ class MainActivity : Activity(), CameraController.Callback {
     }
 
     override fun onMeteringStarted(source: MeteringSource) {
+        if (calibrationMeasurementPending) {
+            meterLayout.calibrationView.setMeasuring(true)
+            return
+        }
         state.measuring = true
         state.transientMessage = if (source == MeteringSource.RAW) {
             "正在读取 5 帧中央 RAW"
@@ -136,6 +171,21 @@ class MainActivity : Activity(), CameraController.Callback {
     }
 
     override fun onMeterReading(reading: MeterReading) {
+        if (calibrationMeasurementPending) {
+            calibrationMeasurementPending = false
+            val reference = calibrationReferenceEv100
+            calibrationReferenceEv100 = Double.NaN
+            val correction = cameraController.updateUserCalibration(
+                referenceEv100 = reference,
+                measuredEv100 = reading.sceneEv100,
+            )
+            meterLayout.calibrationView.showResult(
+                referenceEv100 = reference,
+                measuredEv100 = reading.sceneEv100,
+                correctionEv = correction,
+            )
+            return
+        }
         state.measuring = false
         state.lastReading = reading
         state.sceneEv100 = reading.sceneEv100
@@ -154,6 +204,12 @@ class MainActivity : Activity(), CameraController.Callback {
     }
 
     override fun onMeteringError(message: String) {
+        if (calibrationMeasurementPending) {
+            calibrationMeasurementPending = false
+            calibrationReferenceEv100 = Double.NaN
+            meterLayout.calibrationView.showError(message)
+            return
+        }
         state.measuring = false
         state.transientMessage = message
         meterLayout.refresh()
@@ -187,6 +243,28 @@ class MainActivity : Activity(), CameraController.Callback {
                 }
             }
             .setOnDismissListener { rawDialogVisible = false }
+            .show()
+    }
+
+    private fun showCalibrationResetDialog() {
+        if (calibrationResetDialogVisible || isFinishing) return
+        calibrationResetDialogVisible = true
+        val english = state.menuLanguage == MenuLanguage.ENGLISH
+        AlertDialog.Builder(this)
+            .setTitle(if (english) "Reset calibration" else "重置测光校准")
+            .setMessage(
+                if (english) {
+                    "Reset the user correction for this phone's main camera?"
+                } else {
+                    "是否确定重置这台手机主摄的用户测光修正？"
+                },
+            )
+            .setNegativeButton(if (english) "Cancel" else "取消", null)
+            .setPositiveButton(if (english) "Reset" else "重置") { _, _ ->
+                cameraController.resetUserCalibration()
+                meterLayout.calibrationView.showReset()
+            }
+            .setOnDismissListener { calibrationResetDialogVisible = false }
             .show()
     }
 

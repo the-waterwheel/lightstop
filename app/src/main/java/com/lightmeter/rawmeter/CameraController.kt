@@ -85,6 +85,7 @@ class CameraController(
     private val calibrationPreferences =
         context.getSharedPreferences("raw_meter_calibration", Context.MODE_PRIVATE)
     private val rawCalibrationCache = mutableMapOf<String, Double>()
+    private val userCalibrationCache = mutableMapOf<String, Double>()
 
     private var cameraThread: HandlerThread? = null
     private var cameraHandler: Handler? = null
@@ -274,6 +275,41 @@ class CameraController(
         }
     }
 
+    @Synchronized
+    fun currentUserCalibrationEv(): Double =
+        userCalibrationEv(cameraInfo.cameraId.ifBlank { "0" })
+
+    @Synchronized
+    fun updateUserCalibration(
+        referenceEv100: Double,
+        measuredEv100: Double,
+    ): Double {
+        val cameraId = cameraInfo.cameraId.ifBlank { "0" }
+        val key = userCalibrationKey(cameraId)
+        val updated = CalibrationMath.updatedUserCorrection(
+            currentCorrectionEv = userCalibrationEv(cameraId),
+            referenceEv100 = referenceEv100,
+            measuredEv100 = measuredEv100,
+        )
+        userCalibrationCache[key] = updated
+        calibrationPreferences.edit().putFloat(key, updated.toFloat()).apply()
+        Log.e(
+            TAG,
+            "User calibration updated: camera=$cameraId reference=$referenceEv100 " +
+                "measured=$measuredEv100 correction=$updated",
+        )
+        return updated
+    }
+
+    @Synchronized
+    fun resetUserCalibration() {
+        val cameraId = cameraInfo.cameraId.ifBlank { "0" }
+        val key = userCalibrationKey(cameraId)
+        userCalibrationCache.remove(key)
+        calibrationPreferences.edit().remove(key).apply()
+        Log.e(TAG, "User calibration reset: camera=$cameraId")
+    }
+
     private fun measureProcessedPreview(meteringMode: MeteringMode) {
         if (fallbackMeasuring || activeMeasurement != null) return
         val texture = textureView
@@ -370,7 +406,8 @@ class CameraController(
             ?: return null
         val seconds = exposureTime / 1_000_000_000.0
         val cameraEv = log2(aperture * aperture / seconds * 100.0 / sensitivity)
-        val sceneEv = cameraEv + log2(luma / RAW_REFERENCE_LEVEL)
+        val sceneEv = cameraEv + log2(luma / RAW_REFERENCE_LEVEL) +
+            userCalibrationEv(cameraInfo.cameraId.ifBlank { "0" })
         return FrameStat(
             ev100 = sceneEv,
             luma = luma,
@@ -912,7 +949,9 @@ class CameraController(
             ?: return null
         val seconds = exposureTime / 1_000_000_000.0
         val cameraEv = log2(aperture * aperture / seconds * 100.0 / sensitivity)
-        val calibrationEv = rawCalibrationEv(cameraInfo.cameraId)
+        val baselineCalibrationEv = rawCalibrationEv(cameraInfo.cameraId)
+        val userCalibrationEv = userCalibrationEv(cameraInfo.cameraId)
+        val calibrationEv = baselineCalibrationEv + userCalibrationEv
         val sceneEv = cameraEv + log2(luma / RAW_REFERENCE_LEVEL) + calibrationEv
         val postRawBoost =
             result.get(CaptureResult.CONTROL_POST_RAW_SENSITIVITY_BOOST) ?: 100
@@ -927,7 +966,9 @@ class CameraController(
                 "black=${black.joinToString()} white=$white " +
                 "exposureNs=$exposureTime iso=$sensitivity aperture=$aperture " +
                 "postRawBoost=$postRawBoost neutral=$neutralPoint cameraEv=$cameraEv " +
-                "calibrationEv=$calibrationEv sceneEv=$sceneEv mode=${active.meteringMode}",
+                "baselineCalibrationEv=$baselineCalibrationEv " +
+                "userCalibrationEv=$userCalibrationEv calibrationEv=$calibrationEv " +
+                "sceneEv=$sceneEv mode=${active.meteringMode}",
         )
         return FrameStat(
             ev100 = sceneEv,
@@ -1054,13 +1095,7 @@ class CameraController(
     }
 
     private fun rawCalibrationEv(cameraId: String): Double {
-        val key = buildString {
-            append(Build.MANUFACTURER.lowercase())
-            append('_')
-            append(Build.MODEL.lowercase())
-            append('_')
-            append(cameraId)
-        }.replace(Regex("[^a-z0-9_.-]"), "_")
+        val key = calibrationDeviceKey(cameraId)
         return rawCalibrationCache.getOrPut(key) {
             if (calibrationPreferences.contains(key)) {
                 calibrationPreferences.getFloat(key, 0f).toDouble()
@@ -1071,6 +1106,25 @@ class CameraController(
             }
         }
     }
+
+    @Synchronized
+    private fun userCalibrationEv(cameraId: String): Double {
+        val key = userCalibrationKey(cameraId)
+        return userCalibrationCache.getOrPut(key) {
+            calibrationPreferences.getFloat(key, 0f).toDouble()
+        }
+    }
+
+    private fun userCalibrationKey(cameraId: String): String =
+        "user_${calibrationDeviceKey(cameraId)}"
+
+    private fun calibrationDeviceKey(cameraId: String): String = buildString {
+            append(Build.MANUFACTURER.lowercase())
+            append('_')
+            append(Build.MODEL.lowercase())
+            append('_')
+            append(cameraId)
+        }.replace(Regex("[^a-z0-9_.-]"), "_")
 
     private fun knownRawCalibrationEv(cameraId: String): Double =
         if (Build.MANUFACTURER.equals("vivo", ignoreCase = true) &&

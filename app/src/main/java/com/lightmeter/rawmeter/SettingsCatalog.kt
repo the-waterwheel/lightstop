@@ -15,6 +15,10 @@ enum class SettingKey {
     HANDEDNESS,
 }
 
+enum class SettingActionKey {
+    START_CALIBRATION,
+}
+
 data class LocalizedLabel(
     val chinese: String,
     val english: String,
@@ -38,7 +42,14 @@ data class SettingsSectionSpec(
     val key: SettingsSectionKey,
     val label: LocalizedLabel,
     val items: List<SettingItemSpec>,
+    val actions: List<SettingActionSpec> = emptyList(),
     val enabled: Boolean = true,
+)
+
+data class SettingActionSpec(
+    val key: SettingActionKey,
+    val label: LocalizedLabel,
+    val description: LocalizedLabel? = null,
 )
 
 object SettingsCatalog {
@@ -105,7 +116,16 @@ object SettingsCatalog {
             key = SettingsSectionKey.CALIBRATION,
             label = LocalizedLabel("测光校准", "Calibration"),
             items = emptyList(),
-            enabled = false,
+            actions = listOf(
+                SettingActionSpec(
+                    key = SettingActionKey.START_CALIBRATION,
+                    label = LocalizedLabel("开始校准", "Start calibration"),
+                    description = LocalizedLabel(
+                        "使用参考 EV、相机曝光值或 18% 灰卡 Lux 校准",
+                        "Calibrate with EV, camera exposure, or lux on an 18% gray card",
+                    ),
+                ),
+            ),
         ),
     )
 

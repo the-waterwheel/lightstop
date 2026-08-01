@@ -21,11 +21,17 @@ class SettingsView(
     interface Listener {
         fun onCloseRequested()
         fun onSettingChanged(key: SettingKey)
+        fun onActionRequested(key: SettingActionKey)
     }
 
     private data class OptionHitTarget(
         val item: SettingItemSpec,
         val option: SettingOptionSpec,
+        val rect: RectF,
+    )
+
+    private data class ActionHitTarget(
+        val action: SettingActionSpec,
         val rect: RectF,
     )
 
@@ -46,6 +52,7 @@ class SettingsView(
     private var closeRect = RectF()
     private var tabRects: List<RectF> = emptyList()
     private var optionTargets: List<OptionHitTarget> = emptyList()
+    private var actionTargets: List<ActionHitTarget> = emptyList()
     private var downX = 0f
     private var downY = 0f
     private var lastY = 0f
@@ -133,9 +140,10 @@ class SettingsView(
         val bottomPadding = 18f * density
         val rowGap = 10f * density
         val rowHeight = if (width > height) 74f * density else 84f * density
+        val rowCount = section.items.size + section.actions.size
         val contentHeight = topPadding +
-            section.items.size * rowHeight +
-            max(0, section.items.size - 1) * rowGap +
+            rowCount * rowHeight +
+            max(0, rowCount - 1) * rowGap +
             bottomPadding
         maxScrollOffset = max(0f, contentHeight - (height - headerHeight))
         scrollOffset = scrollOffset.coerceIn(0f, maxScrollOffset)
@@ -144,6 +152,7 @@ class SettingsView(
         canvas.clipRect(0f, headerHeight, width.toFloat(), height.toFloat())
         var y = headerHeight + topPadding - scrollOffset
         val newTargets = mutableListOf<OptionHitTarget>()
+        val newActionTargets = mutableListOf<ActionHitTarget>()
         section.items.forEach { item ->
             val row = RectF(10f * density, y, width - 10f * density, y + rowHeight)
             paint.style = Paint.Style.FILL
@@ -198,7 +207,62 @@ class SettingsView(
             }
             y += rowHeight + rowGap
         }
+        section.actions.forEach { action ->
+            val row = RectF(10f * density, y, width - 10f * density, y + rowHeight)
+            paint.style = Paint.Style.FILL
+            paint.color = background
+            canvas.drawRect(row, paint)
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 1f * density
+            paint.color = divider
+            canvas.drawRect(row, paint)
+
+            val button = RectF(
+                row.left + 10f * density,
+                row.top + 9f * density,
+                row.right - 10f * density,
+                row.bottom - 9f * density,
+            )
+            paint.style = Paint.Style.FILL
+            paint.color = foreground
+            canvas.drawRoundRect(button, 3f * density, 3f * density, paint)
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 1.4f * density
+            paint.color = red
+            canvas.drawRoundRect(button, 3f * density, 3f * density, paint)
+
+            boldPaint.textSize = 11f * density
+            boldPaint.color = background
+            val titleY = if (action.description == null) {
+                button.centerY()
+            } else {
+                button.centerY() - 8f * density
+            }
+            drawCenteredText(
+                canvas,
+                action.label.resolve(state.menuLanguage),
+                button.centerX(),
+                titleY,
+                boldPaint,
+            )
+            action.description?.let { description ->
+                paint.style = Paint.Style.FILL
+                paint.typeface = Typeface.DEFAULT
+                paint.textSize = 7.5f * density
+                paint.color = background
+                drawCenteredText(
+                    canvas,
+                    description.resolve(state.menuLanguage),
+                    button.centerX(),
+                    button.centerY() + 11f * density,
+                    paint,
+                )
+            }
+            newActionTargets += ActionHitTarget(action, button)
+            y += rowHeight + rowGap
+        }
         optionTargets = newTargets
+        actionTargets = newActionTargets
         canvas.restore()
     }
 
@@ -253,6 +317,12 @@ class SettingsView(
                 haptic()
                 invalidate()
             }
+            return
+        }
+        val actionTarget = actionTargets.firstOrNull { it.rect.contains(x, y) }
+        if (actionTarget != null) {
+            haptic()
+            listener?.onActionRequested(actionTarget.action.key)
             return
         }
         val target = optionTargets.firstOrNull { it.rect.contains(x, y) } ?: return

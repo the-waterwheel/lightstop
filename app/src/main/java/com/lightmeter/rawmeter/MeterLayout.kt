@@ -20,6 +20,9 @@ class MeterLayout @JvmOverloads constructor(
         fun onOrientationToggle()
         fun onPreviewGeometryChanged(width: Int, height: Int)
         fun onControlsChanged(frameChanged: Boolean)
+        fun onCalibrationOpened()
+        fun onCalibrationMeasureRequested(referenceEv100: Double)
+        fun onCalibrationResetRequested()
     }
 
     val textureView = TextureView(context).apply {
@@ -27,7 +30,10 @@ class MeterLayout @JvmOverloads constructor(
     }
     val instrumentView = InstrumentView(context, state)
     val settingsView = SettingsView(context, state)
+    val calibrationView = CalibrationView(context, state)
     var isSettingsOpen: Boolean = false
+        private set
+    var isCalibrationOpen: Boolean = false
         private set
     var listener: Listener? = null
         set(value) {
@@ -63,6 +69,28 @@ class MeterLayout @JvmOverloads constructor(
                     settingsView.invalidate()
                     value?.onControlsChanged(frameChanged)
                 }
+
+                override fun onActionRequested(key: SettingActionKey) {
+                    when (key) {
+                        SettingActionKey.START_CALIBRATION -> {
+                            showCalibration()
+                            value?.onCalibrationOpened()
+                        }
+                    }
+                }
+            }
+            calibrationView.listener = object : CalibrationView.Listener {
+                override fun onExitRequested() {
+                    closeCalibration()
+                }
+
+                override fun onResetRequested() {
+                    value?.onCalibrationResetRequested()
+                }
+
+                override fun onMeasureRequested(referenceEv100: Double) {
+                    value?.onCalibrationMeasureRequested(referenceEv100)
+                }
             }
         }
 
@@ -72,6 +100,8 @@ class MeterLayout @JvmOverloads constructor(
         addView(instrumentView)
         settingsView.visibility = View.GONE
         addView(settingsView)
+        calibrationView.visibility = View.GONE
+        addView(calibrationView)
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
@@ -86,6 +116,10 @@ class MeterLayout @JvmOverloads constructor(
             MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
             MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
         )
+        calibrationView.measure(
+            MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
+        )
         val geometry = LayoutGeometry.calculate(
             width,
             height,
@@ -94,9 +128,14 @@ class MeterLayout @JvmOverloads constructor(
             state.frameLandscape,
             state.isLeftHanded,
         )
+        val cameraFrame = if (isCalibrationOpen) {
+            calibrationView.calculatePreviewFrame(width, height)
+        } else {
+            geometry.cameraFrame
+        }
         textureView.measure(
-            MeasureSpec.makeMeasureSpec(geometry.cameraFrame.width().toInt(), MeasureSpec.EXACTLY),
-            MeasureSpec.makeMeasureSpec(geometry.cameraFrame.height().toInt(), MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(cameraFrame.width().toInt(), MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(cameraFrame.height().toInt(), MeasureSpec.EXACTLY),
         )
     }
 
@@ -111,14 +150,20 @@ class MeterLayout @JvmOverloads constructor(
             state.frameLandscape,
             state.isLeftHanded,
         )
+        val cameraFrame = if (isCalibrationOpen) {
+            calibrationView.calculatePreviewFrame(width, height)
+        } else {
+            geometry.cameraFrame
+        }
         textureView.layout(
-            geometry.cameraFrame.left.toInt(),
-            geometry.cameraFrame.top.toInt(),
-            geometry.cameraFrame.right.toInt(),
-            geometry.cameraFrame.bottom.toInt(),
+            cameraFrame.left.toInt(),
+            cameraFrame.top.toInt(),
+            cameraFrame.right.toInt(),
+            cameraFrame.bottom.toInt(),
         )
         instrumentView.layout(0, 0, width, height)
         settingsView.layout(0, 0, width, height)
+        calibrationView.layout(0, 0, width, height)
         // A format change can resize this child while the ViewGroup's own bounds stay the
         // same, so `changed` is not a reliable signal. Publish geometry after every layout.
         post {
@@ -137,10 +182,11 @@ class MeterLayout @JvmOverloads constructor(
         updateBackground()
         instrumentView.invalidate()
         settingsView.invalidate()
+        calibrationView.invalidate()
     }
 
     fun showSettings() {
-        if (isSettingsOpen) return
+        if (isSettingsOpen || isCalibrationOpen) return
         isSettingsOpen = true
         settingsView.animate().cancel()
         settingsView.visibility = View.VISIBLE
@@ -169,8 +215,36 @@ class MeterLayout @JvmOverloads constructor(
         return true
     }
 
+    fun showCalibration() {
+        if (isCalibrationOpen) return
+        settingsView.animate().cancel()
+        isSettingsOpen = false
+        settingsView.visibility = View.GONE
+        isCalibrationOpen = true
+        instrumentView.visibility = View.GONE
+        calibrationView.visibility = View.VISIBLE
+        calibrationView.bringToFront()
+        updateBackground()
+        requestLayout()
+    }
+
+    fun closeCalibration(): Boolean {
+        if (!isCalibrationOpen) return false
+        if (calibrationView.isMeasuring) return true
+        isCalibrationOpen = false
+        calibrationView.visibility = View.GONE
+        instrumentView.visibility = View.VISIBLE
+        instrumentView.bringToFront()
+        updateBackground()
+        requestLayout()
+        invalidate()
+        return true
+    }
+
     private fun updateBackground() {
-        setBackgroundColor(if (state.isDarkMode) Color.BLACK else Color.WHITE)
+        setBackgroundColor(
+            if (isCalibrationOpen || !state.isDarkMode) Color.WHITE else Color.BLACK,
+        )
     }
 
     override fun generateDefaultLayoutParams(): LayoutParams =
