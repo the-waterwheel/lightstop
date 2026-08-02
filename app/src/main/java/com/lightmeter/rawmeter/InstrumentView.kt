@@ -33,6 +33,7 @@ class InstrumentView(
         fun onMeasureRequested()
         fun onOrientationToggle()
         fun onMoreRequested()
+        fun onZoneEntryDrag(progress: Float, released: Boolean)
         fun onControlsChanged(frameChanged: Boolean)
     }
 
@@ -78,6 +79,9 @@ class InstrumentView(
     private var exposureLockDragStartY = 0f
     private var exposureLockDragStartFraction = 0f
     private var exposureLockDragMoved = false
+    private var zoneTransitionFraction = 0f
+    private var zoneDragStartX = 0f
+    private var zoneDragStartY = 0f
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
 
     private enum class TouchTarget {
@@ -87,6 +91,7 @@ class InstrumentView(
         APERTURE,
         SHUTTER,
         LOCK,
+        ZONE_ENTRY,
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -100,12 +105,22 @@ class InstrumentView(
             state.isLeftHanded,
         )
         geometry = g
+        drawSurfaceOutsidePreview(canvas, g.cameraFrame)
         drawPanels(canvas, g)
         drawCameraOverlay(canvas, g)
         drawExposureRows(canvas, g)
         drawDial(canvas, g)
         drawMeterButton(canvas, g)
         drawStatus(canvas, g)
+    }
+
+    private fun drawSurfaceOutsidePreview(canvas: Canvas, frame: RectF) {
+        paint.style = Paint.Style.FILL
+        paint.color = surfaceColor
+        canvas.drawRect(0f, 0f, width.toFloat(), frame.top, paint)
+        canvas.drawRect(0f, frame.top, frame.left, frame.bottom, paint)
+        canvas.drawRect(frame.right, frame.top, width.toFloat(), frame.bottom, paint)
+        canvas.drawRect(0f, frame.bottom, width.toFloat(), height.toFloat(), paint)
     }
 
     private fun drawPanels(canvas: Canvas, g: LayoutGeometry) {
@@ -148,6 +163,7 @@ class InstrumentView(
         drawOrientationButton(canvas, g.orientationButton, g.landscape)
         drawZoom(canvas, g.zoomTrack)
         drawMoreButton(canvas, g.moreButton)
+        drawZoneEntryHandle(canvas, g)
 
         val equivalent = state.equivalent35mm()
         val focalText = buildString {
@@ -180,6 +196,57 @@ class InstrumentView(
             )
             paint.color = black
             canvas.drawText(focalText, g.cameraFrame.centerX() - textWidth / 2f, baseline, paint)
+        }
+    }
+
+    fun setZoneTransitionFraction(fraction: Float) {
+        zoneTransitionFraction = fraction.coerceIn(0f, 1f)
+        invalidate()
+    }
+
+    private fun drawZoneEntryHandle(canvas: Canvas, g: LayoutGeometry) {
+        val rect = RectF(g.zoneEntryHandle)
+        if (g.landscape) {
+            rect.offset(-zoneTransitionFraction * width * 0.14f, 0f)
+        } else {
+            rect.offset(0f, -zoneTransitionFraction * height * 0.16f)
+        }
+        paint.style = Paint.Style.FILL
+        paint.color = surfaceColor
+        canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 1.2f * density
+        paint.color = black
+        canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
+        paint.style = Paint.Style.FILL
+        paint.color = black
+        paint.textSize = 8.5f * density
+        paint.typeface = Typeface.DEFAULT_BOLD
+        if (g.landscape) {
+            canvas.save()
+            canvas.rotate(-90f, rect.centerX(), rect.centerY())
+            drawCenteredText(canvas, "zone", rect.centerX(), rect.centerY(), paint)
+            canvas.restore()
+        } else {
+            drawCenteredText(canvas, "zone", rect.centerX(), rect.centerY(), paint)
+        }
+
+        if (touchTarget == TouchTarget.ZONE_ENTRY || zoneTransitionFraction > 0f) {
+            val arrow = Path()
+            val size = min(rect.width(), rect.height()) * 0.42f
+            if (g.landscape) {
+                val x = rect.left - 5f * density - zoneTransitionFraction * 18f * density
+                arrow.moveTo(x, rect.centerY() - size)
+                arrow.lineTo(x - size, rect.centerY())
+                arrow.lineTo(x, rect.centerY() + size)
+            } else {
+                val y = rect.top - 4f * density - zoneTransitionFraction * 18f * density
+                arrow.moveTo(rect.centerX() - size, y)
+                arrow.lineTo(rect.centerX(), y - size)
+                arrow.lineTo(rect.centerX() + size, y)
+            }
+            arrow.close()
+            canvas.drawPath(arrow, paint)
         }
     }
 
@@ -973,6 +1040,13 @@ class InstrumentView(
                     }
                 }
                 when {
+                    g.zoneEntryHandle.contains(event.x, event.y) && !state.measuring -> {
+                        formatMenuOpen = false
+                        touchTarget = TouchTarget.ZONE_ENTRY
+                        zoneDragStartX = event.x
+                        zoneDragStartY = event.y
+                        return true
+                    }
                     g.moreButton.contains(event.x, event.y) -> {
                         formatMenuOpen = false
                         haptic()
@@ -1053,6 +1127,15 @@ class InstrumentView(
                     TouchTarget.SHUTTER -> updateLockedScaleDrag(event.x, g.shutterRow)
                     TouchTarget.LOCK -> updateExposureLockDrag(event.y, g.exposureLockTrack)
                     TouchTarget.DIAL -> updateDial(event.x, event.y, g.dial)
+                    TouchTarget.ZONE_ENTRY -> {
+                        zoneTransitionFraction = if (g.landscape) {
+                            ((zoneDragStartX - event.x) / (width * 0.18f)).coerceIn(0f, 1f)
+                        } else {
+                            ((zoneDragStartY - event.y) / (height * 0.18f)).coerceIn(0f, 1f)
+                        }
+                        listener?.onZoneEntryDrag(zoneTransitionFraction, false)
+                        invalidate()
+                    }
                     TouchTarget.NONE -> Unit
                 }
                 return true
@@ -1067,6 +1150,11 @@ class InstrumentView(
                         event.y,
                         g.exposureLockTrack,
                         cancelled = event.actionMasked == MotionEvent.ACTION_CANCEL,
+                    )
+                } else if (touchTarget == TouchTarget.ZONE_ENTRY) {
+                    listener?.onZoneEntryDrag(
+                        if (event.actionMasked == MotionEvent.ACTION_CANCEL) 0f else zoneTransitionFraction,
+                        true,
                     )
                 }
                 touchTarget = TouchTarget.NONE

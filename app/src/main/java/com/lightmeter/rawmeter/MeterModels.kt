@@ -271,6 +271,27 @@ class MeterState(context: Context) {
         persist()
     }
 
+    fun setExposureLockModeFromCoordinates(
+        mode: ExposureLockMode,
+        apertureCoordinate: Double,
+        shutterCoordinate: Double,
+    ) {
+        exposureLockMode = mode
+        if (mode == ExposureLockMode.APERTURE) {
+            lockedApertureStop = ExposureMath.nearestApertureStop(
+                apertureCoordinate,
+                apertureStep,
+            )
+        } else {
+            lockedShutterLogSeconds = ExposureMath.nearestShutterLogSeconds(
+                shutterCoordinate,
+                shutterStep,
+            )
+        }
+        clampExposureLocks()
+        persist()
+    }
+
     fun setLockedExposureCoordinate(coordinate: Double) {
         if (exposureLockMode == ExposureLockMode.APERTURE) {
             lockedApertureStop = ExposureMath.nearestApertureStop(

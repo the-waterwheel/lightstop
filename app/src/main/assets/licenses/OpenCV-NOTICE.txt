@@ -1,0 +1,12 @@
+OpenCV
+Copyright (C) 2000-2026, Intel Corporation, all rights reserved.
+Copyright (C) 2009-2011, Willow Garage Inc., all rights reserved.
+Copyright (C) 2009-2016, NVIDIA Corporation, all rights reserved.
+Copyright (C) 2010-2013, Advanced Micro Devices, Inc., all rights reserved.
+Copyright (C) 2015-2023, OpenCV Foundation, all rights reserved.
+Copyright (C) 2015-2023, Itseez Inc., all rights reserved.
+Third-party copyrights are property of their respective owners.
+
+This application uses OpenCV 4.12.0 under the Apache License, Version 2.0.
+Project: https://opencv.org/
+Source and license: https://github.com/opencv/opencv

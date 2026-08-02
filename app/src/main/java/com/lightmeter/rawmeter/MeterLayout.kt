@@ -1,18 +1,25 @@
 package com.lightmeter.rawmeter
 
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
+import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Color
+import android.graphics.RectF
 import android.graphics.SurfaceTexture
 import android.util.AttributeSet
 import android.view.TextureView
 import android.view.View
 import android.view.ViewGroup
 import android.view.animation.DecelerateInterpolator
+import kotlin.math.max
+import kotlin.math.min
 
 class MeterLayout @JvmOverloads constructor(
     context: Context,
     val state: MeterState,
     attributeSet: AttributeSet? = null,
+    trackerFactory: ZoneMarkerTrackerFactory = OpenCvZoneMarkerTrackerFactory(),
 ) : ViewGroup(context, attributeSet) {
 
     interface Listener {
@@ -23,6 +30,7 @@ class MeterLayout @JvmOverloads constructor(
         fun onCalibrationOpened()
         fun onCalibrationMeasureRequested(referenceEv100: Double)
         fun onCalibrationResetRequested()
+        fun onZoneMeasureRequested(marker: ZoneMarker)
     }
 
     val textureView = TextureView(context).apply {
@@ -31,10 +39,22 @@ class MeterLayout @JvmOverloads constructor(
     val instrumentView = InstrumentView(context, state)
     val settingsView = SettingsView(context, state)
     val calibrationView = CalibrationView(context, state)
+    val zoneView = ZoneSystemView(context, state)
+    private val zoneMarkerTracker: ZoneMarkerTracker = trackerFactory.create(
+        textureView,
+        state,
+    ) { id, x, y, trackingState ->
+        zoneView.updateMarkerTracking(id, x, y, trackingState)
+    }
     var isSettingsOpen: Boolean = false
         private set
     var isCalibrationOpen: Boolean = false
         private set
+    var isZoneMode: Boolean = false
+        private set
+    private var zoneTransitionFraction = 0f
+    private var zoneAnimator: ValueAnimator? = null
+    private var zoneTransitionPrepared = false
     var listener: Listener? = null
         set(value) {
             field = value
@@ -49,6 +69,15 @@ class MeterLayout @JvmOverloads constructor(
 
                 override fun onMoreRequested() {
                     showSettings()
+                }
+
+                override fun onZoneEntryDrag(progress: Float, released: Boolean) {
+                    if (!released) {
+                        prepareZoneTransition()
+                        applyZoneTransition(progress)
+                    } else {
+                        animateZoneTransition(if (progress >= 0.45f) 1f else 0f)
+                    }
                 }
 
                 override fun onControlsChanged(frameChanged: Boolean) {
@@ -93,6 +122,51 @@ class MeterLayout @JvmOverloads constructor(
                     value?.onCalibrationMeasureRequested(referenceEv100)
                 }
             }
+            zoneView.listener = object : ZoneSystemView.Listener {
+                override fun onExitDrag(progress: Float, released: Boolean) {
+                    if (!released) {
+                        applyZoneTransition(1f - progress)
+                    } else {
+                        animateZoneTransition(if (progress >= 0.55f) 0f else 1f)
+                    }
+                }
+
+                override fun onMarkRequested(marker: ZoneMarker) {
+                    zoneMarkerTracker.addMarker(
+                        marker.id,
+                        marker.normalizedX,
+                        marker.normalizedY,
+                    )
+                    value?.onZoneMeasureRequested(marker)
+                }
+
+                override fun onMarkerRemoved(markerId: Int) {
+                    zoneMarkerTracker.removeMarker(markerId)
+                }
+
+                override fun onMarkersCleared(markerIds: List<Int>) {
+                    zoneMarkerTracker.clearMarkers()
+                }
+
+                override fun onOrientationToggle() {
+                    value?.onOrientationToggle()
+                }
+
+                override fun onPreviewMappingChanged() {
+                    zoneView.session.markers.forEach { marker ->
+                        zoneMarkerTracker.resetMarker(
+                            marker.id,
+                            marker.normalizedX,
+                            marker.normalizedY,
+                        )
+                    }
+                }
+
+                override fun onControlsChanged(frameChanged: Boolean) {
+                    if (frameChanged) requestLayout()
+                    value?.onControlsChanged(frameChanged)
+                }
+            }
         }
 
     init {
@@ -103,6 +177,8 @@ class MeterLayout @JvmOverloads constructor(
         addView(settingsView)
         calibrationView.visibility = View.GONE
         addView(calibrationView)
+        zoneView.visibility = View.GONE
+        addView(zoneView)
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
@@ -121,6 +197,10 @@ class MeterLayout @JvmOverloads constructor(
             MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
             MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
         )
+        zoneView.measure(
+            MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
+        )
         val geometry = LayoutGeometry.calculate(
             width,
             height,
@@ -131,12 +211,19 @@ class MeterLayout @JvmOverloads constructor(
         )
         val cameraFrame = if (isCalibrationOpen) {
             calibrationView.calculatePreviewFrame(width, height)
+        } else if (zoneTransitionFraction > 0f || isZoneMode) {
+            lerpRect(
+                geometry.cameraFrame,
+                zoneView.calculatePreviewFrame(width, height),
+                zoneTransitionFraction,
+            )
         } else {
             geometry.cameraFrame
         }
+        val textureFrame = previewTextureFrame(cameraFrame, width, height)
         textureView.measure(
-            MeasureSpec.makeMeasureSpec(cameraFrame.width().toInt(), MeasureSpec.EXACTLY),
-            MeasureSpec.makeMeasureSpec(cameraFrame.height().toInt(), MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(textureFrame.width().toInt(), MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(textureFrame.height().toInt(), MeasureSpec.EXACTLY),
         )
     }
 
@@ -153,18 +240,32 @@ class MeterLayout @JvmOverloads constructor(
         )
         val cameraFrame = if (isCalibrationOpen) {
             calibrationView.calculatePreviewFrame(width, height)
+        } else if (zoneTransitionFraction > 0f || isZoneMode) {
+            lerpRect(
+                geometry.cameraFrame,
+                zoneView.calculatePreviewFrame(width, height),
+                zoneTransitionFraction,
+            )
         } else {
             geometry.cameraFrame
         }
+        val textureFrame = previewTextureFrame(cameraFrame, width, height)
         textureView.layout(
-            cameraFrame.left.toInt(),
-            cameraFrame.top.toInt(),
-            cameraFrame.right.toInt(),
-            cameraFrame.bottom.toInt(),
+            textureFrame.left.toInt(),
+            textureFrame.top.toInt(),
+            textureFrame.right.toInt(),
+            textureFrame.bottom.toInt(),
+        )
+        zoneMarkerTracker.setVisibleViewport(
+            left = (cameraFrame.left - textureFrame.left) / textureFrame.width(),
+            top = (cameraFrame.top - textureFrame.top) / textureFrame.height(),
+            right = (cameraFrame.right - textureFrame.left) / textureFrame.width(),
+            bottom = (cameraFrame.bottom - textureFrame.top) / textureFrame.height(),
         )
         instrumentView.layout(0, 0, width, height)
         settingsView.layout(0, 0, width, height)
         calibrationView.layout(0, 0, width, height)
+        zoneView.layout(0, 0, width, height)
         // A format change can resize this child while the ViewGroup's own bounds stay the
         // same, so `changed` is not a reliable signal. Publish geometry after every layout.
         post {
@@ -184,10 +285,11 @@ class MeterLayout @JvmOverloads constructor(
         instrumentView.invalidate()
         settingsView.invalidate()
         calibrationView.invalidate()
+        zoneView.invalidate()
     }
 
     fun showSettings() {
-        if (isSettingsOpen || isCalibrationOpen) return
+        if (isSettingsOpen || isCalibrationOpen || isZoneMode || zoneTransitionFraction > 0f) return
         isSettingsOpen = true
         settingsView.animate().cancel()
         settingsView.visibility = View.VISIBLE
@@ -217,7 +319,7 @@ class MeterLayout @JvmOverloads constructor(
     }
 
     fun showCalibration() {
-        if (isCalibrationOpen) return
+        if (isCalibrationOpen || isZoneMode || zoneTransitionFraction > 0f) return
         settingsView.animate().cancel()
         isSettingsOpen = false
         settingsView.visibility = View.GONE
@@ -243,10 +345,148 @@ class MeterLayout @JvmOverloads constructor(
         return true
     }
 
+    fun closeZoneMode(): Boolean {
+        if (!isZoneMode && zoneTransitionFraction <= 0f) return false
+        animateZoneTransition(0f)
+        return true
+    }
+
+    fun pauseZoneTracking() {
+        zoneMarkerTracker.stop()
+    }
+
+    fun resumeZoneTracking() {
+        if (isZoneMode) zoneMarkerTracker.start(zoneView.session.markers)
+    }
+
+    fun completeZoneMeasurement(reading: MeterReading): ZoneMarker? =
+        zoneView.completeMeasurement(reading)
+
+    fun failZoneMeasurement(): ZoneMarker? = zoneView.failMeasurement()?.also {
+        zoneMarkerTracker.removeMarker(it.id)
+    }
+
+    private fun prepareZoneTransition() {
+        if (zoneTransitionPrepared) return
+        zoneTransitionPrepared = true
+        zoneView.enter()
+        zoneView.visibility = View.VISIBLE
+        zoneView.alpha = 0f
+        zoneView.bringToFront()
+        instrumentView.visibility = View.VISIBLE
+    }
+
+    private fun applyZoneTransition(fraction: Float) {
+        val value = fraction.coerceIn(0f, 1f)
+        if (value > 0f) prepareZoneTransition()
+        zoneTransitionFraction = value
+        if (value < 1f) instrumentView.visibility = View.VISIBLE
+        if (value > 0f) zoneView.visibility = View.VISIBLE
+        instrumentView.setZoneTransitionFraction(value)
+        instrumentView.alpha = 1f - value
+        zoneView.alpha = value
+        if (width > height) {
+            zoneView.translationX = (1f - value) * width * 0.08f
+            zoneView.translationY = 0f
+        } else {
+            zoneView.translationY = (1f - value) * height * 0.08f
+            zoneView.translationX = 0f
+        }
+        requestLayout()
+    }
+
+    private fun animateZoneTransition(target: Float) {
+        prepareZoneTransition()
+        zoneAnimator?.cancel()
+        val start = zoneTransitionFraction
+        if (kotlin.math.abs(start - target) < 0.001f) {
+            finishZoneTransition(target)
+            return
+        }
+        zoneAnimator = ValueAnimator.ofFloat(start, target).apply {
+            duration = (260L + 160L * kotlin.math.abs(target - start)).toLong()
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { applyZoneTransition(it.animatedValue as Float) }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    if (zoneAnimator === this@apply) {
+                        zoneAnimator = null
+                        finishZoneTransition(target)
+                    }
+                }
+            })
+            start()
+        }
+    }
+
+    private fun finishZoneTransition(target: Float) {
+        applyZoneTransition(target)
+        if (target >= 1f) {
+            isZoneMode = true
+            instrumentView.visibility = View.GONE
+            zoneView.visibility = View.VISIBLE
+            zoneView.alpha = 1f
+            zoneView.translationX = 0f
+            zoneView.translationY = 0f
+            zoneMarkerTracker.start(zoneView.session.markers)
+        } else {
+            isZoneMode = false
+            zoneTransitionPrepared = false
+            zoneView.visibility = View.GONE
+            instrumentView.visibility = View.VISIBLE
+            instrumentView.alpha = 1f
+            instrumentView.setZoneTransitionFraction(0f)
+            zoneMarkerTracker.stop()
+        }
+        requestLayout()
+    }
+
+    private fun lerpRect(start: RectF, end: RectF, fraction: Float): RectF = RectF(
+        start.left + (end.left - start.left) * fraction,
+        start.top + (end.top - start.top) * fraction,
+        start.right + (end.right - start.right) * fraction,
+        start.bottom + (end.bottom - start.bottom) * fraction,
+    )
+
+    private fun previewTextureFrame(cameraFrame: RectF, width: Int, height: Int): RectF {
+        val previewSize = state.cameraInfo.previewSize
+        val longAspect = if (previewSize != null && previewSize.width > 0 && previewSize.height > 0) {
+            max(previewSize.width, previewSize.height).toFloat() /
+                min(previewSize.width, previewSize.height).toFloat()
+        } else {
+            16f / 9f
+        }
+        val displayedAspect = if (width > height) longAspect else 1f / longAspect
+        val frameAspect = cameraFrame.width() / cameraFrame.height().coerceAtLeast(1f)
+        return if (frameAspect > displayedAspect) {
+            val textureHeight = cameraFrame.width() / displayedAspect
+            RectF(
+                cameraFrame.left,
+                cameraFrame.centerY() - textureHeight / 2f,
+                cameraFrame.right,
+                cameraFrame.centerY() + textureHeight / 2f,
+            )
+        } else {
+            val textureWidth = cameraFrame.height() * displayedAspect
+            RectF(
+                cameraFrame.centerX() - textureWidth / 2f,
+                cameraFrame.top,
+                cameraFrame.centerX() + textureWidth / 2f,
+                cameraFrame.bottom,
+            )
+        }
+    }
+
     private fun updateBackground() {
         setBackgroundColor(
             if (state.isDarkMode) Color.BLACK else Color.WHITE,
         )
+    }
+
+    override fun onDetachedFromWindow() {
+        zoneAnimator?.cancel()
+        zoneMarkerTracker.release()
+        super.onDetachedFromWindow()
     }
 
     override fun generateDefaultLayoutParams(): LayoutParams =

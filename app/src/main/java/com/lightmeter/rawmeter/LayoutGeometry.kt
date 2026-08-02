@@ -11,6 +11,7 @@ data class LayoutGeometry(
     val formatButton: RectF,
     val orientationButton: RectF,
     val moreButton: RectF,
+    val zoneEntryHandle: RectF,
     val apertureRow: RectF,
     val shutterRow: RectF,
     val exposureLockTrack: RectF,
@@ -127,6 +128,29 @@ data class LayoutGeometry(
                 previewPanel.left + gap + buttonSize,
                 previewPanel.bottom - gap,
             )
+            val zoneHandleLongSide = 76f * density
+            val zoneHandleShortSide = 22f * density
+            val zoneEntryHandle = if (isLandscape) {
+                val zoneHandleHeight = min(zoneHandleLongSide, zoomTrack.height() * 0.34f)
+                val left = if (leftHanded) {
+                    zoomTrack.right + gap
+                } else {
+                    zoomTrack.left - gap - zoneHandleShortSide
+                }
+                RectF(
+                    left,
+                    zoomTrack.centerY() - zoneHandleHeight / 2f,
+                    left + zoneHandleShortSide,
+                    zoomTrack.centerY() + zoneHandleHeight / 2f,
+                )
+            } else {
+                RectF(
+                    previewPanel.centerX() - zoneHandleLongSide / 2f,
+                    previewPanel.bottom - gap - zoneHandleShortSide,
+                    previewPanel.centerX() + zoneHandleLongSide / 2f,
+                    previewPanel.bottom - gap,
+                )
+            }
 
             val rowHeight: Float
             val apertureRow: RectF
@@ -281,6 +305,7 @@ data class LayoutGeometry(
                 formatButton = formatButton,
                 orientationButton = orientationButton,
                 moreButton = moreButton,
+                zoneEntryHandle = zoneEntryHandle,
                 apertureRow = apertureRow,
                 shutterRow = shutterRow,
                 exposureLockTrack = exposureLockTrack,

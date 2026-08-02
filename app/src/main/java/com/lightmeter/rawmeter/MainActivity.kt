@@ -25,6 +25,7 @@ class MainActivity : Activity(), CameraController.Callback {
     private var calibrationResetDialogVisible = false
     private var calibrationMeasurementPending = false
     private var calibrationReferenceEv100 = Double.NaN
+    private var zoneMeasurementPending = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -93,6 +94,19 @@ class MainActivity : Activity(), CameraController.Callback {
             override fun onCalibrationResetRequested() {
                 showCalibrationResetDialog()
             }
+
+            override fun onZoneMeasureRequested(marker: ZoneMarker) {
+                if (zoneMeasurementPending || state.measuring) return
+                zoneMeasurementPending = true
+                state.measuring = true
+                meterLayout.zoneView.invalidate()
+                cameraController.measure(
+                    state.frameFormat,
+                    state.frameLandscape,
+                    state.zoom,
+                    state.meteringMode,
+                )
+            }
         }
         setContentView(meterLayout)
         window.decorView.post { hideSystemBars() }
@@ -102,12 +116,19 @@ class MainActivity : Activity(), CameraController.Callback {
     override fun onResume() {
         super.onResume()
         hideSystemBars()
+        meterLayout.resumeZoneTracking()
         if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
             cameraController.start()
         }
     }
 
     override fun onPause() {
+        meterLayout.pauseZoneTracking()
+        if (zoneMeasurementPending) {
+            zoneMeasurementPending = false
+            state.measuring = false
+            meterLayout.failZoneMeasurement()
+        }
         cameraController.stop()
         super.onPause()
     }
@@ -116,6 +137,7 @@ class MainActivity : Activity(), CameraController.Callback {
     override fun onBackPressed() {
         if (meterLayout.closeCalibration()) return
         if (meterLayout.closeSettings()) return
+        if (meterLayout.closeZoneMode()) return
         super.onBackPressed()
     }
 
@@ -161,6 +183,11 @@ class MainActivity : Activity(), CameraController.Callback {
             meterLayout.calibrationView.setMeasuring(true)
             return
         }
+        if (zoneMeasurementPending) {
+            state.measuring = true
+            meterLayout.zoneView.invalidate()
+            return
+        }
         state.measuring = true
         state.transientMessage = if (source == MeteringSource.RAW) {
             "正在读取 5 帧中央 RAW"
@@ -186,6 +213,14 @@ class MainActivity : Activity(), CameraController.Callback {
             )
             return
         }
+        if (zoneMeasurementPending) {
+            zoneMeasurementPending = false
+            state.measuring = false
+            state.lastReading = reading
+            meterLayout.completeZoneMeasurement(reading)
+            meterLayout.refresh()
+            return
+        }
         state.measuring = false
         state.lastReading = reading
         state.sceneEv100 = reading.sceneEv100
@@ -208,6 +243,15 @@ class MainActivity : Activity(), CameraController.Callback {
             calibrationMeasurementPending = false
             calibrationReferenceEv100 = Double.NaN
             meterLayout.calibrationView.showError(message)
+            return
+        }
+        if (zoneMeasurementPending) {
+            zoneMeasurementPending = false
+            state.measuring = false
+            meterLayout.failZoneMeasurement()
+            state.transientMessage = message
+            meterLayout.refresh()
+            clearTransientMessageLater()
             return
         }
         state.measuring = false
