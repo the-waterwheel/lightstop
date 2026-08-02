@@ -49,6 +49,7 @@ class CameraController(
     interface Callback {
         fun onCameraInfo(info: CameraUiInfo)
         fun onRawUnavailable()
+        fun onZoneTrackingFrame(frame: ZoneTrackingFrame)
         fun onMeteringStarted(source: MeteringSource)
         fun onMeterReading(reading: MeterReading)
         fun onMeteringError(message: String)
@@ -96,6 +97,7 @@ class CameraController(
     private var captureSession: CameraCaptureSession? = null
     private var previewSurface: Surface? = null
     private var rawReader: ImageReader? = null
+    private var trackingReader: ImageReader? = null
     private var characteristics: CameraCharacteristics? = null
     private var cameraInfo = CameraUiInfo()
     private var previewSize: Size? = null
@@ -106,6 +108,9 @@ class CameraController(
     private var activeMeasurement: MeasurementAccumulator? = null
     private var fallbackMeasuring = false
     private var fallbackMeasurementId = 0
+    @Volatile
+    private var trackingFramesEnabled = false
+    private var trackingFrameLogged = false
 
     private var lastViewWidth = 0
     private var lastViewHeight = 0
@@ -116,6 +121,10 @@ class CameraController(
     fun attach(texture: TextureView) {
         textureView = texture
         texture.surfaceTextureListener = this
+    }
+
+    fun setTrackingFramesEnabled(enabled: Boolean) {
+        trackingFramesEnabled = enabled
     }
 
     fun start() {
@@ -587,6 +596,20 @@ class CameraController(
             } else {
                 null
             }
+            trackingReader?.close()
+            trackingReader = chooseTrackingSize(map, chosenPreview)?.let { trackingSize ->
+                ImageReader.newInstance(
+                    trackingSize.width,
+                    trackingSize.height,
+                    ImageFormat.YUV_420_888,
+                    3,
+                ).also { imageReader ->
+                    imageReader.setOnImageAvailableListener(
+                        { reader -> onTrackingImageAvailable(reader) },
+                        handler,
+                    )
+                }
+            }
             cameraManager.openCamera(cameraId, cameraStateCallback, handler)
         } catch (error: Exception) {
             opening = false
@@ -648,6 +671,28 @@ class CameraController(
         )
     }
 
+    private fun chooseTrackingSize(
+        map: android.hardware.camera2.params.StreamConfigurationMap,
+        preview: Size,
+    ): Size? {
+        val sizes = map.getOutputSizes(ImageFormat.YUV_420_888)?.toList().orEmpty()
+        if (sizes.isEmpty()) return null
+        val previewAspect = preview.width.toDouble() / preview.height.coerceAtLeast(1)
+        val compact = sizes.filter { size ->
+            max(size.width, size.height) <= TRACKING_MAX_LONG_EDGE &&
+                min(size.width, size.height) >= TRACKING_MIN_SHORT_EDGE
+        }.ifEmpty {
+            sizes.filter { max(it.width, it.height) <= 1280 }.ifEmpty { sizes }
+        }
+        return compact.minWithOrNull(
+            compareBy<Size> {
+                abs(it.width.toDouble() / it.height.coerceAtLeast(1) - previewAspect)
+            }.thenBy {
+                abs(max(it.width, it.height) - TRACKING_TARGET_LONG_EDGE)
+            }.thenBy { it.width.toLong() * it.height.toLong() },
+        )
+    }
+
     private fun chooseFpsRange(
         chars: CameraCharacteristics,
         size: Size,
@@ -690,10 +735,11 @@ class CameraController(
         }
     }
 
-    private fun createSession(device: CameraDevice) {
+    private fun createSession(device: CameraDevice, includeTrackingStream: Boolean = true) {
         val preview = previewSurface ?: return
         val outputs = mutableListOf(preview)
         rawReader?.surface?.let(outputs::add)
+        if (includeTrackingStream) trackingReader?.surface?.let(outputs::add)
         try {
             device.createCaptureSession(
                 outputs,
@@ -708,12 +754,29 @@ class CameraController(
                     }
 
                     override fun onConfigureFailed(session: CameraCaptureSession) {
+                        if (includeTrackingStream && trackingReader != null) {
+                            Log.w(TAG, "Tracking YUV stream unsupported; retrying without it")
+                            session.close()
+                            trackingReader?.close()
+                            trackingReader = null
+                            cameraHandler?.post {
+                                if (cameraDevice === device) createSession(device, false)
+                            }
+                            return
+                        }
                         postInfo(cameraInfo.copy(status = "相机输出组合不受支持"))
                     }
                 },
                 cameraHandler,
             )
         } catch (error: CameraAccessException) {
+            if (includeTrackingStream && trackingReader != null) {
+                Log.w(TAG, "Tracking YUV session failed; retrying without it", error)
+                trackingReader?.close()
+                trackingReader = null
+                createSession(device, false)
+                return
+            }
             postInfo(cameraInfo.copy(status = "无法建立相机会话：${error.message}"))
         }
     }
@@ -727,6 +790,7 @@ class CameraController(
             val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
             previewBuilder = builder
             builder.addTarget(preview)
+            trackingReader?.surface?.let(builder::addTarget)
             builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
             builder.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
             previewFpsRange?.let { builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
@@ -840,6 +904,57 @@ class CameraController(
                 builder.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_AUTO)
             else ->
                 builder.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
+        }
+    }
+
+    private fun onTrackingImageAvailable(reader: ImageReader) {
+        val image = try {
+            reader.acquireLatestImage()
+        } catch (_: IllegalStateException) {
+            null
+        } ?: return
+        try {
+            if (!trackingFramesEnabled) return
+            val plane = image.planes.firstOrNull() ?: return
+            val width = image.width
+            val height = image.height
+            val buffer = plane.buffer
+            val rowStride = plane.rowStride
+            val pixelStride = plane.pixelStride
+            val luma = ByteArray(width * height)
+            if (pixelStride == 1 && rowStride == width && buffer.remaining() >= luma.size) {
+                buffer.get(luma)
+            } else {
+                for (row in 0 until height) {
+                    val rowOffset = row * rowStride
+                    val destinationOffset = row * width
+                    for (column in 0 until width) {
+                        val sourceOffset = rowOffset + column * pixelStride
+                        if (sourceOffset < buffer.limit()) {
+                            luma[destinationOffset + column] = buffer.get(sourceOffset)
+                        }
+                    }
+                }
+            }
+            val displayDegrees = when (lastDisplayRotation) {
+                Surface.ROTATION_90 -> 90
+                Surface.ROTATION_180 -> 180
+                Surface.ROTATION_270 -> 270
+                else -> 0
+            }
+            val rotation = (cameraInfo.sensorOrientationDegrees - displayDegrees + 360) % 360
+            if (!trackingFrameLogged) {
+                Log.i(
+                    TAG,
+                    "Zone tracking YUV ${width}x$height rotation=$rotation display=$displayDegrees",
+                )
+                trackingFrameLogged = true
+            }
+            callback.onZoneTrackingFrame(
+                ZoneTrackingFrame(width, height, luma, rotation),
+            )
+        } finally {
+            image.close()
         }
     }
 
@@ -1204,6 +1319,13 @@ class CameraController(
             Unit
         }
         rawReader = null
+        try {
+            trackingReader?.close()
+        } catch (_: Exception) {
+            Unit
+        }
+        trackingReader = null
+        trackingFrameLogged = false
         previewSurface?.release()
         previewSurface = null
         latestResult = null
@@ -1238,6 +1360,9 @@ class CameraController(
 
     companion object {
         private const val TAG = "RawLightMeter"
+        private const val TRACKING_TARGET_LONG_EDGE = 640
+        private const val TRACKING_MAX_LONG_EDGE = 720
+        private const val TRACKING_MIN_SHORT_EDGE = 240
         private const val RAW_REFERENCE_LEVEL = 0.18
         private const val FALLBACK_BITMAP_SIZE = 96
         private const val FALLBACK_FRAME_COUNT = 3

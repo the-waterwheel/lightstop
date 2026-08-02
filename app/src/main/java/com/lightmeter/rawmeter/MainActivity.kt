@@ -107,6 +107,10 @@ class MainActivity : Activity(), CameraController.Callback {
                     state.meteringMode,
                 )
             }
+
+            override fun onZoneTrackingActiveChanged(active: Boolean) {
+                cameraController.setTrackingFramesEnabled(active)
+            }
         }
         setContentView(meterLayout)
         window.decorView.post { hideSystemBars() }
@@ -117,12 +121,14 @@ class MainActivity : Activity(), CameraController.Callback {
         super.onResume()
         hideSystemBars()
         meterLayout.resumeZoneTracking()
+        cameraController.setTrackingFramesEnabled(meterLayout.isZoneMode)
         if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
             cameraController.start()
         }
     }
 
     override fun onPause() {
+        cameraController.setTrackingFramesEnabled(false)
         meterLayout.pauseZoneTracking()
         if (zoneMeasurementPending) {
             zoneMeasurementPending = false
@@ -176,6 +182,10 @@ class MainActivity : Activity(), CameraController.Callback {
 
     override fun onRawUnavailable() {
         showRawUnavailableDialog(force = false)
+    }
+
+    override fun onZoneTrackingFrame(frame: ZoneTrackingFrame) {
+        meterLayout.offerZoneTrackingFrame(frame)
     }
 
     override fun onMeteringStarted(source: MeteringSource) {

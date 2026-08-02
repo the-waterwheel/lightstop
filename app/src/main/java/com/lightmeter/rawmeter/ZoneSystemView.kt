@@ -36,6 +36,7 @@ class ZoneSystemView(
         fun onMarkersCleared(markerIds: List<Int>)
         fun onOrientationToggle()
         fun onPreviewMappingChanged()
+        fun onZoomMappingChanged(zoom: Float)
         fun onControlsChanged(frameChanged: Boolean)
     }
 
@@ -1053,22 +1054,13 @@ class ZoneSystemView(
             ((x - track.left) / track.width()).coerceIn(0f, 1f)
         }
         val maxZoom = state.cameraInfo.maxDisplayZoom.coerceAtLeast(1.01f)
-        val oldZoom = state.zoom
         val newZoom = ((1f + fraction * (maxZoom - 1f)) * 10f).roundToInt() / 10f
-        if (abs(newZoom - oldZoom) < 0.001f) return
-        val mappingScale = newZoom / oldZoom.coerceAtLeast(1f)
-        session.markers.forEach { marker ->
-            marker.normalizedX = (0.5f + (marker.normalizedX - 0.5f) * mappingScale)
-                .coerceIn(-4f, 5f)
-            marker.normalizedY = (0.5f + (marker.normalizedY - 0.5f) * mappingScale)
-                .coerceIn(-4f, 5f)
-            if (marker.trackingState == ZoneTrackingState.TRACKED) {
-                marker.trackingState = ZoneTrackingState.UNCERTAIN
-            }
-        }
+        if (abs(newZoom - state.zoom) < 0.001f) return
         state.zoom = newZoom
-        listener?.onPreviewMappingChanged()
         listener?.onControlsChanged(false)
+        // The tracker remains entirely in the unzoomed 1x coordinate space. This callback only
+        // changes how those stable coordinates are projected into the cropped UI.
+        listener?.onZoomMappingChanged(newZoom)
     }
 
     private fun markerAt(x: Float, y: Float, frame: RectF): Int? =

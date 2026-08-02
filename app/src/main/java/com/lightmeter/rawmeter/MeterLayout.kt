@@ -31,6 +31,7 @@ class MeterLayout @JvmOverloads constructor(
         fun onCalibrationMeasureRequested(referenceEv100: Double)
         fun onCalibrationResetRequested()
         fun onZoneMeasureRequested(marker: ZoneMarker)
+        fun onZoneTrackingActiveChanged(active: Boolean)
     }
 
     val textureView = TextureView(context).apply {
@@ -160,6 +161,10 @@ class MeterLayout @JvmOverloads constructor(
                             marker.normalizedY,
                         )
                     }
+                }
+
+                override fun onZoomMappingChanged(zoom: Float) {
+                    if (isZoneMode) zoneMarkerTracker.setDisplayZoom(zoom)
                 }
 
                 override fun onControlsChanged(frameChanged: Boolean) {
@@ -359,6 +364,10 @@ class MeterLayout @JvmOverloads constructor(
         if (isZoneMode) zoneMarkerTracker.start(zoneView.session.markers)
     }
 
+    fun offerZoneTrackingFrame(frame: ZoneTrackingFrame) {
+        zoneMarkerTracker.offerFrame(frame)
+    }
+
     fun completeZoneMeasurement(reading: MeterReading): ZoneMarker? =
         zoneView.completeMeasurement(reading)
 
@@ -429,6 +438,7 @@ class MeterLayout @JvmOverloads constructor(
             zoneView.translationX = 0f
             zoneView.translationY = 0f
             zoneMarkerTracker.start(zoneView.session.markers)
+            listener?.onZoneTrackingActiveChanged(true)
         } else {
             isZoneMode = false
             zoneTransitionPrepared = false
@@ -437,6 +447,7 @@ class MeterLayout @JvmOverloads constructor(
             instrumentView.alpha = 1f
             instrumentView.setZoneTransitionFraction(0f)
             zoneMarkerTracker.stop()
+            listener?.onZoneTrackingActiveChanged(false)
         }
         requestLayout()
     }

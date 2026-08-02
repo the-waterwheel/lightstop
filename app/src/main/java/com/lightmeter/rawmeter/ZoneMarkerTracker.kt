@@ -17,8 +17,22 @@ interface ZoneMarkerTracker {
     fun removeMarker(id: Int)
     fun clearMarkers()
     fun resetMarker(id: Int, normalizedX: Float, normalizedY: Float)
+    /** Replace all marker anchors after a discontinuous, non-zoom preview geometry change. */
+    fun reanchor(markers: List<ZoneMarker>)
+    /** Change only the UI crop/zoom projection; tracking coordinates and reference frames stay unchanged. */
+    fun setDisplayZoom(zoom: Float)
     fun setVisibleViewport(left: Float, top: Float, right: Float, bottom: Float)
+    /** Supply an unzoomed camera luminance frame. May be called from the camera thread. */
+    fun offerFrame(frame: ZoneTrackingFrame)
 }
+
+data class ZoneTrackingFrame(
+    val width: Int,
+    val height: Int,
+    val luma: ByteArray,
+    /** Clockwise rotation that makes the camera buffer upright in the current display. */
+    val clockwiseRotationDegrees: Int,
+)
 fun interface ZoneMarkerTrackerFactory {
     fun create(
         textureView: TextureView,
@@ -36,6 +50,7 @@ data class ZoneTrackingTuning(
     val globalFeatureCount: Int = 160,
     val localFeaturesPerMarker: Int = 16,
     val featureRefreshFrames: Int = 14,
+    val mappingStabilizationFrames: Int = 1,
 )
 
 class OpenCvZoneMarkerTrackerFactory(
