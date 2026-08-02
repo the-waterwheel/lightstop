@@ -150,6 +150,8 @@ class OpenCvZoneMarkerTracker(
     private var sensorRegistered = false
     @Volatile
     private var lastExternalFrameAtMs = 0L
+    @Volatile
+    private var lastExternalFrameRotationDegrees = UNKNOWN_FRAME_ROTATION
     private var frameCoordinatesAreDisplayOriented = false
     @Volatile
     private var visibleViewport = VisibleViewport(0f, 0f, 1f, 1f)
@@ -212,6 +214,7 @@ class OpenCvZoneMarkerTracker(
         running = true
         externalFramesSeen.set(false)
         lastExternalFrameAtMs = 0L
+        lastExternalFrameRotationDegrees = UNKNOWN_FRAME_ROTATION
         statsStartedAtMs = SystemClock.elapsedRealtime()
         statsFrames = 0
         Log.i(
@@ -344,6 +347,7 @@ class OpenCvZoneMarkerTracker(
             return
         }
         lastExternalFrameAtMs = SystemClock.elapsedRealtime()
+        updateExternalFrameRotation(frame.clockwiseRotationDegrees)
         if (externalFramesSeen.compareAndSet(false, true)) {
             resetRequested.set(true)
             redetectRequested.set(true)
@@ -366,6 +370,61 @@ class OpenCvZoneMarkerTracker(
                 processing.set(false)
             }
         }
+    }
+
+    private fun updateExternalFrameRotation(clockwiseRotationDegrees: Int) {
+        val normalizedRotation = ((clockwiseRotationDegrees % 360) + 360) % 360
+        val previousRotation = lastExternalFrameRotationDegrees
+        lastExternalFrameRotationDegrees = normalizedRotation
+        if (previousRotation == UNKNOWN_FRAME_ROTATION || previousRotation == normalizedRotation) {
+            return
+        }
+        val clockwiseDelta = (normalizedRotation - previousRotation + 360) % 360
+        if (clockwiseDelta == 0) return
+
+        mappingRevision.incrementAndGet()
+        val viewport = visibleViewport
+        synchronized(lock) {
+            tracks.values.forEach { track ->
+                val oldDisplayX = viewport.left + track.baseX * viewport.width
+                val oldDisplayY = viewport.top + track.baseY * viewport.height
+                val (newDisplayX, newDisplayY) = rotateDisplayCoordinate(
+                    oldDisplayX,
+                    oldDisplayY,
+                    clockwiseDelta,
+                )
+                track.baseX = ((newDisplayX - viewport.left) / viewport.width)
+                    .coerceIn(MIN_VIRTUAL_COORDINATE, MAX_VIRTUAL_COORDINATE)
+                track.baseY = ((newDisplayY - viewport.top) / viewport.height)
+                    .coerceIn(MIN_VIRTUAL_COORDINATE, MAX_VIRTUAL_COORDINATE)
+                track.trackingState = ZoneTrackingState.UNCERTAIN
+                track.misses = 0
+            }
+        }
+        resetRequested.set(true)
+        redetectRequested.set(true)
+        synchronized(gyroLock) {
+            accumulatedScreenXRotation = 0f
+            accumulatedScreenYRotation = 0f
+            accumulatedScreenZRotation = 0f
+        }
+        publishCurrentPositions()
+        Log.i(
+            TAG,
+            "tracking frame rotation $previousRotation->$normalizedRotation " +
+                "delta=$clockwiseDelta markers=${synchronized(lock) { tracks.size }}",
+        )
+    }
+
+    private fun rotateDisplayCoordinate(
+        x: Float,
+        y: Float,
+        clockwiseDegrees: Int,
+    ): Pair<Float, Float> = when (clockwiseDegrees) {
+        90 -> (1f - y) to x
+        180 -> (1f - x) to (1f - y)
+        270 -> y to (1f - x)
+        else -> x to y
     }
 
     override fun setVisibleViewport(left: Float, top: Float, right: Float, bottom: Float) {
@@ -1138,6 +1197,7 @@ class OpenCvZoneMarkerTracker(
         private const val MAX_VIRTUAL_COORDINATE = 5f
         private const val TRACKING_STATS_INTERVAL_MS = 2_000L
         private const val EXTERNAL_FRAME_TIMEOUT_MS = 500L
+        private const val UNKNOWN_FRAME_ROTATION = -1
         private const val LK_LEVELS = 3
         private val LK_WINDOW = Size(23.0, 23.0)
         private val LK_CRITERIA = TermCriteria(
