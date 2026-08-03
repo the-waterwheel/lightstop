@@ -75,6 +75,22 @@ class ZoneSystemView(
         ORIENTATION,
     }
 
+    private data class MarkerDisplayMotion(
+        var fromX: Float,
+        var fromY: Float,
+        var targetX: Float,
+        var targetY: Float,
+        var startedAtMs: Long,
+        var durationMs: Long,
+        var lastTargetAtMs: Long,
+    )
+
+    private data class MarkerDisplaySample(
+        val x: Float,
+        val y: Float,
+        val animating: Boolean,
+    )
+
     val session = ZoneMeterSession()
     var listener: Listener? = null
 
@@ -118,6 +134,7 @@ class ZoneSystemView(
     private var lockDragStartFraction = 0f
     private var lockDragMoved = false
     private var lockAnimator: ValueAnimator? = null
+    private val markerDisplayMotions = mutableMapOf<Int, MarkerDisplayMotion>()
 
     init {
         setWillNotDraw(false)
@@ -129,6 +146,7 @@ class ZoneSystemView(
 
     fun enter() {
         session.initializeFromMeter(state)
+        markerDisplayMotions.clear()
         formatMenuOpen = false
         exitProgress = 0f
         lockAnimator?.cancel()
@@ -151,13 +169,37 @@ class ZoneSystemView(
     }
 
     fun updateMarkerTracking(id: Int, x: Float, y: Float, trackingState: ZoneTrackingState) {
+        val now = SystemClock.uptimeMillis()
+        val markerBeforeUpdate = session.markers.firstOrNull { it.id == id }
+        val existing = markerDisplayMotions[id]
+        val current = existing?.sampleAt(now) ?: MarkerDisplaySample(
+            markerBeforeUpdate?.normalizedX ?: x,
+            markerBeforeUpdate?.normalizedY ?: y,
+            false,
+        )
         session.updateTracking(id, x, y, trackingState)
-        invalidate()
+        if (markerBeforeUpdate != null) {
+            val updateInterval = existing?.let { now - it.lastTargetAtMs }
+                ?.coerceIn(MIN_MARKER_INTERPOLATION_MS, MAX_MARKER_INTERPOLATION_MS)
+                ?: DEFAULT_MARKER_INTERPOLATION_MS
+            markerDisplayMotions[id] = MarkerDisplayMotion(
+                fromX = current.x,
+                fromY = current.y,
+                targetX = x,
+                targetY = y,
+                startedAtMs = now,
+                durationMs = updateInterval,
+                lastTargetAtMs = now,
+            )
+        }
+        postInvalidateOnAnimation()
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         geometry = calculateGeometry(w, h)
         listScrollOffset = 0f
+        // Orientation/layout changes are discontinuous coordinate remaps, not camera motion.
+        markerDisplayMotions.clear()
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -296,12 +338,19 @@ class ZoneSystemView(
     }
 
     private fun drawPreviewMarkers(canvas: Canvas, frame: RectF) {
+        val now = SystemClock.uptimeMillis()
+        val markerIds = session.markers.mapTo(mutableSetOf()) { it.id }
+        markerDisplayMotions.keys.retainAll(markerIds)
+        var animationPending = false
         session.markers.forEach { marker ->
-            if (marker.normalizedX !in 0f..1f || marker.normalizedY !in 0f..1f) {
+            val display = markerDisplayMotions[marker.id]?.sampleAt(now)
+                ?: MarkerDisplaySample(marker.normalizedX, marker.normalizedY, false)
+            animationPending = animationPending || display.animating
+            if (display.x !in 0f..1f || display.y !in 0f..1f) {
                 return@forEach
             }
-            val x = frame.left + marker.normalizedX * frame.width()
-            val y = frame.top + marker.normalizedY * frame.height()
+            val x = frame.left + display.x * frame.width()
+            val y = frame.top + display.y * frame.height()
             val radius = 9f * density
             val selected = marker.id == session.selectedMarkerId
             paint.pathEffect = when (marker.trackingState) {
@@ -321,6 +370,17 @@ class ZoneSystemView(
             boldPaint.textSize = 7f * density
             drawCenteredText(canvas, marker.id.toString(), x, y, boldPaint)
         }
+        if (animationPending) postInvalidateOnAnimation()
+    }
+
+    private fun MarkerDisplayMotion.sampleAt(nowMs: Long): MarkerDisplaySample {
+        if (durationMs <= 0L) return MarkerDisplaySample(targetX, targetY, false)
+        val fraction = ((nowMs - startedAtMs).toFloat() / durationMs).coerceIn(0f, 1f)
+        return MarkerDisplaySample(
+            x = fromX + (targetX - fromX) * fraction,
+            y = fromY + (targetY - fromY) * fraction,
+            animating = fraction < 1f,
+        )
     }
 
     private fun drawExposureRows(canvas: Canvas, g: Geometry) {
@@ -918,6 +978,7 @@ class ZoneSystemView(
     override fun onDetachedFromWindow() {
         lockAnimator?.cancel()
         lockAnimator = null
+        markerDisplayMotions.clear()
         super.onDetachedFromWindow()
     }
 
@@ -1065,11 +1126,13 @@ class ZoneSystemView(
 
     private fun markerAt(x: Float, y: Float, frame: RectF): Int? =
         session.markers.asReversed().firstOrNull { marker ->
-            if (marker.normalizedX !in 0f..1f || marker.normalizedY !in 0f..1f) {
+            val display = markerDisplayMotions[marker.id]?.sampleAt(SystemClock.uptimeMillis())
+                ?: MarkerDisplaySample(marker.normalizedX, marker.normalizedY, false)
+            if (display.x !in 0f..1f || display.y !in 0f..1f) {
                 return@firstOrNull false
             }
-            val markerX = frame.left + marker.normalizedX * frame.width()
-            val markerY = frame.top + marker.normalizedY * frame.height()
+            val markerX = frame.left + display.x * frame.width()
+            val markerY = frame.top + display.y * frame.height()
             abs(x - markerX) <= 16f * density && abs(y - markerY) <= 14f * density
         }?.id
 
@@ -1307,5 +1370,11 @@ class ZoneSystemView(
             performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
             lastHapticAt = now
         }
+    }
+
+    private companion object {
+        private const val MIN_MARKER_INTERPOLATION_MS = 12L
+        private const val DEFAULT_MARKER_INTERPOLATION_MS = 33L
+        private const val MAX_MARKER_INTERPOLATION_MS = 48L
     }
 }

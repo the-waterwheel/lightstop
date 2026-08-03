@@ -26,13 +26,17 @@ import org.opencv.core.Core
 import org.opencv.core.CvType
 import org.opencv.core.Mat
 import org.opencv.core.MatOfByte
+import org.opencv.core.MatOfDMatch
 import org.opencv.core.MatOfFloat
+import org.opencv.core.MatOfKeyPoint
 import org.opencv.core.MatOfPoint
 import org.opencv.core.MatOfPoint2f
 import org.opencv.core.Point
 import org.opencv.core.Scalar
 import org.opencv.core.Size
 import org.opencv.core.TermCriteria
+import org.opencv.features2d.DescriptorMatcher
+import org.opencv.features2d.ORB
 import org.opencv.imgproc.Imgproc
 import org.opencv.video.Video
 
@@ -55,6 +59,10 @@ class OpenCvZoneMarkerTracker(
         var baseY: Float,
         var misses: Int = 0,
         var trackingState: ZoneTrackingState = ZoneTrackingState.PENDING,
+        var referenceAnchor: Point? = null,
+        var referenceKeypoints: List<Point> = emptyList(),
+        var referenceDescriptors: Mat? = null,
+        var nextReferenceCaptureFrame: Long = 0L,
     )
 
     private data class Update(
@@ -68,6 +76,38 @@ class OpenCvZoneMarkerTracker(
         val dx: Float,
         val dy: Float,
         val rollRadians: Float,
+        val screenXRotation: Float,
+        val screenYRotation: Float,
+        val displayOriented: Boolean,
+        val xTranslationTrusted: Boolean,
+        val yTranslationTrusted: Boolean,
+    )
+
+    private class GyroAxisCalibration {
+        val samples = ArrayDeque<Double>()
+
+        fun estimate(): Double? {
+            if (samples.isEmpty()) return null
+            val sorted = samples.sorted()
+            val middle = sorted.size / 2
+            return if (sorted.size % 2 == 0) {
+                (sorted[middle - 1] + sorted[middle]) / 2.0
+            } else {
+                sorted[middle]
+            }
+        }
+    }
+
+    private data class GyroOrientationCalibration(
+        val horizontal: GyroAxisCalibration = GyroAxisCalibration(),
+        val vertical: GyroAxisCalibration = GyroAxisCalibration(),
+    )
+
+    private data class GyroCalibrationSnapshot(
+        val horizontalScale: Double?,
+        val horizontalSamples: Int,
+        val verticalScale: Double?,
+        val verticalSamples: Int,
     )
 
     private data class VisibleViewport(
@@ -109,6 +149,18 @@ class OpenCvZoneMarkerTracker(
         val support: Int,
     )
 
+    private data class ReentryFrameFeatures(
+        val keypoints: Array<Point>,
+        val descriptors: Mat,
+    ) {
+        fun release() = descriptors.release()
+    }
+
+    private data class ReentryMatch(
+        val point: Point,
+        val inlierCount: Int,
+    )
+
     private val mainHandler = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "zone-opencv-tracker").apply { isDaemon = true }
@@ -116,12 +168,15 @@ class OpenCvZoneMarkerTracker(
     private val processing = AtomicBoolean(false)
     private val resetRequested = AtomicBoolean(true)
     private val redetectRequested = AtomicBoolean(true)
+    private val forceReidentificationRequested = AtomicBoolean(false)
     private val mappingRevision = AtomicInteger(0)
     private val stabilizationFramesRemaining = AtomicInteger(0)
     private val externalFramesSeen = AtomicBoolean(false)
     private val lock = Any()
     private val gyroLock = Any()
+    private val gyroCalibrationLock = Any()
     private val tracks = linkedMapOf<Int, Track>()
+    private val gyroCalibrations = mutableMapOf<Int, GyroOrientationCalibration>()
     private val sensorManager = textureView.context.getSystemService(SensorManager::class.java)
     private val gyroscope = sensorManager?.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
     private val openCvReady = try {
@@ -132,6 +187,9 @@ class OpenCvZoneMarkerTracker(
         Log.e(TAG, "OpenCV initialization failed", error)
         false
     }
+    // Native feature objects must be constructed only after OpenCVLoader has loaded the library.
+    private val reentryOrb = ORB.create(REENTRY_FEATURE_COUNT)
+    private val reentryMatcher = DescriptorMatcher.create(DescriptorMatcher.BRUTEFORCE_HAMMING)
 
     private var running = false
     private var captureBitmap: Bitmap? = null
@@ -143,6 +201,7 @@ class OpenCvZoneMarkerTracker(
     private var framesUntilRedetect = 0
     private var statsStartedAtMs = 0L
     private var statsFrames = 0
+    private var processedFrameNumber = 0L
     private var gyroTimestampNs = 0L
     private var accumulatedScreenXRotation = 0f
     private var accumulatedScreenYRotation = 0f
@@ -196,6 +255,7 @@ class OpenCvZoneMarkerTracker(
         trackedDisplayZoom = meterState.zoom.coerceAtLeast(1f)
         val viewport = visibleViewport
         synchronized(lock) {
+            val previous = tracks.toMap()
             tracks.clear()
             markers.forEach { marker ->
                 val (baseX, baseY) = uiPreviewToBasePreview(
@@ -203,13 +263,18 @@ class OpenCvZoneMarkerTracker(
                     marker.normalizedY,
                     viewport,
                 )
+                val existing = previous[marker.id]
                 tracks[marker.id] = Track(
                     marker.id,
                     baseX,
                     baseY,
                     trackingState = marker.trackingState,
+                    referenceAnchor = existing?.referenceAnchor,
+                    referenceKeypoints = existing?.referenceKeypoints ?: emptyList(),
+                    referenceDescriptors = existing?.referenceDescriptors,
                 )
             }
+            previous.filterKeys { it !in tracks }.values.forEach { it.releaseReference() }
         }
         running = true
         externalFramesSeen.set(false)
@@ -224,6 +289,7 @@ class OpenCvZoneMarkerTracker(
         )
         resetRequested.set(true)
         redetectRequested.set(true)
+        forceReidentificationRequested.set(false)
         gyroTimestampNs = 0L
         synchronized(gyroLock) {
             accumulatedScreenXRotation = 0f
@@ -256,6 +322,10 @@ class OpenCvZoneMarkerTracker(
     override fun release() {
         stop()
         worker.execute {
+            synchronized(lock) {
+                tracks.values.forEach { it.releaseReference() }
+                tracks.clear()
+            }
             releaseOpenCvState()
             captureBitmap?.recycle()
             captureBitmap = null
@@ -273,6 +343,7 @@ class OpenCvZoneMarkerTracker(
             tracks[id] = Track(id, baseX, baseY)
         }
         redetectRequested.set(true)
+        captureReferenceFromLastProcessedFrame()
         // Take the closest possible preview sample before the RAW burst can stall rendering.
         // This makes the new marker refer to the scene at button-press time, rather than to the
         // first frame that happens to arrive after metering finishes.
@@ -280,12 +351,15 @@ class OpenCvZoneMarkerTracker(
     }
 
     override fun removeMarker(id: Int) {
-        synchronized(lock) { tracks.remove(id) }
+        synchronized(lock) { tracks.remove(id)?.releaseReference() }
         redetectRequested.set(true)
     }
 
     override fun clearMarkers() {
-        synchronized(lock) { tracks.clear() }
+        synchronized(lock) {
+            tracks.values.forEach { it.releaseReference() }
+            tracks.clear()
+        }
         redetectRequested.set(true)
     }
 
@@ -300,6 +374,7 @@ class OpenCvZoneMarkerTracker(
                 track.baseX = baseX
                 track.baseY = baseY
                 track.misses = 0
+                track.releaseReference()
             }
         }
         redetectRequested.set(true)
@@ -310,6 +385,7 @@ class OpenCvZoneMarkerTracker(
         trackedDisplayZoom = meterState.zoom.coerceAtLeast(1f)
         val viewport = visibleViewport
         synchronized(lock) {
+            val previous = tracks.toMap()
             tracks.clear()
             markers.forEach { marker ->
                 val (baseX, baseY) = uiPreviewToBasePreview(
@@ -317,13 +393,18 @@ class OpenCvZoneMarkerTracker(
                     marker.normalizedY,
                     viewport,
                 )
+                val existing = previous[marker.id]
                 tracks[marker.id] = Track(
                     marker.id,
                     baseX,
                     baseY,
                     trackingState = marker.trackingState,
+                    referenceAnchor = existing?.referenceAnchor,
+                    referenceKeypoints = existing?.referenceKeypoints ?: emptyList(),
+                    referenceDescriptors = existing?.referenceDescriptors,
                 )
             }
+            previous.filterKeys { it !in tracks }.values.forEach { it.releaseReference() }
         }
         stabilizationFramesRemaining.set(tuning.mappingStabilizationFrames.coerceAtLeast(1))
         resetRequested.set(true)
@@ -346,7 +427,18 @@ class OpenCvZoneMarkerTracker(
         ) {
             return
         }
-        lastExternalFrameAtMs = SystemClock.elapsedRealtime()
+        val now = SystemClock.elapsedRealtime()
+        val previousExternalFrameAtMs = lastExternalFrameAtMs
+        lastExternalFrameAtMs = now
+        if (externalFramesSeen.get() && previousExternalFrameAtMs > 0L) {
+            val frameGapMs = now - previousExternalFrameAtMs
+            if (frameGapMs >= FORCE_REIDENTIFICATION_FRAME_GAP_MS &&
+                synchronized(lock) { tracks.isNotEmpty() }
+            ) {
+                forceReidentificationRequested.set(true)
+                Log.i(TAG, "tracking stream gap=${frameGapMs}ms; forcing marker reidentification")
+            }
+        }
         updateExternalFrameRotation(frame.clockwiseRotationDegrees)
         if (externalFramesSeen.compareAndSet(false, true)) {
             resetRequested.set(true)
@@ -470,6 +562,19 @@ class OpenCvZoneMarkerTracker(
         if (Looper.myLooper() == Looper.getMainLooper()) capture.run() else mainHandler.post(capture)
     }
 
+    private fun captureReferenceFromLastProcessedFrame() {
+        if (!running) return
+        try {
+            worker.execute {
+                if (running && !previousGray.empty()) {
+                    captureMissingReentryReferences(previousGray)
+                }
+            }
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            // Tracker is being released; no reference is needed anymore.
+        }
+    }
+
     private fun captureFrame() {
         if (SystemClock.elapsedRealtime() - lastExternalFrameAtMs < EXTERNAL_FRAME_TIMEOUT_MS) return
         if (!running || !openCvReady || processing.getAndSet(true)) return
@@ -567,6 +672,35 @@ class OpenCvZoneMarkerTracker(
         prediction: MotionPrediction,
         revision: Int,
     ) {
+        processedFrameNumber += 1
+        captureMissingReentryReferences(gray)
+        val forceReidentification = forceReidentificationRequested.getAndSet(false)
+        if (forceReidentification && revision == mappingRevision.get()) {
+            val recoveryMotion = gyroAffine(
+                prediction,
+                gray.cols(),
+                gray.rows(),
+                trustedTranslationOnly = true,
+            )
+            val reentryFeatures = detectReentryFrameFeatures(gray, force = true)
+            val recoveryUpdates = try {
+                updateMarkers(
+                    emptyList(),
+                    recoveryMotion,
+                    prediction,
+                    gray.cols(),
+                    gray.rows(),
+                    reentryFeatures,
+                    forceReidentification = true,
+                )
+            } finally {
+                reentryFeatures?.release()
+            }
+            dispatchUpdates(recoveryUpdates, revision)
+            reportTrackingStats(0, recoveryMotion, recoveryUpdates)
+            resetFlowFrom(gray)
+            return
+        }
         val stabilizing = stabilizationFramesRemaining.getAndUpdate { remaining ->
             (remaining - 1).coerceAtLeast(0)
         } > 0
@@ -582,14 +716,25 @@ class OpenCvZoneMarkerTracker(
 
         val oldPoints = previousPoints.toArray()
         if (oldPoints.size < MIN_FLOW_POINTS || previousOwners.size != oldPoints.size) {
-            val fallbackMotion = gyroAffine(prediction, gray.cols(), gray.rows())
-            val fallbackUpdates = updateMarkers(
-                emptyList(),
-                fallbackMotion,
+            val fallbackMotion = gyroAffine(
                 prediction,
                 gray.cols(),
                 gray.rows(),
+                trustedTranslationOnly = true,
             )
+            val reentryFeatures = detectReentryFrameFeatures(gray)
+            val fallbackUpdates = try {
+                updateMarkers(
+                    emptyList(),
+                    fallbackMotion,
+                    prediction,
+                    gray.cols(),
+                    gray.rows(),
+                    reentryFeatures,
+                )
+            } finally {
+                reentryFeatures?.release()
+            }
             dispatchUpdates(fallbackUpdates, revision)
             reportTrackingStats(0, fallbackMotion, fallbackUpdates)
             resetFlowFrom(gray)
@@ -663,7 +808,19 @@ class OpenCvZoneMarkerTracker(
             resetRequested.set(true)
             return
         }
-        val updates = updateMarkers(valid, affine, prediction, gray.cols(), gray.rows())
+        val reentryFeatures = detectReentryFrameFeatures(gray)
+        val updates = try {
+            updateMarkers(
+                valid,
+                affine,
+                prediction,
+                gray.cols(),
+                gray.rows(),
+                reentryFeatures,
+            )
+        } finally {
+            reentryFeatures?.release()
+        }
         dispatchUpdates(updates, revision)
         reportTrackingStats(valid.size, affine, updates)
 
@@ -692,6 +849,103 @@ class OpenCvZoneMarkerTracker(
         detectFeatures(currentGray)
         currentGray.copyTo(previousGray)
         redetectRequested.set(false)
+    }
+
+    private fun Track.releaseReference() {
+        referenceDescriptors?.release()
+        referenceDescriptors = null
+        referenceAnchor = null
+        referenceKeypoints = emptyList()
+        nextReferenceCaptureFrame = 0L
+    }
+
+    /**
+     * Preserve an appearance signature near the marker. Optical flow cannot reconnect an object
+     * after it has fully left the frame; this descriptor constellation gives the tracker an
+     * identity to search for when the scene returns.
+     */
+    private fun captureMissingReentryReferences(image: Mat) {
+        if (image.empty()) return
+        val viewport = visibleViewport
+        val candidates = synchronized(lock) {
+            tracks.values.filter {
+                it.referenceDescriptors == null &&
+                    it.trackingState != ZoneTrackingState.LOST &&
+                    processedFrameNumber >= it.nextReferenceCaptureFrame
+            }.map { track ->
+                track.nextReferenceCaptureFrame = processedFrameNumber + REENTRY_REFERENCE_RETRY_FRAMES
+                track.id to (track.baseX to track.baseY)
+            }
+        }
+        candidates.forEach { (id, coordinates) ->
+            val center = basePreviewToTexture(
+                coordinates.first,
+                coordinates.second,
+                image.cols(),
+                image.rows(),
+                viewport,
+            )
+            if (!center.insideWithMargin(image.cols(), image.rows(), REENTRY_REFERENCE_RADIUS)) {
+                return@forEach
+            }
+            val mask = Mat.zeros(image.size(), CvType.CV_8UC1)
+            Imgproc.circle(mask, center, REENTRY_REFERENCE_RADIUS, Scalar(255.0), -1)
+            val keypoints = MatOfKeyPoint()
+            val descriptors = Mat()
+            try {
+                reentryOrb.detectAndCompute(image, mask, keypoints, descriptors)
+                val points = keypoints.toArray().map { it.pt }
+                if (points.size < MIN_REENTRY_REFERENCE_FEATURES || descriptors.rows() != points.size) {
+                    return@forEach
+                }
+                val storedDescriptors = descriptors.clone()
+                synchronized(lock) {
+                    val track = tracks[id]
+                    if (track != null && track.referenceDescriptors == null) {
+                        track.referenceAnchor = center
+                        track.referenceKeypoints = points
+                        track.referenceDescriptors = storedDescriptors
+                        Log.i(TAG, "marker $id reference captured features=${points.size}")
+                    } else {
+                        storedDescriptors.release()
+                    }
+                }
+            } finally {
+                descriptors.release()
+                keypoints.release()
+                mask.release()
+            }
+        }
+    }
+
+    private fun detectReentryFrameFeatures(
+        image: Mat,
+        force: Boolean = false,
+    ): ReentryFrameFeatures? {
+        if (!force && processedFrameNumber % REENTRY_SEARCH_INTERVAL_FRAMES != 0L) return null
+        val needed = synchronized(lock) {
+            tracks.values.any {
+                it.referenceDescriptors?.empty() == false &&
+                    (force || it.trackingState == ZoneTrackingState.LOST)
+            }
+        }
+        if (!needed) return null
+        val keypoints = MatOfKeyPoint()
+        val descriptors = Mat()
+        val emptyMask = Mat()
+        return try {
+            reentryOrb.detectAndCompute(image, emptyMask, keypoints, descriptors)
+            val points = keypoints.toArray().map { it.pt }.toTypedArray()
+            if (points.size < MIN_REENTRY_FRAME_FEATURES || descriptors.empty()) {
+                descriptors.release()
+                null
+            } else {
+                ReentryFrameFeatures(points, descriptors)
+            }
+        } finally {
+            emptyMask.release()
+            keypoints.release()
+        }
     }
 
     private fun dispatchUpdates(updates: List<Update>, revision: Int = mappingRevision.get()) {
@@ -737,11 +991,16 @@ class OpenCvZoneMarkerTracker(
         val tracked = updates.count { it.state == ZoneTrackingState.TRACKED }
         val uncertain = updates.count { it.state == ZoneTrackingState.UNCERTAIN }
         val lost = updates.count { it.state == ZoneTrackingState.LOST }
+        val gyroCalibration = gyroCalibrationSnapshot(gray.cols(), gray.rows())
+        val gyroHorizontal = gyroCalibration.horizontalScale?.let { "%.3f".format(it) } ?: "-"
+        val gyroVertical = gyroCalibration.verticalScale?.let { "%.3f".format(it) } ?: "-"
         Log.i(
             TAG,
             "fps=${"%.1f".format(fps)} flow=$flowCount inliers=${motion.inlierCount} " +
                 "reliable=${motion.reliable} markers=${updates.size} " +
-                "tracked=$tracked uncertain=$uncertain lost=$lost",
+                "tracked=$tracked uncertain=$uncertain lost=$lost " +
+                "gyroCal=x:$gyroHorizontal/${gyroCalibration.horizontalSamples} " +
+                "y:$gyroVertical/${gyroCalibration.verticalSamples}",
         )
         statsStartedAtMs = now
         statsFrames = 0
@@ -803,7 +1062,9 @@ class OpenCvZoneMarkerTracker(
         width: Int,
         height: Int,
     ): AffineMotion {
-        if (valid.size < MIN_RANSAC_POINTS) return gyroAffine(prediction, width, height)
+        if (valid.size < MIN_RANSAC_POINTS) {
+            return gyroAffine(prediction, width, height, trustedTranslationOnly = true)
+        }
         val source = MatOfPoint2f(*valid.map(ValidFlow::previous).toTypedArray())
         val destination = MatOfPoint2f(*valid.map(ValidFlow::current).toTypedArray())
         val inlierMask = Mat()
@@ -833,9 +1094,11 @@ class OpenCvZoneMarkerTracker(
                 matrix.get(1, 0)[0], matrix.get(1, 1)[0], matrix.get(1, 2)[0],
                 true,
                 inlierCount,
-            )
+            ).also { visualMotion ->
+                updateGyroCalibration(visualMotion, prediction, width, height)
+            }
         } else {
-            gyroAffine(prediction, width, height)
+            gyroAffine(prediction, width, height, trustedTranslationOnly = true)
         }
         source.release()
         destination.release()
@@ -844,12 +1107,94 @@ class OpenCvZoneMarkerTracker(
         return result
     }
 
+    private fun updateGyroCalibration(
+        visualMotion: AffineMotion,
+        prediction: MotionPrediction,
+        width: Int,
+        height: Int,
+    ) {
+        if (visualMotion.inlierCount < STRONG_GLOBAL_INLIERS) return
+        val affineScale = kotlin.math.hypot(visualMotion.m00, visualMotion.m10)
+        if (abs(affineScale - 1.0) > MAX_CALIBRATION_AFFINE_SCALE_ERROR) return
+
+        val center = Point(width / 2.0, height / 2.0)
+        val mappedCenter = visualMotion.map(center)
+        val analysisDeltaX = mappedCenter.x - center.x
+        val analysisDeltaY = mappedCenter.y - center.y
+        val displayDelta = analysisVectorToDisplay(
+            analysisDeltaX,
+            analysisDeltaY,
+            prediction.displayOriented,
+        )
+        val orientationKey = gyroOrientationKey(width, height)
+        synchronized(gyroCalibrationLock) {
+            val calibration = gyroCalibrations.getOrPut(orientationKey) {
+                GyroOrientationCalibration()
+            }
+            calibration.horizontal.addGyroScaleObservation(
+                angleRadians = prediction.screenYRotation.toDouble(),
+                pixelDelta = displayDelta.x,
+                frameExtent = width,
+            )
+            calibration.vertical.addGyroScaleObservation(
+                angleRadians = prediction.screenXRotation.toDouble(),
+                pixelDelta = displayDelta.y,
+                frameExtent = height,
+            )
+        }
+    }
+
+    private fun GyroAxisCalibration.addGyroScaleObservation(
+        angleRadians: Double,
+        pixelDelta: Double,
+        frameExtent: Int,
+    ) {
+        if (abs(angleRadians) < MIN_GYRO_CALIBRATION_ANGLE ||
+            abs(angleRadians) > MAX_GYRO_CALIBRATION_ANGLE ||
+            abs(pixelDelta) < MIN_GYRO_CALIBRATION_PIXELS ||
+            frameExtent <= 0
+        ) {
+            return
+        }
+        val candidate = pixelDelta / angleRadians / frameExtent
+        if (!candidate.isFinite() ||
+            candidate !in MIN_NORMALIZED_GYRO_SCALE..MAX_NORMALIZED_GYRO_SCALE
+        ) {
+            return
+        }
+        val current = estimate()
+        if (current != null && samples.size >= MIN_GYRO_OUTLIER_FILTER_SAMPLES &&
+            candidate !in
+            (current * MIN_GYRO_OBSERVATION_RATIO)..(current * MAX_GYRO_OBSERVATION_RATIO)
+        ) {
+            return
+        }
+        samples.addLast(candidate)
+        while (samples.size > MAX_GYRO_CALIBRATION_SAMPLES) samples.removeFirst()
+    }
+
+    private fun gyroCalibrationSnapshot(width: Int, height: Int): GyroCalibrationSnapshot =
+        synchronized(gyroCalibrationLock) {
+            val calibration = gyroCalibrations[gyroOrientationKey(width, height)]
+            GyroCalibrationSnapshot(
+                horizontalScale = calibration?.horizontal?.estimate(),
+                horizontalSamples = calibration?.horizontal?.samples?.size ?: 0,
+                verticalScale = calibration?.vertical?.estimate(),
+                verticalSamples = calibration?.vertical?.samples?.size ?: 0,
+            )
+        }
+
+    private fun gyroOrientationKey(width: Int, height: Int): Int =
+        if (width >= height) GYRO_LANDSCAPE_KEY else GYRO_PORTRAIT_KEY
+
     private fun updateMarkers(
         valid: List<ValidFlow>,
         motion: AffineMotion,
         prediction: MotionPrediction,
         width: Int,
         height: Int,
+        reentryFeatures: ReentryFrameFeatures?,
+        forceReidentification: Boolean = false,
     ): List<Update> {
         val viewport = visibleViewport
         val updates = ArrayList<Update>()
@@ -882,6 +1227,7 @@ class OpenCvZoneMarkerTracker(
                 )
             }
             tracks.values.forEach { track ->
+                val wasLost = track.trackingState == ZoneTrackingState.LOST
                 val oldPoint = basePreviewToTexture(track.baseX, track.baseY, width, height, viewport)
                 var mapped = motion.map(oldPoint)
                 val local = localEvidence[track.id]
@@ -903,6 +1249,18 @@ class OpenCvZoneMarkerTracker(
                         mapped.y + correction.dy.coerceIn(-MAX_LOCAL_CORRECTION, MAX_LOCAL_CORRECTION),
                     )
                 }
+                val requiresReidentification =
+                    (wasLost || forceReidentification) && track.referenceDescriptors != null
+                val reentry = if (requiresReidentification && reentryFeatures != null) {
+                    findReentryMatch(track, reentryFeatures, width, height)
+                } else {
+                    null
+                }
+                if (reentry != null) {
+                    mapped = reentry.point
+                    redetectRequested.set(true)
+                    Log.i(TAG, "marker ${track.id} reidentified inliers=${reentry.inlierCount}")
+                }
                 val (nextBaseX, nextBaseY) = textureToBasePreview(
                     mapped,
                     width,
@@ -916,19 +1274,24 @@ class OpenCvZoneMarkerTracker(
                 )
                 val insidePreview = nextUiX in 0f..1f && nextUiY in 0f..1f
                 val visualSupport = motion.reliable || local != null || sharedEvidence != null
-                val gyroSupport = abs(prediction.dx) + abs(prediction.dy) + abs(prediction.rollRadians) > 0.002f
+                val trustedGyroMotion =
+                    (prediction.xTranslationTrusted && abs(prediction.dx) > 0.002f) ||
+                        (prediction.yTranslationTrusted && abs(prediction.dy) > 0.002f) ||
+                        abs(prediction.rollRadians) > 0.002f
                 val trackingState = when {
                     !insidePreview -> ZoneTrackingState.LOST
+                    reentry != null -> ZoneTrackingState.TRACKED
+                    requiresReidentification -> ZoneTrackingState.LOST
                     local != null -> ZoneTrackingState.TRACKED
                     motion.reliable && motion.inlierCount >= STRONG_GLOBAL_INLIERS ->
                         ZoneTrackingState.TRACKED
-                    visualSupport || gyroSupport -> ZoneTrackingState.UNCERTAIN
+                    visualSupport || trustedGyroMotion -> ZoneTrackingState.UNCERTAIN
                     else -> ZoneTrackingState.LOST
                 }
                 // Keep advancing a virtual off-screen position whenever any motion source is
                 // available. Clamping here used to destroy the location and made re-entry
                 // practically impossible.
-                if (visualSupport || gyroSupport) {
+                if (visualSupport || trustedGyroMotion || reentry != null) {
                     track.baseX = nextBaseX.coerceIn(MIN_VIRTUAL_COORDINATE, MAX_VIRTUAL_COORDINATE)
                     track.baseY = nextBaseY.coerceIn(MIN_VIRTUAL_COORDINATE, MAX_VIRTUAL_COORDINATE)
                 }
@@ -944,26 +1307,126 @@ class OpenCvZoneMarkerTracker(
         return updates
     }
 
-    private fun gyroAffine(prediction: MotionPrediction, width: Int, height: Int): AffineMotion {
+    private fun findReentryMatch(
+        track: Track,
+        frame: ReentryFrameFeatures,
+        width: Int,
+        height: Int,
+    ): ReentryMatch? {
+        val referenceDescriptors = track.referenceDescriptors ?: return null
+        val referenceAnchor = track.referenceAnchor ?: return null
+        if (referenceDescriptors.empty() || track.referenceKeypoints.isEmpty() ||
+            frame.descriptors.empty() || frame.keypoints.isEmpty()
+        ) {
+            return null
+        }
+        val neighborMatches = ArrayList<MatOfDMatch>()
+        val goodMatches = ArrayList<org.opencv.core.DMatch>()
+        try {
+            reentryMatcher.knnMatch(referenceDescriptors, frame.descriptors, neighborMatches, 2)
+            neighborMatches.forEach { neighbors ->
+                val pair = neighbors.toArray()
+                if (pair.size >= 2 && pair[0].distance < REENTRY_LOWE_RATIO * pair[1].distance) {
+                    goodMatches += pair[0]
+                }
+            }
+            if (goodMatches.size < MIN_REENTRY_GOOD_MATCHES) return null
+
+            val sourcePoints = ArrayList<Point>(goodMatches.size)
+            val destinationPoints = ArrayList<Point>(goodMatches.size)
+            goodMatches.forEach { match ->
+                val source = track.referenceKeypoints.getOrNull(match.queryIdx)
+                val destination = frame.keypoints.getOrNull(match.trainIdx)
+                if (source != null && destination != null) {
+                    sourcePoints += source
+                    destinationPoints += destination
+                }
+            }
+            if (sourcePoints.size < MIN_REENTRY_GOOD_MATCHES) return null
+            val source = MatOfPoint2f(*sourcePoints.toTypedArray())
+            val destination = MatOfPoint2f(*destinationPoints.toTypedArray())
+            val inlierMask = Mat()
+            val matrix = Calib3d.estimateAffinePartial2D(
+                source,
+                destination,
+                inlierMask,
+                Calib3d.RANSAC,
+                REENTRY_RANSAC_REPROJECTION_ERROR,
+                RANSAC_MAX_ITERATIONS,
+                RANSAC_CONFIDENCE,
+                RANSAC_REFINE_ITERATIONS,
+            )
+            return try {
+                if (matrix.empty()) return null
+                val inlierBytes = ByteArray(inlierMask.total().toInt())
+                if (inlierBytes.isNotEmpty()) inlierMask.get(0, 0, inlierBytes)
+                val inlierCount = inlierBytes.count { it.toInt() != 0 }
+                if (inlierCount < MIN_REENTRY_INLIERS ||
+                    inlierCount.toDouble() / sourcePoints.size < MIN_REENTRY_INLIER_RATIO
+                ) {
+                    return null
+                }
+                val m00 = matrix.get(0, 0)[0]
+                val m01 = matrix.get(0, 1)[0]
+                val m10 = matrix.get(1, 0)[0]
+                val m11 = matrix.get(1, 1)[0]
+                val scale = kotlin.math.hypot(m00, m10)
+                if (scale !in MIN_REENTRY_SCALE..MAX_REENTRY_SCALE) return null
+                val mapped = Point(
+                    m00 * referenceAnchor.x + m01 * referenceAnchor.y + matrix.get(0, 2)[0],
+                    m10 * referenceAnchor.x + m11 * referenceAnchor.y + matrix.get(1, 2)[0],
+                )
+                if (!mapped.inside(width, height)) return null
+                ReentryMatch(mapped, inlierCount)
+            } finally {
+                matrix.release()
+                inlierMask.release()
+                source.release()
+                destination.release()
+            }
+        } catch (error: RuntimeException) {
+            Log.w(TAG, "marker ${track.id} reidentification failed", error)
+            return null
+        } finally {
+            neighborMatches.forEach(MatOfDMatch::release)
+        }
+    }
+
+    private fun gyroAffine(
+        prediction: MotionPrediction,
+        width: Int,
+        height: Int,
+        trustedTranslationOnly: Boolean,
+    ): AffineMotion {
         val angle = prediction.rollRadians.toDouble()
         val cos = kotlin.math.cos(angle)
         val sin = kotlin.math.sin(angle)
         val centerX = width / 2.0
         val centerY = height / 2.0
+        val dx = if (!trustedTranslationOnly || prediction.xTranslationTrusted) {
+            prediction.dx.toDouble()
+        } else {
+            0.0
+        }
+        val dy = if (!trustedTranslationOnly || prediction.yTranslationTrusted) {
+            prediction.dy.toDouble()
+        } else {
+            0.0
+        }
         return AffineMotion(
             cos,
             -sin,
-            prediction.dx + centerX - cos * centerX + sin * centerY,
+            dx + centerX - cos * centerX + sin * centerY,
             sin,
             cos,
-            prediction.dy + centerY - sin * centerX - cos * centerY,
+            dy + centerY - sin * centerX - cos * centerY,
             false,
             0,
         )
     }
 
     private fun gyroMap(point: Point, prediction: MotionPrediction, width: Int, height: Int): Point =
-        gyroAffine(prediction, width, height).map(point)
+        gyroAffine(prediction, width, height, trustedTranslationOnly = false).map(point)
 
     private fun basePreviewToTexture(
         baseX: Float,
@@ -1058,6 +1521,20 @@ class OpenCvZoneMarkerTracker(
             else -> Point(x, y)
         }
 
+    private fun analysisVectorToDisplay(
+        x: Double,
+        y: Double,
+        displayOriented: Boolean,
+    ): Point =
+        if (displayOriented) {
+            Point(x, y)
+        } else when (displayRotationDegrees()) {
+            90 -> Point(y, -x)
+            180 -> Point(-x, -y)
+            270 -> Point(-y, x)
+            else -> Point(x, y)
+        }
+
     private fun displayRotationDegrees(): Int =
         when (textureView.display?.rotation ?: Surface.ROTATION_0) {
             Surface.ROTATION_90 -> 90
@@ -1085,9 +1562,6 @@ class OpenCvZoneMarkerTracker(
         val screenXRotation = rotations.first
         val screenYRotation = rotations.second
         val screenZRotation = rotations.third
-        if (abs(screenXRotation) < 1e-6f && abs(screenYRotation) < 1e-6f) {
-            return MotionPrediction(0f, 0f, screenZRotation)
-        }
 
         val info = meterState.cameraInfo
         val screenAspect = width.toDouble() / height.coerceAtLeast(1).toDouble()
@@ -1119,17 +1593,76 @@ class OpenCvZoneMarkerTracker(
             horizontalFov = 2.0 * atan(physicalWidth / (2.0 * baseFocalLength))
             verticalFov = 2.0 * atan(physicalHeight / (2.0 * baseFocalLength))
         }
-        val displayDx = screenYRotation / horizontalFov.coerceAtLeast(0.12)
+        // Convert angular camera motion with a pinhole projection. The former width/FOV
+        // approximation over-predicted motion on wide lenses even when metadata was correct.
+        val metadataHorizontalScale = 1.0 /
+            (2.0 * kotlin.math.tan(horizontalFov.coerceAtLeast(0.12) / 2.0))
+        val metadataVerticalScale = 1.0 /
+            (2.0 * kotlin.math.tan(verticalFov.coerceAtLeast(0.12) / 2.0))
+        val learned = gyroCalibrationSnapshot(width, height)
+        val horizontalScale = blendedGyroScale(
+            metadataHorizontalScale,
+            learned.horizontalScale,
+            learned.horizontalSamples,
+        )
+        val verticalScale = blendedGyroScale(
+            metadataVerticalScale,
+            learned.verticalScale,
+            learned.verticalSamples,
+        )
+        val horizontalTrusted = learned.horizontalSamples >= MIN_TRUSTED_GYRO_SAMPLES
+        val verticalTrusted = learned.verticalSamples >= MIN_TRUSTED_GYRO_SAMPLES
+
+        val displayDx = screenYRotation * horizontalScale
         // Positive rotation about the displayed horizontal axis tilts the rear camera upward;
         // scene content therefore moves toward positive bitmap Y. This sign must stay in
         // displayed coordinates, especially after a landscape rotation.
-        val displayDy = screenXRotation / verticalFov.coerceAtLeast(0.12)
+        val displayDy = screenXRotation * verticalScale
         val analysisDelta = displayVectorToAnalysis(displayDx, displayDy, displayOriented)
+        val (xTrusted, yTrusted) = displayTrustToAnalysisTrust(
+            horizontalTrusted,
+            verticalTrusted,
+            displayOriented,
+        )
+        val maxDxFraction = if (xTrusted) MAX_TRUSTED_GYRO_FRAME_FRACTION else MAX_SEED_FRAME_FRACTION
+        val maxDyFraction = if (yTrusted) MAX_TRUSTED_GYRO_FRAME_FRACTION else MAX_SEED_FRAME_FRACTION
         val dx = (analysisDelta.x * width)
-            .coerceIn(-width * 0.42, width * 0.42).toFloat()
+            .coerceIn(-width * maxDxFraction, width * maxDxFraction).toFloat()
         val dy = (analysisDelta.y * height)
-            .coerceIn(-height * 0.42, height * 0.42).toFloat()
-        return MotionPrediction(dx, dy, screenZRotation.coerceIn(-0.35f, 0.35f))
+            .coerceIn(-height * maxDyFraction, height * maxDyFraction).toFloat()
+        return MotionPrediction(
+            dx = dx,
+            dy = dy,
+            rollRadians = screenZRotation.coerceIn(-0.35f, 0.35f),
+            screenXRotation = screenXRotation,
+            screenYRotation = screenYRotation,
+            displayOriented = displayOriented,
+            xTranslationTrusted = xTrusted,
+            yTranslationTrusted = yTrusted,
+        )
+    }
+
+    private fun blendedGyroScale(
+        metadataScale: Double,
+        learnedScale: Double?,
+        sampleCount: Int,
+    ): Double {
+        if (learnedScale == null || sampleCount < MIN_GYRO_BLEND_SAMPLES) return metadataScale
+        val learnedWeight = ((sampleCount - MIN_GYRO_BLEND_SAMPLES + 1).toDouble() /
+            GYRO_BLEND_FULL_CONFIDENCE_SAMPLES).coerceIn(0.0, 1.0)
+        return metadataScale * (1.0 - learnedWeight) + learnedScale * learnedWeight
+    }
+
+    private fun displayTrustToAnalysisTrust(
+        horizontalTrusted: Boolean,
+        verticalTrusted: Boolean,
+        displayOriented: Boolean,
+    ): Pair<Boolean, Boolean> {
+        if (displayOriented) return horizontalTrusted to verticalTrusted
+        return when (displayRotationDegrees()) {
+            90, 270 -> verticalTrusted to horizontalTrusted
+            else -> horizontalTrusted to verticalTrusted
+        }
     }
 
     private fun releaseOpenCvState() {
@@ -1193,10 +1726,41 @@ class OpenCvZoneMarkerTracker(
         private const val RANSAC_REFINE_ITERATIONS = 10L
         private const val MIN_EIGEN_THRESHOLD = 0.0001
         private const val MAX_LOCAL_CORRECTION = 22.0
+        private const val MAX_CALIBRATION_AFFINE_SCALE_ERROR = 0.06
+        private const val MIN_GYRO_CALIBRATION_ANGLE = 0.0008
+        private const val MAX_GYRO_CALIBRATION_ANGLE = 0.09
+        private const val MIN_GYRO_CALIBRATION_PIXELS = 0.35
+        private const val MIN_NORMALIZED_GYRO_SCALE = 0.18
+        private const val MAX_NORMALIZED_GYRO_SCALE = 2.5
+        private const val MIN_GYRO_OBSERVATION_RATIO = 0.58
+        private const val MAX_GYRO_OBSERVATION_RATIO = 1.72
+        private const val MIN_GYRO_OUTLIER_FILTER_SAMPLES = 4
+        private const val MAX_GYRO_CALIBRATION_SAMPLES = 21
+        private const val MIN_GYRO_BLEND_SAMPLES = 3
+        private const val MIN_TRUSTED_GYRO_SAMPLES = 6
+        private const val GYRO_BLEND_FULL_CONFIDENCE_SAMPLES = 8.0
+        private const val MAX_SEED_FRAME_FRACTION = 0.16
+        private const val MAX_TRUSTED_GYRO_FRAME_FRACTION = 0.42
+        private const val GYRO_LANDSCAPE_KEY = 0
+        private const val GYRO_PORTRAIT_KEY = 1
+        private const val REENTRY_FEATURE_COUNT = 700
+        private const val REENTRY_REFERENCE_RADIUS = 72
+        private const val MIN_REENTRY_REFERENCE_FEATURES = 8
+        private const val REENTRY_REFERENCE_RETRY_FRAMES = 15L
+        private const val MIN_REENTRY_FRAME_FEATURES = 20
+        private const val REENTRY_SEARCH_INTERVAL_FRAMES = 4L
+        private const val REENTRY_LOWE_RATIO = 0.74f
+        private const val MIN_REENTRY_GOOD_MATCHES = 6
+        private const val MIN_REENTRY_INLIERS = 5
+        private const val MIN_REENTRY_INLIER_RATIO = 0.55
+        private const val REENTRY_RANSAC_REPROJECTION_ERROR = 3.2
+        private const val MIN_REENTRY_SCALE = 0.55
+        private const val MAX_REENTRY_SCALE = 1.8
         private const val MIN_VIRTUAL_COORDINATE = -4f
         private const val MAX_VIRTUAL_COORDINATE = 5f
         private const val TRACKING_STATS_INTERVAL_MS = 2_000L
         private const val EXTERNAL_FRAME_TIMEOUT_MS = 500L
+        private const val FORCE_REIDENTIFICATION_FRAME_GAP_MS = 140L
         private const val UNKNOWN_FRAME_ROTATION = -1
         private const val LK_LEVELS = 3
         private val LK_WINDOW = Size(23.0, 23.0)
