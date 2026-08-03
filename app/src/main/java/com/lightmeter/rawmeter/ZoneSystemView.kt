@@ -252,6 +252,10 @@ class ZoneSystemView(
         paint.color = foreground
         canvas.drawCircle(g.cameraFrame.centerX(), g.cameraFrame.centerY(), spotRadius, paint)
         canvas.drawCircle(g.cameraFrame.centerX(), g.cameraFrame.centerY(), 1.4f * density, paint)
+        if (state.measuring) {
+            drawMeteringSpinner(canvas, g.cameraFrame, spotRadius)
+            postInvalidateOnAnimation()
+        }
 
         drawPreviewMarkers(canvas, g.cameraFrame)
         drawOutlinedButton(canvas, g.formatButton, shortFormatLabel(), formatMenuOpen)
@@ -260,6 +264,27 @@ class ZoneSystemView(
         drawNormalHandle(canvas, g)
         drawFocalInfo(canvas, g.cameraFrame)
         if (formatMenuOpen) drawFormatMenu(canvas, g)
+    }
+
+    private fun drawMeteringSpinner(canvas: Canvas, frame: RectF, spotRadius: Float) {
+        val radius = spotRadius + 6f * density
+        val bounds = RectF(
+            frame.centerX() - radius,
+            frame.centerY() - radius,
+            frame.centerX() + radius,
+            frame.centerY() + radius,
+        )
+        val gray = if (state.isDarkMode) 168 else 132
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 2.2f * density
+        paint.color = Color.argb(42, gray, gray, gray)
+        canvas.drawCircle(frame.centerX(), frame.centerY(), radius, paint)
+
+        val phase = (SystemClock.uptimeMillis() % METERING_SPINNER_PERIOD_MS).toFloat() /
+            METERING_SPINNER_PERIOD_MS
+        paint.strokeWidth = 2.6f * density
+        paint.color = Color.argb(158, gray, gray, gray)
+        canvas.drawArc(bounds, phase * 360f - 90f, METERING_SPINNER_SWEEP_DEGREES, false, paint)
     }
 
     private fun drawFocalInfo(canvas: Canvas, frame: RectF) {
@@ -1376,5 +1401,7 @@ class ZoneSystemView(
         private const val MIN_MARKER_INTERPOLATION_MS = 12L
         private const val DEFAULT_MARKER_INTERPOLATION_MS = 33L
         private const val MAX_MARKER_INTERPOLATION_MS = 48L
+        private const val METERING_SPINNER_PERIOD_MS = 820L
+        private const val METERING_SPINNER_SWEEP_DEGREES = 108f
     }
 }
