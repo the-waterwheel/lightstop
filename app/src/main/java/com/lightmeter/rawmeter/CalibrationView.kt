@@ -14,6 +14,9 @@ import android.view.MotionEvent
 import android.view.ViewGroup
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlin.math.min
 
 class CalibrationView(
@@ -23,6 +26,7 @@ class CalibrationView(
 
     interface Listener {
         fun onExitRequested()
+        fun onCameraRequested()
         fun onResetRequested()
         fun onMeasureRequested(referenceEv100: Double)
     }
@@ -31,6 +35,7 @@ class CalibrationView(
         val preview: RectF,
         val back: RectF,
         val reset: RectF,
+        val camera: RectF,
         val modes: List<RectF>,
         val editorArea: RectF,
         val primary: RectF,
@@ -267,6 +272,8 @@ class CalibrationView(
         paint.strokeWidth = 1f * density
         canvas.drawCircle(preview.centerX(), preview.centerY(), 3f * density, paint)
 
+        geometry?.let { drawCameraSelector(canvas, it.camera) }
+
         val badge = RectF(
             preview.left + 7f * density,
             preview.bottom - 25f * density,
@@ -328,23 +335,51 @@ class CalibrationView(
 
         boldPaint.textSize = 9f * density
         boldPaint.color = foreground
-        val correctionText = localized(
-            "当前用户修正 ${signedEv(currentCorrectionEv)} EV",
-            "Current user correction ${signedEv(currentCorrectionEv)} EV",
-        )
+        val calibrationRecord = state.currentCamera()?.let {
+            state.cameraCalibrationRecord(it.cameraId)
+        }
+        val correctionText = when {
+            calibrationRecord == null -> localized(
+                "当前镜头未校准 · 用户修正 ${signedEv(currentCorrectionEv)} EV",
+                "Current lens not calibrated · correction ${signedEv(currentCorrectionEv)} EV",
+            )
+            calibrationRecord.referenceEv100 != null &&
+                calibrationRecord.measuredEv100 != null -> localized(
+                "记录 ${calibrationRecord.calibrationCount} 次 · " +
+                    "手机 ${formatEv(calibrationRecord.measuredEv100)} → " +
+                    "参考 ${formatEv(calibrationRecord.referenceEv100)} · " +
+                    "修正 ${signedEv(calibrationRecord.correctionEv)} EV",
+                "${calibrationRecord.calibrationCount} records · " +
+                    "phone ${formatEv(calibrationRecord.measuredEv100)} → " +
+                    "reference ${formatEv(calibrationRecord.referenceEv100)} · " +
+                    "correction ${signedEv(calibrationRecord.correctionEv)} EV",
+            )
+            else -> localized(
+                "历史校准 · 用户修正 ${signedEv(calibrationRecord.correctionEv)} EV",
+                "Legacy calibration · correction ${signedEv(calibrationRecord.correctionEv)} EV",
+            )
+        }
         canvas.drawText(
-            correctionText,
+            ellipsize(correctionText, g.controls.width(), boldPaint),
             g.controls.left,
             g.primary.top - 33f * density,
             boldPaint,
         )
-        if (statusText.isNotEmpty()) {
+        val secondaryText = if (statusText.isNotEmpty()) {
+            statusText
+        } else if (calibrationRecord != null && calibrationRecord.updatedAtEpochMs > 0L) {
+            localized("最后校准：", "Last calibrated: ") +
+                formatCalibrationTime(calibrationRecord.updatedAtEpochMs)
+        } else {
+            ""
+        }
+        if (secondaryText.isNotEmpty()) {
             paint.style = Paint.Style.FILL
-            paint.color = if (statusIsError) red else muted
+            paint.color = if (statusText.isNotEmpty() && statusIsError) red else muted
             paint.textSize = 7.5f * density
             paint.typeface = Typeface.DEFAULT
             canvas.drawText(
-                statusText,
+                ellipsize(secondaryText, g.controls.width(), paint),
                 g.controls.left,
                 g.primary.top - 15f * density,
                 paint,
@@ -389,6 +424,11 @@ class CalibrationView(
             g.reset.contains(event.x, event.y) && !isMeasuring -> {
                 haptic()
                 listener?.onResetRequested()
+            }
+            g.camera.contains(event.x, event.y) && !isMeasuring -> {
+                haptic()
+                clearEditorFocus()
+                listener?.onCameraRequested()
             }
             g.modes.indexOfFirst { it.contains(event.x, event.y) } >= 0 && !isMeasuring -> {
                 val index = g.modes.indexOfFirst { it.contains(event.x, event.y) }
@@ -472,6 +512,14 @@ class CalibrationView(
             controls = RectF(pad, h * 0.52f + gap, w - pad, h - pad)
         }
         val preview = fitAspect(previewBounds, state.frameFormat.landscapeAspect)
+        val cameraWidth = minOf(preview.width() - 14f * density, 210f * density)
+            .coerceAtLeast(96f * density)
+        val camera = RectF(
+            preview.left + 7f * density,
+            preview.top + 7f * density,
+            preview.left + 7f * density + cameraWidth,
+            preview.top + 33f * density,
+        )
         val modeGap = 5f * density
         val modeHeight = min(34f * density, controls.height() * 0.16f)
         val modeWidth = (controls.width() - modeGap * 2f) / 3f
@@ -494,7 +542,7 @@ class CalibrationView(
             controls.right,
             controls.bottom,
         )
-        return Geometry(preview, back, reset, modes, editorArea, primary, controls)
+        return Geometry(preview, back, reset, camera, modes, editorArea, primary, controls)
     }
 
     private fun fitAspect(bounds: RectF, aspect: Float): RectF {
@@ -514,6 +562,56 @@ class CalibrationView(
                 bounds.centerY() - frameHeight / 2f,
                 bounds.right,
                 bounds.centerY() + frameHeight / 2f,
+            )
+        }
+    }
+
+    private fun drawCameraSelector(canvas: Canvas, rect: RectF) {
+        val camera = state.currentCamera()
+        paint.style = Paint.Style.FILL
+        paint.color = Color.argb(
+            188,
+            Color.red(surfaceColor),
+            Color.green(surfaceColor),
+            Color.blue(surfaceColor),
+        )
+        canvas.drawRoundRect(rect, 3f * density, 3f * density, paint)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 1f * density
+        paint.color = if (camera?.rawAvailable == false) red else foreground
+        canvas.drawRoundRect(rect, 3f * density, 3f * density, paint)
+
+        paint.style = Paint.Style.FILL
+        paint.color = foreground
+        paint.textSize = 8f * density
+        paint.typeface = Typeface.DEFAULT_BOLD
+        val label = if (camera == null) {
+            localized("选择摄像头", "Select camera")
+        } else {
+            val focal = if (camera.focalLengthMm > 0f) " · %.1f mm".format(camera.focalLengthMm)
+            else ""
+            "${state.cameraName(camera)}$focal  ›"
+        }
+        drawCenteredText(
+            canvas,
+            ellipsize(label, rect.width() - 12f * density, paint),
+            rect.centerX(),
+            rect.centerY(),
+            paint,
+        )
+
+        if (camera?.rawAvailable == false) {
+            paint.color = red
+            paint.textSize = 7f * density
+            paint.typeface = Typeface.DEFAULT_BOLD
+            canvas.drawText(
+                localized(
+                    "该摄像头不支持 RAW，测光可能不准确",
+                    "No RAW · metering may be inaccurate",
+                ),
+                rect.left,
+                rect.bottom + 11f * density,
+                paint,
             )
         }
     }
@@ -574,6 +672,9 @@ class CalibrationView(
 
     private fun formatEv(value: Double): String = "%.2f EV".format(value)
 
+    private fun formatCalibrationTime(epochMs: Long): String =
+        SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(epochMs))
+
     private fun signedEv(value: Double): String =
         if (value >= 0.0) "+${"%.2f".format(value)}" else "%.2f".format(value)
 
@@ -591,5 +692,17 @@ class CalibrationView(
         val metrics = textPaint.fontMetrics
         val baseline = centerY - (metrics.ascent + metrics.descent) / 2f
         canvas.drawText(text, centerX - textPaint.measureText(text) / 2f, baseline, textPaint)
+    }
+
+    private fun ellipsize(text: String, maxWidth: Float, textPaint: Paint): String {
+        if (textPaint.measureText(text) <= maxWidth) return text
+        val suffix = "…"
+        val count = textPaint.breakText(
+            text,
+            true,
+            (maxWidth - textPaint.measureText(suffix)).coerceAtLeast(0f),
+            null,
+        )
+        return text.take(count.coerceAtLeast(0)) + suffix
     }
 }

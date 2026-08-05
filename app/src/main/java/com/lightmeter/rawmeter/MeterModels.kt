@@ -33,6 +33,8 @@ data class FrameFormat(
 
 data class CameraUiInfo(
     val cameraId: String = "",
+    val logicalCameraId: String = cameraId,
+    val physicalCameraId: String? = null,
     val rawAvailable: Boolean = false,
     val manualSensorAvailable: Boolean = false,
     val focalLengthMm: Float = 0f,
@@ -97,6 +99,8 @@ enum class Handedness {
 class MeterState(context: Context) {
     private val preferences =
         context.getSharedPreferences("raw_light_meter_state", Context.MODE_PRIVATE)
+    private val cameraSelectionStore = CameraSelectionStore(context)
+    private val cameraCalibrationStore = CameraCalibrationStore(context)
 
     val isoValues = intArrayOf(
         6, 8, 10, 12, 16, 20, 25, 32, 40, 50, 64, 80,
@@ -226,6 +230,10 @@ class MeterState(context: Context) {
     var lastReading: MeterReading? = null
     var measuring: Boolean = false
     var cameraInfo: CameraUiInfo = CameraUiInfo()
+    var availableCameras: List<CameraDescriptor> = emptyList()
+        private set
+    var selectedCameraId: String = cameraSelectionStore.selectedCameraId.orEmpty()
+        private set
     var transientMessage: String? = null
 
     val effectiveEv100: Double?
@@ -335,6 +343,88 @@ class MeterState(context: Context) {
         persist()
     }
 
+    fun updateCameraCatalog(cameras: List<CameraDescriptor>): String? {
+        availableCameras = cameras
+        if (cameras.isEmpty()) {
+            selectedCameraId = ""
+            return null
+        }
+        val stored = selectedCameraId.ifBlank {
+            cameraSelectionStore.selectedCameraId.orEmpty()
+        }
+        val selected = cameras.firstOrNull {
+            it.cameraId == stored && !isCameraHidden(it.cameraId)
+        }
+            ?: preferredCamera(cameras.filterNot { isCameraHidden(it.cameraId) })
+            ?: preferredCamera(cameras)
+        selectedCameraId = selected?.cameraId.orEmpty()
+        cameraSelectionStore.selectedCameraId = selectedCameraId
+        zoom = preferences.getFloat(cameraZoomKey(selectedCameraId), 1f).coerceAtLeast(1f)
+        return selectedCameraId.ifBlank { null }
+    }
+
+    fun selectCamera(cameraId: String): Boolean {
+        if (cameraId == selectedCameraId) return false
+        if (availableCameras.none { it.cameraId == cameraId }) return false
+        if (selectedCameraId.isNotBlank()) {
+            preferences.edit().putFloat(cameraZoomKey(selectedCameraId), zoom).apply()
+        }
+        selectedCameraId = cameraId
+        cameraSelectionStore.selectedCameraId = cameraId
+        zoom = preferences.getFloat(cameraZoomKey(cameraId), 1f).coerceAtLeast(1f)
+        sceneEv100 = null
+        lastReading = null
+        return true
+    }
+
+    fun currentCamera(): CameraDescriptor? =
+        availableCameras.firstOrNull { it.cameraId == selectedCameraId }
+
+    fun cameraName(camera: CameraDescriptor): String =
+        cameraNote(camera.cameraId).ifBlank { camera.automaticName(menuLanguage) }
+
+    fun cameraNote(cameraId: String): String = cameraSelectionStore.note(cameraId)
+
+    fun cameraCalibrationRecord(cameraId: String): CameraCalibrationRecord? =
+        cameraCalibrationStore.record(cameraId)
+
+    fun setCameraNote(cameraId: String, note: String) {
+        cameraSelectionStore.setNote(cameraId, note)
+    }
+
+    fun isCameraHidden(cameraId: String): Boolean =
+        cameraSelectionStore.isHidden(cameraId)
+
+    /** Returns false when hiding would leave no visible camera. */
+    fun setCameraHidden(cameraId: String, hidden: Boolean): Boolean {
+        if (hidden) {
+            val visibleCount = availableCameras.count { !isCameraHidden(it.cameraId) }
+            if (visibleCount <= 1 && !isCameraHidden(cameraId)) return false
+        }
+        cameraSelectionStore.setHidden(cameraId, hidden)
+        return true
+    }
+
+    var showHiddenCameras: Boolean
+        get() = cameraSelectionStore.showHiddenCameras
+        set(value) {
+            cameraSelectionStore.showHiddenCameras = value
+        }
+
+    fun visibleCameras(): List<CameraDescriptor> = availableCameras.filter {
+        showHiddenCameras || !isCameraHidden(it.cameraId)
+    }
+
+    private fun preferredCamera(cameras: List<CameraDescriptor>): CameraDescriptor? =
+        cameras.firstOrNull {
+            it.lensRole == CameraLensRole.MAIN && it.rawAvailable
+        } ?: cameras.firstOrNull {
+            it.lensRole == CameraLensRole.MAIN
+        } ?: cameras.firstOrNull { it.rawAvailable }
+            ?: cameras.firstOrNull()
+
+    private fun cameraZoomKey(cameraId: String) = "camera_zoom_$cameraId"
+
     fun settingValue(key: SettingKey): String = when (key) {
         SettingKey.APERTURE_STEP -> apertureStep.name
         SettingKey.SHUTTER_STEP -> shutterStep.name
@@ -383,6 +473,7 @@ class MeterState(context: Context) {
             .putInt("exposure_comp_steps", exposureCompSteps)
             .putInt("exposure_comp_divisor", 6)
             .putFloat("zoom", zoom)
+            .putFloat(cameraZoomKey(selectedCameraId), zoom)
             .putInt("frame_index", frameIndex)
             .putBoolean("frame_landscape", frameLandscape)
             .putBoolean("landscape", landscape)

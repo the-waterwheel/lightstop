@@ -210,6 +210,10 @@ class OpenCvZoneMarkerTracker(
     @Volatile
     private var lastExternalFrameAtMs = 0L
     @Volatile
+    private var externalFramesDisabled = false
+    private var emptyExternalFeatureFrames = 0
+    private var externalFrameQualityWarningLogged = false
+    @Volatile
     private var lastExternalFrameRotationDegrees = UNKNOWN_FRAME_ROTATION
     private var frameCoordinatesAreDisplayOriented = false
     @Volatile
@@ -279,6 +283,9 @@ class OpenCvZoneMarkerTracker(
         running = true
         externalFramesSeen.set(false)
         lastExternalFrameAtMs = 0L
+        externalFramesDisabled = false
+        emptyExternalFeatureFrames = 0
+        externalFrameQualityWarningLogged = false
         lastExternalFrameRotationDegrees = UNKNOWN_FRAME_ROTATION
         statsStartedAtMs = SystemClock.elapsedRealtime()
         statsFrames = 0
@@ -425,6 +432,20 @@ class OpenCvZoneMarkerTracker(
         if (!running || !openCvReady || frame.width <= 0 || frame.height <= 0 ||
             frame.luma.size < frame.width * frame.height
         ) {
+            return
+        }
+        if (externalFramesDisabled) return
+        val quality = externalLumaQuality(frame)
+        if (!quality.usable) {
+            if (!externalFrameQualityWarningLogged) {
+                Log.w(
+                    TAG,
+                    "ignoring invalid tracking YUV range=${quality.range} " +
+                        "stdDev=${"%.2f".format(quality.standardDeviation)}; " +
+                        "using displayed preview fallback",
+                )
+                externalFrameQualityWarningLogged = true
+            }
             return
         }
         val now = SystemClock.elapsedRealtime()
@@ -1054,6 +1075,65 @@ class OpenCvZoneMarkerTracker(
         previousPoints.fromArray(*points.toTypedArray())
         previousOwners = owners.toIntArray()
         framesUntilRedetect = tuning.featureRefreshFrames
+        if (frameCoordinatesAreDisplayOriented && points.size < MIN_FLOW_POINTS) {
+            emptyExternalFeatureFrames += 1
+            if (emptyExternalFeatureFrames >= MAX_EMPTY_EXTERNAL_FEATURE_FRAMES) {
+                disableExternalFramesForSession(points.size)
+            }
+        } else {
+            emptyExternalFeatureFrames = 0
+        }
+    }
+
+    private data class ExternalLumaQuality(
+        val usable: Boolean,
+        val range: Int,
+        val standardDeviation: Double,
+    )
+
+    private fun externalLumaQuality(frame: ZoneTrackingFrame): ExternalLumaQuality {
+        val sampleStep = max(1, frame.luma.size / EXTERNAL_QUALITY_SAMPLE_COUNT)
+        var minimum = 255
+        var maximum = 0
+        var sum = 0.0
+        var squaredSum = 0.0
+        var count = 0
+        var index = 0
+        while (index < frame.luma.size) {
+            val value = frame.luma[index].toInt() and 0xff
+            minimum = min(minimum, value)
+            maximum = max(maximum, value)
+            sum += value
+            squaredSum += value.toDouble() * value
+            count += 1
+            index += sampleStep
+        }
+        if (count == 0) return ExternalLumaQuality(false, 0, 0.0)
+        val mean = sum / count
+        val variance = (squaredSum / count - mean * mean).coerceAtLeast(0.0)
+        val standardDeviation = kotlin.math.sqrt(variance)
+        val range = maximum - minimum
+        return ExternalLumaQuality(
+            usable = range >= MIN_EXTERNAL_LUMA_RANGE &&
+                standardDeviation >= MIN_EXTERNAL_LUMA_STANDARD_DEVIATION,
+            range = range,
+            standardDeviation = standardDeviation,
+        )
+    }
+
+    private fun disableExternalFramesForSession(featureCount: Int) {
+        if (externalFramesDisabled) return
+        externalFramesDisabled = true
+        externalFramesSeen.set(false)
+        lastExternalFrameAtMs = 0L
+        resetRequested.set(true)
+        Log.w(
+            TAG,
+            "physical tracking YUV produced $featureCount features for " +
+                "$emptyExternalFeatureFrames frames; disabling it for this Zone session " +
+                "and using displayed preview fallback",
+        )
+        requestImmediateFrame()
     }
 
     private fun estimateMotion(
@@ -1761,6 +1841,10 @@ class OpenCvZoneMarkerTracker(
         private const val TRACKING_STATS_INTERVAL_MS = 2_000L
         private const val EXTERNAL_FRAME_TIMEOUT_MS = 500L
         private const val FORCE_REIDENTIFICATION_FRAME_GAP_MS = 140L
+        private const val EXTERNAL_QUALITY_SAMPLE_COUNT = 4096
+        private const val MIN_EXTERNAL_LUMA_RANGE = 10
+        private const val MIN_EXTERNAL_LUMA_STANDARD_DEVIATION = 2.5
+        private const val MAX_EMPTY_EXTERNAL_FEATURE_FRAMES = 4
         private const val UNKNOWN_FRAME_ROTATION = -1
         private const val LK_LEVELS = 3
         private val LK_WINDOW = Size(23.0, 23.0)

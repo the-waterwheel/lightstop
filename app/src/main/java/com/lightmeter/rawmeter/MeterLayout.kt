@@ -22,12 +22,17 @@ class MeterLayout @JvmOverloads constructor(
     trackerFactory: ZoneMarkerTrackerFactory = OpenCvZoneMarkerTrackerFactory(),
 ) : ViewGroup(context, attributeSet) {
 
+    private enum class CameraManagementOrigin { SETTINGS, CALIBRATION }
+
     interface Listener {
         fun onMeasureRequested()
         fun onOrientationToggle()
         fun onPreviewGeometryChanged(width: Int, height: Int)
         fun onControlsChanged(frameChanged: Boolean)
         fun onCalibrationOpened()
+        fun onCameraSelected(cameraId: String)
+        fun onCameraNoteRequested(cameraId: String)
+        fun onCameraVisibilityRequested(cameraId: String, hidden: Boolean)
         fun onCalibrationMeasureRequested(referenceEv100: Double)
         fun onCalibrationResetRequested()
         fun onZoneMeasureRequested(marker: ZoneMarker)
@@ -39,6 +44,7 @@ class MeterLayout @JvmOverloads constructor(
     }
     val instrumentView = InstrumentView(context, state)
     val settingsView = SettingsView(context, state)
+    val cameraManagementView = CameraManagementView(context, state)
     val calibrationView = CalibrationView(context, state)
     val zoneView = ZoneSystemView(context, state)
     private val zoneMarkerTracker: ZoneMarkerTracker = trackerFactory.create(
@@ -51,11 +57,14 @@ class MeterLayout @JvmOverloads constructor(
         private set
     var isCalibrationOpen: Boolean = false
         private set
+    var isCameraManagementOpen: Boolean = false
+        private set
     var isZoneMode: Boolean = false
         private set
     private var zoneTransitionFraction = 0f
     private var zoneAnimator: ValueAnimator? = null
     private var zoneTransitionPrepared = false
+    private var cameraManagementOrigin = CameraManagementOrigin.SETTINGS
     var listener: Listener? = null
         set(value) {
             field = value
@@ -103,6 +112,9 @@ class MeterLayout @JvmOverloads constructor(
 
                 override fun onActionRequested(key: SettingActionKey) {
                     when (key) {
+                        SettingActionKey.MANAGE_CAMERAS -> {
+                            showCameraManagement(CameraManagementOrigin.SETTINGS)
+                        }
                         SettingActionKey.START_CALIBRATION -> {
                             showCalibration()
                             value?.onCalibrationOpened()
@@ -115,12 +127,37 @@ class MeterLayout @JvmOverloads constructor(
                     closeCalibration()
                 }
 
+                override fun onCameraRequested() {
+                    showCameraManagement(CameraManagementOrigin.CALIBRATION)
+                }
+
                 override fun onResetRequested() {
                     value?.onCalibrationResetRequested()
                 }
 
                 override fun onMeasureRequested(referenceEv100: Double) {
                     value?.onCalibrationMeasureRequested(referenceEv100)
+                }
+            }
+            cameraManagementView.listener = object : CameraManagementView.Listener {
+                override fun onCloseRequested() {
+                    closeCameraManagement()
+                }
+
+                override fun onCameraSelected(cameraId: String) {
+                    value?.onCameraSelected(cameraId)
+                    cameraManagementView.invalidate()
+                    if (cameraManagementOrigin == CameraManagementOrigin.CALIBRATION) {
+                        closeCameraManagement()
+                    }
+                }
+
+                override fun onCameraNoteRequested(cameraId: String) {
+                    value?.onCameraNoteRequested(cameraId)
+                }
+
+                override fun onCameraVisibilityRequested(cameraId: String, hidden: Boolean) {
+                    value?.onCameraVisibilityRequested(cameraId, hidden)
                 }
             }
             zoneView.listener = object : ZoneSystemView.Listener {
@@ -180,6 +217,8 @@ class MeterLayout @JvmOverloads constructor(
         addView(instrumentView)
         settingsView.visibility = View.GONE
         addView(settingsView)
+        cameraManagementView.visibility = View.GONE
+        addView(cameraManagementView)
         calibrationView.visibility = View.GONE
         addView(calibrationView)
         zoneView.visibility = View.GONE
@@ -195,6 +234,10 @@ class MeterLayout @JvmOverloads constructor(
             MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
         )
         settingsView.measure(
+            MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
+        )
+        cameraManagementView.measure(
             MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
             MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
         )
@@ -269,6 +312,7 @@ class MeterLayout @JvmOverloads constructor(
         )
         instrumentView.layout(0, 0, width, height)
         settingsView.layout(0, 0, width, height)
+        cameraManagementView.layout(0, 0, width, height)
         calibrationView.layout(0, 0, width, height)
         zoneView.layout(0, 0, width, height)
         // A format change can resize this child while the ViewGroup's own bounds stay the
@@ -289,12 +333,15 @@ class MeterLayout @JvmOverloads constructor(
         updateBackground()
         instrumentView.invalidate()
         settingsView.invalidate()
+        cameraManagementView.invalidate()
         calibrationView.invalidate()
         zoneView.invalidate()
     }
 
     fun showSettings() {
-        if (isSettingsOpen || isCalibrationOpen || isZoneMode || zoneTransitionFraction > 0f) return
+        if (isSettingsOpen || isCalibrationOpen || isCameraManagementOpen ||
+            isZoneMode || zoneTransitionFraction > 0f
+        ) return
         isSettingsOpen = true
         settingsView.animate().cancel()
         settingsView.visibility = View.VISIBLE
@@ -323,8 +370,61 @@ class MeterLayout @JvmOverloads constructor(
         return true
     }
 
+    private fun showCameraManagement(origin: CameraManagementOrigin) {
+        if (isCameraManagementOpen || isZoneMode || zoneTransitionFraction > 0f) return
+        cameraManagementOrigin = origin
+        isCameraManagementOpen = true
+        when (origin) {
+            CameraManagementOrigin.SETTINGS -> settingsView.visibility = View.GONE
+            CameraManagementOrigin.CALIBRATION -> calibrationView.visibility = View.GONE
+        }
+        cameraManagementView.animate().cancel()
+        cameraManagementView.visibility = View.VISIBLE
+        cameraManagementView.bringToFront()
+        cameraManagementView.translationY = -height.toFloat().coerceAtLeast(1f)
+        cameraManagementView.animate()
+            .translationY(0f)
+            .setDuration(280L)
+            .setInterpolator(DecelerateInterpolator())
+            .start()
+    }
+
+    fun closeCameraManagement(): Boolean {
+        if (!isCameraManagementOpen) return false
+        isCameraManagementOpen = false
+        cameraManagementView.animate().cancel()
+        cameraManagementView.animate()
+            .translationY(-height.toFloat().coerceAtLeast(1f))
+            .setDuration(240L)
+            .setInterpolator(DecelerateInterpolator())
+            .withEndAction {
+                if (!isCameraManagementOpen) {
+                    cameraManagementView.visibility = View.GONE
+                    when (cameraManagementOrigin) {
+                        CameraManagementOrigin.SETTINGS -> settingsView.bringToFront()
+                        CameraManagementOrigin.CALIBRATION -> calibrationView.bringToFront()
+                    }
+                }
+            }
+            .start()
+        when (cameraManagementOrigin) {
+            CameraManagementOrigin.SETTINGS -> {
+                settingsView.visibility = View.VISIBLE
+            }
+            CameraManagementOrigin.CALIBRATION -> {
+                calibrationView.visibility = View.VISIBLE
+                calibrationView.invalidate()
+            }
+        }
+        cameraManagementView.bringToFront()
+        requestLayout()
+        return true
+    }
+
     fun showCalibration() {
-        if (isCalibrationOpen || isZoneMode || zoneTransitionFraction > 0f) return
+        if (isCalibrationOpen || isCameraManagementOpen ||
+            isZoneMode || zoneTransitionFraction > 0f
+        ) return
         settingsView.animate().cancel()
         isSettingsOpen = false
         settingsView.visibility = View.GONE

@@ -14,9 +14,11 @@ import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
+import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.Toast
 
-class MainActivity : Activity(), CameraController.Callback {
+class MainActivity : Activity(), CameraControllerCallback {
     private lateinit var state: MeterState
     private lateinit var meterLayout: MeterLayout
     private lateinit var cameraController: CameraController
@@ -39,6 +41,8 @@ class MainActivity : Activity(), CameraController.Callback {
 
         meterLayout = MeterLayout(this, state)
         cameraController = CameraController(this, this)
+        val selectedCamera = state.updateCameraCatalog(cameraController.availableCameras())
+        selectedCamera?.let(cameraController::selectCamera)
         cameraController.attach(meterLayout.textureView)
         meterLayout.listener = object : MeterLayout.Listener {
             override fun onMeasureRequested() {
@@ -77,6 +81,46 @@ class MainActivity : Activity(), CameraController.Callback {
                 meterLayout.calibrationView.setCurrentCorrection(
                     cameraController.currentUserCalibrationEv(),
                 )
+            }
+
+            override fun onCameraSelected(cameraId: String) {
+                if (state.measuring || calibrationMeasurementPending || zoneMeasurementPending) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        localized("请等待本次测光完成", "Wait for this measurement"),
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                    return
+                }
+                state.setCameraHidden(cameraId, false)
+                if (state.selectCamera(cameraId)) {
+                    state.transientMessage = localized("正在切换摄像头", "Switching camera")
+                    meterLayout.refresh(frameChanged = true)
+                    cameraController.selectCamera(cameraId)
+                }
+            }
+
+            override fun onCameraNoteRequested(cameraId: String) {
+                showCameraNoteDialog(cameraId)
+            }
+
+            override fun onCameraVisibilityRequested(cameraId: String, hidden: Boolean) {
+                if (!state.setCameraHidden(cameraId, hidden)) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        localized("至少保留一个可见摄像头", "Keep at least one camera visible"),
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                    return
+                }
+                if (hidden && cameraId == state.selectedCameraId) {
+                    state.availableCameras.firstOrNull { !state.isCameraHidden(it.cameraId) }
+                        ?.let { replacement ->
+                            state.selectCamera(replacement.cameraId)
+                            cameraController.selectCamera(replacement.cameraId)
+                        }
+                }
+                meterLayout.refresh(frameChanged = true)
             }
 
             override fun onCalibrationMeasureRequested(referenceEv100: Double) {
@@ -141,6 +185,7 @@ class MainActivity : Activity(), CameraController.Callback {
 
     @Suppress("DEPRECATION")
     override fun onBackPressed() {
+        if (meterLayout.closeCameraManagement()) return
         if (meterLayout.closeCalibration()) return
         if (meterLayout.closeSettings()) return
         if (meterLayout.closeZoneMode()) return
@@ -170,7 +215,17 @@ class MainActivity : Activity(), CameraController.Callback {
     }
 
     override fun onCameraInfo(info: CameraUiInfo) {
+        if (info.cameraId.isNotBlank() && info.cameraId != state.selectedCameraId) {
+            state.selectCamera(info.cameraId)
+        }
         state.cameraInfo = info
+        val switchingMessage = localized("正在切换摄像头", "Switching camera")
+        if (state.transientMessage == switchingMessage &&
+            info.cameraId == state.selectedCameraId &&
+            info.status != "正在切换摄像头"
+        ) {
+            state.transientMessage = null
+        }
         if (state.zoom > info.maxDisplayZoom) state.zoom = info.maxDisplayZoom
         if (meterLayout.isCalibrationOpen) {
             meterLayout.calibrationView.setCurrentCorrection(
@@ -279,21 +334,34 @@ class MainActivity : Activity(), CameraController.Callback {
     private fun showRawUnavailableDialog(force: Boolean) {
         val preferences = getSharedPreferences("raw_light_meter_state", MODE_PRIVATE)
         if (!force && preferences.getBoolean("suppress_raw_warning", false)) return
+        val cameraId = state.cameraInfo.cameraId.ifBlank { state.selectedCameraId }
+        val cameraWarningKey = "suppress_raw_warning_camera_${cameraId.hashCode()}"
+        if (!force && preferences.getBoolean(cameraWarningKey, false)) return
         if (rawDialogVisible || isFinishing) return
         rawDialogVisible = true
         val checked = booleanArrayOf(false)
+        val camera = state.availableCameras.firstOrNull { it.cameraId == cameraId }
+        val cameraName = camera?.let(state::cameraName)
+            ?: localized("当前摄像头", "Current camera")
         AlertDialog.Builder(this)
-            .setTitle(R.string.raw_unavailable_title)
-            .setMessage(R.string.raw_unavailable_message)
+            .setTitle(localized("RAW 不可用", "RAW unavailable"))
+            .setMessage(
+                localized(
+                    "$cameraName 不支持 RAW_SENSOR，将使用经过 ISP 处理的预览画面测光。" +
+                        "测光仍然可用，但结果可能不准确。",
+                    "$cameraName does not support RAW_SENSOR. Metering will use the " +
+                        "ISP-processed preview and may be inaccurate.",
+                ),
+            )
             .setMultiChoiceItems(
-                arrayOf(getString(R.string.do_not_show_again)),
+                arrayOf(localized("不再提示这个摄像头", "Do not warn for this camera again")),
                 checked,
             ) { _, _, enabled ->
                 checked[0] = enabled
             }
-            .setPositiveButton(R.string.close) { _, _ ->
+            .setPositiveButton(localized("关闭", "Close")) { _, _ ->
                 if (checked[0]) {
-                    preferences.edit().putBoolean("suppress_raw_warning", true).apply()
+                    preferences.edit().putBoolean(cameraWarningKey, true).apply()
                 }
             }
             .setOnDismissListener { rawDialogVisible = false }
@@ -304,13 +372,15 @@ class MainActivity : Activity(), CameraController.Callback {
         if (calibrationResetDialogVisible || isFinishing) return
         calibrationResetDialogVisible = true
         val english = state.menuLanguage == MenuLanguage.ENGLISH
+        val cameraName = state.currentCamera()?.let(state::cameraName)
+            ?: if (english) "current camera" else "当前摄像头"
         AlertDialog.Builder(this)
             .setTitle(if (english) "Reset calibration" else "重置测光校准")
             .setMessage(
                 if (english) {
-                    "Reset the user correction for this phone's main camera?"
+                    "Reset the user correction for $cameraName? Other cameras are unchanged."
                 } else {
-                    "是否确定重置这台手机主摄的用户测光修正？"
+                    "是否确定重置“$cameraName”的用户测光修正？其他摄像头不会受到影响。"
                 },
             )
             .setNegativeButton(if (english) "Cancel" else "取消", null)
@@ -321,6 +391,44 @@ class MainActivity : Activity(), CameraController.Callback {
             .setOnDismissListener { calibrationResetDialogVisible = false }
             .show()
     }
+
+    private fun showCameraNoteDialog(cameraId: String) {
+        val camera = state.availableCameras.firstOrNull { it.cameraId == cameraId } ?: return
+        val editor = EditText(this).apply {
+            setText(state.cameraNote(cameraId))
+            hint = camera.automaticName(state.menuLanguage)
+            isSingleLine = true
+            selectAll()
+        }
+        val padding = (20f * resources.displayMetrics.density).toInt()
+        val container = FrameLayout(this).apply {
+            setPadding(padding, 0, padding, 0)
+            addView(
+                editor,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                ),
+            )
+        }
+        AlertDialog.Builder(this)
+            .setTitle(localized("摄像头备注", "Camera note"))
+            .setMessage(camera.technicalSummary())
+            .setView(container)
+            .setNegativeButton(localized("取消", "Cancel"), null)
+            .setNeutralButton(localized("清除", "Clear")) { _, _ ->
+                state.setCameraNote(cameraId, "")
+                meterLayout.refresh()
+            }
+            .setPositiveButton(localized("保存", "Save")) { _, _ ->
+                state.setCameraNote(cameraId, editor.text.toString())
+                meterLayout.refresh()
+            }
+            .show()
+    }
+
+    private fun localized(chinese: String, english: String): String =
+        if (state.menuLanguage == MenuLanguage.ENGLISH) english else chinese
 
     private fun updatePreviewTransform(width: Int, height: Int) {
         if (width <= 0 || height <= 0) return

@@ -16,6 +16,7 @@ enum class SettingKey {
 }
 
 enum class SettingActionKey {
+    MANAGE_CAMERAS,
     START_CALIBRATION,
 }
 
@@ -78,6 +79,16 @@ object SettingsCatalog {
                             "Center-weighted",
                         ),
                         option(MeteringMode.SPOT, "点测光", "Spot"),
+                    ),
+                ),
+            ),
+            actions = listOf(
+                SettingActionSpec(
+                    key = SettingActionKey.MANAGE_CAMERAS,
+                    label = LocalizedLabel("选择与管理摄像头", "Select and manage cameras"),
+                    description = LocalizedLabel(
+                        "选择测光摄像头、添加备注或隐藏不用的摄像头",
+                        "Select a metering camera, add notes, or hide unused cameras",
                     ),
                 ),
             ),
