@@ -46,7 +46,7 @@ data class CameraUiInfo(
     val previewSize: Size? = null,
     val previewFps: Int = 0,
     val activeArray: Rect? = null,
-    val status: String = "正在准备相机",
+    val status: String = "",
 )
 
 data class MeterReading(
@@ -208,6 +208,7 @@ class MeterState(context: Context) {
         MeteringMode.SPOT,
     )
 
+    @Volatile
     var menuLanguage: MenuLanguage = preferences.enumValue(
         "menu_language",
         MenuLanguage.CHINESE,
@@ -229,7 +230,13 @@ class MeterState(context: Context) {
     var sceneEv100: Double? = null
     var lastReading: MeterReading? = null
     var measuring: Boolean = false
-    var cameraInfo: CameraUiInfo = CameraUiInfo()
+    var cameraInfo: CameraUiInfo = CameraUiInfo(
+        status = if (menuLanguage == MenuLanguage.ENGLISH) {
+            "Preparing camera"
+        } else {
+            "正在准备相机"
+        },
+    )
     var availableCameras: List<CameraDescriptor> = emptyList()
         private set
     var selectedCameraId: String = cameraSelectionStore.selectedCameraId.orEmpty()

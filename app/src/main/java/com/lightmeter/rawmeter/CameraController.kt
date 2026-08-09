@@ -68,6 +68,7 @@ class CameraController(
     private var latestResult: CaptureResult? = null
     private var previewBuilder: CaptureRequest.Builder? = null
     private var activeMeasurement: MeasurementAccumulator? = null
+    private var activeRawRequest: CaptureRequest? = null
     private var fallbackMeasuring = false
     private var fallbackMeasurementId = 0
     @Volatile
@@ -113,7 +114,7 @@ class CameraController(
                     cameraId = cameraId,
                     logicalCameraId = pending?.logicalCameraId ?: cameraId,
                     physicalCameraId = pending?.physicalCameraId,
-                    status = "正在切换摄像头",
+                    status = localized("正在切换摄像头", "Switching camera"),
                 ),
             )
             openCamera(textureView?.surfaceTexture)
@@ -194,7 +195,7 @@ class CameraController(
             return
         }
         val handler = cameraHandler ?: run {
-            callback.onMeteringError("相机尚未就绪")
+            callback.onMeteringError(localized("相机尚未就绪", "Camera is not ready"))
             return
         }
         handler.post {
@@ -203,11 +204,17 @@ class CameraController(
             val session = captureSession
             val reader = rawReader
             if (device == null || session == null || reader == null || !cameraInfo.rawAvailable) {
-                postMeterError("主摄无法输出 RAW")
+                postMeterError(
+                    localized(
+                        "当前摄像头无法输出 RAW",
+                        "The current camera cannot output RAW",
+                    ),
+                )
                 return@post
             }
 
-            val count = 5
+            val captureIso = latestResult?.get(CaptureResult.SENSOR_SENSITIVITY)
+            val count = rawFrameCount(captureIso)
             val screenAspect =
                 if (frameLandscape) {
                     frameFormat.landscapeAspect
@@ -232,21 +239,32 @@ class CameraController(
             activeMeasurement = accumulator
             Log.e(
                 TAG,
-                "RAW metering started: frames=$count zoom=${accumulator.zoom} " +
+                "RAW metering started: frames=$count captureIso=${captureIso ?: "unknown"} " +
+                    "zoom=${accumulator.zoom} " +
                     "format=${frameFormat.id} sensorAspect=$sensorFrameAspect mode=$meteringMode",
             )
-            mainHandler.post { callback.onMeteringStarted(MeteringSource.RAW) }
+            mainHandler.post { callback.onMeteringStarted(MeteringSource.RAW, count) }
             try {
-                val requests = buildRawBurst(device, reader.surface, count)
-                session.captureBurst(requests, rawCaptureCallback, handler)
+                activeRawRequest = buildRawRequest(device, reader.surface)
+                fillRawPipeline(accumulator)
                 handler.postDelayed({
                     val active = activeMeasurement
                     if (active?.id == accumulator.id) {
-                        finishMeasurementWithError("RAW 测光超时，请重试")
+                        finishMeasurementWithError(
+                            localized(
+                                "RAW 测光超时，请重试",
+                                "RAW metering timed out. Please try again",
+                            ),
+                        )
                     }
                 }, 8_000L)
             } catch (error: Exception) {
-                finishMeasurementWithError("无法启动 RAW 连拍：${error.message ?: "未知错误"}")
+                finishMeasurementWithError(
+                    localized(
+                        "无法启动 RAW 测光：${error.message ?: "未知错误"}",
+                        "Unable to start RAW metering: ${error.message ?: "unknown error"}",
+                    ),
+                )
             }
         }
     }
@@ -285,11 +303,18 @@ class CameraController(
         if (fallbackMeasuring || activeMeasurement != null) return
         val texture = textureView
         if (texture?.isAvailable != true || cameraDevice == null || captureSession == null) {
-            callback.onMeteringError("相机预览尚未就绪")
+            callback.onMeteringError(
+                localized("相机预览尚未就绪", "Camera preview is not ready"),
+            )
             return
         }
         if (latestResult == null) {
-            callback.onMeteringError("正在等待相机曝光参数")
+            callback.onMeteringError(
+                localized(
+                    "正在等待相机曝光参数",
+                    "Waiting for camera exposure data",
+                ),
+            )
             return
         }
         fallbackMeasuring = true
@@ -299,7 +324,7 @@ class CameraController(
             TAG,
             "ISP preview metering started: frames=$FALLBACK_FRAME_COUNT mode=$meteringMode",
         )
-        callback.onMeteringStarted(MeteringSource.ISP_PREVIEW)
+        callback.onMeteringStarted(MeteringSource.ISP_PREVIEW, FALLBACK_FRAME_COUNT)
         captureProcessedPreviewSample(id, samples, meteringMode)
     }
 
@@ -313,7 +338,10 @@ class CameraController(
         val result = latestResult
         val handler = cameraHandler
         if (texture?.isAvailable != true || result == null || handler == null) {
-            finishProcessedPreviewWithError(id, "无法读取当前预览画面")
+            finishProcessedPreviewWithError(
+                id,
+                localized("无法读取当前预览画面", "Unable to read the current preview"),
+            )
             return
         }
         val bitmap = try {
@@ -322,7 +350,10 @@ class CameraController(
             null
         }
         if (bitmap == null) {
-            finishProcessedPreviewWithError(id, "无法读取当前预览画面")
+            finishProcessedPreviewWithError(
+                id,
+                localized("无法读取当前预览画面", "Unable to read the current preview"),
+            )
             return
         }
         handler.post {
@@ -343,7 +374,13 @@ class CameraController(
             mainHandler.post finishSample@{
                 if (!fallbackMeasuring || id != fallbackMeasurementId) return@finishSample
                 if (stat == null) {
-                    finishProcessedPreviewWithError(id, "预览亮度或曝光参数不可用")
+                    finishProcessedPreviewWithError(
+                        id,
+                        localized(
+                            "预览亮度或曝光参数不可用",
+                            "Preview brightness or exposure data is unavailable",
+                        ),
+                    )
                     return@finishSample
                 }
                 samples += stat
@@ -409,7 +446,11 @@ class CameraController(
     private fun openCamera(surfaceTexture: SurfaceTexture?) {
         if (!started || opening || cameraDevice != null || surfaceTexture == null) return
         if (context.checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            postInfo(cameraInfo.copy(status = "等待相机权限"))
+            postInfo(
+                cameraInfo.copy(
+                    status = localized("等待相机权限", "Waiting for camera permission"),
+                ),
+            )
             return
         }
         val handler = cameraHandler ?: return
@@ -427,7 +468,11 @@ class CameraController(
             }
             if (selection == null) {
                 opening = false
-                postInfo(CameraUiInfo(status = "没有可用的摄像头"))
+                postInfo(
+                    CameraUiInfo(
+                        status = localized("没有可用的摄像头", "No camera is available"),
+                    ),
+                )
                 return
             }
             val (descriptor, _, chars) = selection
@@ -441,11 +486,15 @@ class CameraController(
             val manualAvailable =
                 capabilities.contains(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR)
             val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-                ?: throw IllegalStateException("相机没有输出配置")
+                ?: throw IllegalStateException(
+                    localized("相机没有输出配置", "Camera has no output configuration"),
+                )
             val rawAvailable = rawCapability &&
                 !map.getOutputSizes(ImageFormat.RAW_SENSOR).isNullOrEmpty()
             val chosenPreview = choosePreviewSize(chars)
-                ?: throw IllegalStateException("没有合适的预览尺寸")
+                ?: throw IllegalStateException(
+                    localized("没有合适的预览尺寸", "No suitable preview size is available"),
+                )
             previewSize = chosenPreview
             val chosenRange = chooseFpsRange(chars, chosenPreview)
             previewFpsRange = chosenRange
@@ -477,7 +526,7 @@ class CameraController(
                 previewSize = chosenPreview,
                 previewFps = chosenRange?.upper ?: 30,
                 activeArray = activeArray,
-                status = "正在打开摄像头",
+                status = localized("正在打开摄像头", "Opening camera"),
             )
             postInfo(cameraInfo)
 
@@ -489,12 +538,17 @@ class CameraController(
             rawReader = if (rawAvailable) {
                 val rawSizes = map.getOutputSizes(ImageFormat.RAW_SENSOR)
                 val rawSize = rawSizes?.minByOrNull { it.width.toLong() * it.height.toLong() }
-                    ?: throw IllegalStateException("RAW 能力存在，但没有 RAW_SENSOR 尺寸")
+                    ?: throw IllegalStateException(
+                        localized(
+                            "RAW 能力存在，但没有 RAW_SENSOR 尺寸",
+                            "RAW is reported but no RAW_SENSOR size is available",
+                        ),
+                    )
                 ImageReader.newInstance(
                     rawSize.width,
                     rawSize.height,
                     ImageFormat.RAW_SENSOR,
-                    7,
+                    RAW_READER_MAX_IMAGES,
                 ).also { imageReader ->
                     imageReader.setOnImageAvailableListener(
                         { reader -> onRawImageAvailable(reader) },
@@ -526,7 +580,14 @@ class CameraController(
             cameraManager.openCamera(descriptor.logicalCameraId, cameraStateCallback, handler)
         } catch (error: Exception) {
             opening = false
-            postInfo(cameraInfo.copy(status = "相机打开失败：${error.message ?: "未知错误"}"))
+            postInfo(
+                cameraInfo.copy(
+                    status = localized(
+                        "相机打开失败：${error.message ?: "未知错误"}",
+                        "Unable to open camera: ${error.message ?: "unknown error"}",
+                    ),
+                ),
+            )
         }
     }
 
@@ -619,14 +680,14 @@ class CameraController(
             camera.close()
             if (cameraDevice === camera) cameraDevice = null
             opening = false
-            postInfo(cameraInfo.copy(status = "相机已断开"))
+            postInfo(cameraInfo.copy(status = localized("相机已断开", "Camera disconnected")))
         }
 
         override fun onError(camera: CameraDevice, error: Int) {
             camera.close()
             if (cameraDevice === camera) cameraDevice = null
             opening = false
-            postInfo(cameraInfo.copy(status = "相机错误 $error"))
+            postInfo(cameraInfo.copy(status = localized("相机错误 $error", "Camera error $error")))
         }
     }
 
@@ -672,7 +733,14 @@ class CameraController(
                     }
                     return
                 }
-                postInfo(cameraInfo.copy(status = "相机输出组合不受支持"))
+                postInfo(
+                    cameraInfo.copy(
+                        status = localized(
+                            "相机输出组合不受支持",
+                            "This camera output combination is not supported",
+                        ),
+                    ),
+                )
             }
         }
         try {
@@ -705,7 +773,14 @@ class CameraController(
                 createSession(device, false, false)
                 return
             }
-            postInfo(cameraInfo.copy(status = "无法建立相机会话：${error.message}"))
+            postInfo(
+                cameraInfo.copy(
+                    status = localized(
+                        "无法建立相机会话：${error.message}",
+                        "Unable to create camera session: ${error.message}",
+                    ),
+                ),
+            )
         }
     }
 
@@ -715,7 +790,10 @@ class CameraController(
         postInfo(
             cameraInfo.copy(
                 rawAvailable = false,
-                status = "该摄像头的 RAW 输出组合不受支持，正在启用兼容测光",
+                status = localized(
+                    "该摄像头的 RAW 输出组合不受支持，正在启用兼容测光",
+                    "This camera's RAW output combination is unsupported; enabling compatible metering",
+                ),
             ),
         )
     }
@@ -739,7 +817,10 @@ class CameraController(
                 status = if (cameraInfo.rawAvailable) {
                     "${cameraInfo.previewSize?.width}×${cameraInfo.previewSize?.height} · ${cameraInfo.previewFps} fps · RAW"
                 } else {
-                    "${cameraInfo.previewSize?.width}×${cameraInfo.previewSize?.height} · 兼容测光"
+                    localized(
+                        "${cameraInfo.previewSize?.width}×${cameraInfo.previewSize?.height} · 兼容测光",
+                        "${cameraInfo.previewSize?.width}×${cameraInfo.previewSize?.height} · Compatible metering",
+                    )
                 },
             )
             cameraInfo = readyInfo
@@ -752,7 +833,14 @@ class CameraController(
                 lastDisplayZoom,
             )
         } catch (error: CameraAccessException) {
-            postInfo(cameraInfo.copy(status = "预览启动失败：${error.message}"))
+            postInfo(
+                cameraInfo.copy(
+                    status = localized(
+                        "预览启动失败：${error.message}",
+                        "Unable to start preview: ${error.message}",
+                    ),
+                ),
+            )
         }
     }
 
@@ -790,11 +878,21 @@ class CameraController(
             request: CaptureRequest,
             failure: CaptureFailure,
         ) {
-            finishMeasurementWithError("RAW 帧捕获失败：${failure.reason}")
+            finishMeasurementWithError(
+                localized(
+                    "RAW 帧捕获失败：${failure.reason}",
+                    "RAW frame capture failed: ${failure.reason}",
+                ),
+            )
         }
 
         override fun onCaptureSequenceAborted(session: CameraCaptureSession, sequenceId: Int) {
-            finishMeasurementWithError("RAW 连拍被相机中止")
+            finishMeasurementWithError(
+                localized(
+                    "RAW 测光序列被相机中止",
+                    "The RAW metering sequence was aborted by the camera",
+                ),
+            )
         }
     }
 
@@ -814,41 +912,76 @@ class CameraController(
         postInfo(cameraInfo.copy(focalLengthMm = focal, aperture = aperture))
     }
 
-    private fun buildRawBurst(
+    private fun buildRawRequest(
         device: CameraDevice,
         rawSurface: Surface,
-        count: Int,
-    ): List<CaptureRequest> {
+    ): CaptureRequest {
         val last = latestResult
         val exposureTime = last?.get(CaptureResult.SENSOR_EXPOSURE_TIME)
         val sensitivity = last?.get(CaptureResult.SENSOR_SENSITIVITY)
         val frameDuration = last?.get(CaptureResult.SENSOR_FRAME_DURATION)
         val useManual =
             cameraInfo.manualSensorAvailable && exposureTime != null && sensitivity != null
-        return List(count) {
-            device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
-                addTarget(rawSurface)
-                set(
-                    CaptureRequest.CONTROL_CAPTURE_INTENT,
-                    CameraMetadata.CONTROL_CAPTURE_INTENT_STILL_CAPTURE,
-                )
-                set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_OFF)
-                if (useManual) {
-                    set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
-                    set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
-                    set(CaptureRequest.SENSOR_EXPOSURE_TIME, exposureTime)
-                    set(CaptureRequest.SENSOR_SENSITIVITY, sensitivity)
-                    frameDuration?.let {
-                        set(CaptureRequest.SENSOR_FRAME_DURATION, max(it, exposureTime!!))
-                    }
-                    setSupportedAutoFocus(this)
-                } else {
-                    set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
-                    set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
-                    set(CaptureRequest.CONTROL_AE_LOCK, true)
-                    setSupportedAutoFocus(this)
+        return device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
+            addTarget(rawSurface)
+            set(
+                CaptureRequest.CONTROL_CAPTURE_INTENT,
+                CameraMetadata.CONTROL_CAPTURE_INTENT_STILL_CAPTURE,
+            )
+            set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_OFF)
+            if (useManual) {
+                set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
+                set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
+                set(CaptureRequest.SENSOR_EXPOSURE_TIME, exposureTime)
+                set(CaptureRequest.SENSOR_SENSITIVITY, sensitivity)
+                frameDuration?.let {
+                    set(CaptureRequest.SENSOR_FRAME_DURATION, max(it, exposureTime!!))
                 }
-            }.build()
+                setSupportedAutoFocus(this)
+            } else {
+                set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
+                set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
+                set(CaptureRequest.CONTROL_AE_LOCK, true)
+                setSupportedAutoFocus(this)
+            }
+        }.build()
+    }
+
+    /** Keep a small rolling capture window so sensor capture overlaps CPU analysis. */
+    private fun fillRawPipeline(active: MeasurementAccumulator) {
+        while (activeMeasurement?.id == active.id &&
+            active.submittedFrames < active.expectedFrames &&
+            active.submittedFrames - active.completedFrames < RAW_PIPELINE_DEPTH
+        ) {
+            val submittedBefore = active.submittedFrames
+            submitNextRawFrame(active)
+            if (active.submittedFrames == submittedBefore) return
+        }
+    }
+
+    /** Submit one RAW request without allowing the rolling window to grow unbounded. */
+    private fun submitNextRawFrame(active: MeasurementAccumulator) {
+        if (activeMeasurement?.id != active.id) return
+        if (active.submittedFrames >= active.expectedFrames) return
+        val session = captureSession
+        val request = activeRawRequest
+        val handler = cameraHandler
+        if (session == null || request == null || handler == null) {
+            finishMeasurementWithError(
+                localized("RAW 测光会话已失效", "The RAW metering session is no longer available"),
+            )
+            return
+        }
+        active.submittedFrames += 1
+        try {
+            session.capture(request, rawCaptureCallback, handler)
+        } catch (error: Exception) {
+            finishMeasurementWithError(
+                localized(
+                    "无法提交 RAW 帧：${error.message ?: "未知错误"}",
+                    "Unable to submit RAW frame: ${error.message ?: "unknown error"}",
+                ),
+            )
         }
     }
 
@@ -957,14 +1090,33 @@ class CameraController(
                 }
             } finally {
                 image.close()
+                active.completedFrames += 1
+            }
+            if (active.stats.size < active.expectedFrames &&
+                active.completedFrames < active.expectedFrames
+            ) {
+                // Refill immediately after closing this full-size Image. If another paired frame
+                // is waiting below, the camera can already capture its replacement while JNI
+                // analyzes that queued frame.
+                fillRawPipeline(active)
             }
         }
-        if (active.stats.size >= active.expectedFrames) finishMeasurement(active)
+        when {
+            active.stats.size >= active.expectedFrames -> finishMeasurement(active)
+            active.completedFrames >= active.expectedFrames -> finishMeasurementWithError(
+                localized(
+                    "RAW 数据无效，请重试",
+                    "RAW data was invalid. Please try again",
+                ),
+            )
+            else -> fillRawPipeline(active)
+        }
     }
 
     private fun finishMeasurement(active: MeasurementAccumulator) {
         if (activeMeasurement?.id != active.id) return
         activeMeasurement = null
+        activeRawRequest = null
         closePendingImages(active)
         val sortedEv = active.stats.map { it.ev100 }.sorted()
         val sortedLuma = active.stats.map { it.luma }.sorted()
@@ -979,10 +1131,12 @@ class CameraController(
             aperture = representative.aperture,
             source = MeteringSource.RAW,
         )
+        val elapsedMs = (System.nanoTime() - active.startedAtNs) / 1_000_000.0
         Log.e(
             TAG,
             "RAW metering completed: frames=${reading.frameCount} ev100=${reading.sceneEv100} " +
-                "luma=${reading.rawLuma} clipped=${reading.clippedFraction}",
+                "luma=${reading.rawLuma} clipped=${reading.clippedFraction} " +
+                "elapsedMs=${"%.1f".format(elapsedMs)} pipelineDepth=$RAW_PIPELINE_DEPTH",
         )
         mainHandler.post { callback.onMeterReading(reading) }
     }
@@ -990,6 +1144,7 @@ class CameraController(
     private fun finishMeasurementWithError(message: String) {
         val active = activeMeasurement ?: return
         activeMeasurement = null
+        activeRawRequest = null
         closePendingImages(active)
         Log.e(TAG, "RAW metering failed: $message")
         postMeterError(message)
@@ -1012,6 +1167,7 @@ class CameraController(
         fallbackMeasuring = false
         activeMeasurement?.let(::closePendingImages)
         activeMeasurement = null
+        activeRawRequest = null
         try {
             captureSession?.close()
         } catch (_: Exception) {
@@ -1063,6 +1219,16 @@ class CameraController(
         mainHandler.post { callback.onMeteringError(message) }
     }
 
+    private fun localized(chinese: String, english: String): String =
+        callback.localized(chinese, english)
+
+    private fun rawFrameCount(captureIso: Int?): Int =
+        if ((captureIso ?: 0) > HIGH_ISO_THRESHOLD) {
+            HIGH_ISO_RAW_FRAME_COUNT
+        } else {
+            LOW_ISO_RAW_FRAME_COUNT
+        }
+
     private fun median(sorted: List<Double>): Double {
         if (sorted.isEmpty()) return Double.NaN
         val middle = sorted.size / 2
@@ -1078,6 +1244,11 @@ class CameraController(
         private const val TRACKING_TARGET_LONG_EDGE = 640
         private const val TRACKING_MAX_LONG_EDGE = 720
         private const val TRACKING_MIN_SHORT_EDGE = 240
+        private const val RAW_PIPELINE_DEPTH = 2
+        private const val RAW_READER_MAX_IMAGES = 2
+        private const val HIGH_ISO_THRESHOLD = 800
+        private const val LOW_ISO_RAW_FRAME_COUNT = 3
+        private const val HIGH_ISO_RAW_FRAME_COUNT = 5
         private const val FALLBACK_BITMAP_SIZE = 96
         private const val FALLBACK_FRAME_COUNT = 3
         private const val FALLBACK_SAMPLE_DELAY_MS = 70L

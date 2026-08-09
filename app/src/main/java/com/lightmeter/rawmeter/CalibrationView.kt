@@ -67,7 +67,10 @@ class CalibrationView(
 
     private val evEditor = numericEditor("EV100", signed = true)
     private val apertureEditor = numericEditor("f / N")
-    private val shutterEditor = numericEditor("1/125 或 0.008", fraction = true)
+    private val shutterEditor = numericEditor(
+        localized("1/125 或 0.008", "1/125 or 0.008"),
+        fraction = true,
+    )
     private val isoEditor = numericEditor("ISO")
     private val luxEditor = numericEditor("Lux")
     private val allEditors = listOf(
@@ -111,10 +114,17 @@ class CalibrationView(
         invalidate()
     }
 
-    fun setMeasuring(measuring: Boolean) {
+    fun setMeasuring(measuring: Boolean, frameCount: Int? = null) {
         isMeasuring = measuring
         if (measuring) {
-            statusText = localized("正在读取 5 帧中央画面…", "Reading five center frames…")
+            statusText = if (frameCount != null) {
+                localized(
+                    "正在读取 $frameCount 帧中央画面…",
+                    "Reading $frameCount center frames…",
+                )
+            } else {
+                localized("正在准备测光…", "Preparing measurement…")
+            }
             statusIsError = false
             clearEditorFocus()
         }
@@ -466,6 +476,7 @@ class CalibrationView(
             }
             CalibrationReferenceMode.CAMERA_EXPOSURE -> {
                 val aperture = apertureEditor.text.toString().trim().toDoubleOrNull()
+                    ?.takeIf { it > 0.0 && it.isFinite() }
                     ?: throw IllegalArgumentException(
                         localized("请输入有效光圈", "Enter a valid aperture"),
                     )
@@ -474,6 +485,7 @@ class CalibrationView(
                         localized("请输入有效快门，如 1/125", "Enter a shutter such as 1/125"),
                     )
                 val iso = isoEditor.text.toString().trim().toDoubleOrNull()
+                    ?.takeIf { it > 0.0 && it.isFinite() }
                     ?: throw IllegalArgumentException(
                         localized("请输入有效 ISO", "Enter a valid ISO"),
                     )
@@ -481,14 +493,20 @@ class CalibrationView(
             }
             CalibrationReferenceMode.LUX_GRAY_CARD -> {
                 val lux = luxEditor.text.toString().trim().toDoubleOrNull()
+                    ?.takeIf { it > 0.0 && it.isFinite() }
                     ?: throw IllegalArgumentException(
                         localized("请输入有效 Lux", "Enter a valid lux value"),
                     )
                 CalibrationMath.ev100FromLuxOnGrayCard(lux)
             }
         }
-    } catch (error: IllegalArgumentException) {
-        showError(error.message ?: localized("输入无效", "Invalid input"))
+    } catch (_: IllegalArgumentException) {
+        showError(
+            localized(
+                "输入无效，请检查数值范围",
+                "Invalid input. Check the value range",
+            ),
+        )
         null
     }
 

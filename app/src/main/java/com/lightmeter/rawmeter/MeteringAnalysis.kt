@@ -27,9 +27,12 @@ internal data class MeasurementAccumulator(
     val frameAspect: Float,
     val zoom: Float,
     val meteringMode: MeteringMode,
+    val startedAtNs: Long = System.nanoTime(),
     val images: MutableMap<Long, Image> = TreeMap(),
     val results: MutableMap<Long, CaptureResult> = TreeMap(),
     val stats: MutableList<MeteringFrameStat> = mutableListOf(),
+    var submittedFrames: Int = 0,
+    var completedFrames: Int = 0,
 )
 
 /** CPU-only metering math kept outside CameraController's session lifecycle. */

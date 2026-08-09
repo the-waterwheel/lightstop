@@ -208,11 +208,18 @@ class MainActivity : Activity(), CameraControllerCallback {
         if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
             cameraController.start()
         } else {
-            state.cameraInfo = state.cameraInfo.copy(status = getString(R.string.camera_permission))
+            val message = localized(
+                "需要相机权限才能进行 RAW 测光。",
+                "Camera permission is required for RAW metering.",
+            )
+            state.cameraInfo = state.cameraInfo.copy(status = message)
             meterLayout.refresh()
-            Toast.makeText(this, R.string.camera_permission, Toast.LENGTH_LONG).show()
+            Toast.makeText(this, message, Toast.LENGTH_LONG).show()
         }
     }
+
+    override fun localized(chinese: String, english: String): String =
+        if (state.menuLanguage == MenuLanguage.ENGLISH) english else chinese
 
     override fun onCameraInfo(info: CameraUiInfo) {
         if (info.cameraId.isNotBlank() && info.cameraId != state.selectedCameraId) {
@@ -222,7 +229,7 @@ class MainActivity : Activity(), CameraControllerCallback {
         val switchingMessage = localized("正在切换摄像头", "Switching camera")
         if (state.transientMessage == switchingMessage &&
             info.cameraId == state.selectedCameraId &&
-            info.status != "正在切换摄像头"
+            info.status != switchingMessage
         ) {
             state.transientMessage = null
         }
@@ -243,9 +250,9 @@ class MainActivity : Activity(), CameraControllerCallback {
         meterLayout.offerZoneTrackingFrame(frame)
     }
 
-    override fun onMeteringStarted(source: MeteringSource) {
+    override fun onMeteringStarted(source: MeteringSource, frameCount: Int) {
         if (calibrationMeasurementPending) {
-            meterLayout.calibrationView.setMeasuring(true)
+            meterLayout.calibrationView.setMeasuring(true, frameCount)
             return
         }
         if (zoneMeasurementPending) {
@@ -255,9 +262,15 @@ class MainActivity : Activity(), CameraControllerCallback {
         }
         state.measuring = true
         state.transientMessage = if (source == MeteringSource.RAW) {
-            "正在读取 5 帧中央 RAW"
+            localized(
+                "正在读取 $frameCount 帧中央 RAW",
+                "Reading $frameCount center RAW frames",
+            )
         } else {
-            "正在读取中央预览亮度 · 兼容模式"
+            localized(
+                "正在读取 $frameCount 帧中央预览亮度 · 兼容模式",
+                "Reading $frameCount center preview frames · Compatible mode",
+            )
         }
         meterLayout.refresh()
     }
@@ -291,13 +304,25 @@ class MainActivity : Activity(), CameraControllerCallback {
         state.sceneEv100 = reading.sceneEv100
         state.transientMessage = when {
             reading.source == MeteringSource.ISP_PREVIEW ->
-                "兼容测光 · 设备不支持 RAW，结果可能不太准确"
+                localized(
+                    "兼容测光 · RAW 不可用，结果可能不太准确",
+                    "Compatible metering · RAW unavailable; result may be less accurate",
+                )
             reading.clippedFraction > 0.1 ->
-                "中央高光接近饱和 · EV ${"%.1f".format(reading.sceneEv100)}"
+                localized(
+                    "中央高光接近饱和 · EV ${"%.1f".format(reading.sceneEv100)}",
+                    "Center highlights are near clipping · EV ${"%.1f".format(reading.sceneEv100)}",
+                )
             reading.rawLuma < 0.002 ->
-                "中央信号较弱 · EV ${"%.1f".format(reading.sceneEv100)}"
+                localized(
+                    "中央信号较弱 · EV ${"%.1f".format(reading.sceneEv100)}",
+                    "Center signal is weak · EV ${"%.1f".format(reading.sceneEv100)}",
+                )
             else ->
-                "${reading.frameCount} 帧 RAW · EV100 ${"%.1f".format(reading.sceneEv100)}"
+                localized(
+                    "${reading.frameCount} 帧 RAW · EV100 ${"%.1f".format(reading.sceneEv100)}",
+                    "${reading.frameCount} RAW frames · EV100 ${"%.1f".format(reading.sceneEv100)}",
+                )
         }
         meterLayout.refresh()
         clearTransientMessageLater()
@@ -426,9 +451,6 @@ class MainActivity : Activity(), CameraControllerCallback {
             }
             .show()
     }
-
-    private fun localized(chinese: String, english: String): String =
-        if (state.menuLanguage == MenuLanguage.ENGLISH) english else chinese
 
     private fun updatePreviewTransform(width: Int, height: Int) {
         if (width <= 0 || height <= 0) return
