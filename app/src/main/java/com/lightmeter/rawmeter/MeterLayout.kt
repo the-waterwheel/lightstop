@@ -601,7 +601,8 @@ class MeterLayout @JvmOverloads constructor(
         instrumentView.alpha = 1f - value
         zoneView.alpha = value
         if (width > height) {
-            zoneView.translationX = (1f - value) * width * 0.08f
+            val direction = ModeTransitionDirection.normalEntrySign(state.isLeftHanded)
+            zoneView.translationX = direction * (1f - value) * width * 0.08f
             zoneView.translationY = 0f
         } else {
             zoneView.translationY = (1f - value) * height * 0.08f

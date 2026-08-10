@@ -40,6 +40,8 @@ import org.opencv.features2d.ORB
 import org.opencv.imgproc.Imgproc
 import org.opencv.video.Video
 
+private typealias VisibleViewport = ZoneVisibleViewport
+
 /**
  * Tracks Zone markers from the displayed preview only; measured EV values still come exclusively
  * from the RAW/fallback metering pipeline. OpenCV supplies sparse pyramidal LK optical flow and a
@@ -109,16 +111,6 @@ class OpenCvZoneMarkerTracker(
         val verticalScale: Double?,
         val verticalSamples: Int,
     )
-
-    private data class VisibleViewport(
-        val left: Float,
-        val top: Float,
-        val right: Float,
-        val bottom: Float,
-    ) {
-        val width: Float get() = (right - left).coerceAtLeast(0.0001f)
-        val height: Float get() = (bottom - top).coerceAtLeast(0.0001f)
-    }
 
     private data class AffineMotion(
         val m00: Double,
@@ -462,7 +454,7 @@ class OpenCvZoneMarkerTracker(
             return
         }
         if (externalFramesDisabled) return
-        val quality = externalLumaQuality(frame)
+        val quality = ZoneFrameQualityEvaluator.evaluate(frame)
         if (!quality.usable) {
             if (!externalFrameQualityWarningLogged) {
                 Log.w(
@@ -1189,42 +1181,6 @@ class OpenCvZoneMarkerTracker(
         }
     }
 
-    private data class ExternalLumaQuality(
-        val usable: Boolean,
-        val range: Int,
-        val standardDeviation: Double,
-    )
-
-    private fun externalLumaQuality(frame: ZoneTrackingFrame): ExternalLumaQuality {
-        val sampleStep = max(1, frame.luma.size / EXTERNAL_QUALITY_SAMPLE_COUNT)
-        var minimum = 255
-        var maximum = 0
-        var sum = 0.0
-        var squaredSum = 0.0
-        var count = 0
-        var index = 0
-        while (index < frame.luma.size) {
-            val value = frame.luma[index].toInt() and 0xff
-            minimum = min(minimum, value)
-            maximum = max(maximum, value)
-            sum += value
-            squaredSum += value.toDouble() * value
-            count += 1
-            index += sampleStep
-        }
-        if (count == 0) return ExternalLumaQuality(false, 0, 0.0)
-        val mean = sum / count
-        val variance = (squaredSum / count - mean * mean).coerceAtLeast(0.0)
-        val standardDeviation = kotlin.math.sqrt(variance)
-        val range = maximum - minimum
-        return ExternalLumaQuality(
-            usable = range >= MIN_EXTERNAL_LUMA_RANGE &&
-                standardDeviation >= MIN_EXTERNAL_LUMA_STANDARD_DEVIATION,
-            range = range,
-            standardDeviation = standardDeviation,
-        )
-    }
-
     private fun disableExternalFramesForSession(featureCount: Int) {
         if (externalFramesDisabled) return
         externalFramesDisabled = true
@@ -1735,106 +1691,73 @@ class OpenCvZoneMarkerTracker(
         width: Int,
         height: Int,
         viewport: VisibleViewport,
-    ): Point {
-        val baseDisplayX = viewport.left + baseX * viewport.width
-        val baseDisplayY = viewport.top + baseY * viewport.height
-        val analysis = if (frameCoordinatesAreDisplayOriented) {
-            Point(baseDisplayX.toDouble(), baseDisplayY.toDouble())
-        } else {
-            displayToAnalysis(baseDisplayX.toDouble(), baseDisplayY.toDouble())
-        }
-        return Point(analysis.x * width, analysis.y * height)
-    }
+    ): Point = ZoneCoordinateMapper.basePreviewToTexture(
+        baseX,
+        baseY,
+        width,
+        height,
+        viewport,
+        frameCoordinatesAreDisplayOriented,
+        displayRotationDegrees(),
+    )
 
     private fun textureToBasePreview(
         point: Point,
         width: Int,
         height: Int,
         viewport: VisibleViewport,
-    ): Pair<Float, Float> {
-        val baseDisplay = if (frameCoordinatesAreDisplayOriented) {
-            Point(point.x / width, point.y / height)
-        } else {
-            analysisToDisplay(point.x / width, point.y / height)
-        }
-        return ((baseDisplay.x - viewport.left) / viewport.width).toFloat() to
-            ((baseDisplay.y - viewport.top) / viewport.height).toFloat()
-    }
+    ): Pair<Float, Float> = ZoneCoordinateMapper.textureToBasePreview(
+        point,
+        width,
+        height,
+        viewport,
+        frameCoordinatesAreDisplayOriented,
+        displayRotationDegrees(),
+    )
 
     private fun uiPreviewToBasePreview(
         uiX: Float,
         uiY: Float,
         viewport: VisibleViewport,
-    ): Pair<Float, Float> {
-        val zoom = trackedDisplayZoom.toDouble().coerceAtLeast(1.0)
-        val zoomedDisplayX = viewport.left + uiX * viewport.width
-        val zoomedDisplayY = viewport.top + uiY * viewport.height
-        val baseDisplayX = 0.5 + (zoomedDisplayX - 0.5) / zoom
-        val baseDisplayY = 0.5 + (zoomedDisplayY - 0.5) / zoom
-        return ((baseDisplayX - viewport.left) / viewport.width).toFloat() to
-            ((baseDisplayY - viewport.top) / viewport.height).toFloat()
-    }
+    ): Pair<Float, Float> = ZoneCoordinateMapper.uiPreviewToBasePreview(
+        uiX,
+        uiY,
+        viewport,
+        trackedDisplayZoom,
+    )
 
     private fun basePreviewToUiPreview(
         baseX: Float,
         baseY: Float,
         viewport: VisibleViewport,
-    ): Pair<Float, Float> {
-        val zoom = trackedDisplayZoom.toDouble().coerceAtLeast(1.0)
-        val baseDisplayX = viewport.left + baseX * viewport.width
-        val baseDisplayY = viewport.top + baseY * viewport.height
-        val zoomedDisplayX = 0.5 + (baseDisplayX - 0.5) * zoom
-        val zoomedDisplayY = 0.5 + (baseDisplayY - 0.5) * zoom
-        return ((zoomedDisplayX - viewport.left) / viewport.width).toFloat() to
-            ((zoomedDisplayY - viewport.top) / viewport.height).toFloat()
-    }
-
-    /**
-     * TextureView bitmap capture on the tested Camera2 path remains in the device's natural
-     * coordinate orientation. The preview UI, however, follows Display rotation. Keeping this
-     * conversion in the tracker boundary prevents sensor axes from leaking into Zone UI state.
-     */
-    private fun displayToAnalysis(x: Double, y: Double): Point = when (displayRotationDegrees()) {
-        90 -> Point(1.0 - y, x)
-        180 -> Point(1.0 - x, 1.0 - y)
-        270 -> Point(y, 1.0 - x)
-        else -> Point(x, y)
-    }
-
-    private fun analysisToDisplay(x: Double, y: Double): Point = when (displayRotationDegrees()) {
-        90 -> Point(y, 1.0 - x)
-        180 -> Point(1.0 - x, 1.0 - y)
-        270 -> Point(1.0 - y, x)
-        else -> Point(x, y)
-    }
+    ): Pair<Float, Float> = ZoneCoordinateMapper.basePreviewToUiPreview(
+        baseX,
+        baseY,
+        viewport,
+        trackedDisplayZoom,
+    )
 
     private fun displayVectorToAnalysis(
         x: Double,
         y: Double,
         displayOriented: Boolean,
-    ): Point =
-        if (displayOriented) {
-            Point(x, y)
-        } else when (displayRotationDegrees()) {
-            90 -> Point(-y, x)
-            180 -> Point(-x, -y)
-            270 -> Point(y, -x)
-            else -> Point(x, y)
-        }
+    ): Point = ZoneCoordinateMapper.displayVectorToAnalysis(
+        x,
+        y,
+        displayOriented,
+        displayRotationDegrees(),
+    )
 
     private fun analysisVectorToDisplay(
         x: Double,
         y: Double,
         displayOriented: Boolean,
-    ): Point =
-        if (displayOriented) {
-            Point(x, y)
-        } else when (displayRotationDegrees()) {
-            90 -> Point(y, -x)
-            180 -> Point(-x, -y)
-            270 -> Point(-y, x)
-            else -> Point(x, y)
-        }
+    ): Point = ZoneCoordinateMapper.analysisVectorToDisplay(
+        x,
+        y,
+        displayOriented,
+        displayRotationDegrees(),
+    )
 
     private fun displayRotationDegrees(): Int =
         when (textureView.display?.rotation ?: Surface.ROTATION_0) {
@@ -2076,9 +1999,6 @@ class OpenCvZoneMarkerTracker(
         private const val EXPOSURE_RECOVERY_FRAMES = 12
         private const val EXPOSURE_JUMP_MIN_LUMA = 10.0
         private const val EXPOSURE_JUMP_MIN_RATIO = 0.10
-        private const val EXTERNAL_QUALITY_SAMPLE_COUNT = 4096
-        private const val MIN_EXTERNAL_LUMA_RANGE = 10
-        private const val MIN_EXTERNAL_LUMA_STANDARD_DEVIATION = 2.5
         private const val MAX_EMPTY_EXTERNAL_FEATURE_FRAMES = 4
         private const val UNKNOWN_FRAME_ROTATION = -1
         private const val LK_LEVELS = 3

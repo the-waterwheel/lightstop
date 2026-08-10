@@ -57,6 +57,7 @@ class InstrumentView(
     private val boldPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         typeface = Typeface.create("sans", Typeface.BOLD)
     }
+    private val exposureRenderer = InstrumentExposureRenderer(state, density)
     private var geometry: LayoutGeometry? = null
     private var touchTarget = TouchTarget.NONE
     private var lastDialAngle = 0f
@@ -161,7 +162,7 @@ class InstrumentView(
         drawOutlinedButton(
             canvas,
             g.formatButton,
-            formatShortLabel(state.frameFormat),
+            InstrumentPresentation.formatShortLabel(state.frameFormat),
             formatMenuOpen,
         )
         if (formatMenuOpen) drawFormatMenu(canvas, g)
@@ -233,7 +234,8 @@ class InstrumentView(
     private fun drawZoneEntryHandle(canvas: Canvas, g: LayoutGeometry) {
         val rect = RectF(g.zoneEntryHandle)
         if (g.landscape) {
-            rect.offset(-zoneTransitionFraction * width * 0.14f, 0f)
+            val direction = ModeTransitionDirection.zoneEntrySign(state.isLeftHanded)
+            rect.offset(direction * zoneTransitionFraction * width * 0.14f, 0f)
         } else {
             rect.offset(0f, -zoneTransitionFraction * height * 0.16f)
         }
@@ -261,9 +263,14 @@ class InstrumentView(
             val arrow = Path()
             val size = min(rect.width(), rect.height()) * 0.42f
             if (g.landscape) {
-                val x = rect.left - 5f * density - zoneTransitionFraction * 18f * density
+                val direction = ModeTransitionDirection.zoneEntrySign(state.isLeftHanded)
+                val x = if (direction < 0f) {
+                    rect.left - 5f * density - zoneTransitionFraction * 18f * density
+                } else {
+                    rect.right + 5f * density + zoneTransitionFraction * 18f * density
+                }
                 arrow.moveTo(x, rect.centerY() - size)
-                arrow.lineTo(x - size, rect.centerY())
+                arrow.lineTo(x + direction * size, rect.centerY())
                 arrow.lineTo(x, rect.centerY() + size)
             } else {
                 val y = rect.top - 4f * density - zoneTransitionFraction * 18f * density
@@ -277,7 +284,7 @@ class InstrumentView(
     }
 
     private fun drawFormatMenu(canvas: Canvas, g: LayoutGeometry) {
-        formatOptionRects(g).forEachIndexed { index, rect ->
+        InstrumentPresentation.formatOptionRects(g, density).forEachIndexed { index, rect ->
             val selected = index == state.frameIndex
             paint.style = Paint.Style.FILL
             paint.color = if (selected) black else surfaceColor
@@ -292,50 +299,12 @@ class InstrumentView(
             paint.typeface = Typeface.DEFAULT_BOLD
             drawCenteredText(
                 canvas,
-                formatShortLabel(FrameFormat.ALL[index]),
+                InstrumentPresentation.formatShortLabel(FrameFormat.ALL[index]),
                 rect.centerX(),
                 rect.centerY(),
                 paint,
             )
         }
-    }
-
-    private fun formatOptionRects(g: LayoutGeometry): List<RectF> {
-        val left: Float
-        val right: Float
-        if (g.formatButton.centerX() < g.orientationButton.centerX()) {
-            left = g.formatButton.right + 4f * density
-            right = g.orientationButton.left - 4f * density
-        } else {
-            left = g.orientationButton.right + 4f * density
-            right = g.formatButton.left - 4f * density
-        }
-        val availableWidth = (right - left).coerceAtLeast(0f)
-        if (availableWidth < 8f * density) return emptyList()
-        val gap = 2f * density
-        val itemWidth =
-            ((availableWidth - gap * (FrameFormat.ALL.size - 1)) / FrameFormat.ALL.size)
-                .coerceAtLeast(18f * density)
-        return FrameFormat.ALL.indices.mapNotNull { index ->
-            val itemLeft = left + index * (itemWidth + gap)
-            val itemRight = min(itemLeft + itemWidth, right)
-            if (itemLeft >= right) null else RectF(
-                itemLeft,
-                g.formatButton.top,
-                itemRight,
-                g.formatButton.bottom,
-            )
-        }
-    }
-
-    private fun formatShortLabel(format: FrameFormat): String = when (format.id) {
-        "half" -> "半格"
-        "645" -> "645"
-        "66" -> "6×6"
-        "67" -> "6×7"
-        "69" -> "6×9"
-        "xpan" -> "XPan"
-        else -> "135"
     }
 
     private fun drawOrientationButton(canvas: Canvas, rect: RectF, landscape: Boolean) {
@@ -424,278 +393,19 @@ class InstrumentView(
 
     private fun drawExposureRows(canvas: Canvas, g: LayoutGeometry) {
         val evAtIso = animatedExposureValue()
-        var apertureCenter: Double
-        var shutterCenter: Double
-        if (state.exposureLockMode == ExposureLockMode.APERTURE) {
-            apertureCenter = lockedScaleDisplayCoordinate.takeIf(Double::isFinite)
-                ?: state.lockedApertureStop
-            shutterCenter = state.lockedApertureStop - evAtIso
-        } else {
-            shutterCenter = lockedScaleDisplayCoordinate.takeIf(Double::isFinite)
-                ?: state.lockedShutterLogSeconds
-            apertureCenter = state.lockedShutterLogSeconds + evAtIso
-        }
-        val dependentOverride = when {
-            frozenDependentCoordinate.isFinite() -> frozenDependentCoordinate
-            releasedDependentCoordinate.isFinite() -> releasedDependentCoordinate
-            else -> Double.NaN
-        }
-        if (dependentOverride.isFinite()) {
-            if (state.exposureLockMode == ExposureLockMode.APERTURE) {
-                shutterCenter = dependentOverride
-            } else {
-                apertureCenter = dependentOverride
-            }
-        }
-        drawExposureScale(
-            canvas = canvas,
-            rect = g.apertureRow,
-            lockTrack = g.exposureLockTrack,
-            title = "f",
-            centerCoordinate = apertureCenter,
-            apertureRow = true,
+        val centers = InstrumentPresentation.exposureCenters(
+            state = state,
+            evAtIso = evAtIso,
+            lockedDisplayCoordinate = lockedScaleDisplayCoordinate,
+            frozenDependentCoordinate = frozenDependentCoordinate,
+            releasedDependentCoordinate = releasedDependentCoordinate,
         )
-        drawExposureScale(
-            canvas = canvas,
-            rect = g.shutterRow,
-            lockTrack = g.exposureLockTrack,
-            title = "s",
-            centerCoordinate = shutterCenter,
-            apertureRow = false,
-        )
-        drawExposureLock(canvas, g.exposureLockTrack)
-    }
-
-    private fun drawExposureScale(
-        canvas: Canvas,
-        rect: RectF,
-        lockTrack: RectF,
-        title: String,
-        centerCoordinate: Double,
-        apertureRow: Boolean,
-    ) {
-        val foreground = when {
-            state.isDarkMode -> nightForeground
-            apertureRow -> Color.WHITE
-            else -> lightBlack
-        }
-        val background = if (state.isDarkMode || apertureRow) Color.BLACK else Color.WHITE
-        paint.style = Paint.Style.FILL
-        paint.color = background
-        canvas.drawRect(rect, paint)
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 1.2f * density
-        paint.color = black
-        canvas.drawRect(rect, paint)
-
-        val titleWidth = 46f * density
-        val content = exposureScaleContent(rect, lockTrack, titleWidth)
-        val titleLeft = if (state.isLeftHanded) rect.right - titleWidth else rect.left
-        paint.style = Paint.Style.FILL
-        paint.color = foreground
-        paint.typeface = Typeface.DEFAULT_BOLD
-        paint.textSize = 12f * density
-        drawCenteredText(canvas, title, titleLeft + titleWidth * 0.24f, rect.centerY(), paint)
-        paint.textSize = 8f * density
-        paint.typeface = Typeface.DEFAULT
-        val exactValue = if (apertureRow) {
-            formatExactAperture(
-                ExposureMath.apertureValueForCoordinate(
-                    centerCoordinate,
-                    state.apertureStep,
-                ),
-            )
-        } else {
-            formatExactShutter(
-                ExposureMath.shutterValueForCoordinate(
-                    centerCoordinate,
-                    state.shutterStep,
-                ),
-            )
-        }
-        drawCenteredText(
-            canvas,
-            exactValue,
-            titleLeft + titleWidth * 0.65f,
-            rect.centerY(),
-            paint,
-        )
-
-        val baselineY = rect.centerY() + 9f * density
-        val pixelsPerStop = exposurePixelsPerStop(content)
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 0.8f * density
-        paint.color = foreground
-        canvas.drawLine(content.left, baselineY, content.right, baselineY, paint)
-
-        canvas.save()
-        canvas.clipRect(content)
-        paint.textSize = 7.5f * density
-        paint.typeface = Typeface.DEFAULT
-        if (apertureRow) {
-            var lastLabelRight = content.left - 4f * density
-            val ticks = ExposureMath.apertureTicks(state.apertureStep)
-            ticks.forEachIndexed { index, tick ->
-                val coordinate = tick.coordinate
-                val x = content.centerX() +
-                    ((coordinate - centerCoordinate) * pixelsPerStop).toFloat()
-                if (x in content.left..content.right) {
-                    val label =
-                        if (index % state.apertureStep.denominator == 0) {
-                            formatApertureTick(tick.nominalValue)
-                        } else {
-                            null
-                        }
-                    val halfLabel = label?.let { paint.measureText(it) / 2f } ?: 0f
-                    val showLabel = label != null &&
-                        x - halfLabel >= lastLabelRight + 3f * density &&
-                        x + halfLabel <= content.right
-                    drawScaleTick(
-                        canvas,
-                        x,
-                        baselineY,
-                        if (showLabel) label else null,
-                        foreground,
-                    )
-                    if (showLabel) lastLabelRight = x + halfLabel
-                }
-            }
-        } else {
-            var lastLabelLeft = content.right + 4f * density
-            val ticks = ExposureMath.shutterTicks(state.shutterStep)
-            ticks.forEachIndexed { index, tick ->
-                val coordinate = tick.coordinate
-                val x = content.centerX() +
-                    ((coordinate - centerCoordinate) * pixelsPerStop).toFloat()
-                if (x in content.left..content.right) {
-                    val label =
-                        if (index % state.shutterStep.denominator == 0) {
-                            ExposureMath.formatShutter(tick.nominalValue)
-                        } else {
-                            null
-                        }
-                    val halfLabel = label?.let { paint.measureText(it) / 2f } ?: 0f
-                    val showLabel = label != null &&
-                        x + halfLabel <= lastLabelLeft - 3f * density &&
-                        x - halfLabel >= content.left
-                    drawScaleTick(
-                        canvas,
-                        x,
-                        baselineY,
-                        if (showLabel) label else null,
-                        foreground,
-                    )
-                    if (showLabel) lastLabelLeft = x - halfLabel
-                }
-            }
-        }
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 2f * density
-        paint.color = red
-        canvas.drawLine(
-            content.centerX(),
-            baselineY - 11f * density,
-            content.centerX(),
-            baselineY + 3f * density,
-            paint,
-        )
-        canvas.restore()
-    }
-
-    private fun exposureScaleContent(
-        rect: RectF,
-        lockTrack: RectF,
-        titleWidth: Float = 46f * density,
-    ): RectF = if (state.isLeftHanded) {
-        RectF(
-            lockTrack.right + 4f * density,
-            rect.top,
-            rect.right - titleWidth,
-            rect.bottom,
-        )
-    } else {
-        RectF(
-            rect.left + titleWidth,
-            rect.top,
-            lockTrack.left - 4f * density,
-            rect.bottom,
-        )
-    }
-
-    private fun drawScaleTick(
-        canvas: Canvas,
-        x: Float,
-        baselineY: Float,
-        label: String?,
-        color: Int,
-    ) {
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 1f * density
-        paint.color = color
-        val tickHeight = if (label != null) 10f * density else 6f * density
-        canvas.drawLine(x, baselineY - tickHeight, x, baselineY + 2f * density, paint)
-        if (label != null) {
-            paint.style = Paint.Style.FILL
-            paint.textSize = 7.5f * density
-            paint.typeface = Typeface.DEFAULT
-            drawCenteredText(canvas, label, x, baselineY - 16f * density, paint)
-        }
-    }
-
-    private fun drawExposureLock(canvas: Canvas, track: RectF) {
-        paint.style = Paint.Style.FILL
-        paint.color = surfaceColor
-        canvas.drawRect(track, paint)
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 1.2f * density
-        paint.color = black
-        canvas.drawRect(track, paint)
-        val x = track.centerX()
-        val topY = track.top + track.height() * 0.25f
-        val bottomY = track.top + track.height() * 0.75f
-        canvas.drawLine(x, topY, x, bottomY, paint)
-
         if (exposureLockSliderFraction.isNaN()) {
             exposureLockSliderFraction =
                 if (state.exposureLockMode == ExposureLockMode.APERTURE) 0f else 1f
         }
-        val knobY = topY + (bottomY - topY) * exposureLockSliderFraction
-        val knobSize = min(28f * density, track.width() - 6f * density)
-        val knob = RectF(
-            x - knobSize / 2f,
-            knobY - knobSize / 2f,
-            x + knobSize / 2f,
-            knobY + knobSize / 2f,
-        )
-        paint.style = Paint.Style.FILL
-        paint.color = surfaceColor
-        canvas.drawRect(knob, paint)
-        paint.style = Paint.Style.STROKE
-        paint.color = black
-        paint.strokeWidth = 1.4f * density
-        canvas.drawRect(knob, paint)
-
-        val shackle = RectF(
-            x - knobSize * 0.22f,
-            knobY - knobSize * 0.25f,
-            x + knobSize * 0.22f,
-            knobY + knobSize * 0.18f,
-        )
-        canvas.drawArc(shackle, 180f, 180f, false, paint)
-        val body = RectF(
-            x - knobSize * 0.28f,
-            knobY - knobSize * 0.04f,
-            x + knobSize * 0.28f,
-            knobY + knobSize * 0.28f,
-        )
-        canvas.drawRect(body, paint)
-        paint.style = Paint.Style.FILL
-        paint.color = red
-        canvas.drawCircle(x, knobY + knobSize * 0.10f, 1.7f * density, paint)
+        exposureRenderer.draw(canvas, g, centers, exposureLockSliderFraction)
     }
-
-    private fun exposurePixelsPerStop(content: RectF): Double =
-        maxOf(62f * density, content.width() / 4.6f).toDouble()
 
     private fun animatedExposureValue(): Double {
         val fallback = state.lockedApertureStop - state.lockedShutterLogSeconds
@@ -722,23 +432,6 @@ class InstrumentView(
     }
 
     private fun exactEvAtIso(): Double = animatedExposureValue()
-
-    private fun formatApertureTick(value: Double): String =
-        if (value >= 10.0 || abs(value - value.roundToInt()) < 0.02) {
-            value.roundToInt().toString()
-        } else {
-            "%.1f".format(value)
-        }
-
-    private fun formatExactAperture(value: Double): String =
-        if (value >= 10.0) "%.1f".format(value) else "%.2f".format(value)
-
-    private fun formatExactShutter(seconds: Double): String = when {
-        seconds >= 10.0 -> "${seconds.roundToInt()}″"
-        seconds >= 1.0 -> "${"%.1f".format(seconds)}″"
-        seconds >= 0.3 -> "${"%.2f".format(seconds)}″"
-        else -> "1/${(1.0 / seconds).roundToInt()}"
-    }
 
     private fun drawDial(canvas: Canvas, g: LayoutGeometry) {
         val dial = g.dial
@@ -1064,7 +757,7 @@ class InstrumentView(
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 if (formatMenuOpen) {
-                    val selectedFormat = formatOptionRects(g)
+                    val selectedFormat = InstrumentPresentation.formatOptionRects(g, density)
                         .indexOfFirst { it.contains(event.x, event.y) }
                     if (selectedFormat >= 0) {
                         state.selectFrame(selectedFormat)
@@ -1076,32 +769,33 @@ class InstrumentView(
                     }
                 }
                 when {
-                    g.zoneEntryHandle.contains(event.x, event.y) && !state.measuring -> {
+                    g.zoneEntryHandle.containsAccessibleTarget(event.x, event.y, density) &&
+                        !state.measuring -> {
                         formatMenuOpen = false
                         touchTarget = TouchTarget.ZONE_ENTRY
                         zoneDragStartX = event.x
                         zoneDragStartY = event.y
                         return true
                     }
-                    g.moreButton.contains(event.x, event.y) -> {
+                    g.moreButton.containsAccessibleTarget(event.x, event.y, density) -> {
                         formatMenuOpen = false
                         haptic()
                         listener?.onMoreRequested()
                         return true
                     }
-                    g.orientationButton.contains(event.x, event.y) -> {
+                    g.orientationButton.containsAccessibleTarget(event.x, event.y, density) -> {
                         formatMenuOpen = false
                         haptic()
                         listener?.onOrientationToggle()
                         return true
                     }
-                    g.formatButton.contains(event.x, event.y) -> {
+                    g.formatButton.containsAccessibleTarget(event.x, event.y, density) -> {
                         formatMenuOpen = !formatMenuOpen
                         haptic()
                         invalidate()
                         return true
                     }
-                    g.isoModeButton.contains(event.x, event.y) -> {
+                    g.isoModeButton.containsAccessibleTarget(event.x, event.y, density) -> {
                         formatMenuOpen = false
                         state.isoAdjustMode = !state.isoAdjustMode
                         haptic()
@@ -1165,7 +859,11 @@ class InstrumentView(
                     TouchTarget.DIAL -> updateDial(event.x, event.y, g.dial)
                     TouchTarget.ZONE_ENTRY -> {
                         zoneTransitionFraction = if (g.landscape) {
-                            ((zoneDragStartX - event.x) / (width * 0.18f)).coerceIn(0f, 1f)
+                            (ModeTransitionDirection.zoneEntryDistance(
+                                zoneDragStartX,
+                                event.x,
+                                state.isLeftHanded,
+                            ) / (width * 0.18f)).coerceIn(0f, 1f)
                         } else {
                             ((zoneDragStartY - event.y) / (height * 0.18f)).coerceIn(0f, 1f)
                         }
@@ -1219,7 +917,7 @@ class InstrumentView(
 
     private fun updateLockedScaleDrag(x: Float, rect: RectF) {
         val lockTrack = geometry?.exposureLockTrack ?: return
-        val content = exposureScaleContent(rect, lockTrack)
+        val content = exposureRenderer.scaleContent(rect, lockTrack)
         val deltaX = x - lastScaleX
         lastScaleX = x
         val before = if (state.exposureLockMode == ExposureLockMode.APERTURE) {
@@ -1227,7 +925,7 @@ class InstrumentView(
         } else {
             state.lockedShutterLogSeconds
         }
-        lockedScaleDragCoordinate -= deltaX / exposurePixelsPerStop(content)
+        lockedScaleDragCoordinate -= deltaX / exposureRenderer.pixelsPerStop(content)
         state.setLockedExposureCoordinate(lockedScaleDragCoordinate)
         val after = if (state.exposureLockMode == ExposureLockMode.APERTURE) {
             state.lockedApertureStop

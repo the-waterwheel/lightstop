@@ -34,7 +34,6 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
 import kotlin.math.max
-import kotlin.math.min
 import kotlin.math.roundToInt
 
 class CameraController(
@@ -551,24 +550,11 @@ class CameraController(
     private fun finishProcessedPreview(id: Int, samples: List<MeteringFrameStat>) {
         if (!fallbackMeasuring || id != fallbackMeasurementId || samples.isEmpty()) return
         fallbackMeasuring = false
-        val sortedEv = samples.map { it.ev100 }.sorted()
-        val sortedLuma = samples.map { it.luma }.sorted()
-        val representative = samples[samples.size / 2]
-        callback.onMeterReading(
-            MeterReading(
-                sceneEv100 = median(sortedEv),
-                rawLuma = median(sortedLuma),
-                clippedFraction = samples.map { it.clipped }.average(),
-                frameCount = samples.size,
-                captureIso = representative.captureIso,
-                exposureTimeNs = representative.exposureTimeNs,
-                aperture = representative.aperture,
-                source = MeteringSource.ISP_PREVIEW,
-            ),
-        )
+        val reading = MeteringFusion.fuse(samples, MeteringSource.ISP_PREVIEW) ?: return
+        callback.onMeterReading(reading)
         Log.e(
             TAG,
-            "ISP preview metering completed: frames=${samples.size} ev100=${median(sortedEv)}",
+            "ISP preview metering completed: frames=${samples.size} ev100=${reading.sceneEv100}",
         )
     }
 
@@ -643,12 +629,12 @@ class CameraController(
                 )
             val rawAvailable = rawCapability &&
                 !map.getOutputSizes(ImageFormat.RAW_SENSOR).isNullOrEmpty()
-            val chosenPreview = choosePreviewSize(chars)
+            val chosenPreview = CameraStreamSelector.choosePreviewSize(chars)
                 ?: throw IllegalStateException(
                     localized("没有合适的预览尺寸", "No suitable preview size is available"),
                 )
             previewSize = chosenPreview
-            val chosenRange = chooseFpsRange(chars, chosenPreview)
+            val chosenRange = CameraStreamSelector.chooseFpsRange(chars, chosenPreview)
             previewFpsRange = chosenRange
 
             val physicalSize = chars.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
@@ -711,7 +697,8 @@ class CameraController(
                 null
             }
             trackingReader?.close()
-            trackingReader = chooseTrackingSize(map, chosenPreview)?.let { trackingSize ->
+            trackingReader = CameraStreamSelector.chooseTrackingSize(map, chosenPreview)
+                ?.let { trackingSize ->
                 ImageReader.newInstance(
                     trackingSize.width,
                     trackingSize.height,
@@ -741,84 +728,6 @@ class CameraController(
                 ),
             )
         }
-    }
-
-    private fun choosePreviewSize(chars: CameraCharacteristics): Size? {
-        val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return null
-        val all = map.getOutputSizes(SurfaceTexture::class.java)?.toList().orEmpty()
-        val bounded = all.filter {
-            max(it.width, it.height) <= 1920 && min(it.width, it.height) <= 1080
-        }.ifEmpty {
-            all.filter { max(it.width, it.height) <= 2560 }.ifEmpty { all }
-        }
-        if (bounded.isEmpty()) return null
-        val active = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
-        val sensorAspect = if (active != null && active.height() > 0) {
-            active.width().toDouble() / active.height()
-        } else {
-            4.0 / 3.0
-        }
-        val has60Range = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
-            ?.any { it.lower <= 60 && it.upper >= 60 } == true
-        val fast = if (has60Range) {
-            bounded.filter { size ->
-                val duration = map.getOutputMinFrameDuration(SurfaceTexture::class.java, size)
-                val area = size.width.toLong() * size.height.toLong()
-                area >= 1280L * 720L && (duration == 0L || duration <= 20_000_000L)
-            }
-        } else {
-            emptyList()
-        }
-        val pool = fast.ifEmpty { bounded }
-        return pool.minWithOrNull(
-            compareBy<Size> {
-                abs(it.width.toDouble() / it.height.toDouble() - sensorAspect)
-            }.thenByDescending {
-                it.width.toLong() * it.height.toLong()
-            },
-        )
-    }
-
-    private fun chooseTrackingSize(
-        map: android.hardware.camera2.params.StreamConfigurationMap,
-        preview: Size,
-    ): Size? {
-        val sizes = map.getOutputSizes(ImageFormat.YUV_420_888)?.toList().orEmpty()
-        if (sizes.isEmpty()) return null
-        val previewAspect = preview.width.toDouble() / preview.height.coerceAtLeast(1)
-        val compact = sizes.filter { size ->
-            max(size.width, size.height) <= TRACKING_MAX_LONG_EDGE &&
-                min(size.width, size.height) >= TRACKING_MIN_SHORT_EDGE
-        }.ifEmpty {
-            sizes.filter { max(it.width, it.height) <= 1280 }.ifEmpty { sizes }
-        }
-        return compact.minWithOrNull(
-            compareBy<Size> {
-                abs(it.width.toDouble() / it.height.coerceAtLeast(1) - previewAspect)
-            }.thenBy {
-                abs(max(it.width, it.height) - TRACKING_TARGET_LONG_EDGE)
-            }.thenBy { it.width.toLong() * it.height.toLong() },
-        )
-    }
-
-    private fun chooseFpsRange(
-        chars: CameraCharacteristics,
-        size: Size,
-    ): Range<Int>? {
-        val ranges =
-            chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)?.toList()
-                .orEmpty()
-        val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-        val duration = map?.getOutputMinFrameDuration(SurfaceTexture::class.java, size) ?: 0L
-        if (duration == 0L || duration <= 20_000_000L) {
-            ranges.firstOrNull { it.lower <= 60 && it.upper >= 60 }?.let {
-                return Range(60, 60)
-            }
-        }
-        return ranges
-            .filter { it.lower <= 30 && it.upper >= 30 }
-            .minByOrNull { abs(it.lower - 30) + abs(it.upper - 30) }
-            ?: ranges.maxByOrNull { it.upper }
     }
 
     private val cameraStateCallback = object : CameraDevice.StateCallback() {
@@ -1373,19 +1282,7 @@ class CameraController(
         activeMeasurement = null
         activeRawRequest = null
         closePendingImages(active)
-        val sortedEv = active.stats.map { it.ev100 }.sorted()
-        val sortedLuma = active.stats.map { it.luma }.sorted()
-        val representative = active.stats[active.stats.size / 2]
-        val reading = MeterReading(
-            sceneEv100 = median(sortedEv),
-            rawLuma = median(sortedLuma),
-            clippedFraction = active.stats.map { it.clipped }.average(),
-            frameCount = active.stats.size,
-            captureIso = representative.captureIso,
-            exposureTimeNs = representative.exposureTimeNs,
-            aperture = representative.aperture,
-            source = MeteringSource.RAW,
-        )
+        val reading = MeteringFusion.fuse(active.stats, MeteringSource.RAW) ?: return
         val elapsedMs = (System.nanoTime() - active.startedAtNs) / 1_000_000.0
         Log.e(
             TAG,
@@ -1514,21 +1411,8 @@ class CameraController(
             LOW_ISO_RAW_FRAME_COUNT
         }
 
-    private fun median(sorted: List<Double>): Double {
-        if (sorted.isEmpty()) return Double.NaN
-        val middle = sorted.size / 2
-        return if (sorted.size % 2 == 0) {
-            (sorted[middle - 1] + sorted[middle]) * 0.5
-        } else {
-            sorted[middle]
-        }
-    }
-
     companion object {
         private const val TAG = "RawLightMeter"
-        private const val TRACKING_TARGET_LONG_EDGE = 640
-        private const val TRACKING_MAX_LONG_EDGE = 720
-        private const val TRACKING_MIN_SHORT_EDGE = 240
         private const val RAW_PIPELINE_DEPTH = 2
         private const val MAX_METERING_REFERENCE_AGE_NS = 350_000_000L
         private const val PREVIEW_REFERENCE_LONG_EDGE = 384
