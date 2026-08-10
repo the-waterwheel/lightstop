@@ -160,32 +160,42 @@ app/src/main/cpp
 app/build/outputs/apk/debug/app-debug.apk
 ```
 
+### 精简 OpenCV
+
+应用固定使用本地版本化 AAR `app/libs/opencv-slim-4.12.0-r1.aar`，不再在应用构建期间从 Maven 动态解析 OpenCV。AAR 由 OpenCV `4.12.0` 官方源码构建，保留应用和官方 Android Java 胶水层所需模块，并包含 `arm64-v8a`、`armeabi-v7a`、`x86_64`。完整的版本矩阵、源码校验值、模块说明、Windows 启动器、构建命令和升级规则见 [精简 OpenCV 构建说明](tools/opencv-slim/README.md)。
+
+当前 AAR 为 `63,883,833` bytes，SHA-256：
+
+```text
+13EF54C6CD6801006FE1FC98382096D02D2955CE082EE3CA7BA2008EF1CBA902
+```
+
 ## Release 体积
 
-当前 release 配置未开启 R8 或资源收缩，并在一个通用 APK 中包含 `arm64-v8a`、`armeabi-v7a`、`x86_64` 三个 ABI。现有 unsigned release APK 约 97 MiB，压缩后内容大致为：
+当前 release 配置未开启 R8 或资源收缩，并在一个通用 APK 中包含 `arm64-v8a`、`armeabi-v7a`、`x86_64` 三个 ABI。接入精简 OpenCV 4.12.0 后，实测 unsigned release APK 为 `78,192,832` bytes（约 74.57 MiB），release AAB 为 `33,254,264` bytes（约 31.71 MiB）。APK 内容大致为：
 
 | 内容 | 大小 |
 |---|---:|
-| x86_64 原生库 | 54.66 MiB |
-| arm64-v8a 原生库 | 23.83 MiB |
-| armeabi-v7a 原生库 | 15.84 MiB |
-| DEX | 2.82 MiB |
+| x86_64 原生库 | 46.11 MiB |
+| arm64-v8a 原生库 | 15.04 MiB |
+| armeabi-v7a 原生库 | 10.39 MiB |
+| DEX | 2.88 MiB |
 | Android 资源 | 约 0.11 MiB |
 
-OpenCV 原生库占绝大多数体积，因此只开启 `shrinkResources` 预计只能节省不到 0.2 MiB。合理目标是：
+与原先约 97.5 MiB 的完整 Maven OpenCV 通用 APK 相比，当前 APK 减少约 22.9 MiB（约 24.1 MB）。原生库仍占绝大多数体积，因此只开启 `shrinkResources` 预计只能节省不到 0.2 MiB；R8 主要继续压缩当前约 2.88 MiB 的 DEX。保守目标是：
 
-- 通用三 ABI APK，R8 + 资源收缩：约 95–97 MiB。
-- 单独 arm64-v8a APK，R8 + 资源收缩：约 25–27 MiB。
-- 单独 armeabi-v7a APK，R8 + 资源收缩：约 17–19 MiB。
-- 使用 Android App Bundle：每台设备只接收匹配 ABI，交付体积接近对应单 ABI 区间。
+- 通用三 ABI APK，R8 + 资源收缩：约 76–78 MB。
+- 单独 arm64-v8a APK，R8 + 资源收缩：约 17–19 MB。
+- 单独 armeabi-v7a APK，R8 + 资源收缩：约 12–14 MB。
+- Android App Bundle：当前上传包约 33.25 MB；商店按 ABI 拆分后，每台设备只接收匹配的原生库。
 
 如需继续明显缩小，应按以下顺序处理：
 
 1. 发布 AAB，或为 ABI 分别生成 APK。
 2. 开启 `isMinifyEnabled = true` 和 `isShrinkResources = true`，并验证 OpenCV/JNI 保留规则。
-3. 如果仍不能接受体积，再评估只编译项目使用到的 OpenCV 模块；这需要维护自定义 OpenCV 原生构建，不能仅靠资源收缩完成。
+3. 如果不需要在模拟器发布包中保留 x86_64，可用产品风味或 ABI split 将其排除出真机发布变体；不要直接删除调试能力。
 
-体积区间基于当前 APK 的实际 ZIP 内容估算，正式发布前应以签名 release/AAB 和目标应用商店报告为准。
+体积区间基于当前精简 OpenCV APK 的实际 ZIP 内容估算，正式发布前应以签名 release/AAB 和目标应用商店报告为准。
 
 ## 数据与权限
 
@@ -197,6 +207,6 @@ OpenCV 原生库占绝大多数体积，因此只开启 `shrinkResources` 预计
 
 ## 验证与维护
 
-- 当前源码可通过 `:app:assembleDebug` 完整构建。
-- 项目暂未提供自动化测试；后续应优先为曝光数学、多帧融合、画幅几何、Zone 坐标映射和校准文件读写补充单元测试。
+- 当前源码已通过 `:app:testDebugUnitTest`、`:app:assembleDebug`、`:app:assembleRelease` 和 `:app:bundleRelease`。
+- 当前 3 个自动化单元测试覆盖左右手布局下 Zone/Normal 模式入口拖动方向；后续应继续为曝光数学、多帧融合、画幅几何、Zone 坐标映射和校准文件读写补充纯逻辑测试。Camera2、传感器和设备相关行为仍需真机验证。
 - Camera2 和 RAW 行为存在明显厂商差异，正式发布前仍需覆盖不同品牌、RAW/非 RAW、逻辑/物理多摄和横竖屏组合的实机矩阵。

@@ -54,6 +54,6 @@ android {
 }
 
 dependencies {
-    implementation("org.opencv:opencv:4.12.0")
+    implementation(files("libs/opencv-slim-4.12.0-r1.aar"))
     testImplementation("junit:junit:4.13.2")
 }
