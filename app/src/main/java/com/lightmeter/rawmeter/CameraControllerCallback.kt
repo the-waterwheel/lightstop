@@ -8,4 +8,7 @@ interface CameraControllerCallback {
     fun onMeteringStarted(source: MeteringSource, frameCount: Int)
     fun onMeterReading(reading: MeterReading)
     fun onMeteringError(message: String)
+    fun onVignettingCalibrationStarted()
+    fun onVignettingCalibrationCompleted(info: VignettingCalibrationInfo)
+    fun onVignettingCalibrationError(message: String)
 }

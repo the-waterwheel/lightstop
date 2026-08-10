@@ -70,6 +70,7 @@ class ZoneSystemView(
         LIST,
         CLEAR,
         MARK_BUTTON,
+        PREVIEW_MARK,
         ZOOM,
         FORMAT,
         ORIENTATION,
@@ -146,6 +147,7 @@ class ZoneSystemView(
 
     fun enter() {
         session.initializeFromMeter(state)
+        geometry = calculateGeometry(width, height)
         markerDisplayMotions.clear()
         formatMenuOpen = false
         exitProgress = 0f
@@ -244,20 +246,39 @@ class ZoneSystemView(
 
     private fun drawCameraOverlay(canvas: Canvas, g: Geometry) {
         val spotRadius = min(g.cameraFrame.width(), g.cameraFrame.height()) * 0.045f
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 2f * density
-        paint.color = surface
-        canvas.drawCircle(g.cameraFrame.centerX(), g.cameraFrame.centerY(), spotRadius + density, paint)
-        paint.strokeWidth = 1f * density
-        paint.color = foreground
-        canvas.drawCircle(g.cameraFrame.centerX(), g.cameraFrame.centerY(), spotRadius, paint)
-        canvas.drawCircle(g.cameraFrame.centerX(), g.cameraFrame.centerY(), 1.4f * density, paint)
-        if (state.measuring) {
-            drawMeteringSpinner(canvas, g.cameraFrame, spotRadius)
-            postInvalidateOnAnimation()
+        if (state.zoneMarkingMethod == ZoneMarkingMethod.BUTTON) {
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 2f * density
+            paint.color = surface
+            canvas.drawCircle(
+                g.cameraFrame.centerX(),
+                g.cameraFrame.centerY(),
+                spotRadius + density,
+                paint,
+            )
+            paint.strokeWidth = 1f * density
+            paint.color = foreground
+            canvas.drawCircle(g.cameraFrame.centerX(), g.cameraFrame.centerY(), spotRadius, paint)
+            canvas.drawCircle(
+                g.cameraFrame.centerX(),
+                g.cameraFrame.centerY(),
+                1.4f * density,
+                paint,
+            )
         }
 
         drawPreviewMarkers(canvas, g.cameraFrame)
+        if (state.measuring) {
+            val pending = session.pendingMarkerId?.let { pendingId ->
+                session.markers.firstOrNull { it.id == pendingId }
+            }
+            val centerX = pending?.let { g.cameraFrame.left + it.normalizedX * g.cameraFrame.width() }
+                ?: g.cameraFrame.centerX()
+            val centerY = pending?.let { g.cameraFrame.top + it.normalizedY * g.cameraFrame.height() }
+                ?: g.cameraFrame.centerY()
+            drawMeteringSpinner(canvas, centerX, centerY, spotRadius)
+            postInvalidateOnAnimation()
+        }
         drawOutlinedButton(canvas, g.formatButton, shortFormatLabel(), formatMenuOpen)
         drawOrientationButton(canvas, g.orientationButton)
         drawZoom(canvas, g.zoomTrack)
@@ -266,19 +287,24 @@ class ZoneSystemView(
         if (formatMenuOpen) drawFormatMenu(canvas, g)
     }
 
-    private fun drawMeteringSpinner(canvas: Canvas, frame: RectF, spotRadius: Float) {
+    private fun drawMeteringSpinner(
+        canvas: Canvas,
+        centerX: Float,
+        centerY: Float,
+        spotRadius: Float,
+    ) {
         val radius = spotRadius + 6f * density
         val bounds = RectF(
-            frame.centerX() - radius,
-            frame.centerY() - radius,
-            frame.centerX() + radius,
-            frame.centerY() + radius,
+            centerX - radius,
+            centerY - radius,
+            centerX + radius,
+            centerY + radius,
         )
         val gray = if (state.isDarkMode) 168 else 132
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 2.2f * density
         paint.color = Color.argb(42, gray, gray, gray)
-        canvas.drawCircle(frame.centerX(), frame.centerY(), radius, paint)
+        canvas.drawCircle(centerX, centerY, radius, paint)
 
         val phase = (SystemClock.uptimeMillis() % METERING_SPINNER_PERIOD_MS).toFloat() /
             METERING_SPINNER_PERIOD_MS
@@ -612,7 +638,9 @@ class ZoneSystemView(
         canvas.drawRect(g.recordPanel, paint)
 
         drawClearSlider(canvas, g)
-        drawMarkButton(canvas, g.markButton)
+        if (state.zoneMarkingMethod == ZoneMarkingMethod.BUTTON) {
+            drawMarkButton(canvas, g.markButton)
+        }
 
         val rowHeight = 34f * density
         val totalHeight = session.markers.size * rowHeight
@@ -866,13 +894,19 @@ class ZoneSystemView(
                     return true
                 } else if (g.cameraFrame.contains(event.x, event.y)) {
                     session.selectMarker(null)
+                    if (state.zoneMarkingMethod == ZoneMarkingMethod.TOUCH &&
+                        !state.measuring
+                    ) {
+                        touchTarget = TouchTarget.PREVIEW_MARK
+                    }
                     invalidate()
                     return true
                 }
                 if (session.selectedMarkerId != null) session.selectMarker(null)
                 touchTarget = when {
                     g.normalHandle.contains(event.x, event.y) && !state.measuring -> TouchTarget.EXIT
-                    g.markButton.contains(event.x, event.y) -> TouchTarget.MARK_BUTTON
+                    state.zoneMarkingMethod == ZoneMarkingMethod.BUTTON &&
+                        g.markButton.contains(event.x, event.y) -> TouchTarget.MARK_BUTTON
                     g.clearHandle.contains(event.x, event.y) -> TouchTarget.CLEAR
                     g.lockTrack.contains(event.x, event.y) -> TouchTarget.LOCK
                     g.zoneScale.contains(event.x, event.y) || g.markerRail.contains(event.x, event.y) -> TouchTarget.ZONE_RAIL
@@ -979,6 +1013,13 @@ class ZoneSystemView(
                     TouchTarget.LIST -> finishListGesture(g)
                     TouchTarget.CLEAR -> finishClear(g)
                     TouchTarget.MARK_BUTTON -> if (!cancelled && g.markButton.contains(event.x, event.y)) beginMarker()
+                    TouchTarget.PREVIEW_MARK -> if (!cancelled &&
+                        g.cameraFrame.contains(event.x, event.y) &&
+                        abs(event.x - touchStartX) <= touchSlop * 2f &&
+                        abs(event.y - touchStartY) <= touchSlop * 2f
+                    ) {
+                        beginMarkerAt(touchStartX, touchStartY, g.cameraFrame)
+                    }
                     TouchTarget.FORMAT -> if (!cancelled) formatMenuOpen = !formatMenuOpen
                     TouchTarget.ORIENTATION -> if (!cancelled) {
                         listener?.onPreviewMappingChanged()
@@ -1010,6 +1051,17 @@ class ZoneSystemView(
     private fun beginMarker() {
         if (state.measuring) return
         val marker = session.beginMarker(session.iso) ?: return
+        haptic()
+        listener?.onMarkRequested(marker)
+    }
+
+    private fun beginMarkerAt(x: Float, y: Float, frame: RectF) {
+        if (state.measuring || frame.width() <= 0f || frame.height() <= 0f) return
+        val marker = session.beginMarker(
+            iso = session.iso,
+            normalizedX = ((x - frame.left) / frame.width()).coerceIn(0f, 1f),
+            normalizedY = ((y - frame.top) / frame.height()).coerceIn(0f, 1f),
+        ) ?: return
         haptic()
         listener?.onMarkRequested(marker)
     }
@@ -1231,10 +1283,11 @@ class ZoneSystemView(
         val clearTrack: RectF
         val clearHandle: RectF
         val markButton: RectF
+        val touchMarking = state.zoneMarkingMethod == ZoneMarkingMethod.TOUCH
 
         val aspect = if (state.frameLandscape) state.frameFormat.landscapeAspect else 1f / state.frameFormat.landscapeAspect
         if (!landscape) {
-            previewPanel = RectF(pad, pad, w - pad, h * 0.42f)
+            previewPanel = RectF(pad, pad, w - pad, h * if (touchMarking) 0.46f else 0.42f)
             val frameArea = RectF(previewPanel.left + gap, previewPanel.top + gap, previewPanel.right - 34f * density - gap, previewPanel.bottom - gap)
             cameraFrame = fitAspect(frameArea, aspect)
             formatButton = RectF(previewPanel.left + gap, previewPanel.top + gap, previewPanel.left + gap + button * 2.1f, previewPanel.top + gap + button)
@@ -1256,16 +1309,17 @@ class ZoneSystemView(
             markerRail = RectF(pad, zoneScale.bottom + gap * 0.45f, w - pad, zoneScale.bottom + gap * 0.45f + h * 0.052f)
             recordPanel = RectF(pad, markerRail.bottom + gap, w - pad, h - pad)
             val markSize = min(72f * density, min(recordPanel.width() * 0.20f, recordPanel.height() * 0.34f))
-            markButton = RectF(
+            markButton = if (touchMarking) RectF() else RectF(
                 recordPanel.right - gap - markSize,
                 recordPanel.centerY() - markSize / 2f,
                 recordPanel.right - gap,
                 recordPanel.centerY() + markSize / 2f,
             )
+            val recordContentRight = if (touchMarking) recordPanel.right - gap else markButton.left - gap
             clearTrack = RectF(
                 recordPanel.left + gap,
                 recordPanel.top + gap,
-                markButton.left - gap,
+                recordContentRight,
                 recordPanel.top + 31f * density,
             )
             clearHandle = RectF(
@@ -1274,10 +1328,19 @@ class ZoneSystemView(
                 clearTrack.left + min(66f * density, clearTrack.width() * 0.34f),
                 clearTrack.bottom,
             )
-            recordViewport = RectF(recordPanel.left + gap, clearTrack.bottom + gap, markButton.left - gap, recordPanel.bottom - gap)
+            recordViewport = RectF(
+                recordPanel.left + gap,
+                clearTrack.bottom + gap,
+                recordContentRight,
+                recordPanel.bottom - gap,
+            )
         } else {
-            val previewRight = w * 0.43f
-            previewPanel = if (state.isLeftHanded) RectF(w - previewRight + pad, pad, w - pad, h - pad) else RectF(pad, pad, previewRight, h - pad)
+            val previewWidth = w * if (touchMarking) 0.47f else 0.43f
+            previewPanel = if (state.isLeftHanded) {
+                RectF(w - previewWidth + pad, pad, w - pad, h - pad)
+            } else {
+                RectF(pad, pad, previewWidth, h - pad)
+            }
             val sideGap = 31f * density
             val frameArea = if (state.isLeftHanded) {
                 RectF(previewPanel.left + sideGap, previewPanel.top + gap, previewPanel.right - gap, previewPanel.bottom - gap)
@@ -1328,16 +1391,17 @@ class ZoneSystemView(
             }
             recordPanel = RectF(recordPanel.left, shutterRow.bottom + gap, recordPanel.right, recordPanel.bottom)
             val markSize = min(68f * density, min(recordPanel.width() * 0.18f, recordPanel.height() * 0.42f))
-            markButton = RectF(
+            markButton = if (touchMarking) RectF() else RectF(
                 recordPanel.right - gap - markSize,
                 recordPanel.centerY() - markSize / 2f,
                 recordPanel.right - gap,
                 recordPanel.centerY() + markSize / 2f,
             )
+            val recordContentRight = if (touchMarking) recordPanel.right - gap else markButton.left - gap
             clearTrack = RectF(
                 recordPanel.left + gap,
                 recordPanel.bottom - 28f * density,
-                markButton.left - gap,
+                recordContentRight,
                 recordPanel.bottom - gap,
             )
             clearHandle = RectF(
@@ -1346,7 +1410,12 @@ class ZoneSystemView(
                 clearTrack.left + min(66f * density, clearTrack.width() * 0.34f),
                 clearTrack.bottom,
             )
-            recordViewport = RectF(recordPanel.left + gap, recordPanel.top + gap, markButton.left - gap, clearTrack.top - gap)
+            recordViewport = RectF(
+                recordPanel.left + gap,
+                recordPanel.top + gap,
+                recordContentRight,
+                clearTrack.top - gap,
+            )
         }
         return Geometry(
             landscape,

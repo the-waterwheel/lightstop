@@ -22,7 +22,7 @@ class MeterLayout @JvmOverloads constructor(
     trackerFactory: ZoneMarkerTrackerFactory = OpenCvZoneMarkerTrackerFactory(),
 ) : ViewGroup(context, attributeSet) {
 
-    private enum class CameraManagementOrigin { SETTINGS, CALIBRATION }
+    private enum class CameraManagementOrigin { SETTINGS, CALIBRATION, VIGNETTING }
 
     interface Listener {
         fun onMeasureRequested()
@@ -35,7 +35,12 @@ class MeterLayout @JvmOverloads constructor(
         fun onCameraVisibilityRequested(cameraId: String, hidden: Boolean)
         fun onCalibrationMeasureRequested(referenceEv100: Double)
         fun onCalibrationResetRequested()
-        fun onZoneMeasureRequested(marker: ZoneMarker)
+        fun onCalibrationHistoryRestoreRequested(updatedAtEpochMs: Long)
+        fun onVignettingCalibrationOpened()
+        fun onVignettingCalibrationRequested()
+        fun onVignettingCalibrationResetRequested()
+        fun onVignettingHistoryRestoreRequested(createdAtEpochMs: Long)
+        fun onZoneMeasureRequested(marker: ZoneMarker, target: ZoneMeteringTarget?)
         fun onZoneTrackingActiveChanged(active: Boolean)
     }
 
@@ -46,6 +51,7 @@ class MeterLayout @JvmOverloads constructor(
     val settingsView = SettingsView(context, state)
     val cameraManagementView = CameraManagementView(context, state)
     val calibrationView = CalibrationView(context, state)
+    val vignettingCalibrationView = VignettingCalibrationView(context, state)
     val zoneView = ZoneSystemView(context, state)
     private val zoneMarkerTracker: ZoneMarkerTracker = trackerFactory.create(
         textureView,
@@ -56,6 +62,8 @@ class MeterLayout @JvmOverloads constructor(
     var isSettingsOpen: Boolean = false
         private set
     var isCalibrationOpen: Boolean = false
+        private set
+    var isVignettingCalibrationOpen: Boolean = false
         private set
     var isCameraManagementOpen: Boolean = false
         private set
@@ -102,8 +110,12 @@ class MeterLayout @JvmOverloads constructor(
 
                 override fun onSettingChanged(key: SettingKey) {
                     updateBackground()
-                    if (key == SettingKey.THEME) calibrationView.applyTheme()
-                    val frameChanged = key == SettingKey.HANDEDNESS
+                    if (key == SettingKey.THEME) {
+                        calibrationView.applyTheme()
+                        vignettingCalibrationView.applyTheme()
+                    }
+                    val frameChanged = key == SettingKey.HANDEDNESS ||
+                        key == SettingKey.ZONE_MARKING_METHOD
                     if (frameChanged) requestLayout()
                     instrumentView.invalidate()
                     settingsView.invalidate()
@@ -115,9 +127,13 @@ class MeterLayout @JvmOverloads constructor(
                         SettingActionKey.MANAGE_CAMERAS -> {
                             showCameraManagement(CameraManagementOrigin.SETTINGS)
                         }
-                        SettingActionKey.START_CALIBRATION -> {
+                        SettingActionKey.START_METERING_CALIBRATION -> {
                             showCalibration()
                             value?.onCalibrationOpened()
+                        }
+                        SettingActionKey.START_VIGNETTING_CALIBRATION -> {
+                            showVignettingCalibration()
+                            value?.onVignettingCalibrationOpened()
                         }
                     }
                 }
@@ -135,8 +151,33 @@ class MeterLayout @JvmOverloads constructor(
                     value?.onCalibrationResetRequested()
                 }
 
+                override fun onHistoryRestoreRequested(updatedAtEpochMs: Long) {
+                    value?.onCalibrationHistoryRestoreRequested(updatedAtEpochMs)
+                }
+
                 override fun onMeasureRequested(referenceEv100: Double) {
                     value?.onCalibrationMeasureRequested(referenceEv100)
+                }
+            }
+            vignettingCalibrationView.listener = object : VignettingCalibrationView.Listener {
+                override fun onExitRequested() {
+                    closeVignettingCalibration()
+                }
+
+                override fun onCameraRequested() {
+                    showCameraManagement(CameraManagementOrigin.VIGNETTING)
+                }
+
+                override fun onResetRequested() {
+                    value?.onVignettingCalibrationResetRequested()
+                }
+
+                override fun onHistoryRestoreRequested(createdAtEpochMs: Long) {
+                    value?.onVignettingHistoryRestoreRequested(createdAtEpochMs)
+                }
+
+                override fun onCalibrationRequested() {
+                    value?.onVignettingCalibrationRequested()
                 }
             }
             cameraManagementView.listener = object : CameraManagementView.Listener {
@@ -147,7 +188,7 @@ class MeterLayout @JvmOverloads constructor(
                 override fun onCameraSelected(cameraId: String) {
                     value?.onCameraSelected(cameraId)
                     cameraManagementView.invalidate()
-                    if (cameraManagementOrigin == CameraManagementOrigin.CALIBRATION) {
+                    if (cameraManagementOrigin != CameraManagementOrigin.SETTINGS) {
                         closeCameraManagement()
                     }
                 }
@@ -175,7 +216,13 @@ class MeterLayout @JvmOverloads constructor(
                         marker.normalizedX,
                         marker.normalizedY,
                     )
-                    value?.onZoneMeasureRequested(marker)
+                    val target = if (state.zoneMarkingMethod == ZoneMarkingMethod.TOUCH) {
+                        zoneMeteringTarget(marker)
+                    } else {
+                        null
+                    }
+                    zoneMarkerTracker.onMeteringStateChanged(true)
+                    value?.onZoneMeasureRequested(marker, target)
                 }
 
                 override fun onMarkerRemoved(markerId: Int) {
@@ -221,6 +268,8 @@ class MeterLayout @JvmOverloads constructor(
         addView(cameraManagementView)
         calibrationView.visibility = View.GONE
         addView(calibrationView)
+        vignettingCalibrationView.visibility = View.GONE
+        addView(vignettingCalibrationView)
         zoneView.visibility = View.GONE
         addView(zoneView)
     }
@@ -245,6 +294,10 @@ class MeterLayout @JvmOverloads constructor(
             MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
             MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
         )
+        vignettingCalibrationView.measure(
+            MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
+        )
         zoneView.measure(
             MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
             MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
@@ -257,7 +310,9 @@ class MeterLayout @JvmOverloads constructor(
             state.frameLandscape,
             state.isLeftHanded,
         )
-        val cameraFrame = if (isCalibrationOpen) {
+        val cameraFrame = if (isVignettingCalibrationOpen) {
+            vignettingCalibrationView.calculatePreviewFrame(width, height)
+        } else if (isCalibrationOpen) {
             calibrationView.calculatePreviewFrame(width, height)
         } else if (zoneTransitionFraction > 0f || isZoneMode) {
             lerpRect(
@@ -286,7 +341,9 @@ class MeterLayout @JvmOverloads constructor(
             state.frameLandscape,
             state.isLeftHanded,
         )
-        val cameraFrame = if (isCalibrationOpen) {
+        val cameraFrame = if (isVignettingCalibrationOpen) {
+            vignettingCalibrationView.calculatePreviewFrame(width, height)
+        } else if (isCalibrationOpen) {
             calibrationView.calculatePreviewFrame(width, height)
         } else if (zoneTransitionFraction > 0f || isZoneMode) {
             lerpRect(
@@ -314,6 +371,7 @@ class MeterLayout @JvmOverloads constructor(
         settingsView.layout(0, 0, width, height)
         cameraManagementView.layout(0, 0, width, height)
         calibrationView.layout(0, 0, width, height)
+        vignettingCalibrationView.layout(0, 0, width, height)
         zoneView.layout(0, 0, width, height)
         // A format change can resize this child while the ViewGroup's own bounds stay the
         // same, so `changed` is not a reliable signal. Publish geometry after every layout.
@@ -335,11 +393,13 @@ class MeterLayout @JvmOverloads constructor(
         settingsView.invalidate()
         cameraManagementView.invalidate()
         calibrationView.invalidate()
+        vignettingCalibrationView.invalidate()
         zoneView.invalidate()
     }
 
     fun showSettings() {
-        if (isSettingsOpen || isCalibrationOpen || isCameraManagementOpen ||
+        if (isSettingsOpen || isCalibrationOpen || isVignettingCalibrationOpen ||
+            isCameraManagementOpen ||
             isZoneMode || zoneTransitionFraction > 0f
         ) return
         isSettingsOpen = true
@@ -377,6 +437,7 @@ class MeterLayout @JvmOverloads constructor(
         when (origin) {
             CameraManagementOrigin.SETTINGS -> settingsView.visibility = View.GONE
             CameraManagementOrigin.CALIBRATION -> calibrationView.visibility = View.GONE
+            CameraManagementOrigin.VIGNETTING -> vignettingCalibrationView.visibility = View.GONE
         }
         cameraManagementView.animate().cancel()
         cameraManagementView.visibility = View.VISIBLE
@@ -403,6 +464,8 @@ class MeterLayout @JvmOverloads constructor(
                     when (cameraManagementOrigin) {
                         CameraManagementOrigin.SETTINGS -> settingsView.bringToFront()
                         CameraManagementOrigin.CALIBRATION -> calibrationView.bringToFront()
+                        CameraManagementOrigin.VIGNETTING ->
+                            vignettingCalibrationView.bringToFront()
                     }
                 }
             }
@@ -415,6 +478,10 @@ class MeterLayout @JvmOverloads constructor(
                 calibrationView.visibility = View.VISIBLE
                 calibrationView.invalidate()
             }
+            CameraManagementOrigin.VIGNETTING -> {
+                vignettingCalibrationView.visibility = View.VISIBLE
+                vignettingCalibrationView.invalidate()
+            }
         }
         cameraManagementView.bringToFront()
         requestLayout()
@@ -422,11 +489,10 @@ class MeterLayout @JvmOverloads constructor(
     }
 
     fun showCalibration() {
-        if (isCalibrationOpen || isCameraManagementOpen ||
+        if (isCalibrationOpen || isVignettingCalibrationOpen || isCameraManagementOpen ||
             isZoneMode || zoneTransitionFraction > 0f
         ) return
         settingsView.animate().cancel()
-        isSettingsOpen = false
         settingsView.visibility = View.GONE
         isCalibrationOpen = true
         instrumentView.visibility = View.GONE
@@ -443,7 +509,42 @@ class MeterLayout @JvmOverloads constructor(
         isCalibrationOpen = false
         calibrationView.visibility = View.GONE
         instrumentView.visibility = View.VISIBLE
-        instrumentView.bringToFront()
+        settingsView.translationY = 0f
+        settingsView.visibility = View.VISIBLE
+        settingsView.bringToFront()
+        isSettingsOpen = true
+        updateBackground()
+        requestLayout()
+        invalidate()
+        return true
+    }
+
+    fun showVignettingCalibration() {
+        if (isVignettingCalibrationOpen || isCalibrationOpen || isCameraManagementOpen ||
+            isZoneMode || zoneTransitionFraction > 0f
+        ) return
+        settingsView.animate().cancel()
+        settingsView.visibility = View.GONE
+        isVignettingCalibrationOpen = true
+        instrumentView.visibility = View.GONE
+        vignettingCalibrationView.applyTheme()
+        vignettingCalibrationView.visibility = View.VISIBLE
+        vignettingCalibrationView.bringToFront()
+        updateBackground()
+        requestLayout()
+    }
+
+    fun closeVignettingCalibration(): Boolean {
+        if (!isVignettingCalibrationOpen) return false
+        if (vignettingCalibrationView.closeEnlargedPreview()) return true
+        if (vignettingCalibrationView.isCalibrating) return true
+        isVignettingCalibrationOpen = false
+        vignettingCalibrationView.visibility = View.GONE
+        instrumentView.visibility = View.VISIBLE
+        settingsView.translationY = 0f
+        settingsView.visibility = View.VISIBLE
+        settingsView.bringToFront()
+        isSettingsOpen = true
         updateBackground()
         requestLayout()
         invalidate()
@@ -468,11 +569,16 @@ class MeterLayout @JvmOverloads constructor(
         zoneMarkerTracker.offerFrame(frame)
     }
 
-    fun completeZoneMeasurement(reading: MeterReading): ZoneMarker? =
-        zoneView.completeMeasurement(reading)
+    fun completeZoneMeasurement(reading: MeterReading): ZoneMarker? {
+        zoneMarkerTracker.onMeteringStateChanged(false)
+        return zoneView.completeMeasurement(reading)
+    }
 
-    fun failZoneMeasurement(): ZoneMarker? = zoneView.failMeasurement()?.also {
-        zoneMarkerTracker.removeMarker(it.id)
+    fun failZoneMeasurement(): ZoneMarker? {
+        zoneMarkerTracker.onMeteringStateChanged(false)
+        return zoneView.failMeasurement()?.also {
+            zoneMarkerTracker.removeMarker(it.id)
+        }
     }
 
     private fun prepareZoneTransition() {
@@ -586,6 +692,25 @@ class MeterLayout @JvmOverloads constructor(
                 cameraFrame.bottom,
             )
         }
+    }
+
+    private fun zoneMeteringTarget(marker: ZoneMarker): ZoneMeteringTarget {
+        val cameraFrame = zoneView.calculatePreviewFrame(width, height)
+        val textureFrame = previewTextureFrame(cameraFrame, width, height)
+        val screenX = cameraFrame.left + marker.normalizedX * cameraFrame.width()
+        val screenY = cameraFrame.top + marker.normalizedY * cameraFrame.height()
+        return ZoneMeteringTarget(
+            frameX = marker.normalizedX,
+            frameY = marker.normalizedY,
+            previewX = ((screenX - textureFrame.left) / textureFrame.width())
+                .coerceIn(0f, 1f),
+            previewY = ((screenY - textureFrame.top) / textureFrame.height())
+                .coerceIn(0f, 1f),
+            previewFrameWidthFraction =
+                (cameraFrame.width() / textureFrame.width()).coerceIn(0f, 1f),
+            previewFrameHeightFraction =
+                (cameraFrame.height() / textureFrame.height()).coerceIn(0f, 1f),
+        )
     }
 
     private fun updateBackground() {

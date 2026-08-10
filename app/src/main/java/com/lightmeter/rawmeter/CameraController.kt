@@ -35,16 +35,25 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 
 class CameraController(
     private val context: Context,
     private val callback: CameraControllerCallback,
 ) : TextureView.SurfaceTextureListener {
 
+    private data class VignettingCapture(
+        val id: Int,
+        val cameraId: String,
+        val images: MutableMap<Long, Image> = java.util.TreeMap(),
+        val results: MutableMap<Long, CaptureResult> = java.util.TreeMap(),
+    )
+
     private val mainHandler = Handler(Looper.getMainLooper())
     private val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
     private val cameraCatalog = CameraCatalog(cameraManager)
     private val calibrationStore = CameraCalibrationStore(context)
+    private val vignettingCalibrationStore = VignettingCalibrationStore(context)
     private val measurementId = AtomicInteger(0)
 
     private var cameraThread: HandlerThread? = null
@@ -69,10 +78,13 @@ class CameraController(
     private var previewBuilder: CaptureRequest.Builder? = null
     private var activeMeasurement: MeasurementAccumulator? = null
     private var activeRawRequest: CaptureRequest? = null
+    private var activeVignettingCapture: VignettingCapture? = null
     private var fallbackMeasuring = false
     private var fallbackMeasurementId = 0
     @Volatile
     private var trackingFramesEnabled = false
+    @Volatile
+    private var latestTrackingFrame: ZoneTrackingFrame? = null
     private var trackingFrameLogged = false
 
     private var lastViewWidth = 0
@@ -189,17 +201,19 @@ class CameraController(
         frameLandscape: Boolean,
         displayZoom: Float,
         meteringMode: MeteringMode,
+        target: ZoneMeteringTarget? = null,
     ) {
         if (!cameraInfo.rawAvailable) {
-            measureProcessedPreview(meteringMode)
+            measureProcessedPreview(meteringMode, target)
             return
         }
+        val displayedPreviewReference = target?.let(::captureDisplayedPreviewReference)
         val handler = cameraHandler ?: run {
             callback.onMeteringError(localized("相机尚未就绪", "Camera is not ready"))
             return
         }
         handler.post {
-            if (activeMeasurement != null) return@post
+            if (activeMeasurement != null || activeVignettingCapture != null) return@post
             val device = cameraDevice
             val session = captureSession
             val reader = rawReader
@@ -224,24 +238,49 @@ class CameraController(
             val sensorOrientation =
                 characteristics?.get(CameraCharacteristics.SENSOR_ORIENTATION)
                     ?: cameraInfo.sensorOrientationDegrees
+            val displayDegrees = when (lastDisplayRotation) {
+                Surface.ROTATION_90 -> 90
+                Surface.ROTATION_180 -> 180
+                Surface.ROTATION_270 -> 270
+                else -> 0
+            }
+            val screenToSensorRotation =
+                (sensorOrientation - displayDegrees + 360) % 360
             val sensorFrameAspect = CameraPreviewTransform.screenAspectInSensorCoordinates(
                 screenAspect = screenAspect,
                 sensorOrientationDegrees = sensorOrientation,
                 displayRotation = lastDisplayRotation,
             )
+            val recentTrackingFrame = latestTrackingFrame?.takeIf { frame ->
+                System.nanoTime() - frame.capturedAtNs <= MAX_METERING_REFERENCE_AGE_NS
+            }
+            val previewReference = if (target != null && recentTrackingFrame != null) {
+                MeteringAnalysis.createPreviewReference(
+                    frame = recentTrackingFrame,
+                    frameAspect = screenAspect,
+                    zoom = displayZoom,
+                    target = target,
+                ) ?: displayedPreviewReference
+            } else {
+                displayedPreviewReference
+            }
             val accumulator = MeasurementAccumulator(
                 id = measurementId.incrementAndGet(),
                 expectedFrames = count,
                 frameAspect = sensorFrameAspect,
                 zoom = displayZoom.coerceAtLeast(1f),
                 meteringMode = meteringMode,
+                target = target,
+                previewReference = previewReference,
+                screenToSensorRotationDegrees = screenToSensorRotation,
             )
             activeMeasurement = accumulator
             Log.e(
                 TAG,
                 "RAW metering started: frames=$count captureIso=${captureIso ?: "unknown"} " +
                     "zoom=${accumulator.zoom} " +
-                    "format=${frameFormat.id} sensorAspect=$sensorFrameAspect mode=$meteringMode",
+                    "format=${frameFormat.id} sensorAspect=$sensorFrameAspect mode=$meteringMode " +
+                    "touchTarget=${target != null} ispReference=${previewReference != null}",
             )
             mainHandler.post { callback.onMeteringStarted(MeteringSource.RAW, count) }
             try {
@@ -266,6 +305,84 @@ class CameraController(
                     ),
                 )
             }
+        }
+    }
+
+    fun calibrateVignetting() {
+        val handler = cameraHandler ?: run {
+            callback.onVignettingCalibrationError(
+                localized("相机尚未就绪", "Camera is not ready"),
+            )
+            return
+        }
+        handler.post {
+            if (activeMeasurement != null || fallbackMeasuring ||
+                activeVignettingCapture != null
+            ) {
+                postVignettingError(
+                    localized("请等待当前操作完成", "Wait for the current operation"),
+                )
+                return@post
+            }
+            val device = cameraDevice
+            val session = captureSession
+            val reader = rawReader
+            if (!cameraInfo.rawAvailable || device == null || session == null || reader == null) {
+                postVignettingError(
+                    localized("无法输出 RAW，无需校准", "RAW output is unavailable; no calibration is needed"),
+                )
+                return@post
+            }
+            val capture = VignettingCapture(
+                id = measurementId.incrementAndGet(),
+                cameraId = cameraInfo.cameraId,
+            )
+            activeVignettingCapture = capture
+            mainHandler.post { callback.onVignettingCalibrationStarted() }
+            try {
+                val request = buildRawRequest(device, reader.surface)
+                session.capture(request, vignettingCaptureCallback, handler)
+                handler.postDelayed({
+                    if (activeVignettingCapture?.id == capture.id) {
+                        finishVignettingWithError(
+                            localized(
+                                "RAW 暗角校准超时，请重试",
+                                "RAW vignetting calibration timed out. Please try again",
+                            ),
+                        )
+                    }
+                }, 8_000L)
+            } catch (error: Exception) {
+                finishVignettingWithError(
+                    localized(
+                        "无法读取暗角校准 RAW：${error.message ?: "未知错误"}",
+                        "Unable to capture calibration RAW: ${error.message ?: "unknown error"}",
+                    ),
+                )
+            }
+        }
+    }
+
+    private fun captureDisplayedPreviewReference(
+        target: ZoneMeteringTarget,
+    ): PreviewLumaReference? {
+        val texture = textureView ?: return null
+        if (Looper.myLooper() != Looper.getMainLooper() ||
+            !texture.isAvailable || texture.width <= 1 || texture.height <= 1
+        ) return null
+        val scale = PREVIEW_REFERENCE_LONG_EDGE.toFloat() /
+            max(texture.width, texture.height)
+        val bitmapWidth = (texture.width * scale).roundToInt().coerceAtLeast(2)
+        val bitmapHeight = (texture.height * scale).roundToInt().coerceAtLeast(2)
+        val bitmap = try {
+            texture.getBitmap(bitmapWidth, bitmapHeight)
+        } catch (_: RuntimeException) {
+            null
+        } ?: return null
+        return try {
+            MeteringAnalysis.createPreviewReference(bitmap, target)
+        } finally {
+            bitmap.recycle()
         }
     }
 
@@ -299,8 +416,41 @@ class CameraController(
         Log.e(TAG, "User calibration reset: camera=$cameraId")
     }
 
-    private fun measureProcessedPreview(meteringMode: MeteringMode) {
-        if (fallbackMeasuring || activeMeasurement != null) return
+    @Synchronized
+    fun restoreUserCalibration(updatedAtEpochMs: Long): CameraCalibrationRecord? {
+        val cameraId = cameraInfo.cameraId.ifBlank { requestedCameraId ?: "0" }
+        val restored = calibrationStore.restore(cameraId, updatedAtEpochMs) ?: return null
+        Log.i(
+            TAG,
+            "User calibration restored: camera=$cameraId updated=${restored.updatedAtEpochMs} " +
+                "correction=${restored.correctionEv}",
+        )
+        return restored
+    }
+
+    @Synchronized
+    fun restoreVignettingCalibration(createdAtEpochMs: Long): VignettingCalibrationInfo? {
+        val cameraId = cameraInfo.cameraId.ifBlank { requestedCameraId ?: "0" }
+        val restored = vignettingCalibrationStore.restore(cameraId, createdAtEpochMs) ?: return null
+        Log.i(
+            TAG,
+            "Vignetting calibration restored: camera=$cameraId created=${restored.createdAtEpochMs}",
+        )
+        return restored
+    }
+
+    @Synchronized
+    fun resetVignettingCalibration() {
+        val cameraId = cameraInfo.cameraId.ifBlank { requestedCameraId ?: "0" }
+        vignettingCalibrationStore.reset(cameraId)
+        Log.i(TAG, "Vignetting calibration reset: camera=$cameraId")
+    }
+
+    private fun measureProcessedPreview(
+        meteringMode: MeteringMode,
+        target: ZoneMeteringTarget?,
+    ) {
+        if (fallbackMeasuring || activeMeasurement != null || activeVignettingCapture != null) return
         val texture = textureView
         if (texture?.isAvailable != true || cameraDevice == null || captureSession == null) {
             callback.onMeteringError(
@@ -325,13 +475,14 @@ class CameraController(
             "ISP preview metering started: frames=$FALLBACK_FRAME_COUNT mode=$meteringMode",
         )
         callback.onMeteringStarted(MeteringSource.ISP_PREVIEW, FALLBACK_FRAME_COUNT)
-        captureProcessedPreviewSample(id, samples, meteringMode)
+        captureProcessedPreviewSample(id, samples, meteringMode, target)
     }
 
     private fun captureProcessedPreviewSample(
         id: Int,
         samples: MutableList<MeteringFrameStat>,
         meteringMode: MeteringMode,
+        target: ZoneMeteringTarget?,
     ) {
         if (!fallbackMeasuring || id != fallbackMeasurementId) return
         val texture = textureView
@@ -366,6 +517,7 @@ class CameraController(
                         cameraId = cameraInfo.cameraId,
                         meteringMode = meteringMode,
                         calibrationStore = calibrationStore,
+                        target = target,
                     )
                 }
             } finally {
@@ -388,7 +540,7 @@ class CameraController(
                     finishProcessedPreview(id, samples)
                 } else {
                     mainHandler.postDelayed(
-                        { captureProcessedPreviewSample(id, samples, meteringMode) },
+                        { captureProcessedPreviewSample(id, samples, meteringMode, target) },
                         FALLBACK_SAMPLE_DELAY_MS,
                     )
                 }
@@ -896,6 +1048,36 @@ class CameraController(
         }
     }
 
+    private val vignettingCaptureCallback = object : CameraCaptureSession.CaptureCallback() {
+        override fun onCaptureCompleted(
+            session: CameraCaptureSession,
+            request: CaptureRequest,
+            result: TotalCaptureResult,
+        ) {
+            val effectiveResult = effectiveCaptureResult(result)
+            latestResult = effectiveResult
+            val timestamp = effectiveResult.get(CaptureResult.SENSOR_TIMESTAMP)
+                ?: result.get(CaptureResult.SENSOR_TIMESTAMP)
+                ?: return
+            val active = activeVignettingCapture ?: return
+            active.results[timestamp] = effectiveResult
+            pairVignettingFrame(active)
+        }
+
+        override fun onCaptureFailed(
+            session: CameraCaptureSession,
+            request: CaptureRequest,
+            failure: CaptureFailure,
+        ) {
+            finishVignettingWithError(
+                localized(
+                    "暗角校准 RAW 捕获失败：${failure.reason}",
+                    "Vignetting calibration RAW capture failed: ${failure.reason}",
+                ),
+            )
+        }
+    }
+
     @Suppress("DEPRECATION")
     private fun effectiveCaptureResult(result: TotalCaptureResult): CaptureResult {
         val physicalId = selectedPhysicalCameraId ?: return result
@@ -1044,9 +1226,9 @@ class CameraController(
                 )
                 trackingFrameLogged = true
             }
-            callback.onZoneTrackingFrame(
-                ZoneTrackingFrame(width, height, luma, rotation),
-            )
+            val frame = ZoneTrackingFrame(width, height, luma, rotation)
+            latestTrackingFrame = frame
+            callback.onZoneTrackingFrame(frame)
         } finally {
             image.close()
         }
@@ -1058,6 +1240,12 @@ class CameraController(
         } catch (_: IllegalStateException) {
             null
         } ?: return
+        val vignetting = activeVignettingCapture
+        if (vignetting != null) {
+            vignetting.images[image.timestamp] = image
+            pairVignettingFrame(vignetting)
+            return
+        }
         val active = activeMeasurement
         if (active == null) {
             image.close()
@@ -1065,6 +1253,49 @@ class CameraController(
         }
         active.images[image.timestamp] = image
         pairRawFrames(active)
+    }
+
+    private fun pairVignettingFrame(active: VignettingCapture) {
+        val timestamp = active.images.keys.intersect(active.results.keys).firstOrNull() ?: return
+        val image = active.images.remove(timestamp) ?: return
+        val result = active.results.remove(timestamp)
+        val chars = characteristics
+        try {
+            if (result == null || chars == null) {
+                finishVignettingWithError(
+                    localized("RAW 暗角数据无效，请重试", "Invalid RAW vignetting data. Please try again"),
+                )
+                return
+            }
+            val calibration = MeteringAnalysis.createVignettingCalibrationMap(
+                image = image,
+                result = result,
+                characteristics = chars,
+                activeArray = cameraInfo.activeArray,
+            )
+            if (calibration == null) {
+                finishVignettingWithError(
+                    localized(
+                        "画面过暗、过亮或 RAW 数据无效，请调整均匀画面后重试",
+                        "The frame is too dark, too bright, or invalid. Adjust the uniform scene and try again",
+                    ),
+                )
+                return
+            }
+            vignettingCalibrationStore.save(active.cameraId, calibration)
+            activeVignettingCapture = null
+            closePendingVignettingImages(active)
+            val info = vignettingCalibrationStore.info(active.cameraId) ?: return
+            Log.i(
+                TAG,
+                "Vignetting calibration saved camera=${active.cameraId} " +
+                    "grid=${info.gridWidth}x${info.gridHeight} " +
+                    "gain=${info.minimumGain}..${info.maximumGain}",
+            )
+            mainHandler.post { callback.onVignettingCalibrationCompleted(info) }
+        } finally {
+            image.close()
+        }
     }
 
     private fun pairRawFrames(active: MeasurementAccumulator) {
@@ -1076,6 +1307,27 @@ class CameraController(
                 if (result != null) {
                     val chars = characteristics
                     if (chars != null) {
+                        if (active.target != null && active.rawMeterPoint == null) {
+                            active.rawMeterPoint = MeteringAnalysis.resolveRawMeteringPoint(
+                                image = image,
+                                result = result,
+                                characteristics = chars,
+                                cameraInfo = cameraInfo,
+                                frameAspect = active.frameAspect,
+                                zoom = active.zoom,
+                                target = active.target,
+                                reference = active.previewReference,
+                                screenToSensorRotationDegrees =
+                                    active.screenToSensorRotationDegrees,
+                            ).also { point ->
+                                Log.i(
+                                    TAG,
+                                    "RAW touch target sensor=(${"%.1f".format(point.sensorX)}," +
+                                        "${"%.1f".format(point.sensorY)}) " +
+                                        "match=${if (point.matchScore.isFinite()) "%.3f".format(point.matchScore) else "geometry"}",
+                                )
+                            }
+                        }
                         MeteringAnalysis.analyzeRaw(
                             image = image,
                             result = result,
@@ -1085,6 +1337,9 @@ class CameraController(
                             zoom = active.zoom,
                             meteringMode = active.meteringMode,
                             calibrationStore = calibrationStore,
+                            rawMeterPoint = active.rawMeterPoint,
+                            vignettingStore = vignettingCalibrationStore,
+                            applyVignettingCalibration = active.target != null,
                         )?.let(active.stats::add)
                     }
                 }
@@ -1150,7 +1405,34 @@ class CameraController(
         postMeterError(message)
     }
 
+    private fun finishVignettingWithError(message: String) {
+        val active = activeVignettingCapture ?: run {
+            postVignettingError(message)
+            return
+        }
+        activeVignettingCapture = null
+        closePendingVignettingImages(active)
+        Log.e(TAG, "Vignetting calibration failed: $message")
+        postVignettingError(message)
+    }
+
+    private fun postVignettingError(message: String) {
+        mainHandler.post { callback.onVignettingCalibrationError(message) }
+    }
+
     private fun closePendingImages(active: MeasurementAccumulator) {
+        active.images.values.forEach { image ->
+            try {
+                image.close()
+            } catch (_: Exception) {
+                Unit
+            }
+        }
+        active.images.clear()
+        active.results.clear()
+    }
+
+    private fun closePendingVignettingImages(active: VignettingCapture) {
         active.images.values.forEach { image ->
             try {
                 image.close()
@@ -1168,6 +1450,8 @@ class CameraController(
         activeMeasurement?.let(::closePendingImages)
         activeMeasurement = null
         activeRawRequest = null
+        activeVignettingCapture?.let(::closePendingVignettingImages)
+        activeVignettingCapture = null
         try {
             captureSession?.close()
         } catch (_: Exception) {
@@ -1192,6 +1476,7 @@ class CameraController(
             Unit
         }
         trackingReader = null
+        latestTrackingFrame = null
         trackingFrameLogged = false
         previewSurface?.release()
         previewSurface = null
@@ -1245,6 +1530,8 @@ class CameraController(
         private const val TRACKING_MAX_LONG_EDGE = 720
         private const val TRACKING_MIN_SHORT_EDGE = 240
         private const val RAW_PIPELINE_DEPTH = 2
+        private const val MAX_METERING_REFERENCE_AGE_NS = 350_000_000L
+        private const val PREVIEW_REFERENCE_LONG_EDGE = 384
         private const val RAW_READER_MAX_IMAGES = 2
         private const val HIGH_ISO_THRESHOLD = 800
         private const val LOW_ISO_RAW_FRAME_COUNT = 3

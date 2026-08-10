@@ -25,7 +25,10 @@ class MainActivity : Activity(), CameraControllerCallback {
     private val mainHandler = Handler(Looper.getMainLooper())
     private var rawDialogVisible = false
     private var calibrationResetDialogVisible = false
+    private var vignettingDialogVisible = false
+    private var vignettingResetDialogVisible = false
     private var calibrationMeasurementPending = false
+    private var vignettingCalibrationPending = false
     private var calibrationReferenceEv100 = Double.NaN
     private var zoneMeasurementPending = false
 
@@ -84,7 +87,9 @@ class MainActivity : Activity(), CameraControllerCallback {
             }
 
             override fun onCameraSelected(cameraId: String) {
-                if (state.measuring || calibrationMeasurementPending || zoneMeasurementPending) {
+                if (state.measuring || calibrationMeasurementPending ||
+                    vignettingCalibrationPending || zoneMeasurementPending
+                ) {
                     Toast.makeText(
                         this@MainActivity,
                         localized("请等待本次测光完成", "Wait for this measurement"),
@@ -139,7 +144,39 @@ class MainActivity : Activity(), CameraControllerCallback {
                 showCalibrationResetDialog()
             }
 
-            override fun onZoneMeasureRequested(marker: ZoneMarker) {
+            override fun onCalibrationHistoryRestoreRequested(updatedAtEpochMs: Long) {
+                val restored = cameraController.restoreUserCalibration(updatedAtEpochMs) ?: return
+                meterLayout.calibrationView.showHistoryRestored(restored)
+                meterLayout.refresh()
+            }
+
+            override fun onVignettingCalibrationOpened() {
+                showVignettingGuideDialog()
+            }
+
+            override fun onVignettingCalibrationRequested() {
+                if (!vignettingCalibrationPending && !calibrationMeasurementPending) {
+                    startVignettingCalibration()
+                }
+            }
+
+            override fun onVignettingCalibrationResetRequested() {
+                showVignettingResetDialog()
+            }
+
+            override fun onVignettingHistoryRestoreRequested(createdAtEpochMs: Long) {
+                val restored = cameraController.restoreVignettingCalibration(createdAtEpochMs)
+                    ?: return
+                val cameraId = state.cameraInfo.cameraId.ifBlank { state.selectedCameraId }
+                state.refreshVignettingCalibration(cameraId)
+                meterLayout.vignettingCalibrationView.showHistoryRestored(restored)
+                meterLayout.refresh()
+            }
+
+            override fun onZoneMeasureRequested(
+                marker: ZoneMarker,
+                target: ZoneMeteringTarget?,
+            ) {
                 if (zoneMeasurementPending || state.measuring) return
                 zoneMeasurementPending = true
                 state.measuring = true
@@ -149,6 +186,7 @@ class MainActivity : Activity(), CameraControllerCallback {
                     state.frameLandscape,
                     state.zoom,
                     state.meteringMode,
+                    target,
                 )
             }
 
@@ -179,6 +217,12 @@ class MainActivity : Activity(), CameraControllerCallback {
             state.measuring = false
             meterLayout.failZoneMeasurement()
         }
+        if (vignettingCalibrationPending) {
+            vignettingCalibrationPending = false
+            meterLayout.vignettingCalibrationView.showError(
+                localized("暗角校准已中止", "Vignetting calibration was interrupted"),
+            )
+        }
         cameraController.stop()
         super.onPause()
     }
@@ -186,6 +230,7 @@ class MainActivity : Activity(), CameraControllerCallback {
     @Suppress("DEPRECATION")
     override fun onBackPressed() {
         if (meterLayout.closeCameraManagement()) return
+        if (meterLayout.closeVignettingCalibration()) return
         if (meterLayout.closeCalibration()) return
         if (meterLayout.closeSettings()) return
         if (meterLayout.closeZoneMode()) return
@@ -350,6 +395,25 @@ class MainActivity : Activity(), CameraControllerCallback {
         clearTransientMessageLater()
     }
 
+    override fun onVignettingCalibrationStarted() {
+        if (!vignettingCalibrationPending) return
+        meterLayout.vignettingCalibrationView.setCalibrating()
+    }
+
+    override fun onVignettingCalibrationCompleted(info: VignettingCalibrationInfo) {
+        vignettingCalibrationPending = false
+        val cameraId = state.cameraInfo.cameraId.ifBlank { state.selectedCameraId }
+        state.refreshVignettingCalibration(cameraId)
+        meterLayout.vignettingCalibrationView.showResult(info)
+        meterLayout.refresh()
+    }
+
+    override fun onVignettingCalibrationError(message: String) {
+        vignettingCalibrationPending = false
+        meterLayout.vignettingCalibrationView.showError(message)
+        meterLayout.refresh()
+    }
+
     private fun ensureCameraPermission() {
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.CAMERA), CAMERA_PERMISSION_REQUEST)
@@ -403,9 +467,11 @@ class MainActivity : Activity(), CameraControllerCallback {
             .setTitle(if (english) "Reset calibration" else "重置测光校准")
             .setMessage(
                 if (english) {
-                    "Reset the user correction for $cameraName? Other cameras are unchanged."
+                    "Reset the current correction for $cameraName? Its last three records " +
+                        "will remain available for restore. Other lenses are unchanged."
                 } else {
-                    "是否确定重置“$cameraName”的用户测光修正？其他摄像头不会受到影响。"
+                    "是否重置“$cameraName”的当前测光修正？最近三次记录会保留，" +
+                        "之后仍可回退；其他镜头不受影响。"
                 },
             )
             .setNegativeButton(if (english) "Cancel" else "取消", null)
@@ -415,6 +481,82 @@ class MainActivity : Activity(), CameraControllerCallback {
             }
             .setOnDismissListener { calibrationResetDialogVisible = false }
             .show()
+    }
+
+    private fun showVignettingResetDialog() {
+        if (vignettingResetDialogVisible || isFinishing || vignettingCalibrationPending) return
+        vignettingResetDialogVisible = true
+        val cameraName = state.currentCamera()?.let(state::cameraName)
+            ?: localized("当前镜头", "current lens")
+        AlertDialog.Builder(this)
+            .setTitle(localized("重置暗角矫正", "Reset vignetting correction"))
+            .setMessage(
+                localized(
+                    "是否重置“$cameraName”的当前暗角矫正？最近三次记录会保留，" +
+                        "之后仍可回退；其他镜头不受影响。",
+                    "Reset the current vignetting correction for $cameraName? Its last three " +
+                        "records will remain available for restore. Other lenses are unchanged.",
+                ),
+            )
+            .setNegativeButton(localized("取消", "Cancel"), null)
+            .setPositiveButton(localized("重置", "Reset")) { _, _ ->
+                cameraController.resetVignettingCalibration()
+                val cameraId = state.cameraInfo.cameraId.ifBlank { state.selectedCameraId }
+                state.refreshVignettingCalibration(cameraId)
+                meterLayout.vignettingCalibrationView.showReset()
+                meterLayout.refresh()
+            }
+            .setOnDismissListener { vignettingResetDialogVisible = false }
+            .show()
+    }
+
+    private fun showVignettingGuideDialog() {
+        if (vignettingDialogVisible || isFinishing ||
+            calibrationMeasurementPending || vignettingCalibrationPending
+        ) return
+        val camera = state.currentCamera()
+        val rawAvailable = if (camera != null && state.cameraInfo.cameraId == camera.cameraId) {
+            state.cameraInfo.rawAvailable
+        } else {
+            camera?.rawAvailable ?: state.cameraInfo.rawAvailable
+        }
+        if (!rawAvailable) {
+            meterLayout.vignettingCalibrationView.showError(
+                localized(
+                    "无法输出 RAW，无需校准",
+                    "RAW output is unavailable; no calibration is needed",
+                ),
+            )
+            return
+        }
+        val preferences = getSharedPreferences("raw_light_meter_state", MODE_PRIVATE)
+        if (preferences.getBoolean("suppress_vignetting_guide", false)) return
+        vignettingDialogVisible = true
+        AlertDialog.Builder(this)
+            .setTitle(localized("暗角矫正提示", "Vignetting correction guide"))
+            .setMessage(
+                localized(
+                    "请将当前镜头对准亮度均匀的画面，让它填满整个取景框。" +
+                        "避开阴影、反光和过曝，拍摄时保持手机稳定。\n\n" +
+                        "此提示不会开始拍摄；进入页面后，请点击“拍摄并矫正”开始。",
+                    "Aim the current lens at a uniformly lit scene and fill the full frame. " +
+                        "Avoid shadows, glare, and clipping, and hold the phone steady.\n\n" +
+                        "This guide does not start a capture. Tap “Capture and calibrate” " +
+                        "on the page when ready.",
+                ),
+            )
+            .setNeutralButton(localized("不再提示", "Don't show again")) { _, _ ->
+                preferences.edit().putBoolean("suppress_vignetting_guide", true).apply()
+            }
+            .setPositiveButton(localized("确定", "OK"), null)
+            .setOnDismissListener { vignettingDialogVisible = false }
+            .show()
+    }
+
+    private fun startVignettingCalibration() {
+        vignettingCalibrationPending = true
+        meterLayout.vignettingCalibrationView.setCalibrating()
+        cameraController.calibrateVignetting()
     }
 
     private fun showCameraNoteDialog(cameraId: String) {
@@ -456,7 +598,8 @@ class MainActivity : Activity(), CameraControllerCallback {
         if (width <= 0 || height <= 0) return
         @Suppress("DEPRECATION")
         val rotation = windowManager.defaultDisplay?.rotation ?: Surface.ROTATION_0
-        cameraController.updatePreviewTransform(width, height, rotation, state.zoom)
+        val zoom = if (meterLayout.isVignettingCalibrationOpen) 1f else state.zoom
+        cameraController.updatePreviewTransform(width, height, rotation, zoom)
     }
 
     private fun clearTransientMessageLater() {

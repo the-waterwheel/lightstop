@@ -60,6 +60,28 @@ data class MeterReading(
     val source: MeteringSource = MeteringSource.RAW,
 )
 
+/** A Zone touch expressed in both the film-frame viewport and the full preview TextureView. */
+data class ZoneMeteringTarget(
+    val frameX: Float,
+    val frameY: Float,
+    val previewX: Float,
+    val previewY: Float,
+    val previewFrameWidthFraction: Float,
+    val previewFrameHeightFraction: Float,
+)
+
+internal data class PreviewLumaReference(
+    val samples: FloatArray,
+    val gridSize: Int,
+    val halfSpan: Float,
+)
+
+internal data class RawMeterPoint(
+    val sensorX: Float,
+    val sensorY: Float,
+    val matchScore: Double,
+)
+
 enum class MeteringSource {
     RAW,
     ISP_PREVIEW,
@@ -96,11 +118,17 @@ enum class Handedness {
     LEFT,
 }
 
+enum class ZoneMarkingMethod {
+    BUTTON,
+    TOUCH,
+}
+
 class MeterState(context: Context) {
     private val preferences =
         context.getSharedPreferences("raw_light_meter_state", Context.MODE_PRIVATE)
     private val cameraSelectionStore = CameraSelectionStore(context)
     private val cameraCalibrationStore = CameraCalibrationStore(context)
+    private val vignettingCalibrationStore = VignettingCalibrationStore(context)
 
     val isoValues = intArrayOf(
         6, 8, 10, 12, 16, 20, 25, 32, 40, 50, 64, 80,
@@ -206,6 +234,11 @@ class MeterState(context: Context) {
     var meteringMode: MeteringMode = preferences.enumValue(
         "metering_mode",
         MeteringMode.SPOT,
+    )
+
+    var zoneMarkingMethod: ZoneMarkingMethod = preferences.enumValue(
+        "zone_marking_method",
+        ZoneMarkingMethod.BUTTON,
     )
 
     @Volatile
@@ -343,6 +376,8 @@ class MeterState(context: Context) {
             SettingKey.APERTURE_STEP -> apertureStep = enumValue(value, apertureStep)
             SettingKey.SHUTTER_STEP -> shutterStep = enumValue(value, shutterStep)
             SettingKey.METERING_MODE -> meteringMode = enumValue(value, meteringMode)
+            SettingKey.ZONE_MARKING_METHOD ->
+                zoneMarkingMethod = enumValue(value, zoneMarkingMethod)
             SettingKey.LANGUAGE -> menuLanguage = enumValue(value, menuLanguage)
             SettingKey.THEME -> appTheme = enumValue(value, appTheme)
             SettingKey.HANDEDNESS -> handedness = enumValue(value, handedness)
@@ -395,6 +430,19 @@ class MeterState(context: Context) {
     fun cameraCalibrationRecord(cameraId: String): CameraCalibrationRecord? =
         cameraCalibrationStore.record(cameraId)
 
+    fun cameraCalibrationHistory(cameraId: String): List<CameraCalibrationRecord> =
+        cameraCalibrationStore.history(cameraId)
+
+    fun vignettingCalibrationInfo(cameraId: String): VignettingCalibrationInfo? =
+        vignettingCalibrationStore.info(cameraId)
+
+    fun vignettingCalibrationHistory(cameraId: String): List<VignettingCalibrationInfo> =
+        vignettingCalibrationStore.history(cameraId)
+
+    fun refreshVignettingCalibration(cameraId: String) {
+        vignettingCalibrationStore.invalidate(cameraId)
+    }
+
     fun setCameraNote(cameraId: String, note: String) {
         cameraSelectionStore.setNote(cameraId, note)
     }
@@ -436,6 +484,7 @@ class MeterState(context: Context) {
         SettingKey.APERTURE_STEP -> apertureStep.name
         SettingKey.SHUTTER_STEP -> shutterStep.name
         SettingKey.METERING_MODE -> meteringMode.name
+        SettingKey.ZONE_MARKING_METHOD -> zoneMarkingMethod.name
         SettingKey.LANGUAGE -> menuLanguage.name
         SettingKey.THEME -> appTheme.name
         SettingKey.HANDEDNESS -> handedness.name
@@ -493,6 +542,7 @@ class MeterState(context: Context) {
             .putString("aperture_step", apertureStep.name)
             .putString("shutter_step", shutterStep.name)
             .putString("metering_mode", meteringMode.name)
+            .putString("zone_marking_method", zoneMarkingMethod.name)
             .putString("menu_language", menuLanguage.name)
             .putString("app_theme", appTheme.name)
             .putString("handedness", handedness.name)

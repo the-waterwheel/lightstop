@@ -59,7 +59,11 @@ class ZoneMeterSession {
         initialized = true
     }
 
-    fun beginMarker(iso: Int): ZoneMarker? {
+    fun beginMarker(
+        iso: Int,
+        normalizedX: Float = 0.5f,
+        normalizedY: Float = 0.5f,
+    ): ZoneMarker? {
         if (pendingMarkerId != null) return null
         placementOffsetBeforePending = if (markers.any { it.ev100 != null }) {
             weightedMeanEv100() - selectedExposureEv100(iso)
@@ -68,7 +72,11 @@ class ZoneMeterSession {
         }
         // IDs describe the points that still exist in the current scene. Deleted IDs do not
         // reserve a slot; when the list becomes empty, the next point starts at 1 again.
-        val marker = ZoneMarker(id = (markers.maxOfOrNull(ZoneMarker::id) ?: 0) + 1)
+        val marker = ZoneMarker(
+            id = (markers.maxOfOrNull(ZoneMarker::id) ?: 0) + 1,
+            normalizedX = normalizedX.coerceIn(0f, 1f),
+            normalizedY = normalizedY.coerceIn(0f, 1f),
+        )
         markers += marker
         pendingMarkerId = marker.id
         selectedMarkerId = null

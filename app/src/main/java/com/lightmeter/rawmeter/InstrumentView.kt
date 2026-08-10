@@ -167,7 +167,7 @@ class InstrumentView(
         if (formatMenuOpen) drawFormatMenu(canvas, g)
         drawOrientationButton(canvas, g.orientationButton, g.landscape)
         drawZoom(canvas, g.zoomTrack)
-        drawMoreButton(canvas, g.moreButton)
+        drawSettingsButton(canvas, g.moreButton)
         drawZoneEntryHandle(canvas, g)
 
         val equivalent = state.equivalent35mm()
@@ -369,7 +369,7 @@ class InstrumentView(
         canvas.drawArc(arc, 205f, 86f, false, paint)
     }
 
-    private fun drawMoreButton(canvas: Canvas, rect: RectF) {
+    private fun drawSettingsButton(canvas: Canvas, rect: RectF) {
         paint.style = Paint.Style.FILL
         paint.color = surfaceColor
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
@@ -377,13 +377,23 @@ class InstrumentView(
         paint.strokeWidth = 1.2f * density
         paint.color = black
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
+        val outerRadius = min(rect.width(), rect.height()) * 0.27f
+        val rootRadius = outerRadius * 0.78f
+        val innerRadius = outerRadius * 0.31f
+        val gear = Path()
+        repeat(16) { index ->
+            val angle = Math.toRadians((-90.0 + index * 22.5))
+            val radius = if (index % 2 == 0) outerRadius else rootRadius
+            val x = rect.centerX() + cos(angle).toFloat() * radius
+            val y = rect.centerY() + sin(angle).toFloat() * radius
+            if (index == 0) gear.moveTo(x, y) else gear.lineTo(x, y)
+        }
+        gear.close()
         paint.style = Paint.Style.FILL
         paint.color = black
-        val spacing = rect.width() * 0.18f
-        val radius = 1.5f * density
-        canvas.drawCircle(rect.centerX() - spacing, rect.centerY(), radius, paint)
-        canvas.drawCircle(rect.centerX(), rect.centerY(), radius, paint)
-        canvas.drawCircle(rect.centerX() + spacing, rect.centerY(), radius, paint)
+        canvas.drawPath(gear, paint)
+        paint.color = surfaceColor
+        canvas.drawCircle(rect.centerX(), rect.centerY(), innerRadius, paint)
     }
 
     private fun drawZoom(canvas: Canvas, track: RectF) {

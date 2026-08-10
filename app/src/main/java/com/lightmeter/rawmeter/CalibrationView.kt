@@ -28,6 +28,7 @@ class CalibrationView(
         fun onExitRequested()
         fun onCameraRequested()
         fun onResetRequested()
+        fun onHistoryRestoreRequested(updatedAtEpochMs: Long)
         fun onMeasureRequested(referenceEv100: Double)
     }
 
@@ -38,6 +39,7 @@ class CalibrationView(
         val camera: RectF,
         val modes: List<RectF>,
         val editorArea: RectF,
+        val historyRows: List<RectF>,
         val primary: RectF,
         val controls: RectF,
     )
@@ -156,7 +158,21 @@ class CalibrationView(
     fun showReset() {
         isMeasuring = false
         currentCorrectionEv = 0.0
-        statusText = localized("用户校准已重置", "User calibration reset")
+        statusText = localized(
+            "当前测光修正已重置，可从历史回退",
+            "Current correction reset; history remains available",
+        )
+        statusIsError = false
+        invalidate()
+    }
+
+    fun showHistoryRestored(record: CameraCalibrationRecord) {
+        isMeasuring = false
+        currentCorrectionEv = record.correctionEv
+        statusText = localized(
+            "已回退到 ${formatCalibrationTime(record.updatedAtEpochMs)} 的校准",
+            "Restored calibration from ${formatCalibrationTime(record.updatedAtEpochMs)}",
+        )
         statusIsError = false
         invalidate()
     }
@@ -343,55 +359,17 @@ class CalibrationView(
         }
         canvas.drawText(help, g.controls.left, g.editorArea.top - 7f * density, paint)
 
-        boldPaint.textSize = 9f * density
-        boldPaint.color = foreground
-        val calibrationRecord = state.currentCamera()?.let {
-            state.cameraCalibrationRecord(it.cameraId)
-        }
-        val correctionText = when {
-            calibrationRecord == null -> localized(
-                "当前镜头未校准 · 用户修正 ${signedEv(currentCorrectionEv)} EV",
-                "Current lens not calibrated · correction ${signedEv(currentCorrectionEv)} EV",
-            )
-            calibrationRecord.referenceEv100 != null &&
-                calibrationRecord.measuredEv100 != null -> localized(
-                "记录 ${calibrationRecord.calibrationCount} 次 · " +
-                    "手机 ${formatEv(calibrationRecord.measuredEv100)} → " +
-                    "参考 ${formatEv(calibrationRecord.referenceEv100)} · " +
-                    "修正 ${signedEv(calibrationRecord.correctionEv)} EV",
-                "${calibrationRecord.calibrationCount} records · " +
-                    "phone ${formatEv(calibrationRecord.measuredEv100)} → " +
-                    "reference ${formatEv(calibrationRecord.referenceEv100)} · " +
-                    "correction ${signedEv(calibrationRecord.correctionEv)} EV",
-            )
-            else -> localized(
-                "历史校准 · 用户修正 ${signedEv(calibrationRecord.correctionEv)} EV",
-                "Legacy calibration · correction ${signedEv(calibrationRecord.correctionEv)} EV",
-            )
-        }
-        canvas.drawText(
-            ellipsize(correctionText, g.controls.width(), boldPaint),
-            g.controls.left,
-            g.primary.top - 33f * density,
-            boldPaint,
-        )
-        val secondaryText = if (statusText.isNotEmpty()) {
-            statusText
-        } else if (calibrationRecord != null && calibrationRecord.updatedAtEpochMs > 0L) {
-            localized("最后校准：", "Last calibrated: ") +
-                formatCalibrationTime(calibrationRecord.updatedAtEpochMs)
-        } else {
-            ""
-        }
-        if (secondaryText.isNotEmpty()) {
+        drawHistory(canvas, g)
+        if (statusText.isNotEmpty()) {
             paint.style = Paint.Style.FILL
-            paint.color = if (statusText.isNotEmpty() && statusIsError) red else muted
+            paint.color = if (statusIsError) red else muted
             paint.textSize = 7.5f * density
             paint.typeface = Typeface.DEFAULT
-            canvas.drawText(
-                ellipsize(secondaryText, g.controls.width(), paint),
-                g.controls.left,
-                g.primary.top - 15f * density,
+            drawCenteredText(
+                canvas,
+                ellipsize(statusText, g.controls.width(), paint),
+                g.controls.centerX(),
+                g.primary.top - 10f * density,
                 paint,
             )
         }
@@ -415,6 +393,78 @@ class CalibrationView(
             g.primary.centerY(),
             boldPaint,
         )
+    }
+
+    private fun drawHistory(canvas: Canvas, g: Geometry) {
+        val cameraId = state.currentCamera()?.cameraId
+        val active = cameraId?.let(state::cameraCalibrationRecord)
+        val history = cameraId?.let(state::cameraCalibrationHistory).orEmpty().take(3)
+        if (g.historyRows.isEmpty()) return
+        paint.style = Paint.Style.FILL
+        paint.color = muted
+        paint.textSize = 7.5f * density
+        paint.typeface = Typeface.DEFAULT_BOLD
+        canvas.drawText(
+            localized("当前镜头 · 最近 3 次校准", "Current lens · last 3 calibrations"),
+            g.controls.left,
+            g.historyRows.first().top - 5f * density,
+            paint,
+        )
+        if (history.isEmpty()) {
+            paint.typeface = Typeface.DEFAULT
+            drawCenteredText(
+                canvas,
+                localized("暂无校准记录", "No calibration history"),
+                g.historyRows.first().centerX(),
+                g.historyRows.first().centerY(),
+                paint,
+            )
+            return
+        }
+        history.forEachIndexed { index, record ->
+            val row = g.historyRows[index]
+            val isActive = active?.updatedAtEpochMs == record.updatedAtEpochMs
+            paint.style = Paint.Style.FILL
+            paint.color = if (isActive) gray else surfaceColor
+            canvas.drawRoundRect(row, 3f * density, 3f * density, paint)
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 1f * density
+            paint.color = if (isActive) red else gray
+            canvas.drawRoundRect(row, 3f * density, 3f * density, paint)
+
+            val action = historyActionRect(row)
+            paint.style = Paint.Style.FILL
+            paint.color = if (isActive) muted else foreground
+            canvas.drawRoundRect(action, 2.5f * density, 2.5f * density, paint)
+            boldPaint.color = surfaceColor
+            boldPaint.textSize = 7.5f * density
+            drawCenteredText(
+                canvas,
+                localized(if (isActive) "当前" else "回退", if (isActive) "Current" else "Restore"),
+                action.centerX(),
+                action.centerY(),
+                boldPaint,
+            )
+
+            paint.style = Paint.Style.FILL
+            paint.color = foreground
+            paint.typeface = Typeface.DEFAULT_BOLD
+            paint.textSize = 7.4f * density
+            val summary = "${formatCalibrationTime(record.updatedAtEpochMs)}  ·  " +
+                "${signedEv(record.correctionEv)} EV"
+            val textWidth = action.left - row.left - 14f * density
+            canvas.drawText(
+                ellipsize(summary, textWidth, paint),
+                row.left + 7f * density,
+                row.centerY() - (paint.fontMetrics.ascent + paint.fontMetrics.descent) / 2f,
+                paint,
+            )
+        }
+    }
+
+    private fun historyActionRect(row: RectF): RectF {
+        val width = minOf(62f * density, row.width() * 0.24f)
+        return RectF(row.right - width, row.top, row.right, row.bottom)
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -449,11 +499,23 @@ class CalibrationView(
                 requestLayout()
                 invalidate()
             }
-            g.primary.contains(event.x, event.y) && !isMeasuring -> {
-                haptic()
-                val reference = referenceEv100()
-                if (reference == null) return true
-                listener?.onMeasureRequested(reference)
+            !isMeasuring -> {
+                val historyIndex = g.historyRows.indexOfFirst { row ->
+                    historyActionRect(row).contains(event.x, event.y)
+                }
+                val cameraId = state.currentCamera()?.cameraId
+                val history = cameraId?.let(state::cameraCalibrationHistory).orEmpty().take(3)
+                val selected = history.getOrNull(historyIndex)
+                val active = cameraId?.let(state::cameraCalibrationRecord)
+                if (selected != null && active?.updatedAtEpochMs != selected.updatedAtEpochMs) {
+                    haptic()
+                    listener?.onHistoryRestoreRequested(selected.updatedAtEpochMs)
+                } else if (g.primary.contains(event.x, event.y)) {
+                    haptic()
+                    val reference = referenceEv100()
+                    if (reference == null) return true
+                    listener?.onMeasureRequested(reference)
+                }
             }
         }
         performClick()
@@ -560,7 +622,27 @@ class CalibrationView(
             controls.right,
             controls.bottom,
         )
-        return Geometry(preview, back, reset, camera, modes, editorArea, primary, controls)
+        val historyGap = 4f * density
+        val historyTop = editorArea.bottom + 17f * density
+        val historyBottom = primary.top - 22f * density
+        val historyHeight = ((historyBottom - historyTop - historyGap * 2f) / 3f)
+            .coerceAtLeast(18f * density)
+            .coerceAtMost(34f * density)
+        val historyRows = (0 until 3).map { index ->
+            val top = historyTop + index * (historyHeight + historyGap)
+            RectF(controls.left, top, controls.right, top + historyHeight)
+        }
+        return Geometry(
+            preview,
+            back,
+            reset,
+            camera,
+            modes,
+            editorArea,
+            historyRows,
+            primary,
+            controls,
+        )
     }
 
     private fun fitAspect(bounds: RectF, aspect: Float): RectF {
@@ -596,7 +678,7 @@ class CalibrationView(
         canvas.drawRoundRect(rect, 3f * density, 3f * density, paint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1f * density
-        paint.color = if (camera?.rawAvailable == false) red else foreground
+        paint.color = foreground
         canvas.drawRoundRect(rect, 3f * density, 3f * density, paint)
 
         paint.style = Paint.Style.FILL
@@ -618,20 +700,6 @@ class CalibrationView(
             paint,
         )
 
-        if (camera?.rawAvailable == false) {
-            paint.color = red
-            paint.textSize = 7f * density
-            paint.typeface = Typeface.DEFAULT_BOLD
-            canvas.drawText(
-                localized(
-                    "该摄像头不支持 RAW，测光可能不准确",
-                    "No RAW · metering may be inaccurate",
-                ),
-                rect.left,
-                rect.bottom + 11f * density,
-                paint,
-            )
-        }
     }
 
     private fun updateEditorVisibility() {

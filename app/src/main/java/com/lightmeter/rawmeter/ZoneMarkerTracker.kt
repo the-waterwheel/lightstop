@@ -16,6 +16,8 @@ interface ZoneMarkerTracker {
     fun addMarker(id: Int, normalizedX: Float = 0.5f, normalizedY: Float = 0.5f)
     fun removeMarker(id: Int)
     fun clearMarkers()
+    /** Protect marker geometry while RAW capture interrupts or changes the ISP preview exposure. */
+    fun onMeteringStateChanged(active: Boolean)
     fun resetMarker(id: Int, normalizedX: Float, normalizedY: Float)
     /** Replace all marker anchors after a discontinuous, non-zoom preview geometry change. */
     fun reanchor(markers: List<ZoneMarker>)
@@ -32,6 +34,7 @@ data class ZoneTrackingFrame(
     val luma: ByteArray,
     /** Clockwise rotation that makes the camera buffer upright in the current display. */
     val clockwiseRotationDegrees: Int,
+    val capturedAtNs: Long = System.nanoTime(),
 )
 fun interface ZoneMarkerTrackerFactory {
     fun create(

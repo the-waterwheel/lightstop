@@ -10,6 +10,7 @@ enum class SettingKey {
     APERTURE_STEP,
     SHUTTER_STEP,
     METERING_MODE,
+    ZONE_MARKING_METHOD,
     LANGUAGE,
     THEME,
     HANDEDNESS,
@@ -17,7 +18,8 @@ enum class SettingKey {
 
 enum class SettingActionKey {
     MANAGE_CAMERAS,
-    START_CALIBRATION,
+    START_METERING_CALIBRATION,
+    START_VIGNETTING_CALIBRATION,
 }
 
 data class LocalizedLabel(
@@ -81,6 +83,14 @@ object SettingsCatalog {
                         option(MeteringMode.SPOT, "点测光", "Spot"),
                     ),
                 ),
+                SettingItemSpec(
+                    key = SettingKey.ZONE_MARKING_METHOD,
+                    label = LocalizedLabel("标点方式", "Marking method"),
+                    options = listOf(
+                        option(ZoneMarkingMethod.BUTTON, "按键标点", "Button marking"),
+                        option(ZoneMarkingMethod.TOUCH, "触屏标点", "Touch marking"),
+                    ),
+                ),
             ),
             actions = listOf(
                 SettingActionSpec(
@@ -125,15 +135,23 @@ object SettingsCatalog {
         ),
         SettingsSectionSpec(
             key = SettingsSectionKey.CALIBRATION,
-            label = LocalizedLabel("测光校准", "Calibration"),
+            label = LocalizedLabel("校准", "Calibration"),
             items = emptyList(),
             actions = listOf(
                 SettingActionSpec(
-                    key = SettingActionKey.START_CALIBRATION,
-                    label = LocalizedLabel("开始校准", "Start calibration"),
+                    key = SettingActionKey.START_METERING_CALIBRATION,
+                    label = LocalizedLabel("测光校准", "Metering calibration"),
                     description = LocalizedLabel(
                         "使用参考 EV、相机曝光值或 18% 灰卡 Lux 校准",
                         "Calibrate with EV, camera exposure, or lux on an 18% gray card",
+                    ),
+                ),
+                SettingActionSpec(
+                    key = SettingActionKey.START_VIGNETTING_CALIBRATION,
+                    label = LocalizedLabel("暗角矫正", "Vignetting correction"),
+                    description = LocalizedLabel(
+                        "拍摄亮度均匀画面，为当前镜头生成 RAW 二维矫正图",
+                        "Capture a uniform scene and build a 2D RAW map for this lens",
                     ),
                 ),
             ),
