@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">lightstop</string>
+    <string name="camera_permission">Camera permission is required for RAW metering.</string>
+    <string name="raw_unavailable_title">Using compatible metering</string>
+    <string name="raw_unavailable_message">The main camera on this device cannot output RAW_SENSOR data, so lightstop will meter from the ISP-processed preview. Metering remains available, but the result may be less accurate.</string>
+    <string name="do_not_show_again">Do not show again</string>
+    <string name="close">Close</string>
+</resources>
