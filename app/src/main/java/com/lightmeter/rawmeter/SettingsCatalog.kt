@@ -9,6 +9,7 @@ enum class SettingsSectionKey {
 enum class SettingKey {
     APERTURE_STEP,
     SHUTTER_STEP,
+    EXPOSURE_COMPENSATION_STEP,
     METERING_MODE,
     ZONE_MARKING_METHOD,
     LANGUAGE,
@@ -70,6 +71,11 @@ object SettingsCatalog {
                     key = SettingKey.SHUTTER_STEP,
                     label = LocalizedLabel("快门档位", "Shutter step"),
                     options = exposureStepOptions(),
+                ),
+                SettingItemSpec(
+                    key = SettingKey.EXPOSURE_COMPENSATION_STEP,
+                    label = LocalizedLabel("曝光补偿档位", "Exposure compensation step"),
+                    options = exposureCompensationStepOptions(),
                 ),
                 SettingItemSpec(
                     key = SettingKey.METERING_MODE,
@@ -162,6 +168,13 @@ object SettingsCatalog {
         option(ExposureStep.FULL, "一档", "1 stop"),
         option(ExposureStep.HALF, "二分之一档", "1/2 stop"),
         option(ExposureStep.THIRD, "三分之一档", "1/3 stop"),
+    )
+
+    private fun exposureCompensationStepOptions(): List<SettingOptionSpec> = listOf(
+        option(ExposureCompensationStep.SIXTH, "六分之一档", "1/6 stop"),
+        option(ExposureCompensationStep.THIRD, "三分之一档", "1/3 stop"),
+        option(ExposureCompensationStep.HALF, "二分之一档", "1/2 stop"),
+        option(ExposureCompensationStep.FULL, "一档", "1 stop"),
     )
 
     private fun option(value: Enum<*>, chinese: String, english: String) =

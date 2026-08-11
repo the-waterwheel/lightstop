@@ -179,6 +179,23 @@ class ZoneSystemView(
         postInvalidateOnAnimation()
     }
 
+    /** Counter Android's forced app-orientation rotation while the physical camera stays still. */
+    fun remapMarkersForLayoutOrientation(fromLandscape: Boolean, toLandscape: Boolean) {
+        if (fromLandscape == toLandscape) return
+        markerDisplayMotions.clear()
+        session.markers.forEach { marker ->
+            val (x, y) = ZoneCoordinateMapper.remapForLayoutOrientation(
+                marker.normalizedX,
+                marker.normalizedY,
+                fromLandscape,
+                toLandscape,
+            )
+            marker.normalizedX = x
+            marker.normalizedY = y
+        }
+        invalidate()
+    }
+
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         geometry = calculateGeometry(w, h)
         listScrollOffset = 0f

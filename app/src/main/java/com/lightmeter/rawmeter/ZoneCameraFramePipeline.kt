@@ -114,7 +114,9 @@ internal class ZoneCameraFramePipeline(
     }
 
     fun reset() {
-        enabled = false
+        // Camera surfaces are recreated during orientation and camera switches. Keep the logical
+        // Zone request so the next ImageReader immediately resumes YUV delivery; Activity pause
+        // explicitly calls setEnabled(false) before closing the camera.
         replaceLatest(null)
         frameLogged = false
     }

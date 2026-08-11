@@ -20,6 +20,22 @@ internal data class ZoneVisibleViewport(
  * orientation and device-aspect regressions easier to reason about and unit-test later.
  */
 internal object ZoneCoordinateMapper {
+    /**
+     * Keep a marker fixed in the device's natural portrait coordinate system while Android
+     * rotates only the app layout. The two mappings are exact inverses and do not affect normal
+     * frame-to-frame tracking after the layout transition.
+     */
+    fun remapForLayoutOrientation(
+        x: Float,
+        y: Float,
+        fromLandscape: Boolean,
+        toLandscape: Boolean,
+    ): Pair<Float, Float> = when {
+        fromLandscape == toLandscape -> x to y
+        toLandscape -> y to (1f - x)
+        else -> (1f - y) to x
+    }
+
     fun basePreviewToTexture(
         baseX: Float,
         baseY: Float,

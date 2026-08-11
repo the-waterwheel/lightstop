@@ -71,6 +71,8 @@ class MeterLayout @JvmOverloads constructor(
     private var zoneTransitionFraction = 0f
     private var zoneAnimator: ValueAnimator? = null
     private var zoneTransitionPrepared = false
+    private var lastLayoutLandscape: Boolean? = null
+    private var zoneOrientationRestartPending = false
     private var cameraManagementOrigin = CameraManagementOrigin.SETTINGS
     var listener: Listener? = null
         set(value) {
@@ -81,7 +83,7 @@ class MeterLayout @JvmOverloads constructor(
                 }
 
                 override fun onOrientationToggle() {
-                    value?.onOrientationToggle()
+                    handleOrientationToggle()
                 }
 
                 override fun onMoreRequested() {
@@ -233,7 +235,7 @@ class MeterLayout @JvmOverloads constructor(
                 }
 
                 override fun onOrientationToggle() {
-                    value?.onOrientationToggle()
+                    handleOrientationToggle()
                 }
 
                 override fun onPreviewMappingChanged() {
@@ -332,6 +334,22 @@ class MeterLayout @JvmOverloads constructor(
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
         val width = right - left
         val height = bottom - top
+        val layoutLandscape = width > height
+        val previousLayoutLandscape = lastLayoutLandscape
+        val displayOrientationChanged = previousLayoutLandscape?.let {
+            it != layoutLandscape
+        } == true
+        lastLayoutLandscape = layoutLandscape
+        if (isZoneMode && zoneOrientationRestartPending && displayOrientationChanged &&
+            previousLayoutLandscape != null
+        ) {
+            // The camera did not move; only Android's app coordinate axes rotated. Counter that
+            // one-time display rotation before laying out and restarting the tracker.
+            zoneView.remapMarkersForLayoutOrientation(
+                fromLandscape = previousLayoutLandscape,
+                toLandscape = layoutLandscape,
+            )
+        }
         val geometry = LayoutGeometry.calculate(
             width,
             height,
@@ -376,7 +394,32 @@ class MeterLayout @JvmOverloads constructor(
         // same, so `changed` is not a reliable signal. Publish geometry after every layout.
         post {
             listener?.onPreviewGeometryChanged(textureView.width, textureView.height)
+            if (isZoneMode && displayOrientationChanged && zoneOrientationRestartPending) {
+                // CameraController applies TextureView's new preview matrix in another UI task.
+                // Queue behind that task so tracking never observes new layout dimensions with
+                // the old camera matrix. Marker coordinates remain frozen until then.
+                post {
+                    if (isZoneMode && zoneOrientationRestartPending) {
+                        zoneOrientationRestartPending = false
+                        zoneMarkerTracker.start(zoneView.session.markers)
+                    }
+                }
+            }
         }
+    }
+
+    /**
+     * Both Normal and Zone own an orientation button. Route them through one entry point so the
+     * Zone-specific transition guard cannot accidentally be applied only to the hidden Normal UI.
+     */
+    private fun handleOrientationToggle() {
+        // Freeze before Android changes Display.rotation. Otherwise an in-flight old frame can be
+        // projected with the new layout and publish a false 90-degree camera movement.
+        if (isZoneMode) {
+            zoneOrientationRestartPending = true
+            zoneMarkerTracker.stop()
+        }
+        listener?.onOrientationToggle()
     }
 
     fun setSurfaceTextureListener(listener: TextureView.SurfaceTextureListener) {

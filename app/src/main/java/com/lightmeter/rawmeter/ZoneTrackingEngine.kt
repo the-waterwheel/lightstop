@@ -100,6 +100,11 @@ class OpenCvZoneMarkerTracker(
         val support: Int,
     )
 
+    private data class FrameCoordinateSpace(
+        val displayOriented: Boolean,
+        val displayRotationDegrees: Int,
+    )
+
     private val mainHandler = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "zone-opencv-tracker").apply { isDaemon = true }
@@ -151,6 +156,7 @@ class OpenCvZoneMarkerTracker(
     @Volatile
     private var lastExternalFrameRotationDegrees = UNKNOWN_FRAME_ROTATION
     private var frameCoordinatesAreDisplayOriented = false
+    private var processedFrameCoordinateSpace: FrameCoordinateSpace? = null
     private var lastFrameMeanLuma = Double.NaN
     @Volatile
     private var visibleViewport = VisibleViewport(0f, 0f, 1f, 1f)
@@ -166,10 +172,17 @@ class OpenCvZoneMarkerTracker(
     }
 
     override fun start(markers: List<ZoneMarker>) {
+        // A previous worker task may still be unwinding after an orientation or lifecycle stop.
+        // Give this run a new generation so that task cannot update the freshly rebuilt tracks.
+        mappingRevision.incrementAndGet()
+        // This is a fresh run after the preview mapping is stable; the previous run's display
+        // rotation must not be treated as a live frame-to-frame coordinate transition.
+        processedFrameCoordinateSpace = null
+        frameCoordinatesAreDisplayOriented = false
         trackedDisplayZoom = meterState.zoom.coerceAtLeast(1f)
         val viewport = visibleViewport
         synchronized(lock) {
-            val previous = tracks.toMap()
+            val previous = tracks.values.toList()
             tracks.clear()
             markers.forEach { marker ->
                 val (baseX, baseY) = uiPreviewToBasePreview(
@@ -177,18 +190,17 @@ class OpenCvZoneMarkerTracker(
                     marker.normalizedY,
                     viewport,
                 )
-                val existing = previous[marker.id]
                 tracks[marker.id] = Track(
                     marker.id,
                     baseX,
                     baseY,
                     trackingState = marker.trackingState,
-                    referenceAnchor = existing?.referenceAnchor,
-                    referenceKeypoints = existing?.referenceKeypoints ?: emptyList(),
-                    referenceDescriptors = existing?.referenceDescriptors,
                 )
             }
-            previous.filterKeys { it !in tracks }.values.forEach { it.releaseReference() }
+            // A frame/orientation/viewport remap invalidates descriptor coordinates as well as
+            // optical flow. Keeping the old references lets ORB re-identification rotate the
+            // freshly re-anchored UI positions back into the previous display orientation.
+            previous.forEach { it.releaseReference() }
         }
         running = true
         externalFramesSeen.set(false)
@@ -217,6 +229,8 @@ class OpenCvZoneMarkerTracker(
 
     override fun stop() {
         running = false
+        // Drop callbacks already queued on the main thread and invalidate in-flight frame work.
+        mappingRevision.incrementAndGet()
         cancelFrameReservation()
         mainHandler.removeCallbacks(tick)
         gyroscopeMotion.stop()
@@ -433,22 +447,13 @@ class OpenCvZoneMarkerTracker(
         if (clockwiseDelta == 0) return
 
         mappingRevision.incrementAndGet()
-        val viewport = visibleViewport
         synchronized(lock) {
             tracks.values.forEach { track ->
-                val oldDisplayX = viewport.left + track.baseX * viewport.width
-                val oldDisplayY = viewport.top + track.baseY * viewport.height
-                val (newDisplayX, newDisplayY) = rotateDisplayCoordinate(
-                    oldDisplayX,
-                    oldDisplayY,
-                    clockwiseDelta,
-                )
-                track.baseX = ((newDisplayX - viewport.left) / viewport.width)
-                    .coerceIn(MIN_VIRTUAL_COORDINATE, MAX_VIRTUAL_COORDINATE)
-                track.baseY = ((newDisplayY - viewport.top) / viewport.height)
-                    .coerceIn(MIN_VIRTUAL_COORDINATE, MAX_VIRTUAL_COORDINATE)
+                // ZoneOpenCvFramePreprocessor has already rotated YUV into display coordinates.
+                // Preserve UI-relative anchors here; rotating them again caused the visible jump.
                 track.trackingState = ZoneTrackingState.UNCERTAIN
                 track.misses = 0
+                track.releaseReference()
             }
         }
         resetRequested.set(true)
@@ -458,19 +463,9 @@ class OpenCvZoneMarkerTracker(
         Log.i(
             TAG,
             "tracking frame rotation $previousRotation->$normalizedRotation " +
-                "delta=$clockwiseDelta markers=${synchronized(lock) { tracks.size }}",
+                "delta=$clockwiseDelta preservedDisplayAnchors=" +
+                "${synchronized(lock) { tracks.size }}",
         )
-    }
-
-    private fun rotateDisplayCoordinate(
-        x: Float,
-        y: Float,
-        clockwiseDegrees: Int,
-    ): Pair<Float, Float> = when (clockwiseDegrees) {
-        90 -> (1f - y) to x
-        180 -> (1f - x) to (1f - y)
-        270 -> y to (1f - x)
-        else -> x to y
     }
 
     override fun setVisibleViewport(left: Float, top: Float, right: Float, bottom: Float) {
@@ -579,8 +574,8 @@ class OpenCvZoneMarkerTracker(
         if (revision != mappingRevision.get()) return
         Utils.bitmapToMat(bitmap, rgba)
         Imgproc.cvtColor(rgba, gray, Imgproc.COLOR_RGBA2GRAY)
-        frameCoordinatesAreDisplayOriented = false
-        processGrayFrame(prediction, revision)
+        val coordinateRevision = prepareFrameCoordinateSpace(displayOriented = false)
+        processGrayFrame(prediction, coordinateRevision)
     }
 
     private fun processLumaFrame(
@@ -590,8 +585,39 @@ class OpenCvZoneMarkerTracker(
     ) {
         if (revision != mappingRevision.get()) return
         framePreprocessor.copyToGray(frame, gray)
-        frameCoordinatesAreDisplayOriented = true
-        processGrayFrame(prediction, revision)
+        val coordinateRevision = prepareFrameCoordinateSpace(displayOriented = true)
+        processGrayFrame(prediction, coordinateRevision)
+    }
+
+    /**
+     * Prevent optical flow from comparing frames whose axes use different coordinate systems.
+     * Only the transition frame is discarded; anchors stay in UI coordinates and all subsequent
+     * tracking keeps the source's original, device-verified motion mapping.
+     */
+    private fun prepareFrameCoordinateSpace(displayOriented: Boolean): Int {
+        val updated = FrameCoordinateSpace(
+            displayOriented = displayOriented,
+            displayRotationDegrees = if (displayOriented) 0 else displayRotationDegrees(),
+        )
+        val previous = processedFrameCoordinateSpace
+        frameCoordinatesAreDisplayOriented = displayOriented
+        processedFrameCoordinateSpace = updated
+        if (previous == null || previous == updated) return mappingRevision.get()
+
+        val revision = mappingRevision.incrementAndGet()
+        synchronized(lock) {
+            tracks.values.forEach { track ->
+                track.trackingState = ZoneTrackingState.UNCERTAIN
+                track.misses = 0
+                track.releaseReference()
+            }
+        }
+        resetRequested.set(true)
+        redetectRequested.set(true)
+        forceReidentificationRequested.set(false)
+        gyroscopeMotion.resetAccumulation()
+        Log.i(TAG, "analysis coordinates $previous->$updated; reset transition frame")
+        return revision
     }
 
     private fun processGrayFrame(

@@ -606,9 +606,19 @@ class InstrumentView(
         }
         val spacing = 8f
         val textRadius = radius * 0.83f
-        for (step in -30..30) {
+        val compensationStep = state.exposureCompensationStep
+        for (step in
+            ExposureCompensationDial.MIN_SIXTH_STOPS..ExposureCompensationDial.MAX_SIXTH_STOPS
+        ) {
+            if (step % compensationStep.sixthStops != 0) continue
             val baseAngle = if (state.isLeftHanded) 180f else 0f
-            val angle = baseAngle + (step - state.exposureCompSteps) * spacing
+            val angle = baseAngle + ExposureCompensationDial.relativeTickAngleDegrees(
+                tickSixthStops = step,
+                currentSixthStops = state.exposureCompSteps,
+                step = compensationStep,
+                leftHanded = state.isLeftHanded,
+                spacingDegrees = spacing,
+            )
             if (state.isLeftHanded) {
                 if (angle < 90f || angle > 270f) continue
             } else if (angle < -90f || angle > 90f) {
@@ -1145,7 +1155,12 @@ class InstrumentView(
             if (state.isoAdjustMode) {
                 state.isoIndex -= steps
             } else {
-                state.exposureCompSteps -= steps
+                state.exposureCompSteps = ExposureCompensationDial.applyDetents(
+                    currentSixthStops = state.exposureCompSteps,
+                    clockwiseDetents = steps,
+                    step = state.exposureCompensationStep,
+                    leftHanded = state.isLeftHanded,
+                )
             }
             dialStepAccumulator -= steps * stepAngle
             haptic()

@@ -149,14 +149,20 @@ class MeterState(context: Context) {
     private val storedCompensationSteps =
         preferences.getInt("exposure_comp_steps", 0)
 
+    var exposureCompensationStep: ExposureCompensationStep = preferences.enumValue(
+        "exposure_compensation_step",
+        ExposureCompensationStep.SIXTH,
+    )
+        private set
+
     var exposureCompSteps: Int =
-        if (storedCompensationDivisor == 6) {
+        ExposureCompensationDial.snap(if (storedCompensationDivisor == 6) {
             storedCompensationSteps.coerceIn(-30, 30)
         } else {
             (storedCompensationSteps * 2).coerceIn(-30, 30)
-        }
+        }, exposureCompensationStep)
         set(value) {
-            field = value.coerceIn(-30, 30)
+            field = ExposureCompensationDial.snap(value, exposureCompensationStep)
             persist()
         }
     val exposureCompEv: Double get() = exposureCompSteps / 6.0
@@ -375,6 +381,13 @@ class MeterState(context: Context) {
         when (key) {
             SettingKey.APERTURE_STEP -> apertureStep = enumValue(value, apertureStep)
             SettingKey.SHUTTER_STEP -> shutterStep = enumValue(value, shutterStep)
+            SettingKey.EXPOSURE_COMPENSATION_STEP -> {
+                exposureCompensationStep = enumValue(value, exposureCompensationStep)
+                exposureCompSteps = ExposureCompensationDial.snap(
+                    exposureCompSteps,
+                    exposureCompensationStep,
+                )
+            }
             SettingKey.METERING_MODE -> meteringMode = enumValue(value, meteringMode)
             SettingKey.ZONE_MARKING_METHOD ->
                 zoneMarkingMethod = enumValue(value, zoneMarkingMethod)
@@ -483,6 +496,7 @@ class MeterState(context: Context) {
     fun settingValue(key: SettingKey): String = when (key) {
         SettingKey.APERTURE_STEP -> apertureStep.name
         SettingKey.SHUTTER_STEP -> shutterStep.name
+        SettingKey.EXPOSURE_COMPENSATION_STEP -> exposureCompensationStep.name
         SettingKey.METERING_MODE -> meteringMode.name
         SettingKey.ZONE_MARKING_METHOD -> zoneMarkingMethod.name
         SettingKey.LANGUAGE -> menuLanguage.name
@@ -541,6 +555,7 @@ class MeterState(context: Context) {
             .putFloat("locked_shutter_log_seconds", lockedShutterLogSeconds.toFloat())
             .putString("aperture_step", apertureStep.name)
             .putString("shutter_step", shutterStep.name)
+            .putString("exposure_compensation_step", exposureCompensationStep.name)
             .putString("metering_mode", meteringMode.name)
             .putString("zone_marking_method", zoneMarkingMethod.name)
             .putString("menu_language", menuLanguage.name)
