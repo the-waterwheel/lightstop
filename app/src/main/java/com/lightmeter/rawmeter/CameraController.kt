@@ -80,11 +80,11 @@ class CameraController(
     private var activeVignettingCapture: VignettingCapture? = null
     private var fallbackMeasuring = false
     private var fallbackMeasurementId = 0
-    @Volatile
-    private var trackingFramesEnabled = false
-    @Volatile
-    private var latestTrackingFrame: ZoneTrackingFrame? = null
-    private var trackingFrameLogged = false
+    private val zoneCameraFrames = ZoneCameraFramePipeline(
+        reserveTracker = callback::tryReserveZoneTrackingFrame,
+        cancelTrackerReservation = callback::cancelZoneTrackingFrameReservation,
+        deliverToTracker = callback::onZoneTrackingFrame,
+    )
 
     private var lastViewWidth = 0
     private var lastViewHeight = 0
@@ -98,7 +98,7 @@ class CameraController(
     }
 
     fun setTrackingFramesEnabled(enabled: Boolean) {
-        trackingFramesEnabled = enabled
+        zoneCameraFrames.setEnabled(enabled, cameraHandler)
     }
 
     fun availableCameras(): List<CameraDescriptor> = cameraCatalog.discover().also { cameras ->
@@ -250,9 +250,7 @@ class CameraController(
                 sensorOrientationDegrees = sensorOrientation,
                 displayRotation = lastDisplayRotation,
             )
-            val recentTrackingFrame = latestTrackingFrame?.takeIf { frame ->
-                System.nanoTime() - frame.capturedAtNs <= MAX_METERING_REFERENCE_AGE_NS
-            }
+            val recentTrackingFrame = zoneCameraFrames.latestFrame(MAX_METERING_REFERENCE_AGE_NS)
             val previewReference = if (target != null && recentTrackingFrame != null) {
                 MeteringAnalysis.createPreviewReference(
                     frame = recentTrackingFrame,
@@ -703,7 +701,7 @@ class CameraController(
                     trackingSize.width,
                     trackingSize.height,
                     ImageFormat.YUV_420_888,
-                    3,
+                    ZoneLumaBufferPool.DEFAULT_CAPACITY,
                 ).also { imageReader ->
                     imageReader.setOnImageAvailableListener(
                         { reader -> onTrackingImageAvailable(reader) },
@@ -1093,54 +1091,11 @@ class CameraController(
     }
 
     private fun onTrackingImageAvailable(reader: ImageReader) {
-        val image = try {
-            reader.acquireLatestImage()
-        } catch (_: IllegalStateException) {
-            null
-        } ?: return
-        try {
-            if (!trackingFramesEnabled) return
-            val plane = image.planes.firstOrNull() ?: return
-            val width = image.width
-            val height = image.height
-            val buffer = plane.buffer
-            val rowStride = plane.rowStride
-            val pixelStride = plane.pixelStride
-            val luma = ByteArray(width * height)
-            if (pixelStride == 1 && rowStride == width && buffer.remaining() >= luma.size) {
-                buffer.get(luma)
-            } else {
-                for (row in 0 until height) {
-                    val rowOffset = row * rowStride
-                    val destinationOffset = row * width
-                    for (column in 0 until width) {
-                        val sourceOffset = rowOffset + column * pixelStride
-                        if (sourceOffset < buffer.limit()) {
-                            luma[destinationOffset + column] = buffer.get(sourceOffset)
-                        }
-                    }
-                }
-            }
-            val displayDegrees = when (lastDisplayRotation) {
-                Surface.ROTATION_90 -> 90
-                Surface.ROTATION_180 -> 180
-                Surface.ROTATION_270 -> 270
-                else -> 0
-            }
-            val rotation = (cameraInfo.sensorOrientationDegrees - displayDegrees + 360) % 360
-            if (!trackingFrameLogged) {
-                Log.i(
-                    TAG,
-                    "Zone tracking YUV ${width}x$height rotation=$rotation display=$displayDegrees",
-                )
-                trackingFrameLogged = true
-            }
-            val frame = ZoneTrackingFrame(width, height, luma, rotation)
-            latestTrackingFrame = frame
-            callback.onZoneTrackingFrame(frame)
-        } finally {
-            image.close()
-        }
+        zoneCameraFrames.onImageAvailable(
+            reader,
+            cameraInfo.sensorOrientationDegrees,
+            lastDisplayRotation,
+        )
     }
 
     private fun onRawImageAvailable(reader: ImageReader) {
@@ -1373,8 +1328,7 @@ class CameraController(
             Unit
         }
         trackingReader = null
-        latestTrackingFrame = null
-        trackingFrameLogged = false
+        zoneCameraFrames.reset()
         previewSurface?.release()
         previewSurface = null
         previewSize = null

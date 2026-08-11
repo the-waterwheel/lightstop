@@ -1,10 +1,6 @@
 package com.lightmeter.rawmeter
 
 import android.graphics.Bitmap
-import android.hardware.Sensor
-import android.hardware.SensorEvent
-import android.hardware.SensorEventListener
-import android.hardware.SensorManager
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -15,10 +11,8 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
-import kotlin.math.atan
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.roundToInt
 import org.opencv.android.OpenCVLoader
 import org.opencv.android.Utils
 import org.opencv.calib3d.Calib3d
@@ -74,60 +68,6 @@ class OpenCvZoneMarkerTracker(
         val state: ZoneTrackingState,
     )
 
-    private data class MotionPrediction(
-        val dx: Float,
-        val dy: Float,
-        val rollRadians: Float,
-        val screenXRotation: Float,
-        val screenYRotation: Float,
-        val displayOriented: Boolean,
-        val xTranslationTrusted: Boolean,
-        val yTranslationTrusted: Boolean,
-    )
-
-    private class GyroAxisCalibration {
-        val samples = ArrayDeque<Double>()
-
-        fun estimate(): Double? {
-            if (samples.isEmpty()) return null
-            val sorted = samples.sorted()
-            val middle = sorted.size / 2
-            return if (sorted.size % 2 == 0) {
-                (sorted[middle - 1] + sorted[middle]) / 2.0
-            } else {
-                sorted[middle]
-            }
-        }
-    }
-
-    private data class GyroOrientationCalibration(
-        val horizontal: GyroAxisCalibration = GyroAxisCalibration(),
-        val vertical: GyroAxisCalibration = GyroAxisCalibration(),
-    )
-
-    private data class GyroCalibrationSnapshot(
-        val horizontalScale: Double?,
-        val horizontalSamples: Int,
-        val verticalScale: Double?,
-        val verticalSamples: Int,
-    )
-
-    private data class AffineMotion(
-        val m00: Double,
-        val m01: Double,
-        val m02: Double,
-        val m10: Double,
-        val m11: Double,
-        val m12: Double,
-        val reliable: Boolean,
-        val inlierCount: Int,
-    ) {
-        fun map(point: Point): Point = Point(
-            m00 * point.x + m01 * point.y + m02,
-            m10 * point.x + m11 * point.y + m12,
-        )
-    }
-
     private data class ValidFlow(
         val previous: Point,
         val current: Point,
@@ -165,6 +105,7 @@ class OpenCvZoneMarkerTracker(
         Thread(runnable, "zone-opencv-tracker").apply { isDaemon = true }
     }
     private val processing = AtomicBoolean(false)
+    private val externalFrameReserved = AtomicBoolean(false)
     private val resetRequested = AtomicBoolean(true)
     private val redetectRequested = AtomicBoolean(true)
     private val forceReidentificationRequested = AtomicBoolean(false)
@@ -174,12 +115,7 @@ class OpenCvZoneMarkerTracker(
     private val stabilizationFramesRemaining = AtomicInteger(0)
     private val externalFramesSeen = AtomicBoolean(false)
     private val lock = Any()
-    private val gyroLock = Any()
-    private val gyroCalibrationLock = Any()
     private val tracks = linkedMapOf<Int, Track>()
-    private val gyroCalibrations = mutableMapOf<Int, GyroOrientationCalibration>()
-    private val sensorManager = textureView.context.getSystemService(SensorManager::class.java)
-    private val gyroscope = sensorManager?.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
     private val openCvReady = try {
         OpenCVLoader.initLocal().also { ready ->
             Log.i(TAG, "OpenCV ${OpenCVLoader.OPENCV_VERSION} initialized=$ready")
@@ -191,7 +127,10 @@ class OpenCvZoneMarkerTracker(
     // Native feature objects must be constructed only after OpenCVLoader has loaded the library.
     private val reentryOrb = ORB.create(REENTRY_FEATURE_COUNT)
     private val reentryMatcher = DescriptorMatcher.create(DescriptorMatcher.BRUTEFORCE_HAMMING)
+    private val framePreprocessor = ZoneOpenCvFramePreprocessor(tuning.trackingLongEdge)
+    private val gyroscopeMotion = ZoneGyroscopeMotion(textureView, meterState)
 
+    @Volatile
     private var running = false
     private var captureBitmap: Bitmap? = null
     private var rgba = Mat()
@@ -203,11 +142,6 @@ class OpenCvZoneMarkerTracker(
     private var statsStartedAtMs = 0L
     private var statsFrames = 0
     private var processedFrameNumber = 0L
-    private var gyroTimestampNs = 0L
-    private var accumulatedScreenXRotation = 0f
-    private var accumulatedScreenYRotation = 0f
-    private var accumulatedScreenZRotation = 0f
-    private var sensorRegistered = false
     @Volatile
     private var lastExternalFrameAtMs = 0L
     @Volatile
@@ -222,32 +156,6 @@ class OpenCvZoneMarkerTracker(
     private var visibleViewport = VisibleViewport(0f, 0f, 1f, 1f)
     @Volatile
     private var trackedDisplayZoom = 1f
-
-    private val gyroListener = object : SensorEventListener {
-        override fun onSensorChanged(event: SensorEvent) {
-            if (!running || event.sensor.type != Sensor.TYPE_GYROSCOPE) return
-            val previousTimestamp = gyroTimestampNs
-            gyroTimestampNs = event.timestamp
-            if (previousTimestamp == 0L) return
-            val dt = ((event.timestamp - previousTimestamp) * 1e-9f).coerceIn(0f, 0.08f)
-            if (dt <= 0f) return
-            val deviceX = event.values[0]
-            val deviceY = event.values[1]
-            val (screenX, screenY) = when (textureView.display?.rotation ?: Surface.ROTATION_0) {
-                Surface.ROTATION_90 -> deviceY to -deviceX
-                Surface.ROTATION_180 -> -deviceX to -deviceY
-                Surface.ROTATION_270 -> -deviceY to deviceX
-                else -> deviceX to deviceY
-            }
-            synchronized(gyroLock) {
-                accumulatedScreenXRotation += screenX * dt
-                accumulatedScreenYRotation += screenY * dt
-                accumulatedScreenZRotation += event.values[2] * dt
-            }
-        }
-
-        override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
-    }
 
     private val tick = object : Runnable {
         override fun run() {
@@ -302,32 +210,16 @@ class OpenCvZoneMarkerTracker(
         meteringActive.set(false)
         exposureRecoveryFramesRemaining.set(0)
         lastFrameMeanLuma = Double.NaN
-        gyroTimestampNs = 0L
-        synchronized(gyroLock) {
-            accumulatedScreenXRotation = 0f
-            accumulatedScreenYRotation = 0f
-            accumulatedScreenZRotation = 0f
-        }
-        if (!sensorRegistered && gyroscope != null) {
-            sensorRegistered = sensorManager?.registerListener(
-                gyroListener,
-                gyroscope,
-                SensorManager.SENSOR_DELAY_GAME,
-                mainHandler,
-            ) == true
-        }
+        gyroscopeMotion.start(mainHandler)
         mainHandler.removeCallbacks(tick)
         mainHandler.post(tick)
     }
 
     override fun stop() {
         running = false
+        cancelFrameReservation()
         mainHandler.removeCallbacks(tick)
-        if (sensorRegistered) {
-            sensorManager?.unregisterListener(gyroListener)
-            sensorRegistered = false
-        }
-        gyroTimestampNs = 0L
+        gyroscopeMotion.stop()
         resetRequested.set(true)
         meteringActive.set(false)
         exposureRecoveryFramesRemaining.set(0)
@@ -435,11 +327,7 @@ class OpenCvZoneMarkerTracker(
         stabilizationFramesRemaining.set(tuning.mappingStabilizationFrames.coerceAtLeast(1))
         resetRequested.set(true)
         redetectRequested.set(true)
-        synchronized(gyroLock) {
-            accumulatedScreenXRotation = 0f
-            accumulatedScreenYRotation = 0f
-            accumulatedScreenZRotation = 0f
-        }
+        gyroscopeMotion.resetAccumulation()
     }
 
     override fun setDisplayZoom(zoom: Float) {
@@ -447,13 +335,36 @@ class OpenCvZoneMarkerTracker(
         publishCurrentPositions()
     }
 
+    override fun tryReserveFrame(): Boolean {
+        if (!running || !openCvReady || externalFramesDisabled) return false
+        if (!processing.compareAndSet(false, true)) return false
+        externalFrameReserved.set(true)
+        return true
+    }
+
+    override fun cancelFrameReservation() {
+        if (externalFrameReserved.compareAndSet(true, false)) processing.set(false)
+    }
+
     override fun offerFrame(frame: ZoneTrackingFrame) {
+        // A reservation was made on the camera thread before it copied the Y plane. Consuming it
+        // here transfers the single processing slot to the OpenCV worker.
+        if (!externalFrameReserved.compareAndSet(true, false)) {
+            frame.close()
+            return
+        }
         if (!running || !openCvReady || frame.width <= 0 || frame.height <= 0 ||
             frame.luma.size < frame.width * frame.height
         ) {
+            frame.close()
+            processing.set(false)
             return
         }
-        if (externalFramesDisabled) return
+        if (externalFramesDisabled) {
+            frame.close()
+            processing.set(false)
+            return
+        }
         val quality = ZoneFrameQualityEvaluator.evaluate(frame)
         if (!quality.usable) {
             if (!externalFrameQualityWarningLogged) {
@@ -465,6 +376,8 @@ class OpenCvZoneMarkerTracker(
                 )
                 externalFrameQualityWarningLogged = true
             }
+            frame.close()
+            processing.set(false)
             return
         }
         val now = SystemClock.elapsedRealtime()
@@ -484,23 +397,28 @@ class OpenCvZoneMarkerTracker(
             resetRequested.set(true)
             redetectRequested.set(true)
         }
-        if (processing.getAndSet(true)) return
         val rotated = frame.clockwiseRotationDegrees == 90 ||
             frame.clockwiseRotationDegrees == 270
         val orientedWidth = if (rotated) frame.height else frame.width
         val orientedHeight = if (rotated) frame.width else frame.height
-        val (targetWidth, targetHeight) = trackingSize(orientedWidth, orientedHeight)
-        val prediction = consumeGyroPrediction(targetWidth, targetHeight, displayOriented = true)
+        val (targetWidth, targetHeight) = framePreprocessor.targetSize(orientedWidth, orientedHeight)
+        val prediction = gyroscopeMotion.consume(targetWidth, targetHeight, displayOriented = true)
         val revision = mappingRevision.get()
-        worker.execute {
-            try {
-                processLumaFrame(frame, prediction, revision)
-            } catch (error: Throwable) {
-                Log.e(TAG, "OpenCV YUV tracking frame failed", error)
-                resetRequested.set(true)
-            } finally {
-                processing.set(false)
+        try {
+            worker.execute {
+                try {
+                    processLumaFrame(frame, prediction, revision)
+                } catch (error: Throwable) {
+                    Log.e(TAG, "OpenCV YUV tracking frame failed", error)
+                    resetRequested.set(true)
+                } finally {
+                    frame.close()
+                    processing.set(false)
+                }
             }
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            frame.close()
+            processing.set(false)
         }
     }
 
@@ -535,11 +453,7 @@ class OpenCvZoneMarkerTracker(
         }
         resetRequested.set(true)
         redetectRequested.set(true)
-        synchronized(gyroLock) {
-            accumulatedScreenXRotation = 0f
-            accumulatedScreenYRotation = 0f
-            accumulatedScreenZRotation = 0f
-        }
+        gyroscopeMotion.resetAccumulation()
         publishCurrentPositions()
         Log.i(
             TAG,
@@ -626,7 +540,7 @@ class OpenCvZoneMarkerTracker(
         }
         // Preserve the displayed TextureView aspect exactly. OpenCV therefore observes the same
         // already-oriented coordinate system in which the Zone markers are drawn.
-        val (targetWidth, targetHeight) = trackingSize(viewWidth, viewHeight)
+        val (targetWidth, targetHeight) = framePreprocessor.targetSize(viewWidth, viewHeight)
         val bitmap = captureBitmap?.takeIf {
             it.width == targetWidth && it.height == targetHeight && !it.isRecycled
         } ?: Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888).also {
@@ -643,7 +557,7 @@ class OpenCvZoneMarkerTracker(
             processing.set(false)
             return
         }
-        val prediction = consumeGyroPrediction(targetWidth, targetHeight, displayOriented = false)
+        val prediction = gyroscopeMotion.consume(targetWidth, targetHeight, displayOriented = false)
         val revision = mappingRevision.get()
         worker.execute {
             try {
@@ -656,19 +570,6 @@ class OpenCvZoneMarkerTracker(
             }
         }
     }
-
-    private fun trackingSize(sourceWidth: Int, sourceHeight: Int): Pair<Int, Int> =
-        if (sourceWidth >= sourceHeight) {
-            tuning.trackingLongEdge to
-                (tuning.trackingLongEdge * sourceHeight.toFloat() / sourceWidth)
-                    .roundToInt()
-                    .coerceAtLeast(1)
-        } else {
-            (tuning.trackingLongEdge * sourceWidth.toFloat() / sourceHeight)
-                .roundToInt()
-                .coerceAtLeast(1) to
-                tuning.trackingLongEdge
-        }
 
     private fun processBitmap(
         bitmap: Bitmap,
@@ -688,22 +589,7 @@ class OpenCvZoneMarkerTracker(
         revision: Int,
     ) {
         if (revision != mappingRevision.get()) return
-        val source = Mat(frame.height, frame.width, CvType.CV_8UC1)
-        val oriented = Mat()
-        try {
-            source.put(0, 0, frame.luma)
-            when (frame.clockwiseRotationDegrees) {
-                90 -> Core.rotate(source, oriented, Core.ROTATE_90_CLOCKWISE)
-                180 -> Core.rotate(source, oriented, Core.ROTATE_180)
-                270 -> Core.rotate(source, oriented, Core.ROTATE_90_COUNTERCLOCKWISE)
-                else -> source.copyTo(oriented)
-            }
-            val (targetWidth, targetHeight) = trackingSize(oriented.cols(), oriented.rows())
-            Imgproc.resize(oriented, gray, Size(targetWidth.toDouble(), targetHeight.toDouble()))
-        } finally {
-            source.release()
-            oriented.release()
-        }
+        framePreprocessor.copyToGray(frame, gray)
         frameCoordinatesAreDisplayOriented = true
         processGrayFrame(prediction, revision)
     }
@@ -743,7 +629,7 @@ class OpenCvZoneMarkerTracker(
         if (forceRequested && exposureUnstable) forceReidentificationRequested.set(true)
         val forceReidentification = forceRequested && !exposureUnstable
         if (forceReidentification && revision == mappingRevision.get()) {
-            val recoveryMotion = gyroAffine(
+            val recoveryMotion = gyroscopeMotion.affine(
                 prediction,
                 gray.cols(),
                 gray.rows(),
@@ -784,7 +670,7 @@ class OpenCvZoneMarkerTracker(
 
         val oldPoints = previousPoints.toArray()
         if (oldPoints.size < MIN_FLOW_POINTS || previousOwners.size != oldPoints.size) {
-            val fallbackMotion = gyroAffine(
+            val fallbackMotion = gyroscopeMotion.affine(
                 prediction,
                 gray.cols(),
                 gray.rows(),
@@ -814,7 +700,9 @@ class OpenCvZoneMarkerTracker(
             return
         }
 
-        val predicted = oldPoints.map { point -> gyroMap(point, prediction, gray.cols(), gray.rows()) }
+        val predicted = oldPoints.map { point ->
+            gyroscopeMotion.map(point, prediction, gray.cols(), gray.rows())
+        }
         val forwardPoints = MatOfPoint2f(*predicted.toTypedArray())
         val forwardStatus = MatOfByte()
         val forwardError = MatOfFloat()
@@ -1100,7 +988,7 @@ class OpenCvZoneMarkerTracker(
         val tracked = updates.count { it.state == ZoneTrackingState.TRACKED }
         val uncertain = updates.count { it.state == ZoneTrackingState.UNCERTAIN }
         val lost = updates.count { it.state == ZoneTrackingState.LOST }
-        val gyroCalibration = gyroCalibrationSnapshot(gray.cols(), gray.rows())
+        val gyroCalibration = gyroscopeMotion.snapshot(gray.cols(), gray.rows())
         val gyroHorizontal = gyroCalibration.horizontalScale?.let { "%.3f".format(it) } ?: "-"
         val gyroVertical = gyroCalibration.verticalScale?.let { "%.3f".format(it) } ?: "-"
         Log.i(
@@ -1208,7 +1096,7 @@ class OpenCvZoneMarkerTracker(
         val globalFlows = valid.filter { it.ownerId == GLOBAL_OWNER }
         val motionFlows = if (globalFlows.size >= MIN_RANSAC_POINTS) globalFlows else valid
         if (motionFlows.size < MIN_RANSAC_POINTS) {
-            return gyroAffine(prediction, width, height, trustedTranslationOnly = true)
+            return gyroscopeMotion.affine(prediction, width, height, trustedTranslationOnly = true)
         }
         val source = MatOfPoint2f(*motionFlows.map(ValidFlow::previous).toTypedArray())
         val destination = MatOfPoint2f(*motionFlows.map(ValidFlow::current).toTypedArray())
@@ -1240,10 +1128,16 @@ class OpenCvZoneMarkerTracker(
                 true,
                 inlierCount,
             ).also { visualMotion ->
-                updateGyroCalibration(visualMotion, prediction, width, height)
+                gyroscopeMotion.updateCalibration(
+                    visualMotion,
+                    prediction,
+                    width,
+                    height,
+                    minimumInliers = STRONG_GLOBAL_INLIERS,
+                )
             }
         } else {
-            gyroAffine(prediction, width, height, trustedTranslationOnly = true)
+            gyroscopeMotion.affine(prediction, width, height, trustedTranslationOnly = true)
         }
         source.release()
         destination.release()
@@ -1251,86 +1145,6 @@ class OpenCvZoneMarkerTracker(
         matrix.release()
         return result
     }
-
-    private fun updateGyroCalibration(
-        visualMotion: AffineMotion,
-        prediction: MotionPrediction,
-        width: Int,
-        height: Int,
-    ) {
-        if (visualMotion.inlierCount < STRONG_GLOBAL_INLIERS) return
-        val affineScale = kotlin.math.hypot(visualMotion.m00, visualMotion.m10)
-        if (abs(affineScale - 1.0) > MAX_CALIBRATION_AFFINE_SCALE_ERROR) return
-
-        val center = Point(width / 2.0, height / 2.0)
-        val mappedCenter = visualMotion.map(center)
-        val analysisDeltaX = mappedCenter.x - center.x
-        val analysisDeltaY = mappedCenter.y - center.y
-        val displayDelta = analysisVectorToDisplay(
-            analysisDeltaX,
-            analysisDeltaY,
-            prediction.displayOriented,
-        )
-        val orientationKey = gyroOrientationKey(width, height)
-        synchronized(gyroCalibrationLock) {
-            val calibration = gyroCalibrations.getOrPut(orientationKey) {
-                GyroOrientationCalibration()
-            }
-            calibration.horizontal.addGyroScaleObservation(
-                angleRadians = prediction.screenYRotation.toDouble(),
-                pixelDelta = displayDelta.x,
-                frameExtent = width,
-            )
-            calibration.vertical.addGyroScaleObservation(
-                angleRadians = prediction.screenXRotation.toDouble(),
-                pixelDelta = displayDelta.y,
-                frameExtent = height,
-            )
-        }
-    }
-
-    private fun GyroAxisCalibration.addGyroScaleObservation(
-        angleRadians: Double,
-        pixelDelta: Double,
-        frameExtent: Int,
-    ) {
-        if (abs(angleRadians) < MIN_GYRO_CALIBRATION_ANGLE ||
-            abs(angleRadians) > MAX_GYRO_CALIBRATION_ANGLE ||
-            abs(pixelDelta) < MIN_GYRO_CALIBRATION_PIXELS ||
-            frameExtent <= 0
-        ) {
-            return
-        }
-        val candidate = pixelDelta / angleRadians / frameExtent
-        if (!candidate.isFinite() ||
-            candidate !in MIN_NORMALIZED_GYRO_SCALE..MAX_NORMALIZED_GYRO_SCALE
-        ) {
-            return
-        }
-        val current = estimate()
-        if (current != null && samples.size >= MIN_GYRO_OUTLIER_FILTER_SAMPLES &&
-            candidate !in
-            (current * MIN_GYRO_OBSERVATION_RATIO)..(current * MAX_GYRO_OBSERVATION_RATIO)
-        ) {
-            return
-        }
-        samples.addLast(candidate)
-        while (samples.size > MAX_GYRO_CALIBRATION_SAMPLES) samples.removeFirst()
-    }
-
-    private fun gyroCalibrationSnapshot(width: Int, height: Int): GyroCalibrationSnapshot =
-        synchronized(gyroCalibrationLock) {
-            val calibration = gyroCalibrations[gyroOrientationKey(width, height)]
-            GyroCalibrationSnapshot(
-                horizontalScale = calibration?.horizontal?.estimate(),
-                horizontalSamples = calibration?.horizontal?.samples?.size ?: 0,
-                verticalScale = calibration?.vertical?.estimate(),
-                verticalSamples = calibration?.vertical?.samples?.size ?: 0,
-            )
-        }
-
-    private fun gyroOrientationKey(width: Int, height: Int): Int =
-        if (width >= height) GYRO_LANDSCAPE_KEY else GYRO_PORTRAIT_KEY
 
     private fun updateMarkers(
         valid: List<ValidFlow>,
@@ -1649,42 +1463,6 @@ class OpenCvZoneMarkerTracker(
         }
     }
 
-    private fun gyroAffine(
-        prediction: MotionPrediction,
-        width: Int,
-        height: Int,
-        trustedTranslationOnly: Boolean,
-    ): AffineMotion {
-        val angle = prediction.rollRadians.toDouble()
-        val cos = kotlin.math.cos(angle)
-        val sin = kotlin.math.sin(angle)
-        val centerX = width / 2.0
-        val centerY = height / 2.0
-        val dx = if (!trustedTranslationOnly || prediction.xTranslationTrusted) {
-            prediction.dx.toDouble()
-        } else {
-            0.0
-        }
-        val dy = if (!trustedTranslationOnly || prediction.yTranslationTrusted) {
-            prediction.dy.toDouble()
-        } else {
-            0.0
-        }
-        return AffineMotion(
-            cos,
-            -sin,
-            dx + centerX - cos * centerX + sin * centerY,
-            sin,
-            cos,
-            dy + centerY - sin * centerX - cos * centerY,
-            false,
-            0,
-        )
-    }
-
-    private fun gyroMap(point: Point, prediction: MotionPrediction, width: Int, height: Int): Point =
-        gyroAffine(prediction, width, height, trustedTranslationOnly = false).map(point)
-
     private fun basePreviewToTexture(
         baseX: Float,
         baseY: Float,
@@ -1737,28 +1515,6 @@ class OpenCvZoneMarkerTracker(
         trackedDisplayZoom,
     )
 
-    private fun displayVectorToAnalysis(
-        x: Double,
-        y: Double,
-        displayOriented: Boolean,
-    ): Point = ZoneCoordinateMapper.displayVectorToAnalysis(
-        x,
-        y,
-        displayOriented,
-        displayRotationDegrees(),
-    )
-
-    private fun analysisVectorToDisplay(
-        x: Double,
-        y: Double,
-        displayOriented: Boolean,
-    ): Point = ZoneCoordinateMapper.analysisVectorToDisplay(
-        x,
-        y,
-        displayOriented,
-        displayRotationDegrees(),
-    )
-
     private fun displayRotationDegrees(): Int =
         when (textureView.display?.rotation ?: Surface.ROTATION_0) {
             Surface.ROTATION_90 -> 90
@@ -1766,128 +1522,6 @@ class OpenCvZoneMarkerTracker(
             Surface.ROTATION_270 -> 270
             else -> 0
         }
-
-    private fun consumeGyroPrediction(
-        width: Int,
-        height: Int,
-        displayOriented: Boolean,
-    ): MotionPrediction {
-        val rotations = synchronized(gyroLock) {
-            val result = Triple(
-                accumulatedScreenXRotation,
-                accumulatedScreenYRotation,
-                accumulatedScreenZRotation,
-            )
-            accumulatedScreenXRotation = 0f
-            accumulatedScreenYRotation = 0f
-            accumulatedScreenZRotation = 0f
-            result
-        }
-        val screenXRotation = rotations.first
-        val screenYRotation = rotations.second
-        val screenZRotation = rotations.third
-
-        val info = meterState.cameraInfo
-        val screenAspect = width.toDouble() / height.coerceAtLeast(1).toDouble()
-        var horizontalFov = Math.toRadians(64.0)
-        var verticalFov = 2.0 * atan(kotlin.math.tan(horizontalFov / 2.0) / screenAspect)
-        if (info.focalLengthMm > 0f && info.sensorWidthMm > 0f && info.sensorHeightMm > 0f) {
-            val displayDegrees = displayRotationDegrees()
-            val relativeRotation = (info.sensorOrientationDegrees - displayDegrees + 360) % 360
-            val frameAspectInSensor = if (relativeRotation == 90 || relativeRotation == 270) {
-                1.0 / screenAspect
-            } else {
-                screenAspect
-            }
-            val sensorAspect = info.sensorWidthMm.toDouble() / info.sensorHeightMm.toDouble()
-            val cropWidth: Double
-            val cropHeight: Double
-            if (sensorAspect > frameAspectInSensor) {
-                cropHeight = info.sensorHeightMm.toDouble()
-                cropWidth = cropHeight * frameAspectInSensor
-            } else {
-                cropWidth = info.sensorWidthMm.toDouble()
-                cropHeight = cropWidth / frameAspectInSensor
-            }
-            val physicalWidth = if (relativeRotation == 90 || relativeRotation == 270) cropHeight else cropWidth
-            val physicalHeight = if (relativeRotation == 90 || relativeRotation == 270) cropWidth else cropHeight
-            // Gyro predicts motion in the unzoomed SurfaceTexture sampled by OpenCV. The
-            // base-to-UI mapping above applies electronic zoom exactly once afterwards.
-            val baseFocalLength = info.focalLengthMm.toDouble()
-            horizontalFov = 2.0 * atan(physicalWidth / (2.0 * baseFocalLength))
-            verticalFov = 2.0 * atan(physicalHeight / (2.0 * baseFocalLength))
-        }
-        // Convert angular camera motion with a pinhole projection. The former width/FOV
-        // approximation over-predicted motion on wide lenses even when metadata was correct.
-        val metadataHorizontalScale = 1.0 /
-            (2.0 * kotlin.math.tan(horizontalFov.coerceAtLeast(0.12) / 2.0))
-        val metadataVerticalScale = 1.0 /
-            (2.0 * kotlin.math.tan(verticalFov.coerceAtLeast(0.12) / 2.0))
-        val learned = gyroCalibrationSnapshot(width, height)
-        val horizontalScale = blendedGyroScale(
-            metadataHorizontalScale,
-            learned.horizontalScale,
-            learned.horizontalSamples,
-        )
-        val verticalScale = blendedGyroScale(
-            metadataVerticalScale,
-            learned.verticalScale,
-            learned.verticalSamples,
-        )
-        val horizontalTrusted = learned.horizontalSamples >= MIN_TRUSTED_GYRO_SAMPLES
-        val verticalTrusted = learned.verticalSamples >= MIN_TRUSTED_GYRO_SAMPLES
-
-        val displayDx = screenYRotation * horizontalScale
-        // Positive rotation about the displayed horizontal axis tilts the rear camera upward;
-        // scene content therefore moves toward positive bitmap Y. This sign must stay in
-        // displayed coordinates, especially after a landscape rotation.
-        val displayDy = screenXRotation * verticalScale
-        val analysisDelta = displayVectorToAnalysis(displayDx, displayDy, displayOriented)
-        val (xTrusted, yTrusted) = displayTrustToAnalysisTrust(
-            horizontalTrusted,
-            verticalTrusted,
-            displayOriented,
-        )
-        val maxDxFraction = if (xTrusted) MAX_TRUSTED_GYRO_FRAME_FRACTION else MAX_SEED_FRAME_FRACTION
-        val maxDyFraction = if (yTrusted) MAX_TRUSTED_GYRO_FRAME_FRACTION else MAX_SEED_FRAME_FRACTION
-        val dx = (analysisDelta.x * width)
-            .coerceIn(-width * maxDxFraction, width * maxDxFraction).toFloat()
-        val dy = (analysisDelta.y * height)
-            .coerceIn(-height * maxDyFraction, height * maxDyFraction).toFloat()
-        return MotionPrediction(
-            dx = dx,
-            dy = dy,
-            rollRadians = screenZRotation.coerceIn(-0.35f, 0.35f),
-            screenXRotation = screenXRotation,
-            screenYRotation = screenYRotation,
-            displayOriented = displayOriented,
-            xTranslationTrusted = xTrusted,
-            yTranslationTrusted = yTrusted,
-        )
-    }
-
-    private fun blendedGyroScale(
-        metadataScale: Double,
-        learnedScale: Double?,
-        sampleCount: Int,
-    ): Double {
-        if (learnedScale == null || sampleCount < MIN_GYRO_BLEND_SAMPLES) return metadataScale
-        val learnedWeight = ((sampleCount - MIN_GYRO_BLEND_SAMPLES + 1).toDouble() /
-            GYRO_BLEND_FULL_CONFIDENCE_SAMPLES).coerceIn(0.0, 1.0)
-        return metadataScale * (1.0 - learnedWeight) + learnedScale * learnedWeight
-    }
-
-    private fun displayTrustToAnalysisTrust(
-        horizontalTrusted: Boolean,
-        verticalTrusted: Boolean,
-        displayOriented: Boolean,
-    ): Pair<Boolean, Boolean> {
-        if (displayOriented) return horizontalTrusted to verticalTrusted
-        return when (displayRotationDegrees()) {
-            90, 270 -> verticalTrusted to horizontalTrusted
-            else -> horizontalTrusted to verticalTrusted
-        }
-    }
 
     private fun releaseOpenCvState() {
         rgba.release()
@@ -1956,23 +1590,6 @@ class OpenCvZoneMarkerTracker(
         private const val RANSAC_REFINE_ITERATIONS = 10L
         private const val MIN_EIGEN_THRESHOLD = 0.0001
         private const val MAX_LOCAL_CORRECTION = 22.0
-        private const val MAX_CALIBRATION_AFFINE_SCALE_ERROR = 0.06
-        private const val MIN_GYRO_CALIBRATION_ANGLE = 0.0008
-        private const val MAX_GYRO_CALIBRATION_ANGLE = 0.09
-        private const val MIN_GYRO_CALIBRATION_PIXELS = 0.35
-        private const val MIN_NORMALIZED_GYRO_SCALE = 0.18
-        private const val MAX_NORMALIZED_GYRO_SCALE = 2.5
-        private const val MIN_GYRO_OBSERVATION_RATIO = 0.58
-        private const val MAX_GYRO_OBSERVATION_RATIO = 1.72
-        private const val MIN_GYRO_OUTLIER_FILTER_SAMPLES = 4
-        private const val MAX_GYRO_CALIBRATION_SAMPLES = 21
-        private const val MIN_GYRO_BLEND_SAMPLES = 3
-        private const val MIN_TRUSTED_GYRO_SAMPLES = 6
-        private const val GYRO_BLEND_FULL_CONFIDENCE_SAMPLES = 8.0
-        private const val MAX_SEED_FRAME_FRACTION = 0.16
-        private const val MAX_TRUSTED_GYRO_FRAME_FRACTION = 0.42
-        private const val GYRO_LANDSCAPE_KEY = 0
-        private const val GYRO_PORTRAIT_KEY = 1
         private const val REENTRY_FEATURE_COUNT = 700
         private const val REENTRY_REFERENCE_RADIUS = 72
         private const val MIN_REENTRY_REFERENCE_FEATURES = 8

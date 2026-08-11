@@ -24,44 +24,23 @@ interface ZoneMarkerTracker {
     /** Change only the UI crop/zoom projection; tracking coordinates and reference frames stay unchanged. */
     fun setDisplayZoom(zoom: Float)
     fun setVisibleViewport(left: Float, top: Float, right: Float, bottom: Float)
-    /** Supply an unzoomed camera luminance frame. May be called from the camera thread. */
+    /**
+     * Atomically reserve the worker before CameraController copies a YUV plane.
+     * False means the camera frame must be closed without allocating or copying luminance bytes.
+     */
+    fun tryReserveFrame(): Boolean
+    /** Cancel a successful reservation when the camera plane cannot be copied. */
+    fun cancelFrameReservation()
+    /**
+     * Transfer ownership of a reserved, unzoomed luminance frame to the tracker.
+     * Implementations must close the frame after processing or rejection.
+     */
     fun offerFrame(frame: ZoneTrackingFrame)
 }
-
-data class ZoneTrackingFrame(
-    val width: Int,
-    val height: Int,
-    val luma: ByteArray,
-    /** Clockwise rotation that makes the camera buffer upright in the current display. */
-    val clockwiseRotationDegrees: Int,
-    val capturedAtNs: Long = System.nanoTime(),
-)
 fun interface ZoneMarkerTrackerFactory {
     fun create(
         textureView: TextureView,
         meterState: MeterState,
         callback: (Int, Float, Float, ZoneTrackingState) -> Unit,
     ): ZoneMarkerTracker
-}
-
-/** High-level performance controls can be tuned per device without editing the algorithm. */
-data class ZoneTrackingTuning(
-    val trackingLongEdge: Int = 512,
-    val frameIntervalMs: Long = 24L,
-    val perMarkerIntervalMs: Long = 1L,
-    val maxFrameIntervalMs: Long = 42L,
-    val globalFeatureCount: Int = 160,
-    val localFeaturesPerMarker: Int = 16,
-    val featureRefreshFrames: Int = 14,
-    val mappingStabilizationFrames: Int = 1,
-)
-
-class OpenCvZoneMarkerTrackerFactory(
-    private val tuning: ZoneTrackingTuning = ZoneTrackingTuning(),
-) : ZoneMarkerTrackerFactory {
-    override fun create(
-        textureView: TextureView,
-        meterState: MeterState,
-        callback: (Int, Float, Float, ZoneTrackingState) -> Unit,
-    ): ZoneMarkerTracker = OpenCvZoneMarkerTracker(textureView, meterState, tuning, callback)
 }

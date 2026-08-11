@@ -53,11 +53,10 @@ class MeterLayout @JvmOverloads constructor(
     val calibrationView = CalibrationView(context, state)
     val vignettingCalibrationView = VignettingCalibrationView(context, state)
     val zoneView = ZoneSystemView(context, state)
-    private val zoneMarkerTracker: ZoneMarkerTracker = trackerFactory.create(
-        textureView,
-        state,
-    ) { id, x, y, trackingState ->
-        zoneView.updateMarkerTracking(id, x, y, trackingState)
+    private val zoneMarkerTracker: ZoneMarkerTracker = DeferredZoneMarkerTracker {
+        trackerFactory.create(textureView, state) { id, x, y, trackingState ->
+            zoneView.updateMarkerTracking(id, x, y, trackingState)
+        }
     }
     var isSettingsOpen: Boolean = false
         private set
@@ -567,6 +566,13 @@ class MeterLayout @JvmOverloads constructor(
 
     fun offerZoneTrackingFrame(frame: ZoneTrackingFrame) {
         zoneMarkerTracker.offerFrame(frame)
+    }
+
+    /** Called on the camera thread before any Y-plane bytes are copied. */
+    fun tryReserveZoneTrackingFrame(): Boolean = zoneMarkerTracker.tryReserveFrame()
+
+    fun cancelZoneTrackingFrameReservation() {
+        zoneMarkerTracker.cancelFrameReservation()
     }
 
     fun completeZoneMeasurement(reading: MeterReading): ZoneMarker? {

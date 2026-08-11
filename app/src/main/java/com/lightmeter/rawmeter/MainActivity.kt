@@ -291,6 +291,13 @@ class MainActivity : Activity(), CameraControllerCallback {
         showRawUnavailableDialog(force = false)
     }
 
+    override fun tryReserveZoneTrackingFrame(): Boolean =
+        meterLayout.tryReserveZoneTrackingFrame()
+
+    override fun cancelZoneTrackingFrameReservation() {
+        meterLayout.cancelZoneTrackingFrameReservation()
+    }
+
     override fun onZoneTrackingFrame(frame: ZoneTrackingFrame) {
         meterLayout.offerZoneTrackingFrame(frame)
     }

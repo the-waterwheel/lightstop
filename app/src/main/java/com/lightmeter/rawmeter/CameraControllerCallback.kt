@@ -4,6 +4,8 @@ interface CameraControllerCallback {
     fun localized(chinese: String, english: String): String
     fun onCameraInfo(info: CameraUiInfo)
     fun onRawUnavailable()
+    fun tryReserveZoneTrackingFrame(): Boolean
+    fun cancelZoneTrackingFrameReservation()
     fun onZoneTrackingFrame(frame: ZoneTrackingFrame)
     fun onMeteringStarted(source: MeteringSource, frameCount: Int)
     fun onMeterReading(reading: MeterReading)

@@ -110,8 +110,14 @@ app/src/main/java/com/lightmeter/rawmeter
 ├─ ZoneLayoutGeometry.kt            Zone 页面纯布局几何
 ├─ ZoneCoordinateMapper.kt          UI/预览/OpenCV 坐标映射
 ├─ ZoneFrameQuality.kt              YUV 跟踪帧质量检查
-├─ ZoneMarkerTracker.kt             可替换的跟踪接口与调优参数
-└─ ZoneTrackingEngine.kt            OpenCV、陀螺仪和重识别编排
+├─ ZoneMarkerTracker.kt             可替换的跟踪接口与帧所有权契约
+├─ DeferredZoneMarkerTracker.kt     首次进入 Zone 才创建原生跟踪器
+├─ OpenCvZoneMarkerTrackerFactory.kt OpenCV 跟踪器工厂与调优参数
+├─ ZoneTrackingFrames.kt            Y 平面复制、引用计数与三缓冲池
+├─ ZoneCameraFramePipeline.kt       相机线程背压与最新参考帧管理
+├─ ZoneOpenCvFramePreprocessor.kt   YUV 方向和跟踪分辨率预处理
+├─ ZoneGyroscopeMotion.kt           陀螺仪采样、预测与视觉自校准
+└─ ZoneTrackingEngine.kt            光流、RANSAC 和重识别编排
 
 app/src/main/cpp
 ├─ raw_meter.cpp                    Bayer RAW 中位数统计
@@ -119,6 +125,14 @@ app/src/main/cpp
 ```
 
 拆分原则是让 Camera2 生命周期、纯计算、布局几何、坐标变换和 UI 状态相互隔离。核心大类仍负责流程编排，但可独立验证的策略已经移到无 Android 生命周期状态的辅助文件中。
+
+### Zone 跟踪生命周期与内存
+
+- 应用启动和 Normal 模式布局不会创建 `OpenCvZoneMarkerTracker`；只有第一次完整进入 Zone 后才加载 OpenCV、创建原生 Mat、工作线程和陀螺仪监听器。退出 Zone 后停止采样但保留实例，避免重复进入时反复初始化；View 销毁时统一释放。
+- Camera2 回调先取得循环缓冲槽并向跟踪器原子预约处理权，预约失败的帧直接关闭，不复制 `width × height` 数据。
+- Y 平面使用 3 块固定槽位。分辨率不变时不再逐帧创建大 `ByteArray`；分辨率改变时每个槽位最多重新分配一次。
+- OpenCV 工作线程和触屏测光所需的“最新参考帧”通过引用计数共享槽位，最后一个读取者关闭后才能复用，避免异步处理读到下一帧覆盖的数据。
+- 离开 Zone 时日志 `Zone YUV summary` 会报告实际复制帧、忙碌丢帧、池耗尽丢帧和累计大缓冲分配数，便于真机核对背压效果。
 
 ## UI 适配策略
 
@@ -208,5 +222,5 @@ app/build/outputs/apk/debug/app-debug.apk
 ## 验证与维护
 
 - 当前源码已通过 `:app:testDebugUnitTest`、`:app:assembleDebug`、`:app:assembleRelease` 和 `:app:bundleRelease`。
-- 当前 3 个自动化单元测试覆盖左右手布局下 Zone/Normal 模式入口拖动方向；后续应继续为曝光数学、多帧融合、画幅几何、Zone 坐标映射和校准文件读写补充纯逻辑测试。Camera2、传感器和设备相关行为仍需真机验证。
+- 当前 7 个自动化单元测试覆盖左右手布局下 Zone/Normal 模式入口拖动方向、OpenCV 延迟创建、三缓冲复用、引用计数和带 stride 的 Y 平面复制；后续应继续为曝光数学、多帧融合、画幅几何、Zone 坐标映射和校准文件读写补充纯逻辑测试。Camera2、传感器和设备相关行为仍需真机验证。
 - Camera2 和 RAW 行为存在明显厂商差异，正式发布前仍需覆盖不同品牌、RAW/非 RAW、逻辑/物理多摄和横竖屏组合的实机矩阵。
