@@ -186,7 +186,7 @@ app/build/outputs/apk/debug/app-debug.apk
 
 ## Release 体积
 
-当前 release 配置未开启 R8 或资源收缩，并在一个通用 APK 中包含 `arm64-v8a`、`armeabi-v7a`、`x86_64` 三个 ABI。接入精简 OpenCV 4.12.0 后，实测 unsigned release APK 为 `78,192,832` bytes（约 74.57 MiB），release AAB 为 `33,254,264` bytes（约 31.71 MiB）。APK 内容大致为：
+当前 release 配置未开启 R8 或资源收缩，并在一个通用 APK 中包含 `arm64-v8a`、`armeabi-v7a`、`x86_64` 三个 ABI。接入精简 OpenCV 4.12.0 和 Zone 跟踪内存优化后，实测 unsigned release APK 为 `78,213,312` bytes（约 74.59 MiB），release AAB 为 `33,259,524` bytes（约 31.72 MiB）。APK 内容大致为：
 
 | 内容 | 大小 |
 |---|---:|
@@ -201,7 +201,7 @@ app/build/outputs/apk/debug/app-debug.apk
 - 通用三 ABI APK，R8 + 资源收缩：约 76–78 MB。
 - 单独 arm64-v8a APK，R8 + 资源收缩：约 17–19 MB。
 - 单独 armeabi-v7a APK，R8 + 资源收缩：约 12–14 MB。
-- Android App Bundle：当前上传包约 33.25 MB；商店按 ABI 拆分后，每台设备只接收匹配的原生库。
+- Android App Bundle：当前上传包约 33.26 MB；商店按 ABI 拆分后，每台设备只接收匹配的原生库。
 
 如需继续明显缩小，应按以下顺序处理：
 
