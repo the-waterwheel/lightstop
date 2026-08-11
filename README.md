@@ -200,15 +200,15 @@ app/build/outputs/bundle/release/app-release.aab
 
 应用固定使用本地版本化 AAR `app/libs/opencv-slim-4.12.0-r1.aar`，不再在应用构建期间从 Maven 动态解析 OpenCV。AAR 由 OpenCV `4.12.0` 官方源码构建，保留应用和官方 Android Java 胶水层所需模块，并包含 `arm64-v8a`、`armeabi-v7a`、`x86_64`。完整的版本矩阵、源码校验值、模块说明、Windows 启动器、构建命令和升级规则见 [精简 OpenCV 构建说明](tools/opencv-slim/README.md)。
 
-当前 AAR 为 `63,883,833` bytes，SHA-256：
+当前 AAR 为 `63,882,947` bytes，SHA-256：
 
 ```text
-13EF54C6CD6801006FE1FC98382096D02D2955CE082EE3CA7BA2008EF1CBA902
+0A5C95F697D63C94F87D0B3CBAC8ACB61046D089BCEBCF25BF307A0F796767D0
 ```
 
 ## Release 体积
 
-当前 release 已启用 R8 和资源收缩，并在一个通用 APK 中包含 `arm64-v8a`、`armeabi-v7a`、`x86_64` 三个 ABI。版本 `0.2.0` 的实测 unsigned release APK 为 `76,054,315` bytes（约 72.53 MiB），release AAB 为 `32,957,608` bytes（约 31.43 MiB）。APK 内容大致为：
+当前 release 已启用 R8 和资源收缩，并在一个通用 APK 中包含 `arm64-v8a`、`armeabi-v7a`、`x86_64` 三个 ABI。版本 `0.2.0` 的实测 unsigned release APK 为 `76,056,239` bytes（约 72.53 MiB），release AAB 为 `32,959,091` bytes（约 31.43 MiB）。APK 内容大致为：
 
 | 内容 | 大小 |
 |---|---:|

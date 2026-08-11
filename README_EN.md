@@ -156,8 +156,8 @@ app/build/outputs/apk/release/app-release-unsigned.apk
 app/build/outputs/bundle/release/app-release.aab
 ```
 
-For version 0.2.0, the verified unsigned universal APK is 76,054,315 bytes
-(72.53 MiB), and the release AAB is 32,957,608 bytes (31.43 MiB). Native
+For version 0.2.0, the verified unsigned universal APK is 76,056,239 bytes
+(72.53 MiB), and the release AAB is 32,959,091 bytes (31.43 MiB). Native
 libraries dominate the universal APK; R8 reduces the DEX payload to about
 0.71 MiB.
 
@@ -182,8 +182,8 @@ modules needed by lightstop and the official Android Java glue, and includes
 `arm64-v8a`, `armeabi-v7a`, and `x86_64`.
 
 ```text
-Size: 63,883,833 bytes
-SHA-256: 13EF54C6CD6801006FE1FC98382096D02D2955CE082EE3CA7BA2008EF1CBA902
+Size: 63,882,947 bytes
+SHA-256: 0A5C95F697D63C94F87D0B3CBAC8ACB61046D089BCEBCF25BF307A0F796767D0
 ```
 
 See [the reproducible OpenCV build guide](tools/opencv-slim/README.md) for the

@@ -14,6 +14,7 @@ All notable user-facing changes are recorded here. The project follows
 - Added selectable 1/6, 1/3, 1/2, and 1 EV exposure-compensation steps.
 - Enabled R8 code shrinking and Android resource shrinking for release builds.
 - Added Apache-2.0 project licensing and bundled third-party notices.
+- Sanitized user-profile paths from OpenCV's embedded build-information string.
 
 ## 0.1.2
 

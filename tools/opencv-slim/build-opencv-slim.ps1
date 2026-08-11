@@ -52,12 +52,69 @@ $officialSdkScript = Join-Path $sourceDir "platforms\android\build_sdk.py"
 $officialAarScript = Join-Path $sourceDir "platforms\android\build_java_shared_aar.py"
 $downloadDir = Join-Path $OpenCvRoot "downloads"
 
+# OpenCV embeds its CMake status report in cv::getBuildInformation(). Without
+# sanitizing it, public binaries reveal the local Windows account through SDK,
+# NDK, compiler, and Python paths. This deterministic source patch changes only
+# that diagnostic string; it does not alter OpenCV algorithms or binary APIs.
+$openCvUtilsPath = Join-Path $sourceDir "cmake\OpenCVUtils.cmake"
+$buildInfoMarker = "# lightstop: redact the build user's home directory (v2)"
+$legacyBuildInfoMarker = "# lightstop: redact the build user's home directory"
+$buildInfoNeedle = '  string(REGEX REPLACE "^\n+|\n+$" "" msg "${msg}")'
+$legacyBuildInfoSanitizer = @'
+  # lightstop: redact the build user's home directory
+  if(DEFINED ENV{USERPROFILE})
+    file(TO_CMAKE_PATH "$ENV{USERPROFILE}" __lightstop_user_profile)
+    string(REPLACE "${__lightstop_user_profile}" "<USERPROFILE>" msg "${msg}")
+    string(REPLACE "$ENV{USERPROFILE}" "<USERPROFILE>" msg "${msg}")
+  endif()
+'@
+$buildInfoSanitizer = @'
+  # lightstop: redact the build user's home directory (v2)
+  if(DEFINED ENV{USERPROFILE})
+    file(TO_CMAKE_PATH "$ENV{USERPROFILE}" __lightstop_user_profile)
+    string(REPLACE "\\" "\\\\" __lightstop_user_profile_escaped "$ENV{USERPROFILE}")
+    string(REPLACE "${__lightstop_user_profile}" "<USERPROFILE>" msg "${msg}")
+    string(REPLACE "${__lightstop_user_profile_escaped}" "<USERPROFILE>" msg "${msg}")
+    string(REPLACE "$ENV{USERPROFILE}" "<USERPROFILE>" msg "${msg}")
+  endif()
+'@
+if (-not (Test-Path -LiteralPath $openCvUtilsPath)) {
+    throw "OpenCV build utility is missing: $openCvUtilsPath"
+}
+$openCvUtils = [IO.File]::ReadAllText($openCvUtilsPath)
+if (-not $openCvUtils.Contains($buildInfoMarker)) {
+    if ($openCvUtils.Contains($legacyBuildInfoSanitizer)) {
+        $patchedOpenCvUtils = $openCvUtils.Replace(
+            $legacyBuildInfoSanitizer,
+            $buildInfoSanitizer
+        )
+    }
+    elseif ($openCvUtils.Contains($legacyBuildInfoMarker)) {
+        throw "Unknown legacy build-info patch found; audit OpenCVUtils.cmake before rebuilding."
+    }
+    elseif (-not $openCvUtils.Contains($buildInfoNeedle)) {
+        throw "OpenCV build-info patch point changed; audit OpenCVUtils.cmake before upgrading."
+    }
+    else {
+        $patchedOpenCvUtils = $openCvUtils.Replace(
+            $buildInfoNeedle,
+            "$buildInfoNeedle`r`n$buildInfoSanitizer"
+        )
+    }
+    [IO.File]::WriteAllText(
+        $openCvUtilsPath,
+        $patchedOpenCvUtils,
+        [Text.UTF8Encoding]::new($false)
+    )
+}
+
 $requiredPaths = @(
     $sourceDir,
     $AndroidSdk,
     $ndkPath,
     $cmakePath,
     $PythonExecutable,
+    $openCvUtilsPath,
     $configPath,
     $aarWrapperPath,
     $gradleWrapperProperties,

@@ -30,6 +30,8 @@ ADE v0.1.2e MD5: 962CE79E0B95591F226431F7B5F152CD
 
 脚本会在每次构建前验证这些归档，并填充 OpenCV 源码的 `.cache`，避免 CMake 重复联网下载。
 
+OpenCV 会把 CMake 状态报告编译进 `cv::getBuildInformation()`。原始报告包含本机 SDK、NDK、编译器和 Python 的绝对路径，公开 AAR 时可能暴露 Windows 用户名。构建脚本会对 OpenCV `4.12.0` 的 `OpenCVUtils.cmake` 应用一段可重复、带标记的最小补丁，把用户主目录统一替换为 `<USERPROFILE>`；补丁只改变诊断文本，不改变算法、ABI 或第三方二进制。升级 OpenCV 后若补丁位置变化，脚本会立即停止并要求重新审计。
+
 源码、依赖下载、Gradle 缓存、中间文件和原始构建输出默认统一存放在项目同级目录：
 
 ```text
@@ -66,8 +68,8 @@ app\libs\opencv-slim-4.12.0-r1.aar
 当前已验证产物：
 
 ```text
-Size: 63,883,833 bytes
-SHA-256: 13EF54C6CD6801006FE1FC98382096D02D2955CE082EE3CA7BA2008EF1CBA902
+Size: 63,882,947 bytes
+SHA-256: 0A5C95F697D63C94F87D0B3CBAC8ACB61046D089BCEBCF25BF307A0F796767D0
 ```
 
 若 SDK 已生成，只重新打包 AAR：
