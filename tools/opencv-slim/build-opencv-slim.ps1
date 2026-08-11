@@ -1,10 +1,10 @@
 [CmdletBinding()]
 param(
-    [string]$OpenCvRoot = "D:\Project\opencv-lightmeter-slim",
-    [string]$AndroidSdk = "C:\Users\15449\AppData\Local\Android\Sdk",
+    [string]$OpenCvRoot = "",
+    [string]$AndroidSdk = "",
     [string]$NdkVersion = "25.1.8937393",
     [string]$CmakeVersion = "3.22.1",
-    [string]$PythonExecutable = "C:\Users\15449\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe",
+    [string]$PythonExecutable = "python",
     [switch]$SkipSdkBuild,
     [switch]$SkipAarBuild,
     [switch]$InstallIntoProject
@@ -16,6 +16,29 @@ $ErrorActionPreference = "Stop"
 $openCvVersion = "4.12.0"
 $moduleList = "core,imgproc,imgcodecs,video,videoio,features2d,calib3d,java"
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+
+if ([string]::IsNullOrWhiteSpace($OpenCvRoot)) {
+    $OpenCvRoot = Join-Path (Split-Path -Parent $projectRoot) "opencv-lightstop-slim"
+}
+if ([string]::IsNullOrWhiteSpace($AndroidSdk)) {
+    $sdkCandidates = @(
+        $env:ANDROID_SDK_ROOT,
+        $env:ANDROID_HOME,
+        $(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "Android\Sdk" })
+    ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
+    $AndroidSdk = $sdkCandidates | Select-Object -First 1
+}
+if ([string]::IsNullOrWhiteSpace($AndroidSdk)) {
+    throw "Android SDK not found. Set ANDROID_SDK_ROOT or pass -AndroidSdk."
+}
+if (-not (Test-Path -LiteralPath $PythonExecutable)) {
+    $pythonCommand = Get-Command -Name $PythonExecutable -ErrorAction SilentlyContinue
+    if (-not $pythonCommand) {
+        throw "Python not found. Put Python on PATH or pass -PythonExecutable."
+    }
+    $PythonExecutable = $pythonCommand.Source
+}
+
 $sourceDir = Join-Path $OpenCvRoot "src\opencv-$openCvVersion"
 $sdkBuildDir = Join-Path $OpenCvRoot "build\android-sdk-$openCvVersion"
 $aarBuildDir = Join-Path $OpenCvRoot "build\aar-$openCvVersion"

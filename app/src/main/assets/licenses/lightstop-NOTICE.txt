@@ -1,0 +1,9 @@
+lightstop
+Copyright 2026 lightstop contributors
+
+This product includes software developed by the OpenCV project
+(https://opencv.org/).
+
+OpenCV and all other third-party components remain the property of their
+respective copyright holders. See THIRD_PARTY_NOTICES.md and
+app/src/main/assets/licenses/ for attribution and license terms.

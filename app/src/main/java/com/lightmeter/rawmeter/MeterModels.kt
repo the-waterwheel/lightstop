@@ -26,7 +26,7 @@ data class FrameFormat(
             FrameFormat("66", "6×6 · 1:1", 56.0, 56.0),
             FrameFormat("67", "6×7 · 5:4", 70.0, 56.0),
             FrameFormat("69", "6×9 · 3:2", 84.0, 56.0),
-            FrameFormat("xpan", "XPan · 65:24", 65.0, 24.0),
+            FrameFormat("65x24", "65:24", 65.0, 24.0),
         )
     }
 }

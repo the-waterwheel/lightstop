@@ -1366,7 +1366,7 @@ class CameraController(
         }
 
     companion object {
-        private const val TAG = "RawLightMeter"
+        private const val TAG = "lightstop"
         private const val RAW_PIPELINE_DEPTH = 2
         private const val MAX_METERING_REFERENCE_AGE_NS = 350_000_000L
         private const val PREVIEW_REFERENCE_LONG_EDGE = 384

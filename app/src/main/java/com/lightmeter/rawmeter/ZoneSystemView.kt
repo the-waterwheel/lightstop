@@ -1251,7 +1251,10 @@ class ZoneSystemView(
     private fun zonePositionY(rect: RectF, zone: Double): Float =
         rect.bottom - (zone.coerceIn(0.0, 10.0) / 10.0 * rect.height()).toFloat()
 
-    private fun shortFormatLabel(): String = state.frameFormat.id.uppercase()
+    private fun shortFormatLabel(): String = when (state.frameFormat.id) {
+        "65x24" -> "65:24"
+        else -> state.frameFormat.id.uppercase()
+    }
 
     private fun formatOptionRects(g: Geometry): List<RectF> {
         val gap = 4f * density

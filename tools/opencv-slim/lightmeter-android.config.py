@@ -1,4 +1,4 @@
-"""Pinned Android build matrix for the RawLightMeter OpenCV runtime."""
+"""Pinned Android build matrix for the lightstop OpenCV runtime."""
 
 import os
 

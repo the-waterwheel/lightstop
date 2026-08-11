@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.RawLightMeter" parent="android:style/Theme.Material.Light.NoActionBar">
+    <style name="Theme.Lightstop" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
         <item name="android:windowNoTitle">true</item>
         <item name="android:windowFullscreen">true</item>

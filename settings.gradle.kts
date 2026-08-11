@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "RawLightMeter"
+rootProject.name = "lightstop"
 include(":app")

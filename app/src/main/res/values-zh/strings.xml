@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">光档</string>
+    <string name="camera_permission">需要相机权限才能进行 RAW 测光。</string>
+    <string name="raw_unavailable_title">正在使用兼容测光</string>
+    <string name="raw_unavailable_message">由于此设备的主摄无法输出 RAW_SENSOR，光档将改用经过 ISP 处理的预览画面测光。测光仍然可用，但结果可能不太准确。</string>
+    <string name="do_not_show_again">不再显示此提示</string>
+    <string name="close">关闭</string>
+</resources>

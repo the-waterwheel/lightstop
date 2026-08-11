@@ -1,6 +1,8 @@
-# RAW 测光表
+# 光档（lightstop）
 
-一个面向手动曝光与胶片摄影的 Android 反射式测光表。应用通过 Camera2 显示自动曝光预览，优先读取 `RAW_SENSOR`，在 C++ 中完成 Bayer 像素统计，再由 Kotlin 计算 EV100、光圈/快门组合和 Zone System 分区。RAW 不可用时会自动切换到 ISP 预览兼容测光。
+中文 | [English](README_EN.md)
+
+光档是一个面向手动曝光与胶片摄影的 Android 反射式测光表。应用通过 Camera2 显示自动曝光预览，优先读取 `RAW_SENSOR`，在 C++ 中完成 Bayer 像素统计，再由 Kotlin 计算 EV100、光圈/快门组合和 Zone System 分区。RAW 不可用时会自动切换到 ISP 预览兼容测光。
 
 项目当前是可在真实设备运行的高级原型：不拍摄或保存照片，不访问网络，测光、设置和校准数据全部留在应用本地。
 
@@ -13,7 +15,7 @@
 - 预览优先选择不超过 1080 级别且接近传感器比例的尺寸；设备允许时请求 60 fps。
 - 预览始终保持像素宽高比并中心裁切，不对相机缓冲区做非等比拉伸。
 - 电子变焦只改变显示裁切和测光 ROI，不向 Camera2 提交数码变焦或镜头切换请求。
-- 支持 135、半格、6×4.5、6×6、6×7、6×9 和 XPan 画幅；长边始终沿屏幕水平轴放置。
+- 支持 135、半格、6×4.5、6×6、6×7、6×9 和通用 65:24 画幅；长边始终沿屏幕水平轴放置。
 - 根据传感器方向、屏幕方向、画幅和变焦同步计算 RAW 裁切范围与等效 35 mm 焦距。
 
 ### RAW 与兼容测光
@@ -82,6 +84,8 @@
 ## 代码结构
 
 项目是单 Activity、单 `app` 模块，没有 Compose、Fragment、AndroidX、数据库或网络层。界面由自定义 `ViewGroup`、Canvas 和 `ValueAnimator` 绘制。
+
+包名和 Android application ID 继续保留为 `com.lightmeter.rawmeter`，使现有开发安装可以原位升级并保留校准及设置数据；它只是内部兼容标识，用户可见名称已经改为“光档 / lightstop”。
 
 ```text
 app/src/main/java/com/lightmeter/rawmeter
@@ -175,6 +179,23 @@ app/src/main/cpp
 app/build/outputs/apk/debug/app-debug.apk
 ```
 
+### Release 构建与签名
+
+Release 默认启用 R8 代码压缩和 Android 资源收缩：
+
+```powershell
+.\gradlew.bat :app:testDebugUnitTest :app:assembleRelease :app:bundleRelease
+```
+
+未签名 APK 和 AAB 输出到：
+
+```text
+app/build/outputs/apk/release/app-release-unsigned.apk
+app/build/outputs/bundle/release/app-release.aab
+```
+
+仓库不会保存签名密钥或密码。APK 安装和对外分发前必须使用 Android Studio 的 `Generate Signed Bundle / APK`，或 Android SDK 的 `zipalign` 与 `apksigner` 完成签名。密钥应离线备份，禁止提交 `*.jks`、`*.keystore`、`keystore.properties` 或任何密码。应用商店优先发布 AAB；GitHub Release 应上传签名 APK、SHA-256、`LICENSE`、`NOTICE` 和 `THIRD_PARTY_NOTICES.md`，不要把生成的 release 文件提交到源码仓库。
+
 ### 精简 OpenCV
 
 应用固定使用本地版本化 AAR `app/libs/opencv-slim-4.12.0-r1.aar`，不再在应用构建期间从 Maven 动态解析 OpenCV。AAR 由 OpenCV `4.12.0` 官方源码构建，保留应用和官方 Android Java 胶水层所需模块，并包含 `arm64-v8a`、`armeabi-v7a`、`x86_64`。完整的版本矩阵、源码校验值、模块说明、Windows 启动器、构建命令和升级规则见 [精简 OpenCV 构建说明](tools/opencv-slim/README.md)。
@@ -187,27 +208,28 @@ app/build/outputs/apk/debug/app-debug.apk
 
 ## Release 体积
 
-当前 release 配置未开启 R8 或资源收缩，并在一个通用 APK 中包含 `arm64-v8a`、`armeabi-v7a`、`x86_64` 三个 ABI。接入精简 OpenCV 4.12.0 和 Zone 跟踪内存优化后，实测 unsigned release APK 为 `78,217,408` bytes（约 74.59 MiB），release AAB 为 `33,262,082` bytes（约 31.72 MiB）。APK 内容大致为：
+当前 release 已启用 R8 和资源收缩，并在一个通用 APK 中包含 `arm64-v8a`、`armeabi-v7a`、`x86_64` 三个 ABI。版本 `0.2.0` 的实测 unsigned release APK 为 `76,054,315` bytes（约 72.53 MiB），release AAB 为 `32,957,608` bytes（约 31.43 MiB）。APK 内容大致为：
 
 | 内容 | 大小 |
 |---|---:|
 | x86_64 原生库 | 46.11 MiB |
 | arm64-v8a 原生库 | 15.04 MiB |
 | armeabi-v7a 原生库 | 10.39 MiB |
-| DEX | 2.88 MiB |
+| DEX | 0.71 MiB |
+| 第三方许可证资源（APK 压缩后） | 约 0.13 MiB |
 | Android 资源 | 约 0.11 MiB |
 
-与原先约 97.5 MiB 的完整 Maven OpenCV 通用 APK 相比，当前 APK 减少约 22.9 MiB（约 24.1 MB）。原生库仍占绝大多数体积，因此只开启 `shrinkResources` 预计只能节省不到 0.2 MiB；R8 主要继续压缩当前约 2.88 MiB 的 DEX。保守目标是：
+与原先约 97.5 MiB 的完整 Maven OpenCV 通用 APK 相比，精简 OpenCV 已显著减少原生库占用。原生库仍占绝大多数体积，R8 和资源收缩主要压缩 Java/Kotlin DEX 与 Android 资源。保守目标是：
 
-- 通用三 ABI APK，R8 + 资源收缩：约 76–78 MB。
+- 通用三 ABI APK，R8 + 资源收缩：实测约 72.53 MiB。
 - 单独 arm64-v8a APK，R8 + 资源收缩：约 17–19 MB。
 - 单独 armeabi-v7a APK，R8 + 资源收缩：约 12–14 MB。
-- Android App Bundle：当前上传包约 33.26 MB；商店按 ABI 拆分后，每台设备只接收匹配的原生库。
+- Android App Bundle：当前上传包约 31.43 MiB；商店按 ABI 拆分后，每台设备只接收匹配的原生库。
 
 如需继续明显缩小，应按以下顺序处理：
 
 1. 发布 AAB，或为 ABI 分别生成 APK。
-2. 开启 `isMinifyEnabled = true` 和 `isShrinkResources = true`，并验证 OpenCV/JNI 保留规则。
+2. 保持 `isMinifyEnabled = true` 和 `isShrinkResources = true`，并验证 OpenCV/JNI 保留规则。
 3. 如果不需要在模拟器发布包中保留 x86_64，可用产品风味或 ABI split 将其排除出真机发布变体；不要直接删除调试能力。
 
 体积区间基于当前精简 OpenCV APK 的实际 ZIP 内容估算，正式发布前应以签名 release/AAB 和目标应用商店报告为准。
@@ -220,8 +242,16 @@ app/build/outputs/apk/debug/app-debug.apk
 - 暗角增益图保存在应用私有目录的版本化二进制文件中。
 - Zone 点位只描述当前场景，退出会话后不持久化。
 
+完整的中英文隐私说明见 [PRIVACY.md](PRIVACY.md)。
+
+## 开源许可证
+
+光档自有源码、文档和原创启动图标采用 [Apache License 2.0](LICENSE)。OpenCV、自编译 AAR 内的第三方组件、Kotlin 运行库和 Android NDK C++ 运行库继续遵循各自许可证，详见 [NOTICE](NOTICE) 与 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。相同的第三方条款会打包到 APK/AAB 的 `assets/licenses/` 中。
+
+自编译 AAR 包含多种宽松开源许可证，以及适用 ABI 下的 Intel IPP 二进制授权，因此不能把整个 AAR 简化宣称为单一 Apache-2.0 组件。`ittnotify` 明确采用其 BSD-3-Clause 双许可证分支，不对光档施加 GPL 开源义务。
+
 ## 验证与维护
 
-- 当前源码已通过 `:app:testDebugUnitTest`、`:app:assembleDebug`、`:app:assembleRelease` 和 `:app:bundleRelease`。
-- 当前 15 个自动化单元测试覆盖左右手布局下 Zone/Normal 模式入口拖动方向、OpenCV 延迟创建、三缓冲复用、引用计数、带 stride 的 Y 平面复制、显示方向坐标稳定性、横竖布局点位映射及其往返关系，以及曝光补偿档位换算、左右手拨盘方向和刻度符号；后续应继续为曝光数学、多帧融合、画幅几何和校准文件读写补充纯逻辑测试。Camera2、传感器和设备相关行为仍需真机验证。
+- 当前源码已通过 `:app:testDebugUnitTest`、`:app:assembleDebug`、开启 R8/资源收缩的 `:app:assembleRelease` 和 `:app:bundleRelease`。
+- 当前 16 个自动化单元测试覆盖左右手布局下 Zone/Normal 模式入口拖动方向、OpenCV 延迟创建、三缓冲复用、引用计数、带 stride 的 Y 平面复制、显示方向坐标稳定性、横竖布局点位映射及其往返关系、65:24 通用画幅名称，以及曝光补偿档位换算、左右手拨盘方向和刻度符号；后续应继续为曝光数学、多帧融合、画幅几何和校准文件读写补充纯逻辑测试。Camera2、传感器和设备相关行为仍需真机验证。
 - Camera2 和 RAW 行为存在明显厂商差异，正式发布前仍需覆盖不同品牌、RAW/非 RAW、逻辑/物理多摄和横竖屏组合的实机矩阵。

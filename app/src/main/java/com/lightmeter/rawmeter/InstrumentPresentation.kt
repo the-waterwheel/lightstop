@@ -49,7 +49,7 @@ internal object InstrumentPresentation {
         "66" -> "6×6"
         "67" -> "6×7"
         "69" -> "6×9"
-        "xpan" -> "XPan"
+        "65x24" -> "65:24"
         else -> "135"
     }
 

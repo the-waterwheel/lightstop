@@ -1,4 +1,4 @@
-# RawLightMeter 精简 OpenCV 构建
+# lightstop 精简 OpenCV 构建
 
 该构建固定使用 OpenCV `4.12.0`，与应用当前使用的 Java API 保持一致。
 
@@ -30,11 +30,13 @@ ADE v0.1.2e MD5: 962CE79E0B95591F226431F7B5F152CD
 
 脚本会在每次构建前验证这些归档，并填充 OpenCV 源码的 `.cache`，避免 CMake 重复联网下载。
 
-源码、依赖下载、Gradle 缓存、中间文件和原始构建输出统一存放在：
+源码、依赖下载、Gradle 缓存、中间文件和原始构建输出默认统一存放在项目同级目录：
 
 ```text
-D:\Project\opencv-lightmeter-slim
+<项目父目录>\opencv-lightstop-slim
 ```
+
+脚本优先使用 `ANDROID_SDK_ROOT`、`ANDROID_HOME` 或当前用户的标准 Android SDK 目录，并从 `PATH` 查找 Python。也可以通过 `-OpenCvRoot`、`-AndroidSdk` 和 `-PythonExecutable` 显式覆盖，仓库内不包含开发者个人路径。
 
 ## 保留模块
 
@@ -52,12 +54,12 @@ OpenCV 会自动加入 `flann` 和 `java_bindings_generator` 等必要依赖。`
 .\tools\opencv-slim\build-opencv-slim.bat -InstallIntoProject
 ```
 
-批处理启动器只为当前构建进程绕过本机 PowerShell 的脚本执行限制，不修改系统 Execution Policy。脚本使用独立的 `GRADLE_USER_HOME`，会优先复用本机已经校验过的 Gradle 8.7 分发版和只读依赖缓存；新下载仍写入 `D:\Project\opencv-lightmeter-slim\gradle-home`。OpenCV 官方 SDK 模板默认使用体积更大的 `gradle-8.7-all.zip`，本构建将其固定替换为功能等价的 `gradle-8.7-bin.zip`。
+批处理启动器只为当前构建进程绕过本机 PowerShell 的脚本执行限制，不修改系统 Execution Policy。脚本使用 OpenCV 工作目录内独立的 `GRADLE_USER_HOME`，会优先复用本机已经校验过的 Gradle 8.7 分发版和只读依赖缓存；新下载仍写入 `<OpenCvRoot>\gradle-home`。OpenCV 官方 SDK 模板默认使用体积更大的 `gradle-8.7-all.zip`，本构建将其固定替换为功能等价的 `gradle-8.7-bin.zip`。
 
 产物为：
 
 ```text
-D:\Project\opencv-lightmeter-slim\outputs\opencv-slim-4.12.0-r1.aar
+<OpenCvRoot>\outputs\opencv-slim-4.12.0-r1.aar
 app\libs\opencv-slim-4.12.0-r1.aar
 ```
 

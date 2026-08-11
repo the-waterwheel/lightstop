@@ -941,7 +941,7 @@ internal object MeteringAnalysis {
 
     private fun log2(value: Double): Double = ln(value) / ln(2.0)
 
-    private const val TAG = "RawLightMeter"
+    private const val TAG = "lightstop"
     private const val RAW_REFERENCE_LEVEL = 0.18
     private const val SPOT_ROI_FRACTION = 0.08f
     private const val CENTER_WEIGHTED_ROI_FRACTION = 0.30f
