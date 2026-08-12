@@ -229,6 +229,7 @@ class MainActivity : Activity(), CameraControllerCallback {
 
     @Suppress("DEPRECATION")
     override fun onBackPressed() {
+        if (meterLayout.closeInformationFromBack()) return
         if (meterLayout.closeCameraManagement()) return
         if (meterLayout.closeVignettingCalibration()) return
         if (meterLayout.closeCalibration()) return

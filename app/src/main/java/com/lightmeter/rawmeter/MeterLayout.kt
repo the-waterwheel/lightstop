@@ -49,6 +49,7 @@ class MeterLayout @JvmOverloads constructor(
     }
     val instrumentView = InstrumentView(context, state)
     val settingsView = SettingsView(context, state)
+    val informationView = InformationView(context, state)
     val cameraManagementView = CameraManagementView(context, state)
     val calibrationView = CalibrationView(context, state)
     val vignettingCalibrationView = VignettingCalibrationView(context, state)
@@ -59,6 +60,8 @@ class MeterLayout @JvmOverloads constructor(
         }
     }
     var isSettingsOpen: Boolean = false
+        private set
+    var isInformationOpen: Boolean = false
         private set
     var isCalibrationOpen: Boolean = false
         private set
@@ -128,6 +131,9 @@ class MeterLayout @JvmOverloads constructor(
                         SettingActionKey.MANAGE_CAMERAS -> {
                             showCameraManagement(CameraManagementOrigin.SETTINGS)
                         }
+                        SettingActionKey.SHOW_ABOUT -> {
+                            showInformation(InformationView.Page.ABOUT)
+                        }
                         SettingActionKey.START_METERING_CALIBRATION -> {
                             showCalibration()
                             value?.onCalibrationOpened()
@@ -137,6 +143,11 @@ class MeterLayout @JvmOverloads constructor(
                             value?.onVignettingCalibrationOpened()
                         }
                     }
+                }
+            }
+            informationView.listener = object : InformationView.Listener {
+                override fun onCloseRequested() {
+                    closeInformation()
                 }
             }
             calibrationView.listener = object : CalibrationView.Listener {
@@ -265,6 +276,8 @@ class MeterLayout @JvmOverloads constructor(
         addView(instrumentView)
         settingsView.visibility = View.GONE
         addView(settingsView)
+        informationView.visibility = View.GONE
+        addView(informationView)
         cameraManagementView.visibility = View.GONE
         addView(cameraManagementView)
         calibrationView.visibility = View.GONE
@@ -284,6 +297,10 @@ class MeterLayout @JvmOverloads constructor(
             MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
         )
         settingsView.measure(
+            MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
+        )
+        informationView.measure(
             MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
             MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
         )
@@ -386,6 +403,7 @@ class MeterLayout @JvmOverloads constructor(
         )
         instrumentView.layout(0, 0, width, height)
         settingsView.layout(0, 0, width, height)
+        informationView.layout(0, 0, width, height)
         cameraManagementView.layout(0, 0, width, height)
         calibrationView.layout(0, 0, width, height)
         vignettingCalibrationView.layout(0, 0, width, height)
@@ -433,6 +451,7 @@ class MeterLayout @JvmOverloads constructor(
         updateBackground()
         instrumentView.invalidate()
         settingsView.invalidate()
+        informationView.invalidate()
         cameraManagementView.invalidate()
         calibrationView.invalidate()
         vignettingCalibrationView.invalidate()
@@ -458,6 +477,7 @@ class MeterLayout @JvmOverloads constructor(
     }
 
     fun closeSettings(): Boolean {
+        if (isInformationOpen) return closeInformationFromBack()
         if (!isSettingsOpen) return false
         isSettingsOpen = false
         settingsView.animate().cancel()
@@ -469,6 +489,51 @@ class MeterLayout @JvmOverloads constructor(
                 if (!isSettingsOpen) settingsView.visibility = View.GONE
             }
             .start()
+        return true
+    }
+
+    private fun showInformation(page: InformationView.Page) {
+        if (isInformationOpen || !isSettingsOpen) return
+        isInformationOpen = true
+        settingsView.visibility = View.GONE
+        informationView.animate().cancel()
+        informationView.show(page)
+        informationView.visibility = View.VISIBLE
+        informationView.bringToFront()
+        informationView.translationX = width.toFloat().coerceAtLeast(1f)
+        informationView.animate()
+            .translationX(0f)
+            .setDuration(280L)
+            .setInterpolator(DecelerateInterpolator())
+            .start()
+    }
+
+    /** Android Back first leaves a license document, then leaves the information screen. */
+    fun closeInformationFromBack(): Boolean {
+        if (!isInformationOpen) return false
+        if (informationView.navigateBack()) return true
+        return closeInformation()
+    }
+
+    private fun closeInformation(): Boolean {
+        if (!isInformationOpen) return false
+        isInformationOpen = false
+        informationView.animate().cancel()
+        informationView.animate()
+            .translationX(width.toFloat().coerceAtLeast(1f))
+            .setDuration(240L)
+            .setInterpolator(DecelerateInterpolator())
+            .withEndAction {
+                if (!isInformationOpen) {
+                    informationView.visibility = View.GONE
+                    informationView.clearContentCache()
+                }
+            }
+            .start()
+        settingsView.translationY = 0f
+        settingsView.visibility = View.VISIBLE
+        settingsView.bringToFront()
+        informationView.bringToFront()
         return true
     }
 

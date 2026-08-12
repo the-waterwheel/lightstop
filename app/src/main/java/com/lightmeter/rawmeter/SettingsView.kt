@@ -144,9 +144,14 @@ class SettingsView(
         val bottomPadding = 18f * density
         val rowGap = 10f * density
         val rowHeight = if (width > height) 74f * density else 84f * density
+        val compactActionHeight = if (width > height) 48f * density else 54f * density
+        val actionHeights = section.actions.map { action ->
+            if (action.key == SettingActionKey.SHOW_ABOUT) compactActionHeight else rowHeight
+        }
         val rowCount = section.items.size + section.actions.size
         val contentHeight = topPadding +
-            rowCount * rowHeight +
+            section.items.size * rowHeight +
+            actionHeights.sum() +
             max(0, rowCount - 1) * rowGap +
             bottomPadding
         maxScrollOffset = max(0f, contentHeight - (height - headerHeight))
@@ -211,8 +216,9 @@ class SettingsView(
             }
             y += rowHeight + rowGap
         }
-        section.actions.forEach { action ->
-            val row = RectF(10f * density, y, width - 10f * density, y + rowHeight)
+        section.actions.forEachIndexed { index, action ->
+            val actionHeight = actionHeights[index]
+            val row = RectF(10f * density, y, width - 10f * density, y + actionHeight)
             paint.style = Paint.Style.FILL
             paint.color = background
             canvas.drawRect(row, paint)
@@ -263,7 +269,7 @@ class SettingsView(
                 )
             }
             newActionTargets += ActionHitTarget(action, button)
-            y += rowHeight + rowGap
+            y += actionHeight + rowGap
         }
         optionTargets = newTargets
         actionTargets = newActionTargets
