@@ -48,6 +48,11 @@ code.
   relationship of the dependent scale.
 - Chinese and English menus, light and dark themes, and complete right- or
   left-handed layouts.
+- A bilingual About screen with the application version, AI-assisted
+  development disclosure, OpenCV attribution, and a clear metering-result
+  notice for important or non-repeatable work.
+- An in-app open-source license browser under About. Complete bundled license
+  and attribution texts remain accessible without extracting the APK.
 - 135, half-frame, 6×4.5, 6×6, 6×7, 6×9, and generic 65:24 frame formats. The
   long edge remains horizontal in the viewfinder.
 
@@ -82,6 +87,8 @@ code.
 - Drag the `zone` handle into the page to enter Zone System mode.
 - Tap the gear for metering, general, camera-management, and calibration
   settings.
+- Open `General` → `About` for the metering-result notice; the open-source
+  license browser is available after the About text.
 
 ## Project structure
 
@@ -240,6 +247,9 @@ Project-owned source code, documentation, and the original launcher icon are
 licensed under the [Apache License 2.0](LICENSE). Third-party components retain
 their own licenses; see [NOTICE](NOTICE) and
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+The same notices are bundled in the APK and can be read from `General` →
+`About` → `Open-source licenses`.
 
 Product and dependency names are used only to identify their origin. No
 endorsement by their respective owners is implied.

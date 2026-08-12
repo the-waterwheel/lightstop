@@ -19,6 +19,7 @@ enum class SettingKey {
 
 enum class SettingActionKey {
     MANAGE_CAMERAS,
+    SHOW_ABOUT,
     START_METERING_CALIBRATION,
     START_VIGNETTING_CALIBRATION,
 }
@@ -136,6 +137,12 @@ object SettingsCatalog {
                         option(Handedness.RIGHT, "右手", "Right"),
                         option(Handedness.LEFT, "左手", "Left"),
                     ),
+                ),
+            ),
+            actions = listOf(
+                SettingActionSpec(
+                    key = SettingActionKey.SHOW_ABOUT,
+                    label = LocalizedLabel("关于", "About"),
                 ),
             ),
         ),
