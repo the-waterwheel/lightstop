@@ -3,6 +3,22 @@
 All notable user-facing changes are recorded here. The project follows
 [Semantic Versioning](https://semver.org/) for public releases.
 
+## Unreleased
+
+- Added sequential RAW and compatible-preview calibration for RAW-capable
+  cameras, while compatible-only cameras skip RAW calibration.
+- Added bilingual compatibility mode settings and camera-error recovery across
+  full, RAW-only, YUV-compatible, preview-only, and logical-camera routes.
+- Changed compatible metering to one ISP-processed frame, with a maximum
+  three-frame/250 ms YUV attempt before a single preview fallback.
+- Limited RAW capture to one full-size image in flight and explicitly cancel
+  completed RAW, YUV, and vignetting timeout callbacks.
+- Fixed background interruption so an in-progress measurement or calibration
+  does not remain permanently displayed as measuring.
+- Added half-frame naming/layout corrections and expanded bilingual UI text.
+- Documented camera stream profiles, resource ownership, vendor boundaries,
+  and the planned `CameraController` decomposition.
+
 ## 0.2.1 - 2026-08-12
 
 - Added a compact **About** entry under General settings.

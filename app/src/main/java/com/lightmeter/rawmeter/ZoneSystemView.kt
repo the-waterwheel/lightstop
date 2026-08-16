@@ -847,7 +847,12 @@ class ZoneSystemView(
     private fun drawFormatMenu(canvas: Canvas, g: Geometry) {
         formatOptionRects(g).forEachIndexed { index, rect ->
             val selected = index == state.frameIndex
-            drawOutlinedButton(canvas, rect, FrameFormat.ALL[index].label, selected)
+            drawOutlinedButton(
+                canvas,
+                rect,
+                FrameFormat.ALL[index].displayLabel(state.menuLanguage),
+                selected,
+            )
         }
     }
 

@@ -286,8 +286,8 @@ class VignettingCalibrationView(
         boldPaint.textSize = 11f * density
         val buttonText = when {
             !rawAvailable -> localized(
-                "无法输出 RAW，无需校准",
-                "RAW unavailable; no calibration needed",
+                "当前镜头不支持此项校准",
+                "This lens does not support this calibration",
             )
             isCalibrating -> localized("正在校准", "Calibrating")
             info != null -> localized("重新拍摄并矫正", "Capture and recalibrate")
@@ -321,7 +321,10 @@ class VignettingCalibrationView(
                 if (currentCameraRawAvailable()) {
                     localized("暂无矫正记录", "No correction history")
                 } else {
-                    localized("无法输出 RAW，无需校准", "RAW output unavailable; no calibration needed")
+                    localized(
+                        "当前镜头不支持此项校准",
+                        "This lens does not support this calibration",
+                    )
                 },
                 g.historyRows.first().centerX(),
                 g.historyRows.first().centerY(),
@@ -528,8 +531,8 @@ class VignettingCalibrationView(
             paint.textSize = 7f * density
             canvas.drawText(
                 localized(
-                    "无法输出 RAW，无需校准",
-                    "RAW output is unavailable; no calibration is needed",
+                    "当前镜头不支持此项校准",
+                    "This lens does not support this calibration",
                 ),
                 rect.left,
                 rect.bottom + 11f * density,
@@ -596,8 +599,8 @@ class VignettingCalibrationView(
                         listener?.onCalibrationRequested()
                     } else {
                         statusText = localized(
-                            "无法输出 RAW，无需校准",
-                            "RAW output is unavailable; no calibration is needed",
+                            "当前镜头不支持此项校准",
+                            "This lens does not support this calibration",
                         )
                         statusIsError = false
                         invalidate()

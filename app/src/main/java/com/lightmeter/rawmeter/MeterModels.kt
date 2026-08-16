@@ -14,14 +14,18 @@ data class FrameFormat(
     val label: String,
     val widthMm: Double,
     val heightMm: Double,
+    val englishLabel: String = label,
 ) {
     val landscapeAspect: Float
         get() = (maxOf(widthMm, heightMm) / minOf(widthMm, heightMm)).toFloat()
 
+    fun displayLabel(language: MenuLanguage): String =
+        if (language == MenuLanguage.ENGLISH) englishLabel else label
+
     companion object {
         val ALL = listOf(
             FrameFormat("135", "135 · 3:2", 36.0, 24.0),
-            FrameFormat("half", "半格 · 4:3", 24.0, 18.0),
+            FrameFormat("half", "半格 · 4:3", 24.0, 18.0, "Half-frame · 4:3"),
             FrameFormat("645", "6×4.5 · 4:3", 56.0, 42.0),
             FrameFormat("66", "6×6 · 1:1", 56.0, 56.0),
             FrameFormat("67", "6×7 · 5:4", 70.0, 56.0),
@@ -84,6 +88,7 @@ internal data class RawMeterPoint(
 
 enum class MeteringSource {
     RAW,
+    YUV_PREVIEW,
     ISP_PREVIEW,
 }
 
@@ -101,6 +106,11 @@ enum class ExposureStep(val denominator: Int) {
 enum class MeteringMode {
     CENTER_WEIGHTED,
     SPOT,
+}
+
+enum class MeteringPipelineMode {
+    AUTO,
+    COMPATIBLE,
 }
 
 enum class MenuLanguage {
@@ -240,6 +250,11 @@ class MeterState(context: Context) {
     var meteringMode: MeteringMode = preferences.enumValue(
         "metering_mode",
         MeteringMode.SPOT,
+    )
+
+    var meteringPipelineMode: MeteringPipelineMode = preferences.enumValue(
+        "metering_pipeline_mode",
+        MeteringPipelineMode.AUTO,
     )
 
     var zoneMarkingMethod: ZoneMarkingMethod = preferences.enumValue(
@@ -389,6 +404,8 @@ class MeterState(context: Context) {
                 )
             }
             SettingKey.METERING_MODE -> meteringMode = enumValue(value, meteringMode)
+            SettingKey.METERING_PIPELINE ->
+                meteringPipelineMode = enumValue(value, meteringPipelineMode)
             SettingKey.ZONE_MARKING_METHOD ->
                 zoneMarkingMethod = enumValue(value, zoneMarkingMethod)
             SettingKey.LANGUAGE -> menuLanguage = enumValue(value, menuLanguage)
@@ -498,6 +515,7 @@ class MeterState(context: Context) {
         SettingKey.SHUTTER_STEP -> shutterStep.name
         SettingKey.EXPOSURE_COMPENSATION_STEP -> exposureCompensationStep.name
         SettingKey.METERING_MODE -> meteringMode.name
+        SettingKey.METERING_PIPELINE -> meteringPipelineMode.name
         SettingKey.ZONE_MARKING_METHOD -> zoneMarkingMethod.name
         SettingKey.LANGUAGE -> menuLanguage.name
         SettingKey.THEME -> appTheme.name
@@ -557,6 +575,7 @@ class MeterState(context: Context) {
             .putString("shutter_step", shutterStep.name)
             .putString("exposure_compensation_step", exposureCompensationStep.name)
             .putString("metering_mode", meteringMode.name)
+            .putString("metering_pipeline_mode", meteringPipelineMode.name)
             .putString("zone_marking_method", zoneMarkingMethod.name)
             .putString("menu_language", menuLanguage.name)
             .putString("app_theme", appTheme.name)

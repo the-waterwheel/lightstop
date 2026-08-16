@@ -4,28 +4,34 @@ import android.content.Context
 import android.os.Build
 
 data class CameraCalibrationRecord(
-    val correctionEv: Double,
+    val rawCorrectionEv: Double?,
+    val compatibleCorrectionEv: Double?,
     val referenceEv100: Double?,
-    val measuredEv100: Double?,
+    val rawMeasuredEv100: Double?,
+    val compatibleMeasuredEv100: Double?,
     val updatedAtEpochMs: Long,
     val calibrationCount: Int,
-)
+) {
+    /** Legacy aliases retained for older UI call sites and saved records. */
+    val correctionEv: Double
+        get() = rawCorrectionEv ?: compatibleCorrectionEv ?: 0.0
+    val measuredEv100: Double?
+        get() = rawMeasuredEv100 ?: compatibleMeasuredEv100
+}
 
-/** Keeps baseline and user corrections isolated for every device and camera id. */
+/** Keeps RAW and compatible-preview corrections isolated for every device and camera id. */
 class CameraCalibrationStore(context: Context) {
     private val preferences =
         context.getSharedPreferences("raw_meter_calibration", Context.MODE_PRIVATE)
 
     @Synchronized
-    fun userCorrection(cameraId: String): Double {
-        val key = userKey(cameraId)
+    fun userCorrection(cameraId: String, source: MeteringSource = MeteringSource.RAW): Double {
+        val key = userKey(cameraId, source)
         return preferences.getFloat(key, 0f).toDouble()
     }
 
     @Synchronized
-    fun record(cameraId: String): CameraCalibrationRecord? {
-        return readActiveRecord(cameraId)
-    }
+    fun record(cameraId: String): CameraCalibrationRecord? = readActiveRecord(cameraId)
 
     @Synchronized
     fun history(cameraId: String): List<CameraCalibrationRecord> {
@@ -37,39 +43,56 @@ class CameraCalibrationStore(context: Context) {
     }
 
     private fun readActiveRecord(cameraId: String): CameraCalibrationRecord? {
-        val userKey = userKey(cameraId)
-        if (!preferences.contains(userKey)) return null
-        val reference = preferences.optionalFloat(referenceKey(cameraId))
-        val measured = preferences.optionalFloat(measuredKey(cameraId))
+        val rawKey = userKey(cameraId, MeteringSource.RAW)
+        val compatibleKey = userKey(cameraId, MeteringSource.ISP_PREVIEW)
+        if (!preferences.contains(rawKey) && !preferences.contains(compatibleKey)) return null
         return CameraCalibrationRecord(
-            correctionEv = preferences.getFloat(userKey, 0f).toDouble(),
-            referenceEv100 = reference,
-            measuredEv100 = measured,
+            rawCorrectionEv = preferences.optionalFloat(rawKey),
+            compatibleCorrectionEv = preferences.optionalFloat(compatibleKey),
+            referenceEv100 = preferences.optionalFloat(referenceKey(cameraId)),
+            rawMeasuredEv100 = preferences.optionalFloat(rawMeasuredKey(cameraId)),
+            compatibleMeasuredEv100 = preferences.optionalFloat(compatibleMeasuredKey(cameraId)),
             updatedAtEpochMs = preferences.getLong(updatedAtKey(cameraId), 0L),
             calibrationCount = preferences.getInt(countKey(cameraId), 1).coerceAtLeast(1),
         )
     }
 
     @Synchronized
-    fun updateUserCorrection(
+    fun updateUserCorrections(
         cameraId: String,
         referenceEv100: Double,
-        measuredEv100: Double,
-    ): Double {
-        val updated = CalibrationMath.updatedUserCorrection(
-            currentCorrectionEv = userCorrection(cameraId),
-            referenceEv100 = referenceEv100,
-            measuredEv100 = measuredEv100,
-        )
+        rawMeasuredEv100: Double?,
+        compatibleMeasuredEv100: Double?,
+    ): CameraCalibrationRecord {
+        require(rawMeasuredEv100 != null || compatibleMeasuredEv100 != null) {
+            "At least one calibration measurement is required"
+        }
+        val current = readActiveRecord(cameraId)
+        val updatedRaw = rawMeasuredEv100?.let { measured ->
+            CalibrationMath.updatedUserCorrection(
+                currentCorrectionEv = userCorrection(cameraId, MeteringSource.RAW),
+                referenceEv100 = referenceEv100,
+                measuredEv100 = measured,
+            )
+        } ?: current?.rawCorrectionEv
+        val updatedCompatible = compatibleMeasuredEv100?.let { measured ->
+            CalibrationMath.updatedUserCorrection(
+                currentCorrectionEv = userCorrection(cameraId, MeteringSource.ISP_PREVIEW),
+                referenceEv100 = referenceEv100,
+                measuredEv100 = measured,
+            )
+        } ?: current?.compatibleCorrectionEv
         val previous = history(cameraId)
         val count = maxOf(
             preferences.getInt(countKey(cameraId), 0),
             previous.maxOfOrNull { it.calibrationCount } ?: 0,
         ) + 1
         val record = CameraCalibrationRecord(
-            correctionEv = updated,
+            rawCorrectionEv = updatedRaw,
+            compatibleCorrectionEv = updatedCompatible,
             referenceEv100 = referenceEv100,
-            measuredEv100 = measuredEv100,
+            rawMeasuredEv100 = rawMeasuredEv100,
+            compatibleMeasuredEv100 = compatibleMeasuredEv100,
             updatedAtEpochMs = System.currentTimeMillis(),
             calibrationCount = count,
         )
@@ -80,7 +103,7 @@ class CameraCalibrationStore(context: Context) {
             writeActiveRecord(cameraId, record)
             writeHistory(cameraId, updatedHistory)
         }.apply()
-        return updated
+        return record
     }
 
     @Synchronized
@@ -97,17 +120,23 @@ class CameraCalibrationStore(context: Context) {
         val retainedHistory = history(cameraId).take(HISTORY_LIMIT)
         preferences.edit().apply {
             writeHistory(cameraId, retainedHistory)
-            remove(userKey(cameraId))
+            remove(userKey(cameraId, MeteringSource.RAW))
+            remove(userKey(cameraId, MeteringSource.ISP_PREVIEW))
             remove(referenceKey(cameraId))
-            remove(measuredKey(cameraId))
+            remove(rawMeasuredKey(cameraId))
+            remove(compatibleMeasuredKey(cameraId))
             remove(updatedAtKey(cameraId))
             remove(countKey(cameraId))
         }.apply()
     }
 
     @Synchronized
-    fun totalCorrection(cameraId: String): Double =
-        baselineCorrection(cameraId) + userCorrection(cameraId)
+    fun totalCorrection(cameraId: String, source: MeteringSource = MeteringSource.RAW): Double =
+        if (source == MeteringSource.RAW) {
+            baselineCorrection(cameraId) + userCorrection(cameraId, source)
+        } else {
+            userCorrection(cameraId, source)
+        }
 
     private fun baselineCorrection(cameraId: String): Double {
         val key = deviceKey(cameraId)
@@ -119,9 +148,18 @@ class CameraCalibrationStore(context: Context) {
         return default
     }
 
-    private fun userKey(cameraId: String): String = "user_${deviceKey(cameraId)}"
+    private fun userKey(cameraId: String, source: MeteringSource): String =
+        if (source == MeteringSource.RAW) {
+            // Keep the original key for seamless migration of existing RAW calibration.
+            "user_${deviceKey(cameraId)}"
+        } else {
+            "compatible_user_${deviceKey(cameraId)}"
+        }
+
     private fun referenceKey(cameraId: String): String = "reference_${deviceKey(cameraId)}"
-    private fun measuredKey(cameraId: String): String = "measured_${deviceKey(cameraId)}"
+    private fun rawMeasuredKey(cameraId: String): String = "measured_${deviceKey(cameraId)}"
+    private fun compatibleMeasuredKey(cameraId: String): String =
+        "compatible_measured_${deviceKey(cameraId)}"
     private fun updatedAtKey(cameraId: String): String = "updated_${deviceKey(cameraId)}"
     private fun countKey(cameraId: String): String = "count_${deviceKey(cameraId)}"
 
@@ -129,12 +167,19 @@ class CameraCalibrationStore(context: Context) {
         "history_${deviceKey(cameraId)}_${index}_$field"
 
     private fun readHistoryRecord(cameraId: String, index: Int): CameraCalibrationRecord? {
-        val correctionKey = historyKey(cameraId, index, "correction")
-        if (!preferences.contains(correctionKey)) return null
+        val rawCorrection = historyKey(cameraId, index, "correction")
+        val compatibleCorrection = historyKey(cameraId, index, "compatible_correction")
+        if (!preferences.contains(rawCorrection) && !preferences.contains(compatibleCorrection)) {
+            return null
+        }
         return CameraCalibrationRecord(
-            correctionEv = preferences.getFloat(correctionKey, 0f).toDouble(),
+            rawCorrectionEv = preferences.optionalFloat(rawCorrection),
+            compatibleCorrectionEv = preferences.optionalFloat(compatibleCorrection),
             referenceEv100 = preferences.optionalFloat(historyKey(cameraId, index, "reference")),
-            measuredEv100 = preferences.optionalFloat(historyKey(cameraId, index, "measured")),
+            rawMeasuredEv100 = preferences.optionalFloat(historyKey(cameraId, index, "measured")),
+            compatibleMeasuredEv100 = preferences.optionalFloat(
+                historyKey(cameraId, index, "compatible_measured"),
+            ),
             updatedAtEpochMs = preferences.getLong(historyKey(cameraId, index, "updated"), 0L),
             calibrationCount = preferences.getInt(historyKey(cameraId, index, "count"), index + 1)
                 .coerceAtLeast(1),
@@ -145,11 +190,14 @@ class CameraCalibrationStore(context: Context) {
         cameraId: String,
         record: CameraCalibrationRecord,
     ) {
-        putFloat(userKey(cameraId), record.correctionEv.toFloat())
-        record.referenceEv100?.let { putFloat(referenceKey(cameraId), it.toFloat()) }
-            ?: remove(referenceKey(cameraId))
-        record.measuredEv100?.let { putFloat(measuredKey(cameraId), it.toFloat()) }
-            ?: remove(measuredKey(cameraId))
+        putOptionalFloat(userKey(cameraId, MeteringSource.RAW), record.rawCorrectionEv)
+        putOptionalFloat(
+            userKey(cameraId, MeteringSource.ISP_PREVIEW),
+            record.compatibleCorrectionEv,
+        )
+        putOptionalFloat(referenceKey(cameraId), record.referenceEv100)
+        putOptionalFloat(rawMeasuredKey(cameraId), record.rawMeasuredEv100)
+        putOptionalFloat(compatibleMeasuredKey(cameraId), record.compatibleMeasuredEv100)
         putLong(updatedAtKey(cameraId), record.updatedAtEpochMs)
         putInt(countKey(cameraId), record.calibrationCount)
     }
@@ -163,13 +211,26 @@ class CameraCalibrationStore(context: Context) {
             if (record == null) {
                 clearHistoryRecord(cameraId, index)
             } else {
-                putFloat(historyKey(cameraId, index, "correction"), record.correctionEv.toFloat())
-                record.referenceEv100?.let {
-                    putFloat(historyKey(cameraId, index, "reference"), it.toFloat())
-                } ?: remove(historyKey(cameraId, index, "reference"))
-                record.measuredEv100?.let {
-                    putFloat(historyKey(cameraId, index, "measured"), it.toFloat())
-                } ?: remove(historyKey(cameraId, index, "measured"))
+                putOptionalFloat(
+                    historyKey(cameraId, index, "correction"),
+                    record.rawCorrectionEv,
+                )
+                putOptionalFloat(
+                    historyKey(cameraId, index, "compatible_correction"),
+                    record.compatibleCorrectionEv,
+                )
+                putOptionalFloat(
+                    historyKey(cameraId, index, "reference"),
+                    record.referenceEv100,
+                )
+                putOptionalFloat(
+                    historyKey(cameraId, index, "measured"),
+                    record.rawMeasuredEv100,
+                )
+                putOptionalFloat(
+                    historyKey(cameraId, index, "compatible_measured"),
+                    record.compatibleMeasuredEv100,
+                )
                 putLong(historyKey(cameraId, index, "updated"), record.updatedAtEpochMs)
                 putInt(historyKey(cameraId, index, "count"), record.calibrationCount)
             }
@@ -180,9 +241,22 @@ class CameraCalibrationStore(context: Context) {
         cameraId: String,
         index: Int,
     ) {
-        listOf("correction", "reference", "measured", "updated", "count").forEach { field ->
-            remove(historyKey(cameraId, index, field))
-        }
+        listOf(
+            "correction",
+            "compatible_correction",
+            "reference",
+            "measured",
+            "compatible_measured",
+            "updated",
+            "count",
+        ).forEach { field -> remove(historyKey(cameraId, index, field)) }
+    }
+
+    private fun android.content.SharedPreferences.Editor.putOptionalFloat(
+        key: String,
+        value: Double?,
+    ) {
+        if (value == null) remove(key) else putFloat(key, value.toFloat())
     }
 
     private fun deviceKey(cameraId: String): String = buildString {

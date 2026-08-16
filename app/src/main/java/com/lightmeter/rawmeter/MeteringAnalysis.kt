@@ -89,7 +89,64 @@ internal object MeteringAnalysis {
         val seconds = exposureTime / 1_000_000_000.0
         val cameraEv = log2(aperture * aperture / seconds * 100.0 / sensitivity)
         val sceneEv = cameraEv + log2(region.luma / RAW_REFERENCE_LEVEL) +
-            calibrationStore.userCorrection(cameraId.ifBlank { "0" })
+            calibrationStore.userCorrection(
+                cameraId.ifBlank { "0" },
+                MeteringSource.ISP_PREVIEW,
+            )
+        return MeteringFrameStat(
+            ev100 = sceneEv,
+            luma = region.luma,
+            clipped = region.clipped,
+            captureIso = sensitivity,
+            exposureTimeNs = exposureTime,
+            aperture = aperture,
+        )
+    }
+
+    fun analyzeYuvPreview(
+        image: Image,
+        luma: ByteArray,
+        result: CaptureResult,
+        characteristics: CameraCharacteristics,
+        cameraId: String,
+        meteringMode: MeteringMode,
+        calibrationStore: CameraCalibrationStore,
+    ): MeteringFrameStat? {
+        if (image.format != android.graphics.ImageFormat.YUV_420_888) return null
+        if (luma.size < image.width * image.height) return null
+        if (!ZoneYuvLumaCopier.copy(image, luma)) return null
+        val spot = analyzeYuvRegion(
+            luma,
+            image.width,
+            image.height,
+            SPOT_ROI_FRACTION,
+        ) ?: return null
+        val region = if (meteringMode == MeteringMode.CENTER_WEIGHTED) {
+            val wide = analyzeYuvRegion(
+                luma,
+                image.width,
+                image.height,
+                CENTER_WEIGHTED_ROI_FRACTION,
+            ) ?: return null
+            PreviewRegionStat(
+                luma = spot.luma * CENTER_SPOT_WEIGHT + wide.luma * CENTER_WIDE_WEIGHT,
+                clipped = spot.clipped * CENTER_SPOT_WEIGHT +
+                    wide.clipped * CENTER_WIDE_WEIGHT,
+            )
+        } else {
+            spot
+        }
+        if (!region.luma.isFinite() || region.luma <= 0.00001) return null
+        val exposureTime = result.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: return null
+        val sensitivity = result.get(CaptureResult.SENSOR_SENSITIVITY) ?: return null
+        val aperture = result.get(CaptureResult.LENS_APERTURE)
+            ?: characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_APERTURES)
+                ?.firstOrNull()
+            ?: return null
+        val seconds = exposureTime / 1_000_000_000.0
+        val cameraEv = log2(aperture * aperture / seconds * 100.0 / sensitivity)
+        val sceneEv = cameraEv + log2(region.luma / RAW_REFERENCE_LEVEL) +
+            calibrationStore.userCorrection(cameraId.ifBlank { "0" }, MeteringSource.YUV_PREVIEW)
         return MeteringFrameStat(
             ev100 = sceneEv,
             luma = region.luma,
@@ -202,8 +259,14 @@ internal object MeteringAnalysis {
             ?: return null
         val seconds = exposureTime / 1_000_000_000.0
         val cameraEv = log2(aperture * aperture / seconds * 100.0 / sensitivity)
-        val userCalibrationEv = calibrationStore.userCorrection(cameraInfo.cameraId)
-        val calibrationEv = calibrationStore.totalCorrection(cameraInfo.cameraId)
+        val userCalibrationEv = calibrationStore.userCorrection(
+            cameraInfo.cameraId,
+            MeteringSource.RAW,
+        )
+        val calibrationEv = calibrationStore.totalCorrection(
+            cameraInfo.cameraId,
+            MeteringSource.RAW,
+        )
         val baselineCalibrationEv = calibrationEv - userCalibrationEv
         val sceneEv = cameraEv + log2(luma / RAW_REFERENCE_LEVEL) + calibrationEv
         val postRawBoost = result.get(CaptureResult.CONTROL_POST_RAW_SENSITIVITY_BOOST) ?: 100
@@ -556,6 +619,33 @@ internal object MeteringAnalysis {
             luminances[luminances.size / 2]
         }
         return PreviewRegionStat(luma, clipped.toDouble() / pixels.size)
+    }
+
+    private fun analyzeYuvRegion(
+        luma: ByteArray,
+        width: Int,
+        height: Int,
+        roiFraction: Float,
+    ): PreviewRegionStat? {
+        if (width <= 1 || height <= 1 || luma.size < width * height) return null
+        val roiWidth = (width * roiFraction).roundToInt().coerceIn(2, width)
+        val roiHeight = (height * roiFraction).roundToInt().coerceIn(2, height)
+        val left = (width - roiWidth) / 2
+        val top = (height - roiHeight) / 2
+        var sum = 0.0
+        var clipped = 0
+        var count = 0
+        for (row in top until top + roiHeight) {
+            val rowOffset = row * width
+            for (column in left until left + roiWidth) {
+                val value = luma[rowOffset + column].toInt() and 0xff
+                sum += srgbToLinear(value / 255.0)
+                if (value >= YUV_CLIP_LEVEL) clipped += 1
+                count += 1
+            }
+        }
+        if (count == 0) return null
+        return PreviewRegionStat(sum / count, clipped.toDouble() / count)
     }
 
     private fun analyzeRawRegion(
@@ -943,6 +1033,7 @@ internal object MeteringAnalysis {
 
     private const val TAG = "lightstop"
     private const val RAW_REFERENCE_LEVEL = 0.18
+    private const val YUV_CLIP_LEVEL = 250
     private const val SPOT_ROI_FRACTION = 0.08f
     private const val CENTER_WEIGHTED_ROI_FRACTION = 0.30f
     private const val CENTER_SPOT_WEIGHT = 0.7

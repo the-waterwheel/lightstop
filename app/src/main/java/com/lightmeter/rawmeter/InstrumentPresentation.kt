@@ -43,8 +43,8 @@ internal object InstrumentPresentation {
         return ExposureScaleCenters(aperture, shutter)
     }
 
-    fun formatShortLabel(format: FrameFormat): String = when (format.id) {
-        "half" -> "半格"
+    fun formatShortLabel(format: FrameFormat, language: MenuLanguage): String = when (format.id) {
+        "half" -> if (language == MenuLanguage.ENGLISH) "Half" else "半格"
         "645" -> "645"
         "66" -> "6×6"
         "67" -> "6×7"

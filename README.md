@@ -27,14 +27,21 @@ code.
 
 - Android 9 / API 28 or newer.
 - Camera2 logical and physical camera discovery, selection, labels, and hiding.
-- RAW-first metering with an explicit ISP-preview compatibility fallback.
+- RAW-first metering with a capability-driven YUV/ISP compatibility fallback.
 - Timestamp pairing between `Image` and `CaptureResult`.
 - Bayer black-level subtraction, white-level normalization, per-channel median
   statistics, clipping detection, white-balance/color-matrix conversion, and
   EV100 calculation.
-- Three-frame fusion at ISO 800 or below and five-frame fusion above ISO 800.
+- RAW-only three-frame fusion at ISO 800 or below and five-frame fusion above
+  ISO 800, with only one full-size RAW image in flight at a time.
+- Single-frame compatible metering: try up to three ISP-processed YUV frames
+  for at most 250 ms, then immediately use one displayed-preview sample.
+- Camera-session recovery from full RAW + tracking to RAW-only, compatible
+  YUV, preview-only, and finally a logical-camera route when appropriate.
 - Spot and center-weighted metering.
-- Per-camera metering calibration and two-dimensional vignetting calibration.
+- Per-camera metering calibration that records RAW first when supported and
+  then compatible-preview correction without a fixed inter-stage delay.
+- Two-dimensional vignetting calibration for RAW-capable cameras.
 - Electronic preview crop and matching metering ROI without requesting Camera2
   digital zoom or silently switching lenses.
 
@@ -101,6 +108,8 @@ code.
 app/src/main/java/com/lightmeter/rawmeter
 ├─ MainActivity.kt                   lifecycle, permissions, coordination
 ├─ CameraController.kt               Camera2 sessions and capture scheduling
+├─ CameraRecoveryPolicy.kt           session profiles and recovery decisions
+├─ CompatibleMeteringPolicy.kt       single-frame compatibility limits
 ├─ CameraCatalog.kt                  logical/physical camera discovery
 ├─ CameraStreamSelector.kt           preview, tracking stream, and FPS choice
 ├─ CameraPreviewTransform.kt         preview orientation and crop transform
@@ -128,6 +137,10 @@ app/src/main/cpp
 ├─ raw_meter.cpp                     Bayer RAW median statistics
 └─ CMakeLists.txt                    JNI native-library build
 ```
+
+See [Camera pipeline and device compatibility](docs/CAMERA_PIPELINE.md) for
+the stream profiles, fallback order, resource-ownership rules, known vendor
+boundaries, and the planned split of `CameraController` into smaller owners.
 
 The package name and Android application ID remain
 `com.lightmeter.rawmeter` so existing development installations can upgrade
@@ -231,8 +244,9 @@ See [PRIVACY.md](PRIVACY.md) for the bilingual privacy statement.
 ## Testing and device compatibility
 
 Pure logic is covered by unit tests for handedness-sensitive mode transitions,
-deferred tracker creation, buffer reuse and ownership, stride-aware Y-plane
-copying, layout coordinate stability, and exposure-compensation behavior.
+camera recovery, compatible-metering limits, deferred tracker creation, buffer
+reuse and ownership, stride-aware Y-plane copying, layout coordinate stability,
+and exposure-compensation behavior.
 
 Camera2, RAW streams, logical/physical camera combinations, vendor-specific
 sensor metadata, tracking quality, and layout changes must also be verified on

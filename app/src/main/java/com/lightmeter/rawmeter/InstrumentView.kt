@@ -162,7 +162,7 @@ class InstrumentView(
         drawOutlinedButton(
             canvas,
             g.formatButton,
-            InstrumentPresentation.formatShortLabel(state.frameFormat),
+            InstrumentPresentation.formatShortLabel(state.frameFormat, state.menuLanguage),
             formatMenuOpen,
         )
         if (formatMenuOpen) drawFormatMenu(canvas, g)
@@ -299,7 +299,10 @@ class InstrumentView(
             paint.typeface = Typeface.DEFAULT_BOLD
             drawCenteredText(
                 canvas,
-                InstrumentPresentation.formatShortLabel(FrameFormat.ALL[index]),
+                InstrumentPresentation.formatShortLabel(
+                    FrameFormat.ALL[index],
+                    state.menuLanguage,
+                ),
                 rect.centerX(),
                 rect.centerY(),
                 paint,

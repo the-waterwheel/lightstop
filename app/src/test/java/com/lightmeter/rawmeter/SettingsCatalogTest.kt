@@ -5,6 +5,17 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SettingsCatalogTest {
+    @Test
+    fun meteringSectionOffersAutomaticAndCompatibleEngines() {
+        val metering = SettingsCatalog.sections.single { it.key == SettingsSectionKey.METERING }
+        val engine = metering.items.single { it.key == SettingKey.METERING_PIPELINE }
+
+        assertEquals(
+            listOf(MeteringPipelineMode.AUTO.name, MeteringPipelineMode.COMPATIBLE.name),
+            engine.options.map { it.value },
+        )
+    }
+
 
     @Test
     fun generalSectionExposesOnlyAboutAsItsInformationEntry() {

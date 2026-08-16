@@ -234,22 +234,15 @@ class CameraManagementView(
         val calibration = state.cameraCalibrationRecord(camera.cameraId)
         paint.color = if (calibration == null) muted else foreground
         paint.textSize = 7.5f * density
-        val calibrationSummary = when {
-            calibration == null -> localized("未校准", "Not calibrated")
-            calibration.referenceEv100 != null && calibration.measuredEv100 != null -> localized(
-                "校准 ${signedEv(calibration.correctionEv)} EV" +
-                    " · 手机 ${"%.2f".format(calibration.measuredEv100)}" +
-                    " → 参考 ${"%.2f".format(calibration.referenceEv100)}" +
-                    " · ${calibration.calibrationCount} 次",
-                "Calibrated ${signedEv(calibration.correctionEv)} EV" +
-                    " · phone ${"%.2f".format(calibration.measuredEv100)}" +
-                    " → ref ${"%.2f".format(calibration.referenceEv100)}" +
-                    " · ${calibration.calibrationCount} records",
-            )
-            else -> localized(
-                "校准 ${signedEv(calibration.correctionEv)} EV · 历史记录",
-                "Calibrated ${signedEv(calibration.correctionEv)} EV · legacy record",
-            )
+        val calibrationSummary = if (calibration == null) {
+            localized("未校准", "Not calibrated")
+        } else {
+            val highAccuracy = calibration.rawCorrectionEv?.let {
+                "${localized("高精度", "High accuracy")} ${signedEv(it)} EV"
+            } ?: localized("高精度不可用", "High accuracy unavailable")
+            "$highAccuracy · ${localized("兼容", "Compatible")} " +
+                "${signedEv(calibration.compatibleCorrectionEv ?: 0.0)} EV" +
+                " · ${calibration.calibrationCount}"
         }
         canvas.drawText(
             ellipsize(calibrationSummary, row.width() - 24f * density, paint),

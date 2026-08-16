@@ -85,7 +85,8 @@ class CalibrationView(
 
     private var mode = CalibrationReferenceMode.EV100
     private var geometry: Geometry? = null
-    private var currentCorrectionEv = 0.0
+    private var currentRawCorrectionEv: Double? = null
+    private var currentCompatibleCorrectionEv = 0.0
     private var statusText = ""
     private var statusIsError = false
 
@@ -102,8 +103,9 @@ class CalibrationView(
     fun calculatePreviewFrame(width: Int, height: Int): RectF =
         calculateGeometry(width, height).preview
 
-    fun setCurrentCorrection(value: Double) {
-        currentCorrectionEv = value
+    fun setCurrentCorrections(rawCorrectionEv: Double?, compatibleCorrectionEv: Double) {
+        currentRawCorrectionEv = rawCorrectionEv
+        currentCompatibleCorrectionEv = compatibleCorrectionEv
         invalidate()
     }
 
@@ -116,16 +118,23 @@ class CalibrationView(
         invalidate()
     }
 
-    fun setMeasuring(measuring: Boolean, frameCount: Int? = null) {
+    fun setMeasuring(
+        measuring: Boolean,
+        frameCount: Int? = null,
+        source: MeteringSource? = null,
+    ) {
         isMeasuring = measuring
         if (measuring) {
-            statusText = if (frameCount != null) {
-                localized(
-                    "正在读取 $frameCount 帧中央画面…",
-                    "Reading $frameCount center frames…",
+            statusText = when {
+                source == MeteringSource.RAW && frameCount != null -> localized(
+                    "正在校准高精度测光（$frameCount 帧）…",
+                    "Calibrating high-accuracy metering ($frameCount frames)…",
                 )
-            } else {
-                localized("正在准备测光…", "Preparing measurement…")
+                source != null && source != MeteringSource.RAW && frameCount != null -> localized(
+                    "正在进行兼容测光…",
+                    "Running compatible measurement…",
+                )
+                else -> localized("正在准备测光…", "Preparing measurement…")
             }
             statusIsError = false
             clearEditorFocus()
@@ -133,18 +142,21 @@ class CalibrationView(
         invalidate()
     }
 
-    fun showResult(
-        referenceEv100: Double,
-        measuredEv100: Double,
-        correctionEv: Double,
-    ) {
+    fun showResult(record: CameraCalibrationRecord) {
         isMeasuring = false
-        currentCorrectionEv = correctionEv
-        statusText = localized(
-            "完成：手机 ${formatEv(measuredEv100)} → 参考 ${formatEv(referenceEv100)}",
-            "Done: phone ${formatEv(measuredEv100)} → reference ${formatEv(referenceEv100)}",
-        )
+        currentRawCorrectionEv = record.rawCorrectionEv
+        currentCompatibleCorrectionEv = record.compatibleCorrectionEv ?: 0.0
+        statusText = localized("校准完成", "Calibration complete")
         statusIsError = false
+        invalidate()
+    }
+
+    fun showPartialResult(record: CameraCalibrationRecord, message: String) {
+        isMeasuring = false
+        currentRawCorrectionEv = record.rawCorrectionEv
+        currentCompatibleCorrectionEv = record.compatibleCorrectionEv ?: 0.0
+        statusText = message
+        statusIsError = true
         invalidate()
     }
 
@@ -155,9 +167,10 @@ class CalibrationView(
         invalidate()
     }
 
-    fun showReset() {
+    fun showReset(rawAvailable: Boolean) {
         isMeasuring = false
-        currentCorrectionEv = 0.0
+        currentRawCorrectionEv = if (rawAvailable) 0.0 else null
+        currentCompatibleCorrectionEv = 0.0
         statusText = localized(
             "当前测光修正已重置，可从历史回退",
             "Current correction reset; history remains available",
@@ -168,7 +181,8 @@ class CalibrationView(
 
     fun showHistoryRestored(record: CameraCalibrationRecord) {
         isMeasuring = false
-        currentCorrectionEv = record.correctionEv
+        currentRawCorrectionEv = record.rawCorrectionEv
+        currentCompatibleCorrectionEv = record.compatibleCorrectionEv ?: 0.0
         statusText = localized(
             "已回退到 ${formatCalibrationTime(record.updatedAtEpochMs)} 的校准",
             "Restored calibration from ${formatCalibrationTime(record.updatedAtEpochMs)}",
@@ -314,7 +328,7 @@ class CalibrationView(
         paint.typeface = Typeface.DEFAULT_BOLD
         drawCenteredText(
             canvas,
-            state.frameFormat.label,
+            state.frameFormat.displayLabel(state.menuLanguage),
             badge.centerX(),
             badge.centerY(),
             paint,
@@ -405,7 +419,7 @@ class CalibrationView(
         paint.textSize = 7.5f * density
         paint.typeface = Typeface.DEFAULT_BOLD
         canvas.drawText(
-            localized("当前镜头 · 最近 3 次校准", "Current lens · last 3 calibrations"),
+            correctionSummary(currentRawCorrectionEv, currentCompatibleCorrectionEv),
             g.controls.left,
             g.historyRows.first().top - 5f * density,
             paint,
@@ -451,7 +465,7 @@ class CalibrationView(
             paint.typeface = Typeface.DEFAULT_BOLD
             paint.textSize = 7.4f * density
             val summary = "${formatCalibrationTime(record.updatedAtEpochMs)}  ·  " +
-                "${signedEv(record.correctionEv)} EV"
+                correctionSummary(record.rawCorrectionEv, record.compatibleCorrectionEv ?: 0.0)
             val textWidth = action.left - row.left - 14f * density
             canvas.drawText(
                 ellipsize(summary, textWidth, paint),
@@ -756,13 +770,19 @@ class CalibrationView(
     private fun localized(chinese: String, english: String): String =
         if (state.menuLanguage == MenuLanguage.ENGLISH) english else chinese
 
-    private fun formatEv(value: Double): String = "%.2f EV".format(value)
-
     private fun formatCalibrationTime(epochMs: Long): String =
         SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(epochMs))
 
     private fun signedEv(value: Double): String =
         if (value >= 0.0) "+${"%.2f".format(value)}" else "%.2f".format(value)
+
+    private fun correctionSummary(rawCorrectionEv: Double?, compatibleCorrectionEv: Double): String {
+        val highAccuracy = rawCorrectionEv?.let {
+            "${localized("高精度", "High accuracy")} ${signedEv(it)} EV"
+        } ?: localized("高精度不可用", "High accuracy unavailable")
+        return "$highAccuracy · ${localized("兼容", "Compatible")} " +
+            "${signedEv(compatibleCorrectionEv)} EV"
+    }
 
     private fun haptic() {
         performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)

@@ -11,6 +11,7 @@ enum class SettingKey {
     SHUTTER_STEP,
     EXPOSURE_COMPENSATION_STEP,
     METERING_MODE,
+    METERING_PIPELINE,
     ZONE_MARKING_METHOD,
     LANGUAGE,
     THEME,
@@ -91,6 +92,22 @@ object SettingsCatalog {
                     ),
                 ),
                 SettingItemSpec(
+                    key = SettingKey.METERING_PIPELINE,
+                    label = LocalizedLabel("测光方式", "Metering method"),
+                    options = listOf(
+                        option(
+                            MeteringPipelineMode.AUTO,
+                            "自动（优先高精度）",
+                            "Automatic (prefer accuracy)",
+                        ),
+                        option(
+                            MeteringPipelineMode.COMPATIBLE,
+                            "兼容（遇到相机问题时）",
+                            "Compatible (if camera issues occur)",
+                        ),
+                    ),
+                ),
+                SettingItemSpec(
                     key = SettingKey.ZONE_MARKING_METHOD,
                     label = LocalizedLabel("标点方式", "Marking method"),
                     options = listOf(
@@ -163,8 +180,8 @@ object SettingsCatalog {
                     key = SettingActionKey.START_VIGNETTING_CALIBRATION,
                     label = LocalizedLabel("暗角矫正", "Vignetting correction"),
                     description = LocalizedLabel(
-                        "拍摄亮度均匀画面，为当前镜头生成 RAW 二维矫正图",
-                        "Capture a uniform scene and build a 2D RAW map for this lens",
+                        "拍摄亮度均匀的画面，为当前镜头校正边缘亮度",
+                        "Capture a uniformly lit scene to correct edge brightness for this lens",
                     ),
                 ),
             ),
