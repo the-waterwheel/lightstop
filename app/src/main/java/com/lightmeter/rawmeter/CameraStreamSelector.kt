@@ -15,7 +15,8 @@ import kotlin.math.min
  *
  * Keeping this outside [CameraController] makes device-capability decisions independently
  * reviewable and prevents the camera lifecycle class from accumulating more sizing policy.
- * The selected sizes and frame-rate preferences intentionally match the original behavior.
+ * Frame-rate selection intentionally stays at or below 30 fps. Some vendor HALs advertise a
+ * 60 fps preview range but cannot sustain it once a YUV or RAW output belongs to the session.
  */
 internal object CameraStreamSelector {
     fun choosePreviewSize(characteristics: CameraCharacteristics): Size? {
@@ -75,22 +76,58 @@ internal object CameraStreamSelector {
         )
     }
 
-    fun chooseFpsRange(characteristics: CameraCharacteristics, size: Size): Range<Int>? {
+    fun chooseFpsRange(
+        characteristics: CameraCharacteristics,
+        previewSize: Size,
+        trackingSize: Size?,
+        requestedCeiling: Int,
+    ): Range<Int>? {
         val ranges = characteristics
             .get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
             ?.toList()
             .orEmpty()
         val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-        val duration = map?.getOutputMinFrameDuration(SurfaceTexture::class.java, size) ?: 0L
-        if (duration == 0L || duration <= 20_000_000L) {
-            ranges.firstOrNull { it.lower <= 60 && it.upper >= 60 }?.let {
-                return Range(60, 60)
+        val durations = buildList {
+            map?.getOutputMinFrameDuration(SurfaceTexture::class.java, previewSize)
+                ?.takeIf { it > 0L }
+                ?.let(::add)
+            trackingSize?.let { size ->
+                map?.getOutputMinFrameDuration(ImageFormat.YUV_420_888, size)
+                    ?.takeIf { it > 0L }
+                    ?.let(::add)
             }
         }
+        val streamCeiling = durations.maxOrNull()?.let { duration ->
+            (1_000_000_000L / duration).toInt().coerceAtLeast(1)
+        } ?: requestedCeiling
+        return selectFpsRange(
+            ranges = ranges,
+            requestedCeiling = min(30, min(requestedCeiling, streamCeiling)),
+        )
+    }
+
+    /** Selects an advertised AE range without synthesizing a range the HAL may reject. */
+    fun selectFpsRange(
+        ranges: List<Range<Int>>,
+        requestedCeiling: Int,
+    ): Range<Int>? {
+        val selected = selectFpsRangeBounds(
+            ranges = ranges.map { it.lower to it.upper },
+            requestedCeiling = requestedCeiling,
+        ) ?: return null
+        return ranges.firstOrNull { it.lower == selected.first && it.upper == selected.second }
+    }
+
+    /** Pure counterpart used by JVM tests where android.util.Range is only a stub. */
+    fun selectFpsRangeBounds(
+        ranges: List<Pair<Int, Int>>,
+        requestedCeiling: Int,
+    ): Pair<Int, Int>? {
+        if (ranges.isEmpty()) return null
+        val target = requestedCeiling.coerceAtLeast(1)
         return ranges
-            .filter { it.lower <= 30 && it.upper >= 30 }
-            .minByOrNull { abs(it.lower - 30) + abs(it.upper - 30) }
-            ?: ranges.maxByOrNull { it.upper }
+            .filter { it.first <= target && it.second <= target }
+            .maxWithOrNull(compareBy<Pair<Int, Int>> { it.second }.thenBy { it.first })
     }
 
     private const val TRACKING_TARGET_LONG_EDGE = 640

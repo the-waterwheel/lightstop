@@ -19,6 +19,14 @@ data class FrameFormat(
     val landscapeAspect: Float
         get() = (maxOf(widthMm, heightMm) / minOf(widthMm, heightMm)).toFloat()
 
+    /** Representative exposed-image diagonal used for cross-format focal-length equivalence. */
+    val diagonalMm: Double
+        get() = sqrt(widthMm * widthMm + heightMm * heightMm)
+
+    /** Converts a 135-equivalent field of view into a lens focal length for this format. */
+    fun focalLengthForFullFrameEquivalent(fullFrameEquivalentMm: Double): Int =
+        (fullFrameEquivalentMm * diagonalMm / FULL_FRAME_DIAGONAL_MM).roundToInt()
+
     fun displayLabel(language: MenuLanguage): String =
         if (language == MenuLanguage.ENGLISH) englishLabel else label
 
@@ -31,7 +39,15 @@ data class FrameFormat(
             FrameFormat("67", "6×7 · 5:4", 70.0, 56.0),
             FrameFormat("69", "6×9 · 3:2", 84.0, 56.0),
             FrameFormat("65x24", "65:24", 65.0, 24.0),
+            // Append new formats so persisted indices from earlier versions keep their meaning.
+            FrameFormat("612", "6×12 · 2:1", 112.0, 56.0),
+            FrameFormat("617", "6×17 · 3:1", 168.0, 56.0),
+            FrameFormat("45", "4×5 · 5:4", 120.0, 96.0),
+            FrameFormat("57", "5×7 · 7:5", 168.0, 120.0),
+            FrameFormat("810", "8×10 · 5:4", 240.0, 192.0),
         )
+
+        private const val FULL_FRAME_DIAGONAL_MM = 43.266615
     }
 }
 
@@ -109,8 +125,24 @@ enum class MeteringMode {
 }
 
 enum class MeteringPipelineMode {
+    /** Uses RAW when possible and automatically falls back when a device rejects it. */
     AUTO,
-    COMPATIBLE,
+
+    /** Keeps RAW and YUV out of the same session to avoid fragile multi-stream combinations. */
+    ISOLATED,
+
+    /** Uses one ISP-processed preview sample and never opens a RAW output. */
+    FAST,
+
+    ;
+
+    companion object {
+        fun fromStored(value: String?): MeteringPipelineMode = when (value) {
+            // COMPATIBLE was the old name of the no-RAW processed pipeline.
+            "COMPATIBLE" -> FAST
+            else -> entries.firstOrNull { it.name == value } ?: AUTO
+        }
+    }
 }
 
 enum class MenuLanguage {
@@ -252,9 +284,9 @@ class MeterState(context: Context) {
         MeteringMode.SPOT,
     )
 
-    var meteringPipelineMode: MeteringPipelineMode = preferences.enumValue(
-        "metering_pipeline_mode",
-        MeteringPipelineMode.AUTO,
+    // Preserve the old no-RAW behavior instead of silently moving existing users to isolation.
+    var meteringPipelineMode: MeteringPipelineMode = MeteringPipelineMode.fromStored(
+        preferences.getString("metering_pipeline_mode", null),
     )
 
     var zoneMarkingMethod: ZoneMarkingMethod = preferences.enumValue(
@@ -502,6 +534,10 @@ class MeterState(context: Context) {
 
     private fun preferredCamera(cameras: List<CameraDescriptor>): CameraDescriptor? =
         cameras.firstOrNull {
+            it.lensRole == CameraLensRole.AUTOMATIC && it.rawAvailable
+        } ?: cameras.firstOrNull {
+            it.lensRole == CameraLensRole.AUTOMATIC
+        } ?: cameras.firstOrNull {
             it.lensRole == CameraLensRole.MAIN && it.rawAvailable
         } ?: cameras.firstOrNull {
             it.lensRole == CameraLensRole.MAIN
@@ -522,7 +558,7 @@ class MeterState(context: Context) {
         SettingKey.HANDEDNESS -> handedness.name
     }
 
-    fun equivalent35mm(): Int? {
+    private fun effectiveFullFrameEquivalentMm(): Double? {
         val info = cameraInfo
         if (info.focalLengthMm <= 0f || info.sensorWidthMm <= 0f || info.sensorHeightMm <= 0f) {
             return null
@@ -552,8 +588,15 @@ class MeterState(context: Context) {
             effectiveWidth * effectiveWidth + effectiveHeight * effectiveHeight,
         )
         if (effectiveDiagonal <= 0.0) return null
-        return (info.focalLengthMm * 43.266615 / effectiveDiagonal * zoom).toInt()
+        return info.focalLengthMm * 43.266615 / effectiveDiagonal * zoom
     }
+
+    /** Conventional 135-equivalent focal length retained for compatibility and diagnostics. */
+    fun equivalent35mm(): Int? = effectiveFullFrameEquivalentMm()?.toInt()
+
+    /** Lens focal length on the selected film format that gives the current preview field of view. */
+    fun equivalentFrameFocalMm(): Int? = effectiveFullFrameEquivalentMm()
+        ?.let(frameFormat::focalLengthForFullFrameEquivalent)
 
     private fun persist() {
         preferences.edit()

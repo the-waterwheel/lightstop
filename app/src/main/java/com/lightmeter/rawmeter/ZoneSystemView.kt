@@ -6,7 +6,6 @@ import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.DashPathEffect
 import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.Path
@@ -313,11 +312,11 @@ class ZoneSystemView(
     }
 
     private fun drawFocalInfo(canvas: Canvas, frame: RectF) {
-        val equivalent = state.equivalent35mm()
+        val equivalent = state.equivalentFrameFocalMm()
         val focalText = buildString {
             val focal = state.cameraInfo.focalLengthMm
             if (focal > 0f) append("${"%.1f".format(focal)} mm")
-            if (equivalent != null) append("  ≈ $equivalent mm")
+            if (equivalent != null) append("  ≈ $equivalent mm (${shortFormatLabel()})")
         }
         if (focalText.isBlank()) return
 
@@ -408,11 +407,9 @@ class ZoneSystemView(
             val y = frame.top + display.y * frame.height()
             val radius = 9f * density
             val selected = marker.id == session.selectedMarkerId
-            paint.pathEffect = when (marker.trackingState) {
-                ZoneTrackingState.UNCERTAIN -> DashPathEffect(floatArrayOf(4f * density, 3f * density), 0f)
-                ZoneTrackingState.LOST -> DashPathEffect(floatArrayOf(2f * density, 4f * density), 0f)
-                else -> null
-            }
+            // RAW capture temporarily freezes the preview and can make tracking report
+            // UNCERTAIN/LOST. Keep the marker geometry stable: every state uses a solid circle.
+            paint.pathEffect = null
             paint.style = Paint.Style.FILL
             paint.color = if (selected) Color.argb(150, Color.red(red), Color.green(red), Color.blue(red)) else surface
             canvas.drawCircle(x, y, radius, paint)
@@ -420,7 +417,6 @@ class ZoneSystemView(
             paint.strokeWidth = 1f * density
             paint.color = if (selected) red else foreground
             canvas.drawCircle(x, y, radius, paint)
-            paint.pathEffect = null
             boldPaint.color = if (selected && !state.isDarkMode) Color.WHITE else foreground
             boldPaint.textSize = 7f * density
             drawCenteredText(canvas, marker.id.toString(), x, y, boldPaint)
@@ -1256,26 +1252,39 @@ class ZoneSystemView(
     private fun zonePositionY(rect: RectF, zone: Double): Float =
         rect.bottom - (zone.coerceIn(0.0, 10.0) / 10.0 * rect.height()).toFloat()
 
-    private fun shortFormatLabel(): String = when (state.frameFormat.id) {
-        "65x24" -> "65:24"
-        else -> state.frameFormat.id.uppercase()
-    }
+    private fun shortFormatLabel(): String = InstrumentPresentation.formatShortLabel(
+        state.frameFormat,
+        state.menuLanguage,
+    )
 
     private fun formatOptionRects(g: Geometry): List<RectF> {
         val gap = 4f * density
         val itemHeight = 28f * density
+        val itemWidth = 85f * density
+        val grid = InstrumentPresentation.formatMenuGridWithMaximumRows(
+            FrameFormat.ALL.size,
+            MAX_FORMAT_MENU_ROWS,
+        )
+        if (grid.columns == 0) return emptyList()
+        val menuWidth = grid.columns * itemWidth + (grid.columns - 1) * gap
+        val menuHeight = grid.rows * itemHeight + (grid.rows - 1) * gap
+        val menuLeft = if (g.formatButton.centerX() <= width / 2f) {
+            g.formatButton.left
+        } else {
+            g.formatButton.right - menuWidth
+        }.coerceIn(gap, (width - gap - menuWidth).coerceAtLeast(gap))
+        val belowTop = g.formatButton.bottom + gap
+        val menuTop = if (belowTop + menuHeight <= height - gap) {
+            belowTop
+        } else {
+            (g.formatButton.top - gap - menuHeight).coerceAtLeast(gap)
+        }
         return FrameFormat.ALL.indices.map { index ->
-            if (g.landscape) {
-                RectF(
-                    g.formatButton.left,
-                    g.formatButton.bottom + gap + index * (itemHeight + gap),
-                    g.formatButton.left + 85f * density,
-                    g.formatButton.bottom + gap + index * (itemHeight + gap) + itemHeight,
-                )
-            } else {
-                val top = g.formatButton.bottom + gap + index * (itemHeight + gap)
-                RectF(g.formatButton.left, top, g.formatButton.left + 85f * density, top + itemHeight)
-            }
+            val column = index / grid.rows
+            val row = index % grid.rows
+            val left = menuLeft + column * (itemWidth + gap)
+            val top = menuTop + row * (itemHeight + gap)
+            RectF(left, top, left + itemWidth, top + itemHeight)
         }
     }
 
@@ -1300,6 +1309,7 @@ class ZoneSystemView(
     }
 
     private companion object {
+        private const val MAX_FORMAT_MENU_ROWS = 6
         private const val MIN_MARKER_INTERPOLATION_MS = 12L
         private const val DEFAULT_MARKER_INTERPOLATION_MS = 33L
         private const val MAX_MARKER_INTERPOLATION_MS = 48L

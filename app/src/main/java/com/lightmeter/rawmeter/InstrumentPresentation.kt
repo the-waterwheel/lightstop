@@ -3,6 +3,8 @@ package com.lightmeter.rawmeter
 import android.graphics.RectF
 import kotlin.math.min
 
+internal data class FormatMenuGrid(val columns: Int, val rows: Int)
+
 internal data class ExposureScaleCenters(
     val aperture: Double,
     val shutter: Double,
@@ -50,7 +52,37 @@ internal object InstrumentPresentation {
         "67" -> "6×7"
         "69" -> "6×9"
         "65x24" -> "65:24"
+        "612" -> "6×12"
+        "617" -> "6×17"
+        "45" -> "4×5"
+        "57" -> "5×7"
+        "810" -> "8×10"
         else -> "135"
+    }
+
+    /** Chooses enough columns to keep labels readable, then wraps remaining formats into rows. */
+    fun formatMenuGrid(
+        itemCount: Int,
+        availableWidth: Float,
+        density: Float,
+    ): FormatMenuGrid {
+        if (itemCount <= 0 || availableWidth <= 0f) return FormatMenuGrid(0, 0)
+        val gap = 2f * density
+        val minimumItemWidth = 36f * density
+        val columnsThatFit = ((availableWidth + gap) / (minimumItemWidth + gap))
+            .toInt()
+            .coerceAtLeast(1)
+        val columns = minOf(itemCount, MAX_FORMAT_COLUMNS, columnsThatFit)
+        val rows = (itemCount + columns - 1) / columns
+        return FormatMenuGrid(columns, rows)
+    }
+
+    /** Grid used by the Zone overlay, capped vertically so it cannot run off-screen. */
+    fun formatMenuGridWithMaximumRows(itemCount: Int, maximumRows: Int): FormatMenuGrid {
+        if (itemCount <= 0 || maximumRows <= 0) return FormatMenuGrid(0, 0)
+        val columns = (itemCount + maximumRows - 1) / maximumRows
+        val rows = (itemCount + columns - 1) / columns
+        return FormatMenuGrid(columns, rows)
     }
 
     fun formatOptionRects(geometry: LayoutGeometry, density: Float): List<RectF> {
@@ -66,22 +98,23 @@ internal object InstrumentPresentation {
         val availableWidth = (right - left).coerceAtLeast(0f)
         if (availableWidth < 8f * density) return emptyList()
         val gap = 2f * density
-        val itemWidth = (
-            (availableWidth - gap * (FrameFormat.ALL.size - 1)) / FrameFormat.ALL.size
-            ).coerceAtLeast(18f * density)
-        return FrameFormat.ALL.indices.mapNotNull { index ->
-            val itemLeft = left + index * (itemWidth + gap)
-            val itemRight = min(itemLeft + itemWidth, right)
-            if (itemLeft >= right) {
-                null
-            } else {
-                RectF(
-                    itemLeft,
-                    geometry.formatButton.top,
-                    itemRight,
-                    geometry.formatButton.bottom,
-                )
-            }
+        val grid = formatMenuGrid(FrameFormat.ALL.size, availableWidth, density)
+        if (grid.columns == 0) return emptyList()
+        val itemWidth = (availableWidth - gap * (grid.columns - 1)) / grid.columns
+        val itemHeight = geometry.formatButton.height()
+        return FrameFormat.ALL.indices.map { index ->
+            val column = index % grid.columns
+            val row = index / grid.columns
+            val itemLeft = left + column * (itemWidth + gap)
+            val itemTop = geometry.formatButton.top + row * (itemHeight + gap)
+            RectF(
+                itemLeft,
+                itemTop,
+                min(itemLeft + itemWidth, right),
+                itemTop + itemHeight,
+            )
         }
     }
+
+    private const val MAX_FORMAT_COLUMNS = 6
 }

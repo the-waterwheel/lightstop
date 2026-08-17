@@ -16,8 +16,6 @@ import android.hardware.camera2.CaptureFailure
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
-import android.hardware.camera2.params.OutputConfiguration
-import android.hardware.camera2.params.SessionConfiguration
 import android.media.Image
 import android.media.ImageReader
 import android.os.Handler
@@ -29,13 +27,19 @@ import android.util.Size
 import android.view.Surface
 import android.view.TextureView
 import java.util.concurrent.CountDownLatch
-import java.util.concurrent.Executor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.roundToInt
 
+/**
+ * Public camera facade used by MainActivity.
+ *
+ * This class selects capabilities and coordinates lifecycle, calibration and fallback. Camera2
+ * resources, RAW metering, compatible metering, result pairing and recovery history are owned by
+ * dedicated internal components below this facade.
+ */
 class CameraController(
     private val context: Context,
     private val callback: CameraControllerCallback,
@@ -44,72 +48,177 @@ class CameraController(
     private data class VignettingCapture(
         val id: Int,
         val cameraId: String,
-        val images: MutableMap<Long, Image> = java.util.TreeMap(),
-        val results: MutableMap<Long, CaptureResult> = java.util.TreeMap(),
-    )
-
-    private data class YuvMeasurement(
-        val id: Int,
-        val meteringMode: MeteringMode,
-        var attemptedFrames: Int = 0,
+        val framePairer: TimestampedResultPairer<Image, CaptureResult> =
+            TimestampedResultPairer(Image::close),
     )
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+    private val sessionCoordinator = CameraSessionCoordinator(
+        cameraManager = cameraManager,
+        onRawImageAvailable = ::onRawImageAvailable,
+        onTrackingImageAvailable = ::onTrackingImageAvailable,
+        listener = object : CameraSessionCoordinatorListener {
+            override fun onCameraOpened(generation: Int) {
+                if (!started || generation != cameraGeneration) return
+                cameraFailureStage = CameraFailureStage.CONFIGURING
+            }
+
+            override fun onSessionConfigured(
+                device: CameraDevice,
+                session: CameraCaptureSession,
+                previewSurface: Surface,
+                generation: Int,
+            ) {
+                if (!started || generation != cameraGeneration) return
+                cameraFailureStage = CameraFailureStage.RUNNING
+                startPreview(device, session, previewSurface, generation)
+            }
+
+            override fun onSessionConfigurationFailed(generation: Int, error: Exception?) {
+                if (generation != cameraGeneration) return
+                if (error == null) {
+                    Log.w(TAG, "Camera session configuration failed for profile=$sessionProfile")
+                } else {
+                    Log.e(TAG, "Unable to create camera session for profile=$sessionProfile", error)
+                }
+                handleSessionFailure(generation)
+            }
+
+            override fun onCameraDisconnected(generation: Int) {
+                if (generation != cameraGeneration) return
+                handleCameraFailure(
+                    CameraFailureKind.DISCONNECTED,
+                    cameraFailureStage,
+                    generation,
+                )
+            }
+
+            override fun onCameraError(error: Int, generation: Int) {
+                if (generation != cameraGeneration) return
+                val failure = CameraFailureKind.fromDeviceError(error)
+                Log.e(
+                    TAG,
+                    "Camera device callback error=$error kind=$failure " +
+                        "stage=$cameraFailureStage profile=$sessionProfile generation=$generation",
+                )
+                handleCameraFailure(failure, cameraFailureStage, generation)
+            }
+        },
+    )
     private val cameraCatalog = CameraCatalog(cameraManager)
     private val calibrationStore = CameraCalibrationStore(context)
     private val vignettingCalibrationStore = VignettingCalibrationStore(context)
     private val measurementId = AtomicInteger(0)
+    private val compatibleMeter = CompatibleLightMeter(
+        mainHandler = mainHandler,
+        calibrationStore = calibrationStore,
+        localized = ::localized,
+        listener = object : CompatibleLightMeterListener {
+            override fun onCompatibleMeteringStarted(source: MeteringSource, frameCount: Int) {
+                callback.onMeteringStarted(source, frameCount)
+            }
+
+            override fun onCompatibleMeteringReading(reading: MeterReading) {
+                meteringOperationActive = false
+                callback.onMeterReading(reading)
+            }
+
+            override fun onCompatibleMeteringError(message: String) {
+                meteringOperationActive = false
+                finishCompatibleYuvRequest()
+                callback.onMeteringError(message)
+            }
+
+            override fun onCompatibleMeteringCompleted(requiresPreviewOnlySession: Boolean) {
+                afterCompatibleMeasurement(requiresPreviewOnlySession)
+            }
+        },
+    )
+    private val rawMeter = RawLightMeter(
+        calibrationStore = calibrationStore,
+        vignettingCalibrationStore = vignettingCalibrationStore,
+        localized = ::localized,
+        listener = object : RawLightMeterListener {
+            override fun onRawCaptureResult(result: CaptureResult) {
+                latestResult = result
+                updateDynamicLensInfo(result)
+            }
+
+            override fun onRawMeteringStarted(frameCount: Int) {
+                mainHandler.post { callback.onMeteringStarted(MeteringSource.RAW, frameCount) }
+            }
+
+            override fun onRawMeteringReading(reading: MeterReading) {
+                resumePreviewAfterRawCapture()
+                meteringOperationActive = false
+                recoveryState.recordRawMeasurementSucceeded()
+                mainHandler.post { callback.onMeterReading(reading) }
+            }
+
+            override fun onRawMeteringError(
+                message: String,
+                meteringMode: MeteringMode,
+                target: ZoneMeteringTarget?,
+            ) {
+                resumePreviewAfterRawCapture()
+                val canUsePreview = textureView?.isAvailable == true &&
+                    cameraDevice != null && captureSession != null
+                if (canUsePreview) {
+                    downgradeAfterCompatibleMeasurement =
+                        recoveryState.recordRawMeasurementFailed(meteringPipelineMode)
+                    measureCompatiblePreview(meteringMode, target)
+                } else {
+                    meteringOperationActive = false
+                    postMeterError(message)
+                }
+            }
+        },
+    )
 
     private var cameraThread: HandlerThread? = null
     private var cameraHandler: Handler? = null
     private var started = false
-    private var opening = false
+    private val opening: Boolean
+        get() = sessionCoordinator.isOpening
     @Volatile
     private var requestedCameraId: String? = null
     private var textureView: TextureView? = null
-    @Volatile
-    private var cameraDevice: CameraDevice? = null
-    @Volatile
-    private var captureSession: CameraCaptureSession? = null
-    private var previewSurface: Surface? = null
-    private var rawReader: ImageReader? = null
-    private var trackingReader: ImageReader? = null
+    private val cameraDevice: CameraDevice?
+        get() = sessionCoordinator.device
+    private val captureSession: CameraCaptureSession?
+        get() = sessionCoordinator.session
+    private val rawReader: ImageReader?
+        get() = sessionCoordinator.rawReader
+    private val trackingReader: ImageReader?
+        get() = sessionCoordinator.trackingReader
     private var characteristics: CameraCharacteristics? = null
     private var selectedPhysicalCameraId: String? = null
     private var meteringPipelineMode = MeteringPipelineMode.AUTO
-    private var sessionProfile: CameraSessionProfile? = null
     private var rawHardwareAvailable = false
     private var trackingHardwareAvailable = false
-    private var useLogicalCameraFallback = false
-    private val failureAttempts =
-        mutableMapOf<Triple<CameraSessionProfile, CameraFailureKind, CameraFailureStage>, Int>()
-    private var totalRecoveryAttempts = 0
+    private val recoveryState = CameraRecoveryStateMachine(
+        maxRecoveryAttempts = MAX_TOTAL_RECOVERY_ATTEMPTS,
+        rawFailuresBeforeDowngrade = RAW_FAILURES_BEFORE_DOWNGRADE,
+    )
+    private val sessionProfile: CameraSessionProfile?
+        get() = recoveryState.profile
+    private val useLogicalCameraFallback: Boolean
+        get() = recoveryState.usesLogicalCameraFallback
     private var cameraGeneration = 0
     private var cameraFailureStage = CameraFailureStage.OPENING
     private var cameraInfo = CameraUiInfo()
     private var previewSize: Size? = null
     private var previewFpsRange: Range<Int>? = null
+    private var fpsRequestCeiling: Int? = DEFAULT_PREVIEW_FPS_CEILING
     @Volatile
     private var latestResult: CaptureResult? = null
-    private var previewBuilder: CaptureRequest.Builder? = null
-    @Volatile
-    private var activeMeasurement: MeasurementAccumulator? = null
-    private var activeRawRequest: CaptureRequest? = null
+    private var trackingFramesEnabled = false
+    private var compatibleYuvRequestActive = false
+    private var previewPausedForRawCapture = false
     @Volatile
     private var activeVignettingCapture: VignettingCapture? = null
-    @Volatile
-    private var fallbackMeasuring = false
-    private var fallbackMeasurementId = 0
-    @Volatile
-    private var activeYuvMeasurement: YuvMeasurement? = null
-    private var compatibleLumaBuffer = ByteArray(0)
-    private var compatibleYuvAvailable = true
-    private var downgradeYuvSessionAfterMeasurement = false
-    private var rawMeasurementTimeout: Runnable? = null
-    private var yuvMeasurementTimeout: Runnable? = null
     private var vignettingMeasurementTimeout: Runnable? = null
-    private var consecutiveRawMeasurementFailures = 0
     private var downgradeAfterCompatibleMeasurement = false
     @Volatile
     private var meteringOperationActive = false
@@ -132,6 +241,16 @@ class CameraController(
 
     fun setTrackingFramesEnabled(enabled: Boolean) {
         zoneCameraFrames.setEnabled(enabled, cameraHandler)
+        val handler = cameraHandler
+        if (handler == null) {
+            trackingFramesEnabled = enabled
+            return
+        }
+        handler.post {
+            if (trackingFramesEnabled == enabled) return@post
+            trackingFramesEnabled = enabled
+            updatePreviewRepeatingRequest()
+        }
     }
 
     fun setMeteringPipelineMode(mode: MeteringPipelineMode) {
@@ -194,8 +313,7 @@ class CameraController(
     fun start() {
         if (started) return
         started = true
-        failureAttempts.clear()
-        totalRecoveryAttempts = 0
+        recoveryState.markPreviewStable()
         val thread = HandlerThread("raw-meter-camera").apply { start() }
         cameraThread = thread
         cameraHandler = Handler(thread.looper)
@@ -299,17 +417,15 @@ class CameraController(
             return true
         }
         handler.post {
-            if (activeMeasurement != null || activeVignettingCapture != null) {
+            if (rawMeter.isMeasuring || activeVignettingCapture != null) {
                 meteringOperationActive = false
                 postMeterError(
                     localized("请等待当前操作完成", "Wait for the current operation"),
                 )
                 return@post
             }
-            val device = cameraDevice
-            val session = captureSession
-            val reader = rawReader
-            if (device == null || session == null || reader == null || !cameraInfo.rawAvailable) {
+            val rawContext = rawMeteringContext()
+            if (rawContext == null || !cameraInfo.rawAvailable) {
                 meteringOperationActive = false
                 postMeterError(
                     localized(
@@ -320,8 +436,6 @@ class CameraController(
                 return@post
             }
 
-            val captureIso = latestResult?.get(CaptureResult.SENSOR_SENSITIVITY)
-            val count = rawFrameCount(captureIso)
             val screenAspect =
                 if (frameLandscape) {
                     frameFormat.landscapeAspect
@@ -355,9 +469,10 @@ class CameraController(
             } else {
                 displayedPreviewReference
             }
-            val accumulator = MeasurementAccumulator(
-                id = measurementId.incrementAndGet(),
-                expectedFrames = count,
+            Log.i(TAG, "Starting RAW metering for frame format=${frameFormat.id}")
+            pausePreviewForRawCapture()
+            val accepted = rawMeter.start(
+                context = rawContext,
                 frameAspect = sensorFrameAspect,
                 zoom = displayZoom.coerceAtLeast(1f),
                 meteringMode = meteringMode,
@@ -365,83 +480,31 @@ class CameraController(
                 previewReference = previewReference,
                 screenToSensorRotationDegrees = screenToSensorRotation,
             )
-            activeMeasurement = accumulator
-            Log.e(
-                TAG,
-                "RAW metering started: frames=$count captureIso=${captureIso ?: "unknown"} " +
-                    "zoom=${accumulator.zoom} " +
-                    "format=${frameFormat.id} sensorAspect=$sensorFrameAspect mode=$meteringMode " +
-                    "touchTarget=${target != null} ispReference=${previewReference != null}",
-            )
-            mainHandler.post { callback.onMeteringStarted(MeteringSource.RAW, count) }
-            try {
-                activeRawRequest = buildRawRequest(device, reader.surface)
-                scheduleRawMeasurementTimeout(accumulator, handler)
-                fillRawPipeline(accumulator)
-            } catch (error: Exception) {
-                finishMeasurementWithError(
-                    localized(
-                        "无法开始测光，请重试",
-                        "Unable to start metering. Please try again",
-                    ),
-                )
+            if (!accepted) {
+                resumePreviewAfterRawCapture()
+                meteringOperationActive = false
+                postMeterError(localized("请等待当前操作完成", "Wait for the current operation"))
             }
         }
         return true
     }
 
-    private fun scheduleRawMeasurementTimeout(
-        accumulator: MeasurementAccumulator,
-        handler: Handler,
-    ) {
-        cancelRawMeasurementTimeout(handler)
-        lateinit var timeout: Runnable
-        timeout = Runnable {
-            if (rawMeasurementTimeout !== timeout) return@Runnable
-            rawMeasurementTimeout = null
-            if (activeMeasurement?.id == accumulator.id) {
-                finishMeasurementWithError(
-                    localized("测光超时，请重试", "Metering timed out. Please try again"),
-                )
-            }
-        }
-        rawMeasurementTimeout = timeout
-        handler.postDelayed(timeout, RAW_METERING_TIMEOUT_MS)
-    }
-
-    private fun cancelRawMeasurementTimeout(handler: Handler? = cameraHandler) {
-        val timeout = rawMeasurementTimeout ?: return
-        rawMeasurementTimeout = null
-        handler?.removeCallbacks(timeout)
-    }
-
-    private fun scheduleYuvMeasurementTimeout(
-        measurement: YuvMeasurement,
-        handler: Handler,
-    ) {
-        cancelYuvMeasurementTimeout(handler)
-        lateinit var timeout: Runnable
-        timeout = Runnable {
-            if (yuvMeasurementTimeout !== timeout) return@Runnable
-            yuvMeasurementTimeout = null
-            if (activeYuvMeasurement?.id == measurement.id) {
-                finishYuvPreviewWithError(
-                    measurement.id,
-                    localized(
-                        "正在切换到更兼容的测光方式",
-                        "Switching to a more compatible metering method",
-                    ),
-                )
-            }
-        }
-        yuvMeasurementTimeout = timeout
-        handler.postDelayed(timeout, CompatibleMeteringPolicy.YUV_TIMEOUT_MS)
-    }
-
-    private fun cancelYuvMeasurementTimeout(handler: Handler? = cameraHandler) {
-        val timeout = yuvMeasurementTimeout ?: return
-        yuvMeasurementTimeout = null
-        handler?.removeCallbacks(timeout)
+    private fun rawMeteringContext(): RawMeteringContext? {
+        val device = cameraDevice ?: return null
+        val session = captureSession ?: return null
+        val reader = rawReader ?: return null
+        val handler = cameraHandler ?: return null
+        val chars = characteristics ?: return null
+        return RawMeteringContext(
+            device = device,
+            session = session,
+            rawSurface = reader.surface,
+            handler = handler,
+            latestResult = latestResult,
+            characteristics = chars,
+            cameraInfo = cameraInfo,
+            selectedPhysicalCameraId = selectedPhysicalCameraId,
+        )
     }
 
     private fun scheduleVignettingMeasurementTimeout(
@@ -480,7 +543,7 @@ class CameraController(
             return
         }
         handler.post {
-            if (activeMeasurement != null || fallbackMeasuring ||
+            if (rawMeter.isMeasuring || compatibleMeter.isMeasuring ||
                 activeVignettingCapture != null
             ) {
                 postVignettingError(
@@ -488,10 +551,8 @@ class CameraController(
                 )
                 return@post
             }
-            val device = cameraDevice
-            val session = captureSession
-            val reader = rawReader
-            if (!cameraInfo.rawAvailable || device == null || session == null || reader == null) {
+            val rawContext = rawMeteringContext()
+            if (!cameraInfo.rawAvailable || rawContext == null) {
                 postVignettingError(
                     localized(
                         "当前镜头不支持暗角校准",
@@ -507,9 +568,10 @@ class CameraController(
             activeVignettingCapture = capture
             mainHandler.post { callback.onVignettingCalibrationStarted() }
             try {
-                val request = buildRawRequest(device, reader.surface)
+                val request = rawMeter.buildCaptureRequest(rawContext)
                 scheduleVignettingMeasurementTimeout(capture, handler)
-                session.capture(request, vignettingCaptureCallback, handler)
+                pausePreviewForRawCapture()
+                rawContext.session.capture(request, vignettingCaptureCallback, handler)
             } catch (error: Exception) {
                 finishVignettingWithError(
                     localized(
@@ -553,7 +615,11 @@ class CameraController(
 
     @Synchronized
     fun preferredCompatibleMeteringSource(): MeteringSource =
-        if (trackingReader != null) MeteringSource.YUV_PREVIEW else MeteringSource.ISP_PREVIEW
+        if (meteringPipelineMode == MeteringPipelineMode.ISOLATED) {
+            MeteringSource.ISP_PREVIEW
+        } else {
+            compatibleMeter.preferredSource(trackingReader != null)
+        }
 
     @Synchronized
     fun updateUserCalibration(
@@ -619,263 +685,57 @@ class CameraController(
     private fun measureCompatiblePreview(
         meteringMode: MeteringMode,
         target: ZoneMeteringTarget?,
+        forceProcessedPreview: Boolean = false,
     ) {
-        if (target == null && trackingReader != null && compatibleYuvAvailable) {
-            measureYuvPreview(meteringMode)
-        } else {
-            mainHandler.post { measureProcessedPreview(meteringMode, target) }
-        }
-    }
-
-    private fun measureYuvPreview(meteringMode: MeteringMode) {
-        if (fallbackMeasuring || activeMeasurement != null || activeVignettingCapture != null) {
+        if (compatibleMeter.isMeasuring || rawMeter.isMeasuring ||
+            activeVignettingCapture != null
+        ) {
             meteringOperationActive = false
             postMeterError(localized("请等待当前操作完成", "Wait for the current operation"))
             return
         }
-        val handler = cameraHandler
-        if (trackingReader == null || handler == null || cameraDevice == null ||
-            captureSession == null || latestResult == null
-        ) {
-            mainHandler.post { measureProcessedPreview(meteringMode, null) }
-            return
-        }
-        fallbackMeasuring = true
-        val measurement = YuvMeasurement(
-            id = ++fallbackMeasurementId,
+        val useProcessedPreview = forceProcessedPreview ||
+            meteringPipelineMode == MeteringPipelineMode.ISOLATED
+        val needsYuvRequest = !useProcessedPreview && target == null &&
+            trackingReader != null && compatibleMeter.yuvAvailable
+        val accepted = compatibleMeter.measure(
             meteringMode = meteringMode,
+            target = target,
+            context = compatibleMeteringContext(),
+            forceProcessedPreview = useProcessedPreview,
         )
-        activeYuvMeasurement = measurement
-        Log.e(
-            TAG,
-            "YUV preview metering started: frames=${CompatibleMeteringPolicy.FRAME_COUNT} " +
-                "mode=$meteringMode",
-        )
-        mainHandler.post {
-            callback.onMeteringStarted(
-                MeteringSource.YUV_PREVIEW,
-                CompatibleMeteringPolicy.FRAME_COUNT,
-            )
-        }
-        scheduleYuvMeasurementTimeout(measurement, handler)
-    }
-
-    private fun onYuvMeteringImage(image: Image, measurement: YuvMeasurement) {
-        if (activeYuvMeasurement?.id != measurement.id) return
-        measurement.attemptedFrames += 1
-        val requiredBytes = image.width * image.height
-        if (compatibleLumaBuffer.size != requiredBytes) {
-            compatibleLumaBuffer = ByteArray(requiredBytes)
-        }
-        val result = latestResult
-        val chars = characteristics
-        val stat = if (result != null && chars != null) {
-            MeteringAnalysis.analyzeYuvPreview(
-                image = image,
-                luma = compatibleLumaBuffer,
-                result = result,
-                characteristics = chars,
-                cameraId = cameraInfo.cameraId,
-                meteringMode = measurement.meteringMode,
-                calibrationStore = calibrationStore,
-            )
-        } else {
-            null
-        }
-        if (activeYuvMeasurement?.id != measurement.id) return
-        if (stat != null) {
-            val reading = MeteringFusion.fuse(listOf(stat), MeteringSource.YUV_PREVIEW)
-            if (reading == null) {
-                finishYuvPreviewWithError(
-                    measurement.id,
-                    localized(
-                        "兼容测光数据无效，正在使用预览重试",
-                        "Compatible metering data was invalid. Retrying from the preview",
-                    ),
-                )
-                return
-            }
-            cancelYuvMeasurementTimeout()
-            activeYuvMeasurement = null
-            fallbackMeasuring = false
+        if (!accepted) {
             meteringOperationActive = false
-            mainHandler.post { callback.onMeterReading(reading) }
-            Log.e(
-                TAG,
-                "YUV preview metering completed: frames=${reading.frameCount} " +
-                "ev100=${reading.sceneEv100}",
-            )
-            afterCompatibleMeasurement()
-        } else if (CompatibleMeteringPolicy.decide(
-                attemptedFrames = measurement.attemptedFrames,
-                frameValid = false,
-            ) == CompatibleFrameDecision.USE_PREVIEW
-        ) {
-            finishYuvPreviewWithError(
-                measurement.id,
-                localized(
-                    "正在切换到更兼容的测光方式",
-                    "Switching to a more compatible metering method",
-                ),
-            )
+            postMeterError(localized("请等待当前操作完成", "Wait for the current operation"))
+        } else if (needsYuvRequest) {
+            compatibleYuvRequestActive = true
+            updatePreviewRepeatingRequest()
         }
     }
 
-    private fun finishYuvPreviewWithError(id: Int, message: String) {
-        val measurement = activeYuvMeasurement?.takeIf { it.id == id } ?: return
-        cancelYuvMeasurementTimeout()
-        activeYuvMeasurement = null
-        fallbackMeasuring = false
-        compatibleYuvAvailable = false
-        if (sessionProfile == CameraSessionProfile.COMPATIBLE) {
-            downgradeYuvSessionAfterMeasurement = true
-        }
-        Log.w(TAG, message)
-        mainHandler.post { measureProcessedPreview(measurement.meteringMode, null) }
-    }
+    private fun compatibleMeteringContext() = CompatibleMeteringContext(
+        textureView = textureView,
+        cameraHandler = cameraHandler,
+        trackingReaderAvailable = trackingReader != null,
+        cameraReady = { cameraDevice != null && captureSession != null },
+        latestResult = { latestResult },
+        characteristics = { characteristics },
+        cameraId = { cameraInfo.cameraId },
+    )
 
     private fun measureProcessedPreview(
         meteringMode: MeteringMode,
         target: ZoneMeteringTarget?,
     ) {
-        if (fallbackMeasuring || activeMeasurement != null || activeVignettingCapture != null) {
-            meteringOperationActive = false
-            callback.onMeteringError(
-                localized("请等待当前操作完成", "Wait for the current operation"),
-            )
-            return
-        }
-        val texture = textureView
-        if (texture?.isAvailable != true || cameraDevice == null || captureSession == null) {
-            meteringOperationActive = false
-            callback.onMeteringError(
-                localized("相机预览尚未就绪", "Camera preview is not ready"),
-            )
-            return
-        }
-        if (latestResult == null) {
-            meteringOperationActive = false
-            callback.onMeteringError(
-                localized(
-                    "正在等待相机曝光参数",
-                    "Waiting for camera exposure data",
-                ),
-            )
-            return
-        }
-        fallbackMeasuring = true
-        val id = ++fallbackMeasurementId
-        val samples = mutableListOf<MeteringFrameStat>()
-        Log.e(
-            TAG,
-            "ISP preview metering started: frames=${CompatibleMeteringPolicy.FRAME_COUNT} " +
-                "mode=$meteringMode",
-        )
-        callback.onMeteringStarted(
-            MeteringSource.ISP_PREVIEW,
-            CompatibleMeteringPolicy.FRAME_COUNT,
-        )
-        captureProcessedPreviewSample(id, samples, meteringMode, target)
+        measureCompatiblePreview(meteringMode, target, forceProcessedPreview = true)
     }
 
-    private fun captureProcessedPreviewSample(
-        id: Int,
-        samples: MutableList<MeteringFrameStat>,
-        meteringMode: MeteringMode,
-        target: ZoneMeteringTarget?,
-    ) {
-        if (!fallbackMeasuring || id != fallbackMeasurementId) return
-        val texture = textureView
-        val result = latestResult
-        val handler = cameraHandler
-        if (texture?.isAvailable != true || result == null || handler == null) {
-            finishProcessedPreviewWithError(
-                id,
-                localized("无法读取当前预览画面", "Unable to read the current preview"),
-            )
-            return
-        }
-        val bitmap = try {
-            texture.getBitmap(FALLBACK_BITMAP_SIZE, FALLBACK_BITMAP_SIZE)
-        } catch (_: Exception) {
-            null
-        }
-        if (bitmap == null) {
-            finishProcessedPreviewWithError(
-                id,
-                localized("无法读取当前预览画面", "Unable to read the current preview"),
-            )
-            return
-        }
-        val accepted = handler.post {
-            val stat = try {
-                characteristics?.let { chars ->
-                    MeteringAnalysis.analyzePreview(
-                        bitmap = bitmap,
-                        result = result,
-                        characteristics = chars,
-                        cameraId = cameraInfo.cameraId,
-                        meteringMode = meteringMode,
-                        calibrationStore = calibrationStore,
-                        target = target,
-                    )
-                }
-            } finally {
-                bitmap.recycle()
-            }
-            mainHandler.post finishSample@{
-                if (!fallbackMeasuring || id != fallbackMeasurementId) return@finishSample
-                if (stat == null) {
-                    finishProcessedPreviewWithError(
-                        id,
-                        localized(
-                            "预览亮度或曝光参数不可用",
-                            "Preview brightness or exposure data is unavailable",
-                        ),
-                    )
-                    return@finishSample
-                }
-                samples += stat
-                finishProcessedPreview(id, samples)
-            }
-        }
-        if (!accepted) {
-            bitmap.recycle()
-            finishProcessedPreviewWithError(
-                id,
-                localized("相机预览已关闭", "The camera preview has closed"),
-            )
-        }
-    }
-
-    private fun finishProcessedPreview(id: Int, samples: List<MeteringFrameStat>) {
-        if (!fallbackMeasuring || id != fallbackMeasurementId || samples.isEmpty()) return
-        val reading = MeteringFusion.fuse(samples, MeteringSource.ISP_PREVIEW)
-        if (reading == null) {
-            finishProcessedPreviewWithError(
-                id,
-                localized(
-                    "无法计算兼容测光结果",
-                    "Unable to calculate a compatible reading",
-                ),
-            )
-            return
-        }
-        fallbackMeasuring = false
-        meteringOperationActive = false
-        callback.onMeterReading(reading)
-        Log.e(
-            TAG,
-            "ISP preview metering completed: frames=${samples.size} ev100=${reading.sceneEv100}",
-        )
-        afterCompatibleMeasurement()
-    }
-
-    private fun afterCompatibleMeasurement() {
+    private fun afterCompatibleMeasurement(requiresPreviewOnlySession: Boolean) {
         cameraHandler?.post {
+            finishCompatibleYuvRequest()
             when {
-                downgradeYuvSessionAfterMeasurement -> {
-                    downgradeYuvSessionAfterMeasurement = false
+                requiresPreviewOnlySession &&
+                    sessionProfile == CameraSessionProfile.COMPATIBLE -> {
                     if (started && cameraDevice != null) {
                         scheduleRecovery(
                             CameraSessionProfile.PREVIEW_ONLY,
@@ -890,7 +750,7 @@ class CameraController(
                 downgradeAfterCompatibleMeasurement -> {
                     downgradeAfterCompatibleMeasurement = false
                     if (!started || cameraDevice == null) return@post
-                    val compatible = if (trackingHardwareAvailable && compatibleYuvAvailable) {
+                    val compatible = if (trackingHardwareAvailable && compatibleMeter.yuvAvailable) {
                         CameraSessionProfile.COMPATIBLE
                     } else {
                         CameraSessionProfile.PREVIEW_ONLY
@@ -906,14 +766,6 @@ class CameraController(
                 }
             }
         }
-    }
-
-    private fun finishProcessedPreviewWithError(id: Int, message: String) {
-        if (id != fallbackMeasurementId) return
-        fallbackMeasuring = false
-        meteringOperationActive = false
-        Log.e(TAG, "ISP preview metering failed: $message")
-        callback.onMeteringError(message)
     }
 
     override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
@@ -945,7 +797,6 @@ class CameraController(
         val handler = cameraHandler ?: return
         val generation = ++cameraGeneration
         cameraFailureStage = CameraFailureStage.OPENING
-        opening = true
         try {
             val discovered = cameraCatalog.discover()
             val selected = discovered.firstOrNull { it.cameraId == requestedCameraId }
@@ -960,7 +811,6 @@ class CameraController(
                 Triple(descriptor, effectivePhysicalId, streamChars)
             }
             if (selection == null) {
-                opening = false
                 postInfo(
                     CameraUiInfo(
                         status = localized("没有可用的摄像头", "No camera is available"),
@@ -994,21 +844,36 @@ class CameraController(
                     localized("没有合适的预览尺寸", "No suitable preview size is available"),
                 )
             previewSize = chosenPreview
-            val chosenRange = CameraStreamSelector.chooseFpsRange(chars, chosenPreview)
-            previewFpsRange = chosenRange
             val trackingSize = CameraStreamSelector.chooseTrackingSize(map, chosenPreview)
             trackingHardwareAvailable = trackingSize != null
-            val profile = CameraRecoveryPolicy.normalize(
-                sessionProfile ?: CameraRecoveryPolicy.initialProfile(
-                    mode = meteringPipelineMode,
-                    rawSupported = rawHardwareAvailable,
-                    trackingSupported = trackingHardwareAvailable,
-                ),
+            val profile = recoveryState.resolveProfile(
+                mode = meteringPipelineMode,
                 rawSupported = rawHardwareAvailable,
                 trackingSupported = trackingHardwareAvailable,
             )
-            sessionProfile = profile
             val rawAvailable = rawHardwareAvailable && profile.usesRaw
+            val rawSize = if (rawAvailable) {
+                val rawSizes = map.getOutputSizes(ImageFormat.RAW_SENSOR)
+                rawSizes?.minByOrNull { it.width.toLong() * it.height.toLong() }
+                    ?: throw IllegalStateException(
+                        localized(
+                            "RAW 能力存在，但没有 RAW_SENSOR 尺寸",
+                            "RAW is reported but no RAW_SENSOR size is available",
+                        ),
+                    )
+            } else {
+                null
+            }
+            val configuredTrackingSize = trackingSize.takeIf { profile.usesTracking }
+            val chosenRange = fpsRequestCeiling?.let { ceiling ->
+                CameraStreamSelector.chooseFpsRange(
+                    characteristics = chars,
+                    previewSize = chosenPreview,
+                    trackingSize = configuredTrackingSize,
+                    requestedCeiling = ceiling,
+                )
+            }
+            previewFpsRange = chosenRange
 
             val physicalSize = chars.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
             val focal = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
@@ -1041,160 +906,27 @@ class CameraController(
             )
             postInfo(cameraInfo)
 
-            surfaceTexture.setDefaultBufferSize(chosenPreview.width, chosenPreview.height)
-            previewSurface?.release()
-            previewSurface = Surface(surfaceTexture)
-
-            rawReader?.close()
-            rawReader = if (rawAvailable) {
-                val rawSizes = map.getOutputSizes(ImageFormat.RAW_SENSOR)
-                val rawSize = rawSizes?.minByOrNull { it.width.toLong() * it.height.toLong() }
-                    ?: throw IllegalStateException(
-                        localized(
-                            "RAW 能力存在，但没有 RAW_SENSOR 尺寸",
-                            "RAW is reported but no RAW_SENSOR size is available",
-                        ),
-                    )
-                ImageReader.newInstance(
-                    rawSize.width,
-                    rawSize.height,
-                    ImageFormat.RAW_SENSOR,
-                    RAW_READER_MAX_IMAGES,
-                ).also { imageReader ->
-                    imageReader.setOnImageAvailableListener(
-                        { reader -> onRawImageAvailable(reader) },
-                        handler,
-                    )
-                }
-            } else {
-                null
-            }
-            trackingReader?.close()
-            trackingReader = if (profile.usesTracking) {
-                trackingSize?.let { size ->
-                ImageReader.newInstance(
-                    size.width,
-                    size.height,
-                    ImageFormat.YUV_420_888,
-                    ZoneLumaBufferPool.DEFAULT_CAPACITY,
-                ).also { imageReader ->
-                    imageReader.setOnImageAvailableListener(
-                        { reader -> onTrackingImageAvailable(reader) },
-                        handler,
-                    )
-                }
-                }
-            } else {
-                null
-            }
+            sessionCoordinator.configureOutputs(
+                surfaceTexture = surfaceTexture,
+                previewSize = chosenPreview,
+                rawSize = rawSize,
+                trackingSize = configuredTrackingSize,
+                handler = handler,
+            )
             Log.i(
                 TAG,
                 "Opening selection=${descriptor.cameraId}, logical=${descriptor.logicalCameraId}, " +
                     "physical=$effectivePhysicalId, profile=$profile, focal=$focal, " +
                     "raw=$rawAvailable",
             )
-            cameraManager.openCamera(
-                descriptor.logicalCameraId,
-                createCameraStateCallback(generation),
-                handler,
+            sessionCoordinator.open(
+                logicalCameraId = descriptor.logicalCameraId,
+                physicalCameraId = effectivePhysicalId,
+                generation = generation,
+                handler = handler,
             )
         } catch (error: Exception) {
-            opening = false
             handlePreparationFailure(error, generation)
-        }
-    }
-
-    private fun createCameraStateCallback(generation: Int) =
-        object : CameraDevice.StateCallback() {
-            override fun onOpened(camera: CameraDevice) {
-                if (!started || generation != cameraGeneration) {
-                    camera.close()
-                    return
-                }
-                opening = false
-                cameraDevice = camera
-                cameraFailureStage = CameraFailureStage.CONFIGURING
-                createSession(camera, generation)
-            }
-
-            override fun onDisconnected(camera: CameraDevice) {
-                if (generation != cameraGeneration) {
-                    camera.close()
-                    return
-                }
-                val stage = cameraFailureStage
-                camera.close()
-                if (cameraDevice === camera) cameraDevice = null
-                opening = false
-                handleCameraFailure(
-                    CameraFailureKind.DISCONNECTED,
-                    stage,
-                    generation,
-                )
-            }
-
-            override fun onError(camera: CameraDevice, error: Int) {
-                if (generation != cameraGeneration) {
-                    camera.close()
-                    return
-                }
-                val stage = cameraFailureStage
-                camera.close()
-                if (cameraDevice === camera) cameraDevice = null
-                opening = false
-                val failure = CameraFailureKind.fromDeviceError(error)
-                Log.e(
-                    TAG,
-                    "Camera device callback error=$error kind=$failure stage=$stage " +
-                        "profile=$sessionProfile generation=$generation",
-                )
-                handleCameraFailure(failure, stage, generation)
-            }
-        }
-
-    private fun createSession(device: CameraDevice, generation: Int) {
-        val preview = previewSurface ?: return
-        val handler = cameraHandler ?: return
-        val outputs = mutableListOf(preview)
-        rawReader?.surface?.let(outputs::add)
-        trackingReader?.surface?.let(outputs::add)
-        val stateCallback = object : CameraCaptureSession.StateCallback() {
-            override fun onConfigured(session: CameraCaptureSession) {
-                if (generation != cameraGeneration || cameraDevice !== device) {
-                    session.close()
-                    return
-                }
-                captureSession = session
-                cameraFailureStage = CameraFailureStage.RUNNING
-                startPreview(device, session, preview, generation)
-            }
-
-            override fun onConfigureFailed(session: CameraCaptureSession) {
-                session.close()
-                if (generation != cameraGeneration) return
-                Log.w(TAG, "Camera session configuration failed for profile=$sessionProfile")
-                handleSessionFailure(generation)
-            }
-        }
-        try {
-            val physicalId = selectedPhysicalCameraId
-            val outputConfigurations = outputs.map { surface ->
-                OutputConfiguration(surface).apply {
-                    if (physicalId != null) setPhysicalCameraId(physicalId)
-                }
-            }
-            val executor = Executor { runnable -> handler.post(runnable) }
-            device.createCaptureSession(
-                SessionConfiguration(
-                    SessionConfiguration.SESSION_REGULAR,
-                    outputConfigurations,
-                    executor,
-                    stateCallback,
-                ),
-            )
-        } catch (error: Exception) {
-            Log.e(TAG, "Unable to create camera session for profile=$sessionProfile", error)
-            if (generation == cameraGeneration) handleSessionFailure(generation)
         }
     }
 
@@ -1216,9 +948,8 @@ class CameraController(
 
     private fun handleSessionFailure(generation: Int) {
         if (generation != cameraGeneration) return
-        val current = sessionProfile ?: CameraSessionProfile.PREVIEW_ONLY
-        val next = CameraRecoveryPolicy.nextProfile(
-            current,
+        val next = recoveryState.nextProfile(
+            mode = meteringPipelineMode,
             rawSupported = rawHardwareAvailable,
             trackingSupported = trackingHardwareAvailable,
         )
@@ -1247,15 +978,10 @@ class CameraController(
         generation: Int,
     ) {
         if (generation != cameraGeneration) return
-        val current = sessionProfile ?: CameraSessionProfile.PREVIEW_ONLY
-        val key = Triple(current, failure, stage)
-        val attempt = (failureAttempts[key] ?: 0) + 1
-        failureAttempts[key] = attempt
-        val decision = CameraRecoveryPolicy.decide(
+        val decision = recoveryState.decideFailure(
             failure = failure,
             stage = stage,
-            current = current,
-            attempt = attempt,
+            mode = meteringPipelineMode,
             rawSupported = rawHardwareAvailable,
             trackingSupported = trackingHardwareAvailable,
         )
@@ -1263,7 +989,7 @@ class CameraController(
             CameraRecoveryAction.RETRY,
             CameraRecoveryAction.DOWNGRADE,
             -> scheduleRecovery(
-                decision.profile ?: current,
+                decision.profile ?: sessionProfile ?: CameraSessionProfile.PREVIEW_ONLY,
                 recoveryMessage(failure),
                 decision.delayMs,
             )
@@ -1281,9 +1007,9 @@ class CameraController(
     }
 
     private fun tryLogicalCameraFallback(): Boolean {
-        if (useLogicalCameraFallback || selectedPhysicalCameraId == null) return false
-        useLogicalCameraFallback = true
-        sessionProfile = CameraSessionProfile.PREVIEW_ONLY
+        if (!recoveryState.enableLogicalCameraFallback(selectedPhysicalCameraId != null)) {
+            return false
+        }
         scheduleRecovery(
             CameraSessionProfile.PREVIEW_ONLY,
             localized(
@@ -1302,7 +1028,7 @@ class CameraController(
     ) {
         val handler = cameraHandler ?: return
         if (!started) return
-        if (totalRecoveryAttempts >= MAX_TOTAL_RECOVERY_ATTEMPTS) {
+        if (!recoveryState.beginRecovery(profile)) {
             finishCameraFailure(
                 localized(
                     "相机多次启动失败，请稍后重试或重启手机",
@@ -1311,8 +1037,6 @@ class CameraController(
             )
             return
         }
-        totalRecoveryAttempts += 1
-        sessionProfile = profile
         notifyInterruptedOperations()
         closeCamera()
         postInfo(
@@ -1342,7 +1066,7 @@ class CameraController(
     }
 
     private fun notifyInterruptedOperations() {
-        if (meteringOperationActive || activeMeasurement != null || fallbackMeasuring) {
+        if (meteringOperationActive || rawMeter.isMeasuring || compatibleMeter.isMeasuring) {
             meteringOperationActive = false
             postMeterError(
                 localized(
@@ -1424,12 +1148,9 @@ class CameraController(
     }
 
     private fun resetRecoveryState() {
-        sessionProfile = null
-        useLogicalCameraFallback = false
-        failureAttempts.clear()
-        totalRecoveryAttempts = 0
-        consecutiveRawMeasurementFailures = 0
+        recoveryState.reset()
         downgradeAfterCompatibleMeasurement = false
+        fpsRequestCeiling = DEFAULT_PREVIEW_FPS_CEILING
     }
 
     private fun startPreview(
@@ -1439,27 +1160,9 @@ class CameraController(
         generation: Int,
     ) {
         try {
-            val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
-            previewBuilder = builder
-            builder.addTarget(preview)
-            trackingReader?.surface?.let(builder::addTarget)
-            builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
-            builder.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
-            previewFpsRange?.let { builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
-            setSupportedAutoFocus(builder)
-            session.setRepeatingRequest(builder.build(), previewCaptureCallback, cameraHandler)
+            submitPreviewRepeatingRequest(device, session, preview)
             val readyInfo = cameraInfo.copy(
-                status = if (cameraInfo.rawAvailable) {
-                    localized(
-                        "${cameraInfo.previewSize?.width}×${cameraInfo.previewSize?.height} · 高精度测光",
-                        "${cameraInfo.previewSize?.width}×${cameraInfo.previewSize?.height} · High-accuracy metering",
-                    )
-                } else {
-                    localized(
-                        "${cameraInfo.previewSize?.width}×${cameraInfo.previewSize?.height} · 兼容测光",
-                        "${cameraInfo.previewSize?.width}×${cameraInfo.previewSize?.height} · Compatible metering",
-                    )
-                },
+                status = readyCameraStatus(),
             )
             cameraInfo = readyInfo
             postInfo(readyInfo)
@@ -1475,15 +1178,115 @@ class CameraController(
             cameraHandler?.postDelayed(
                 {
                     if (generation == cameraGeneration && captureSession === session) {
-                        failureAttempts.clear()
-                        totalRecoveryAttempts = 0
+                        recoveryState.markPreviewStable()
                     }
                 },
                 STABLE_PREVIEW_RESET_DELAY_MS,
             )
         } catch (error: Exception) {
             Log.e(TAG, "Unable to start preview for profile=$sessionProfile", error)
-            if (generation == cameraGeneration) handleSessionFailure(generation)
+            if (generation == cameraGeneration) handlePreviewRequestFailure(generation)
+        }
+    }
+
+    /** Rebuilds the request so YUV is targeted only while tracking or one sample needs it. */
+    private fun submitPreviewRepeatingRequest(
+        device: CameraDevice,
+        session: CameraCaptureSession,
+        preview: Surface,
+    ) {
+        val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+        builder.addTarget(preview)
+        val includeYuv = trackingReader != null &&
+            (trackingFramesEnabled || compatibleYuvRequestActive)
+        if (includeYuv) trackingReader?.surface?.let(builder::addTarget)
+        builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
+        builder.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
+        previewFpsRange?.let { builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
+        setSupportedAutoFocus(builder)
+        session.setRepeatingRequest(builder.build(), previewCaptureCallback, cameraHandler)
+        Log.i(
+            TAG,
+            "Preview request submitted: fps=$previewFpsRange yuv=$includeYuv " +
+                "profile=$sessionProfile",
+        )
+    }
+
+    private fun updatePreviewRepeatingRequest() {
+        if (previewPausedForRawCapture) return
+        val device = cameraDevice ?: return
+        val session = captureSession ?: return
+        val preview = sessionCoordinator.previewSurface ?: return
+        try {
+            submitPreviewRepeatingRequest(device, session, preview)
+        } catch (error: Exception) {
+            Log.e(TAG, "Unable to update preview request", error)
+            handlePreviewRequestFailure(cameraGeneration)
+        }
+    }
+
+    /** Freezes the last displayed frame and drains repeating preview/YUV before RAW captures. */
+    private fun pausePreviewForRawCapture() {
+        if (previewPausedForRawCapture) return
+        val session = captureSession ?: return
+        try {
+            session.stopRepeating()
+            previewPausedForRawCapture = true
+        } catch (error: Exception) {
+            Log.w(TAG, "Unable to pause preview before RAW capture", error)
+        }
+    }
+
+    private fun resumePreviewAfterRawCapture() {
+        if (!previewPausedForRawCapture) return
+        previewPausedForRawCapture = false
+        updatePreviewRepeatingRequest()
+    }
+
+    private fun finishCompatibleYuvRequest() {
+        val handler = cameraHandler
+        if (handler != null && Looper.myLooper() != handler.looper) {
+            handler.post(::finishCompatibleYuvRequest)
+            return
+        }
+        if (!compatibleYuvRequestActive) return
+        compatibleYuvRequestActive = false
+        updatePreviewRepeatingRequest()
+    }
+
+    private fun handlePreviewRequestFailure(generation: Int) {
+        if (generation != cameraGeneration) return
+        val currentCeiling = fpsRequestCeiling
+        if (previewFpsRange != null && currentCeiling != null) {
+            fpsRequestCeiling = if (currentCeiling > CONSERVATIVE_PREVIEW_FPS_CEILING) {
+                CONSERVATIVE_PREVIEW_FPS_CEILING
+            } else {
+                null
+            }
+            scheduleRecovery(
+                sessionProfile ?: CameraSessionProfile.PREVIEW_ONLY,
+                localized(
+                    "正在使用更兼容的预览设置",
+                    "Trying a more compatible preview setting",
+                ),
+                SESSION_RECOVERY_DELAY_MS,
+            )
+        } else {
+            handleSessionFailure(generation)
+        }
+    }
+
+    private fun readyCameraStatus(): String {
+        val size = "${cameraInfo.previewSize?.width}×${cameraInfo.previewSize?.height}"
+        return when (meteringPipelineMode) {
+            MeteringPipelineMode.AUTO -> if (cameraInfo.rawAvailable) {
+                localized("$size · 高精度测光", "$size · High-accuracy metering")
+            } else {
+                localized("$size · 快速测光", "$size · Fast metering")
+            }
+            MeteringPipelineMode.ISOLATED ->
+                localized("$size · 兼容模式", "$size · Compatibility mode")
+            MeteringPipelineMode.FAST -> localized("$size · 快速模式", "$size · Fast mode")
         }
     }
 
@@ -1499,46 +1302,6 @@ class CameraController(
         }
     }
 
-    private val rawCaptureCallback = object : CameraCaptureSession.CaptureCallback() {
-        override fun onCaptureCompleted(
-            session: CameraCaptureSession,
-            request: CaptureRequest,
-            result: TotalCaptureResult,
-        ) {
-            val effectiveResult = effectiveCaptureResult(result)
-            latestResult = effectiveResult
-            updateDynamicLensInfo(effectiveResult)
-            val timestamp = effectiveResult.get(CaptureResult.SENSOR_TIMESTAMP)
-                ?: result.get(CaptureResult.SENSOR_TIMESTAMP)
-                ?: return
-            val active = activeMeasurement ?: return
-            active.results[timestamp] = effectiveResult
-            pairRawFrames(active)
-        }
-
-        override fun onCaptureFailed(
-            session: CameraCaptureSession,
-            request: CaptureRequest,
-            failure: CaptureFailure,
-        ) {
-            finishMeasurementWithError(
-                localized(
-                    "相机未能完成本次测光，请重试",
-                    "The camera could not complete this measurement. Please try again",
-                ),
-            )
-        }
-
-        override fun onCaptureSequenceAborted(session: CameraCaptureSession, sequenceId: Int) {
-            finishMeasurementWithError(
-                localized(
-                    "本次测光被相机中止，请重试",
-                    "This measurement was stopped by the camera. Please try again",
-                ),
-            )
-        }
-    }
-
     private val vignettingCaptureCallback = object : CameraCaptureSession.CaptureCallback() {
         override fun onCaptureCompleted(
             session: CameraCaptureSession,
@@ -1551,8 +1314,9 @@ class CameraController(
                 ?: result.get(CaptureResult.SENSOR_TIMESTAMP)
                 ?: return
             val active = activeVignettingCapture ?: return
-            active.results[timestamp] = effectiveResult
-            pairVignettingFrame(active)
+            active.framePairer.offerResult(timestamp, effectiveResult)?.let { pair ->
+                processVignettingFramePair(active, pair)
+            }
         }
 
         override fun onCaptureFailed(
@@ -1585,79 +1349,6 @@ class CameraController(
         postInfo(cameraInfo.copy(focalLengthMm = focal, aperture = aperture))
     }
 
-    private fun buildRawRequest(
-        device: CameraDevice,
-        rawSurface: Surface,
-    ): CaptureRequest {
-        val last = latestResult
-        val exposureTime = last?.get(CaptureResult.SENSOR_EXPOSURE_TIME)
-        val sensitivity = last?.get(CaptureResult.SENSOR_SENSITIVITY)
-        val frameDuration = last?.get(CaptureResult.SENSOR_FRAME_DURATION)
-        val useManual =
-            cameraInfo.manualSensorAvailable && exposureTime != null && sensitivity != null
-        return device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
-            addTarget(rawSurface)
-            set(
-                CaptureRequest.CONTROL_CAPTURE_INTENT,
-                CameraMetadata.CONTROL_CAPTURE_INTENT_STILL_CAPTURE,
-            )
-            set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_OFF)
-            if (useManual) {
-                set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
-                set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
-                set(CaptureRequest.SENSOR_EXPOSURE_TIME, exposureTime)
-                set(CaptureRequest.SENSOR_SENSITIVITY, sensitivity)
-                frameDuration?.let {
-                    set(CaptureRequest.SENSOR_FRAME_DURATION, max(it, exposureTime!!))
-                }
-                setSupportedAutoFocus(this)
-            } else {
-                set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
-                set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
-                set(CaptureRequest.CONTROL_AE_LOCK, true)
-                setSupportedAutoFocus(this)
-            }
-        }.build()
-    }
-
-    /** Keep only one full-size RAW Image in flight to bound native camera-buffer memory. */
-    private fun fillRawPipeline(active: MeasurementAccumulator) {
-        while (activeMeasurement?.id == active.id &&
-            active.submittedFrames < active.expectedFrames &&
-            active.submittedFrames - active.completedFrames < RAW_PIPELINE_DEPTH
-        ) {
-            val submittedBefore = active.submittedFrames
-            submitNextRawFrame(active)
-            if (active.submittedFrames == submittedBefore) return
-        }
-    }
-
-    /** Submit one RAW request without allowing the rolling window to grow unbounded. */
-    private fun submitNextRawFrame(active: MeasurementAccumulator) {
-        if (activeMeasurement?.id != active.id) return
-        if (active.submittedFrames >= active.expectedFrames) return
-        val session = captureSession
-        val request = activeRawRequest
-        val handler = cameraHandler
-        if (session == null || request == null || handler == null) {
-            finishMeasurementWithError(
-                localized("本次测光已失效，请重试", "This measurement expired. Please try again"),
-            )
-            return
-        }
-        active.submittedFrames += 1
-        try {
-            session.capture(request, rawCaptureCallback, handler)
-        } catch (error: Exception) {
-            finishMeasurementWithError(
-                localized(
-                    "无法继续测光，请重试",
-                    "Unable to continue metering. Please try again",
-                ),
-            )
-        }
-    }
-
     private fun setSupportedAutoFocus(builder: CaptureRequest.Builder) {
         val modes =
             characteristics?.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES) ?: intArrayOf()
@@ -1675,22 +1366,7 @@ class CameraController(
     }
 
     private fun onTrackingImageAvailable(reader: ImageReader) {
-        val yuvMeasurement = activeYuvMeasurement
-        if (yuvMeasurement != null) {
-            val image = try {
-                reader.acquireLatestImage()
-            } catch (_: IllegalStateException) {
-                null
-            } ?: return
-            try {
-                onYuvMeteringImage(image, yuvMeasurement)
-            } catch (error: Throwable) {
-                Log.e(TAG, "Unable to analyze compatible camera frame", error)
-            } finally {
-                image.close()
-            }
-            return
-        }
+        if (compatibleMeter.onImageAvailable(reader)) return
         zoneCameraFrames.onImageAvailable(
             reader,
             cameraInfo.sensorOrientationDegrees,
@@ -1699,33 +1375,28 @@ class CameraController(
     }
 
     private fun onRawImageAvailable(reader: ImageReader) {
-        val image = try {
-            reader.acquireNextImage()
-        } catch (_: IllegalStateException) {
-            null
-        } ?: return
         val vignetting = activeVignettingCapture
         if (vignetting != null) {
-            vignetting.images[image.timestamp] = image
-            pairVignettingFrame(vignetting)
+            val image = try {
+                reader.acquireNextImage()
+            } catch (_: IllegalStateException) {
+                null
+            } ?: return
+            vignetting.framePairer.offerImage(image.timestamp, image)?.let { pair ->
+                processVignettingFramePair(vignetting, pair)
+            }
             return
         }
-        val active = activeMeasurement
-        if (active == null) {
-            image.close()
-            return
-        }
-        active.images[image.timestamp] = image
-        pairRawFrames(active)
+        rawMeter.onImageAvailable(reader)
     }
 
-    private fun pairVignettingFrame(active: VignettingCapture) {
-        val timestamp = active.images.keys.intersect(active.results.keys).firstOrNull() ?: return
-        val image = active.images.remove(timestamp) ?: return
-        val result = active.results.remove(timestamp)
+    private fun processVignettingFramePair(
+        active: VignettingCapture,
+        pair: TimestampedResultPair<Image, CaptureResult>,
+    ) {
         val chars = characteristics
         try {
-            if (result == null || chars == null) {
+            if (chars == null) {
                 finishVignettingWithError(
                     localized(
                         "暗角校准数据无效，请重试",
@@ -1735,8 +1406,8 @@ class CameraController(
                 return
             }
             val calibration = MeteringAnalysis.createVignettingCalibrationMap(
-                image = image,
-                result = result,
+                image = pair.image,
+                result = pair.result,
                 characteristics = chars,
                 activeArray = cameraInfo.activeArray,
             )
@@ -1753,6 +1424,7 @@ class CameraController(
             cancelVignettingMeasurementTimeout()
             activeVignettingCapture = null
             closePendingVignettingImages(active)
+            resumePreviewAfterRawCapture()
             val info = vignettingCalibrationStore.info(active.cameraId) ?: return
             Log.i(
                 TAG,
@@ -1762,121 +1434,7 @@ class CameraController(
             )
             mainHandler.post { callback.onVignettingCalibrationCompleted(info) }
         } finally {
-            image.close()
-        }
-    }
-
-    private fun pairRawFrames(active: MeasurementAccumulator) {
-        val common = active.images.keys.intersect(active.results.keys).toList()
-        for (timestamp in common) {
-            val image = active.images.remove(timestamp) ?: continue
-            val result = active.results.remove(timestamp)
-            try {
-                if (result != null) {
-                    val chars = characteristics
-                    if (chars != null) {
-                        if (active.target != null && active.rawMeterPoint == null) {
-                            active.rawMeterPoint = MeteringAnalysis.resolveRawMeteringPoint(
-                                image = image,
-                                result = result,
-                                characteristics = chars,
-                                cameraInfo = cameraInfo,
-                                frameAspect = active.frameAspect,
-                                zoom = active.zoom,
-                                target = active.target,
-                                reference = active.previewReference,
-                                screenToSensorRotationDegrees =
-                                    active.screenToSensorRotationDegrees,
-                            ).also { point ->
-                                Log.i(
-                                    TAG,
-                                    "RAW touch target sensor=(${"%.1f".format(point.sensorX)}," +
-                                        "${"%.1f".format(point.sensorY)}) " +
-                                        "match=${if (point.matchScore.isFinite()) "%.3f".format(point.matchScore) else "geometry"}",
-                                )
-                            }
-                        }
-                        MeteringAnalysis.analyzeRaw(
-                            image = image,
-                            result = result,
-                            characteristics = chars,
-                            cameraInfo = cameraInfo,
-                            frameAspect = active.frameAspect,
-                            zoom = active.zoom,
-                            meteringMode = active.meteringMode,
-                            calibrationStore = calibrationStore,
-                            rawMeterPoint = active.rawMeterPoint,
-                            vignettingStore = vignettingCalibrationStore,
-                            applyVignettingCalibration = active.target != null,
-                        )?.let(active.stats::add)
-                    }
-                }
-            } finally {
-                image.close()
-                active.completedFrames += 1
-            }
-            if (active.stats.size < active.expectedFrames &&
-                active.completedFrames < active.expectedFrames
-            ) {
-                // Submit the next frame only after this full-size Image has been closed.
-                fillRawPipeline(active)
-            }
-        }
-        when {
-            active.stats.size >= active.expectedFrames -> finishMeasurement(active)
-            active.completedFrames >= active.expectedFrames -> finishMeasurementWithError(
-                localized(
-                    "测光数据无效，请重试",
-                    "Metering data was invalid. Please try again",
-                ),
-            )
-            else -> fillRawPipeline(active)
-        }
-    }
-
-    private fun finishMeasurement(active: MeasurementAccumulator) {
-        if (activeMeasurement?.id != active.id) return
-        val reading = MeteringFusion.fuse(active.stats, MeteringSource.RAW)
-        if (reading == null) {
-            finishMeasurementWithError(
-                localized("测光数据无效，请重试", "Metering data was invalid. Please try again"),
-            )
-            return
-        }
-        cancelRawMeasurementTimeout()
-        activeMeasurement = null
-        activeRawRequest = null
-        meteringOperationActive = false
-        consecutiveRawMeasurementFailures = 0
-        closePendingImages(active)
-        val elapsedMs = (System.nanoTime() - active.startedAtNs) / 1_000_000.0
-        Log.e(
-            TAG,
-            "RAW metering completed: frames=${reading.frameCount} ev100=${reading.sceneEv100} " +
-                "luma=${reading.rawLuma} clipped=${reading.clippedFraction} " +
-                "elapsedMs=${"%.1f".format(elapsedMs)} pipelineDepth=$RAW_PIPELINE_DEPTH",
-        )
-        mainHandler.post { callback.onMeterReading(reading) }
-    }
-
-    private fun finishMeasurementWithError(message: String) {
-        val active = activeMeasurement ?: return
-        cancelRawMeasurementTimeout()
-        activeMeasurement = null
-        activeRawRequest = null
-        closePendingImages(active)
-        Log.e(TAG, "RAW metering failed: $message")
-        val canUsePreview = textureView?.isAvailable == true &&
-            cameraDevice != null && captureSession != null
-        if (canUsePreview) {
-            consecutiveRawMeasurementFailures += 1
-            downgradeAfterCompatibleMeasurement =
-                meteringPipelineMode == MeteringPipelineMode.AUTO &&
-                consecutiveRawMeasurementFailures >= RAW_FAILURES_BEFORE_DOWNGRADE
-            measureCompatiblePreview(active.meteringMode, active.target)
-        } else {
-            meteringOperationActive = false
-            postMeterError(message)
+            pair.image.close()
         }
     }
 
@@ -1888,6 +1446,7 @@ class CameraController(
         cancelVignettingMeasurementTimeout()
         activeVignettingCapture = null
         closePendingVignettingImages(active)
+        resumePreviewAfterRawCapture()
         Log.e(TAG, "Vignetting calibration failed: $message")
         postVignettingError(message)
     }
@@ -1896,81 +1455,29 @@ class CameraController(
         mainHandler.post { callback.onVignettingCalibrationError(message) }
     }
 
-    private fun closePendingImages(active: MeasurementAccumulator) {
-        active.images.values.forEach { image ->
-            try {
-                image.close()
-            } catch (_: Exception) {
-                Unit
-            }
-        }
-        active.images.clear()
-        active.results.clear()
-    }
-
     private fun closePendingVignettingImages(active: VignettingCapture) {
-        active.images.values.forEach { image ->
-            try {
-                image.close()
-            } catch (_: Exception) {
-                Unit
-            }
-        }
-        active.images.clear()
-        active.results.clear()
+        active.framePairer.clear()
     }
 
     private fun closeCamera() {
         cameraGeneration += 1
         cameraFailureStage = CameraFailureStage.OPENING
-        cancelRawMeasurementTimeout()
-        cancelYuvMeasurementTimeout()
         cancelVignettingMeasurementTimeout()
-        fallbackMeasurementId++
-        fallbackMeasuring = false
-        activeYuvMeasurement = null
-        compatibleYuvAvailable = true
-        downgradeYuvSessionAfterMeasurement = false
+        rawMeter.cancel(cameraHandler)
+        compatibleMeter.cancel(cameraHandler, resetYuvAvailability = true)
         meteringOperationActive = false
         downgradeAfterCompatibleMeasurement = false
-        activeMeasurement?.let(::closePendingImages)
-        activeMeasurement = null
-        activeRawRequest = null
+        compatibleYuvRequestActive = false
+        previewPausedForRawCapture = false
         activeVignettingCapture?.let(::closePendingVignettingImages)
         activeVignettingCapture = null
-        try {
-            captureSession?.close()
-        } catch (_: Exception) {
-            Unit
-        }
-        captureSession = null
-        try {
-            cameraDevice?.close()
-        } catch (_: Exception) {
-            Unit
-        }
-        cameraDevice = null
-        try {
-            rawReader?.close()
-        } catch (_: Exception) {
-            Unit
-        }
-        rawReader = null
-        try {
-            trackingReader?.close()
-        } catch (_: Exception) {
-            Unit
-        }
-        trackingReader = null
+        sessionCoordinator.close()
         zoneCameraFrames.reset()
-        previewSurface?.release()
-        previewSurface = null
         previewSize = null
         previewFpsRange = null
         characteristics = null
         selectedPhysicalCameraId = null
         latestResult = null
-        opening = false
     }
 
     private fun postInfo(info: CameraUiInfo) {
@@ -1992,28 +1499,16 @@ class CameraController(
     private fun localized(chinese: String, english: String): String =
         callback.localized(chinese, english)
 
-    private fun rawFrameCount(captureIso: Int?): Int =
-        if ((captureIso ?: 0) > HIGH_ISO_THRESHOLD) {
-            HIGH_ISO_RAW_FRAME_COUNT
-        } else {
-            LOW_ISO_RAW_FRAME_COUNT
-        }
-
     companion object {
         private const val TAG = "lightstop"
-        private const val RAW_PIPELINE_DEPTH = 1
         private const val MAX_METERING_REFERENCE_AGE_NS = 350_000_000L
         private const val PREVIEW_REFERENCE_LONG_EDGE = 384
-        private const val RAW_READER_MAX_IMAGES = 1
-        private const val HIGH_ISO_THRESHOLD = 800
-        private const val LOW_ISO_RAW_FRAME_COUNT = 3
-        private const val HIGH_ISO_RAW_FRAME_COUNT = 5
-        private const val FALLBACK_BITMAP_SIZE = 96
-        private const val RAW_METERING_TIMEOUT_MS = 8_000L
         private const val VIGNETTING_TIMEOUT_MS = 8_000L
         private const val SESSION_RECOVERY_DELAY_MS = 300L
         private const val STABLE_PREVIEW_RESET_DELAY_MS = 10_000L
         private const val MAX_TOTAL_RECOVERY_ATTEMPTS = 6
         private const val RAW_FAILURES_BEFORE_DOWNGRADE = 2
+        private const val DEFAULT_PREVIEW_FPS_CEILING = 30
+        private const val CONSERVATIVE_PREVIEW_FPS_CEILING = 24
     }
 }

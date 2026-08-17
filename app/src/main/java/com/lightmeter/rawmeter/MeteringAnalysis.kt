@@ -9,7 +9,6 @@ import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureResult
 import android.media.Image
 import android.util.Log
-import java.util.TreeMap
 import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
@@ -23,24 +22,6 @@ internal data class MeteringFrameStat(
     val captureIso: Int,
     val exposureTimeNs: Long,
     val aperture: Float,
-)
-
-internal data class MeasurementAccumulator(
-    val id: Int,
-    val expectedFrames: Int,
-    val frameAspect: Float,
-    val zoom: Float,
-    val meteringMode: MeteringMode,
-    val target: ZoneMeteringTarget? = null,
-    val previewReference: PreviewLumaReference? = null,
-    val screenToSensorRotationDegrees: Int = 0,
-    val startedAtNs: Long = System.nanoTime(),
-    val images: MutableMap<Long, Image> = TreeMap(),
-    val results: MutableMap<Long, CaptureResult> = TreeMap(),
-    val stats: MutableList<MeteringFrameStat> = mutableListOf(),
-    var submittedFrames: Int = 0,
-    var completedFrames: Int = 0,
-    var rawMeterPoint: RawMeterPoint? = null,
 )
 
 /** CPU-only metering math kept outside CameraController's session lifecycle. */

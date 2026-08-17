@@ -6,14 +6,27 @@ import org.junit.Test
 
 class SettingsCatalogTest {
     @Test
-    fun meteringSectionOffersAutomaticAndCompatibleEngines() {
+    fun meteringSectionOffersAccuracyCompatibilityAndFastEngines() {
         val metering = SettingsCatalog.sections.single { it.key == SettingsSectionKey.METERING }
         val engine = metering.items.single { it.key == SettingKey.METERING_PIPELINE }
 
         assertEquals(
-            listOf(MeteringPipelineMode.AUTO.name, MeteringPipelineMode.COMPATIBLE.name),
+            listOf(
+                MeteringPipelineMode.AUTO.name,
+                MeteringPipelineMode.ISOLATED.name,
+                MeteringPipelineMode.FAST.name,
+            ),
             engine.options.map { it.value },
         )
+    }
+
+    @Test
+    fun oldCompatiblePreferenceMigratesToFastMode() {
+        assertEquals(
+            MeteringPipelineMode.FAST,
+            MeteringPipelineMode.fromStored("COMPATIBLE"),
+        )
+        assertEquals(MeteringPipelineMode.AUTO, MeteringPipelineMode.fromStored("unknown"))
     }
 
 

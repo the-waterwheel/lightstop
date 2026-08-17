@@ -171,11 +171,17 @@ class InstrumentView(
         drawSettingsButton(canvas, g.moreButton)
         drawZoneEntryHandle(canvas, g)
 
-        val equivalent = state.equivalent35mm()
+        val equivalent = state.equivalentFrameFocalMm()
         val focalText = buildString {
             val focal = state.cameraInfo.focalLengthMm
             if (focal > 0f) append("${"%.1f".format(focal)} mm")
-            if (equivalent != null) append("  ≈ ${equivalent} mm")
+            if (equivalent != null) {
+                val format = InstrumentPresentation.formatShortLabel(
+                    state.frameFormat,
+                    state.menuLanguage,
+                )
+                append("  ≈ ${equivalent} mm ($format)")
+            }
         }
         if (focalText.isNotBlank()) {
             paint.style = Paint.Style.FILL

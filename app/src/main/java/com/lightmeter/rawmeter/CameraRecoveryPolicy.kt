@@ -51,15 +51,36 @@ internal object CameraRecoveryPolicy {
         mode: MeteringPipelineMode,
         rawSupported: Boolean,
         trackingSupported: Boolean,
-    ): CameraSessionProfile = normalize(
-        if (mode == MeteringPipelineMode.AUTO) {
-            CameraSessionProfile.FULL
-        } else {
-            CameraSessionProfile.COMPATIBLE
+    ): CameraSessionProfile = normalizeForMode(
+        profile = when (mode) {
+            MeteringPipelineMode.AUTO -> CameraSessionProfile.FULL
+            MeteringPipelineMode.ISOLATED -> CameraSessionProfile.RAW_ONLY
+            MeteringPipelineMode.FAST -> CameraSessionProfile.COMPATIBLE
         },
-        rawSupported,
-        trackingSupported,
+        mode = mode,
+        rawSupported = rawSupported,
+        trackingSupported = trackingSupported,
     )
+
+    fun normalizeForMode(
+        profile: CameraSessionProfile,
+        mode: MeteringPipelineMode,
+        rawSupported: Boolean,
+        trackingSupported: Boolean,
+    ): CameraSessionProfile {
+        val normalized = normalize(profile, rawSupported, trackingSupported)
+        return when (mode) {
+            MeteringPipelineMode.AUTO -> normalized
+            MeteringPipelineMode.ISOLATED -> when {
+                normalized.usesRaw && rawSupported -> CameraSessionProfile.RAW_ONLY
+                else -> CameraSessionProfile.PREVIEW_ONLY
+            }
+            MeteringPipelineMode.FAST -> when {
+                normalized.usesTracking && trackingSupported -> CameraSessionProfile.COMPATIBLE
+                else -> CameraSessionProfile.PREVIEW_ONLY
+            }
+        }
+    }
 
     fun normalize(
         profile: CameraSessionProfile,
@@ -87,16 +108,34 @@ internal object CameraRecoveryPolicy {
 
     fun nextProfile(
         current: CameraSessionProfile,
+        mode: MeteringPipelineMode,
         rawSupported: Boolean,
         trackingSupported: Boolean,
     ): CameraSessionProfile? {
-        val requested = when (current) {
-            CameraSessionProfile.FULL -> CameraSessionProfile.RAW_ONLY
-            CameraSessionProfile.RAW_ONLY -> CameraSessionProfile.COMPATIBLE
-            CameraSessionProfile.COMPATIBLE -> CameraSessionProfile.PREVIEW_ONLY
-            CameraSessionProfile.PREVIEW_ONLY -> null
+        val requested = when (mode) {
+            MeteringPipelineMode.AUTO -> when (current) {
+                CameraSessionProfile.FULL -> CameraSessionProfile.RAW_ONLY
+                CameraSessionProfile.RAW_ONLY -> CameraSessionProfile.COMPATIBLE
+                CameraSessionProfile.COMPATIBLE -> CameraSessionProfile.PREVIEW_ONLY
+                CameraSessionProfile.PREVIEW_ONLY -> null
+            }
+            MeteringPipelineMode.ISOLATED -> when (current) {
+                CameraSessionProfile.FULL,
+                CameraSessionProfile.RAW_ONLY,
+                -> CameraSessionProfile.PREVIEW_ONLY
+                CameraSessionProfile.COMPATIBLE,
+                CameraSessionProfile.PREVIEW_ONLY,
+                -> null
+            }
+            MeteringPipelineMode.FAST -> when (current) {
+                CameraSessionProfile.FULL,
+                CameraSessionProfile.RAW_ONLY,
+                CameraSessionProfile.COMPATIBLE,
+                -> CameraSessionProfile.PREVIEW_ONLY
+                CameraSessionProfile.PREVIEW_ONLY -> null
+            }
         } ?: return null
-        return normalize(requested, rawSupported, trackingSupported)
+        return normalizeForMode(requested, mode, rawSupported, trackingSupported)
             .takeIf { it != current }
     }
 
@@ -104,6 +143,7 @@ internal object CameraRecoveryPolicy {
         failure: CameraFailureKind,
         stage: CameraFailureStage,
         current: CameraSessionProfile,
+        mode: MeteringPipelineMode,
         attempt: Int,
         rawSupported: Boolean,
         trackingSupported: Boolean,
@@ -113,7 +153,7 @@ internal object CameraRecoveryPolicy {
         CameraFailureKind.RESOURCE_LIMIT -> if (attempt == 1) {
             retry(current, 800L)
         } else {
-            downgrade(current, rawSupported, trackingSupported, 500L)
+            downgrade(current, mode, rawSupported, trackingSupported, 500L)
         }
 
         CameraFailureKind.DISABLED -> stop()
@@ -121,7 +161,7 @@ internal object CameraRecoveryPolicy {
         CameraFailureKind.DEVICE -> if (stage == CameraFailureStage.OPENING && attempt == 1) {
             retry(current, 500L)
         } else {
-            downgrade(current, rawSupported, trackingSupported, 500L)
+            downgrade(current, mode, rawSupported, trackingSupported, 500L)
         }
 
         CameraFailureKind.SERVICE,
@@ -130,7 +170,7 @@ internal object CameraRecoveryPolicy {
         -> if (attempt == 1) {
             retry(current, 1_000L)
         } else {
-            downgrade(current, rawSupported, trackingSupported, 1_000L)
+            downgrade(current, mode, rawSupported, trackingSupported, 1_000L)
         }
     }
 
@@ -139,11 +179,12 @@ internal object CameraRecoveryPolicy {
 
     private fun downgrade(
         current: CameraSessionProfile,
+        mode: MeteringPipelineMode,
         rawSupported: Boolean,
         trackingSupported: Boolean,
         delayMs: Long,
     ): CameraRecoveryDecision {
-        val next = nextProfile(current, rawSupported, trackingSupported)
+        val next = nextProfile(current, mode, rawSupported, trackingSupported)
         return if (next == null) stop() else {
             CameraRecoveryDecision(CameraRecoveryAction.DOWNGRADE, next, delayMs)
         }

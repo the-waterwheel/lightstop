@@ -26,8 +26,11 @@ code.
 ### Camera and metering
 
 - Android 9 / API 28 or newer.
-- Camera2 logical and physical camera discovery, selection, labels, and hiding.
+- Camera2 logical and physical camera discovery, selection, labels, and hiding;
+  multi-camera phones default to the safer automatic logical-camera route.
 - RAW-first metering with a capability-driven YUV/ISP compatibility fallback.
+- Three bilingual metering modes: recommended high accuracy, strict stream
+  isolation for difficult devices, and fast single-sample ISP metering.
 - Timestamp pairing between `Image` and `CaptureResult`.
 - Bayer black-level subtraction, white-level normalization, per-channel median
   statistics, clipping detection, white-balance/color-matrix conversion, and
@@ -36,6 +39,10 @@ code.
   ISO 800, with only one full-size RAW image in flight at a time.
 - Single-frame compatible metering: try up to three ISP-processed YUV frames
   for at most 250 ms, then immediately use one displayed-preview sample.
+- Preview requests never force 60 fps. They select an advertised range at or
+  below 30 fps and can retry at 24 fps or without an explicit frame-rate range.
+- YUV is targeted only while Zone tracking or a compatible sample needs it;
+  repeating preview requests pause during RAW capture and resume afterwards.
 - Camera-session recovery from full RAW + tracking to RAW-only, compatible
   YUV, preview-only, and finally a logical-camera route when appropriate.
 - Spot and center-weighted metering.
@@ -60,8 +67,11 @@ code.
   notice for important or non-repeatable work.
 - An in-app open-source license browser under About. Complete bundled license
   and attribution texts remain accessible without extracting the APK.
-- 135, half-frame, 6×4.5, 6×6, 6×7, 6×9, and generic 65:24 frame formats. The
-  long edge remains horizontal in the viewfinder.
+- 135, half-frame, 6×4.5, 6×6, 6×7, 6×9, 6×12, 6×17, 65:24, 4×5, 5×7,
+  and 8×10 frame formats. The long edge remains horizontal in the viewfinder.
+- Focal-length guidance is converted to the selected film format using its
+  representative image diagonal; the selector wraps into rows instead of
+  compressing labels, and the preview is never stretched.
 
 ### Zone System
 
@@ -107,8 +117,13 @@ code.
 ```text
 app/src/main/java/com/lightmeter/rawmeter
 ├─ MainActivity.kt                   lifecycle, permissions, coordination
-├─ CameraController.kt               Camera2 sessions and capture scheduling
+├─ CameraController.kt               lifecycle and camera-operation facade
+├─ CameraSessionCoordinator.kt       Camera2 resources, sessions, open/close
+├─ RawLightMeter.kt                  bounded RAW capture and metering
+├─ CompatibleLightMeter.kt           YUV/preview compatible metering
+├─ TimestampedResultPairer.kt        image/result ownership and pairing
 ├─ CameraRecoveryPolicy.kt           session profiles and recovery decisions
+├─ CameraRecoveryStateMachine.kt     retry history and route downgrade state
 ├─ CompatibleMeteringPolicy.kt       single-frame compatibility limits
 ├─ CameraCatalog.kt                  logical/physical camera discovery
 ├─ CameraStreamSelector.kt           preview, tracking stream, and FPS choice
@@ -140,7 +155,7 @@ app/src/main/cpp
 
 See [Camera pipeline and device compatibility](docs/CAMERA_PIPELINE.md) for
 the stream profiles, fallback order, resource-ownership rules, known vendor
-boundaries, and the planned split of `CameraController` into smaller owners.
+boundaries, and the component boundaries around `CameraController`.
 
 The package name and Android application ID remain
 `com.lightmeter.rawmeter` so existing development installations can upgrade

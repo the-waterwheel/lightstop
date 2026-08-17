@@ -5,10 +5,22 @@ All notable user-facing changes are recorded here. The project follows
 
 ## Unreleased
 
+- Added 6×12, 6×17, 4×5, 5×7, and 8×10 formats, selected-format focal-length
+  equivalence, and wrapped format menus that keep every option readable.
 - Added sequential RAW and compatible-preview calibration for RAW-capable
   cameras, while compatible-only cameras skip RAW calibration.
 - Added bilingual compatibility mode settings and camera-error recovery across
   full, RAW-only, YUV-compatible, preview-only, and logical-camera routes.
+- Reworked metering into three user modes: recommended high accuracy, strictly
+  isolated compatibility, and fast ISP metering. Existing compatible-mode
+  preferences migrate to fast mode so upgrades retain their previous behavior.
+- Limited explicit preview requests to safe advertised ranges at or below
+  30 fps, with automatic 24 fps and system-default fallback when rejected.
+- Stopped targeting YUV continuously: it is now attached only for Zone tracking
+  or one compatible sample, and repeating preview/YUV requests pause while RAW
+  or vignetting captures are in progress.
+- Added an automatic logical-camera entry as the default on multi-camera phones;
+  fixed physical lenses remain selectable and monochrome/NIR sensors are hidden.
 - Changed compatible metering to one ISP-processed frame, with a maximum
   three-frame/250 ms YUV attempt before a single preview fallback.
 - Limited RAW capture to one full-size image in flight and explicitly cancel
@@ -16,8 +28,11 @@ All notable user-facing changes are recorded here. The project follows
 - Fixed background interruption so an in-progress measurement or calibration
   does not remain permanently displayed as measuring.
 - Added half-frame naming/layout corrections and expanded bilingual UI text.
+- Split `CameraController` into a session coordinator, RAW meter, compatible
+  meter, timestamp result pairer, and recovery state machine, with documented
+  thread and resource ownership.
 - Documented camera stream profiles, resource ownership, vendor boundaries,
-  and the planned `CameraController` decomposition.
+  and the resulting controller component boundaries.
 
 ## 0.2.1 - 2026-08-12
 

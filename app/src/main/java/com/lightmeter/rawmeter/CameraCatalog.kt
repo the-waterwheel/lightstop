@@ -31,6 +31,8 @@ data class CameraDescriptor(
 
     fun automaticName(language: MenuLanguage): String {
         val roleName = when (lensRole) {
+            CameraLensRole.AUTOMATIC ->
+                if (language == MenuLanguage.ENGLISH) "Automatic camera" else "自动主摄"
             CameraLensRole.MAIN -> if (language == MenuLanguage.ENGLISH) "Main camera" else "主摄"
             CameraLensRole.ULTRA_WIDE ->
                 if (language == MenuLanguage.ENGLISH) "Ultra-wide" else "超广角"
@@ -67,6 +69,7 @@ data class CameraDescriptor(
 }
 
 enum class CameraLensRole {
+    AUTOMATIC,
     MAIN,
     ULTRA_WIDE,
     TELEPHOTO,
@@ -102,10 +105,9 @@ class CameraCatalog(private val cameraManager: CameraManager) {
                 val capabilities = logicalChars.get(
                     CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES,
                 ) ?: intArrayOf()
-                val isLogicalMultiCamera = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
-                    capabilities.contains(
-                        CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA,
-                    )
+                val isLogicalMultiCamera = capabilities.contains(
+                    CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA,
+                )
                 val physicalIds = if (isLogicalMultiCamera) {
                     logicalChars.physicalCameraIds
                 } else {
@@ -124,9 +126,19 @@ class CameraCatalog(private val cameraManager: CameraManager) {
                     emptyList()
                 }
                 val usablePhysical = physicalCandidates.filter { (_, chars) ->
-                    hasPreviewOutput(chars)
+                    hasPreviewOutput(chars) && isVisibleLightCamera(chars)
                 }
                 if (usablePhysical.size >= 2) {
+                    // Keep the logical route as the default. Android guarantees more stream
+                    // combinations for a logical camera than for an explicitly-routed physical
+                    // camera, while the fixed physical entries remain available to the user.
+                    descriptor(
+                        selectionId = logicalId,
+                        logicalId = logicalId,
+                        physicalId = null,
+                        characteristics = logicalChars,
+                        lensRole = CameraLensRole.AUTOMATIC,
+                    )?.let(::add)
                     val logicalFocal = equivalentFocalLength(logicalChars)
                     val mainPhysicalId = usablePhysical.minByOrNull { (_, chars) ->
                         val focal = equivalentFocalLength(chars)
@@ -148,11 +160,7 @@ class CameraCatalog(private val cameraManager: CameraManager) {
                             mainFocalLength = mainFocal,
                         )
                         descriptor(
-                            selectionId = if (physicalId == mainPhysicalId) {
-                                logicalId
-                            } else {
-                                "$logicalId@$physicalId"
-                            },
+                            selectionId = "$logicalId@$physicalId",
                             logicalId = logicalId,
                             physicalId = physicalId,
                             characteristics = physicalChars,
@@ -180,10 +188,11 @@ class CameraCatalog(private val cameraManager: CameraManager) {
                 }
             }.thenBy {
                 when (it.lensRole) {
-                    CameraLensRole.ULTRA_WIDE -> 0
-                    CameraLensRole.MAIN -> 1
-                    CameraLensRole.TELEPHOTO -> 2
-                    else -> 3
+                    CameraLensRole.AUTOMATIC -> 0
+                    CameraLensRole.ULTRA_WIDE -> 1
+                    CameraLensRole.MAIN -> 2
+                    CameraLensRole.TELEPHOTO -> 3
+                    else -> 4
                 }
             }.thenByDescending { it.rawAvailable }
                 .thenBy { it.focalLengthMm }
@@ -244,6 +253,23 @@ class CameraCatalog(private val cameraManager: CameraManager) {
             ?.getOutputSizes(SurfaceTexture::class.java)
             ?.isNotEmpty() == true
 
+    /** Hidden monochrome/NIR/depth sensors can expose SurfaceTexture but produce unusable UI. */
+    private fun isVisibleLightCamera(characteristics: CameraCharacteristics): Boolean {
+        val capabilities = characteristics.get(
+            CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES,
+        ) ?: intArrayOf()
+        if (capabilities.contains(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MONOCHROME)) {
+            return false
+        }
+        val colorFilter = characteristics.get(
+            CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT,
+        )
+        // MONO=5 and NIR=6 were named in API 29. Camera metadata uses the same stable integer
+        // values on API 28, so comparing values avoids referencing newer inline constants.
+        return colorFilter != COLOR_FILTER_ARRANGEMENT_MONO &&
+            colorFilter != COLOR_FILTER_ARRANGEMENT_NIR
+    }
+
     private fun firstFocalLength(characteristics: CameraCharacteristics): Float =
         characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
             ?.firstOrNull() ?: 0f
@@ -288,10 +314,19 @@ class CameraCatalog(private val cameraManager: CameraManager) {
         private const val FULL_FRAME_DIAGONAL_MM = 43.266f
         private const val ULTRA_WIDE_EQUIVALENT_MM = 22f
         private const val TELEPHOTO_EQUIVALENT_MM = 40f
+        private const val COLOR_FILTER_ARRANGEMENT_MONO = 5
+        private const val COLOR_FILTER_ARRANGEMENT_NIR = 6
     }
 
     fun preferredCamera(cameras: List<CameraDescriptor>): CameraDescriptor? =
         cameras.firstOrNull {
+            it.lensFacing == CameraCharacteristics.LENS_FACING_BACK &&
+                it.lensRole == CameraLensRole.AUTOMATIC &&
+                it.rawAvailable
+        } ?: cameras.firstOrNull {
+            it.lensFacing == CameraCharacteristics.LENS_FACING_BACK &&
+                it.lensRole == CameraLensRole.AUTOMATIC
+        } ?: cameras.firstOrNull {
             it.lensFacing == CameraCharacteristics.LENS_FACING_BACK &&
                 it.lensRole == CameraLensRole.MAIN &&
                 it.rawAvailable

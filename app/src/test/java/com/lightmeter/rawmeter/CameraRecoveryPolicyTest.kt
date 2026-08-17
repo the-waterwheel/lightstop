@@ -16,14 +16,14 @@ class CameraRecoveryPolicyTest {
     }
 
     @Test
-    fun compatibleModeNeverRequestsRaw() {
+    fun fastModeNeverRequestsRaw() {
         val withTracking = CameraRecoveryPolicy.initialProfile(
-            MeteringPipelineMode.COMPATIBLE,
+            MeteringPipelineMode.FAST,
             rawSupported = true,
             trackingSupported = true,
         )
         val withoutTracking = CameraRecoveryPolicy.initialProfile(
-            MeteringPipelineMode.COMPATIBLE,
+            MeteringPipelineMode.FAST,
             rawSupported = true,
             trackingSupported = false,
         )
@@ -35,19 +35,41 @@ class CameraRecoveryPolicyTest {
     }
 
     @Test
+    fun isolatedModeNeverCombinesRawAndYuv() {
+        val withRaw = CameraRecoveryPolicy.initialProfile(
+            MeteringPipelineMode.ISOLATED,
+            rawSupported = true,
+            trackingSupported = true,
+        )
+        val withoutRaw = CameraRecoveryPolicy.initialProfile(
+            MeteringPipelineMode.ISOLATED,
+            rawSupported = false,
+            trackingSupported = true,
+        )
+
+        assertEquals(CameraSessionProfile.RAW_ONLY, withRaw)
+        assertEquals(CameraSessionProfile.PREVIEW_ONLY, withoutRaw)
+        assertFalse(withRaw.usesTracking)
+        assertFalse(withoutRaw.usesTracking)
+    }
+
+    @Test
     fun sessionProfilesDegradeInCompatibilityOrder() {
         val rawOnly = CameraRecoveryPolicy.nextProfile(
             CameraSessionProfile.FULL,
+            mode = MeteringPipelineMode.AUTO,
             rawSupported = true,
             trackingSupported = true,
         )
         val compatible = CameraRecoveryPolicy.nextProfile(
             rawOnly!!,
+            mode = MeteringPipelineMode.AUTO,
             rawSupported = true,
             trackingSupported = true,
         )
         val previewOnly = CameraRecoveryPolicy.nextProfile(
             compatible!!,
+            mode = MeteringPipelineMode.AUTO,
             rawSupported = true,
             trackingSupported = true,
         )
@@ -63,6 +85,7 @@ class CameraRecoveryPolicyTest {
             failure = CameraFailureKind.DEVICE,
             stage = CameraFailureStage.OPENING,
             current = CameraSessionProfile.FULL,
+            mode = MeteringPipelineMode.AUTO,
             attempt = 1,
             rawSupported = true,
             trackingSupported = true,
@@ -71,6 +94,7 @@ class CameraRecoveryPolicyTest {
             failure = CameraFailureKind.DEVICE,
             stage = CameraFailureStage.OPENING,
             current = CameraSessionProfile.FULL,
+            mode = MeteringPipelineMode.AUTO,
             attempt = 2,
             rawSupported = true,
             trackingSupported = true,
@@ -88,6 +112,7 @@ class CameraRecoveryPolicyTest {
             CameraFailureKind.IN_USE,
             CameraFailureStage.OPENING,
             CameraSessionProfile.FULL,
+            MeteringPipelineMode.AUTO,
             attempt = 1,
             rawSupported = true,
             trackingSupported = true,
@@ -96,6 +121,7 @@ class CameraRecoveryPolicyTest {
             CameraFailureKind.DISABLED,
             CameraFailureStage.OPENING,
             CameraSessionProfile.FULL,
+            MeteringPipelineMode.AUTO,
             attempt = 1,
             rawSupported = true,
             trackingSupported = true,
@@ -112,6 +138,7 @@ class CameraRecoveryPolicyTest {
             CameraFailureKind.RESOURCE_LIMIT,
             CameraFailureStage.CONFIGURING,
             CameraSessionProfile.COMPATIBLE,
+            MeteringPipelineMode.FAST,
             attempt = 1,
             rawSupported = true,
             trackingSupported = true,
@@ -120,6 +147,7 @@ class CameraRecoveryPolicyTest {
             CameraFailureKind.RESOURCE_LIMIT,
             CameraFailureStage.CONFIGURING,
             CameraSessionProfile.COMPATIBLE,
+            MeteringPipelineMode.FAST,
             attempt = 2,
             rawSupported = true,
             trackingSupported = true,
@@ -137,6 +165,7 @@ class CameraRecoveryPolicyTest {
             CameraFailureKind.DEVICE,
             CameraFailureStage.RUNNING,
             CameraSessionProfile.FULL,
+            MeteringPipelineMode.AUTO,
             attempt = 1,
             rawSupported = true,
             trackingSupported = true,

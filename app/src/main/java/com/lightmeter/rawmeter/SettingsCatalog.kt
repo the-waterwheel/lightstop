@@ -97,13 +97,18 @@ object SettingsCatalog {
                     options = listOf(
                         option(
                             MeteringPipelineMode.AUTO,
-                            "自动（优先高精度）",
-                            "Automatic (prefer accuracy)",
+                            "高精度（推荐）",
+                            "High accuracy (recommended)",
                         ),
                         option(
-                            MeteringPipelineMode.COMPATIBLE,
-                            "兼容（遇到相机问题时）",
-                            "Compatible (if camera issues occur)",
+                            MeteringPipelineMode.ISOLATED,
+                            "兼容模式",
+                            "Compatibility",
+                        ),
+                        option(
+                            MeteringPipelineMode.FAST,
+                            "快速模式",
+                            "Fast",
                         ),
                     ),
                 ),

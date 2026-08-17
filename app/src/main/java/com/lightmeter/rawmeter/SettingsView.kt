@@ -205,9 +205,16 @@ class SettingsView(
                 paint.color = if (selected) background else foreground
                 paint.textSize = 9f * density
                 paint.typeface = Typeface.DEFAULT_BOLD
+                val optionText = option.label.resolve(state.menuLanguage)
+                val maximumTextWidth = rect.width() - 8f * density
+                while (paint.textSize > 6.5f * density &&
+                    paint.measureText(optionText) > maximumTextWidth
+                ) {
+                    paint.textSize -= 0.5f * density
+                }
                 drawCenteredText(
                     canvas,
-                    option.label.resolve(state.menuLanguage),
+                    optionText,
                     rect.centerX(),
                     rect.centerY(),
                     paint,
