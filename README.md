@@ -28,16 +28,20 @@ code.
 - Android 9 / API 28 or newer.
 - Camera2 logical and physical camera discovery, selection, labels, and hiding;
   multi-camera phones default to the safer automatic logical-camera route.
-- RAW-first metering with a capability-driven YUV/ISP compatibility fallback.
-- Three bilingual metering modes: recommended high accuracy, strict stream
-  isolation for difficult devices, and fast single-sample ISP metering.
+- A common advertised 4:3 preview is preferred for logical and physical routes,
+  avoiding viewport aspect changes when Automatic camera and Main camera use the same lens.
+- RAW-first metering with a capability-driven ISP-preview fallback.
+- Three bilingual metering modes: **High accuracy (recommended)**, **Stable**
+  (RAW retained with processed-stream requests isolated), and **Compatibility
+  mode** (one ISP-processed sample and no RAW resources).
 - Timestamp pairing between `Image` and `CaptureResult`.
 - Bayer black-level subtraction, white-level normalization, per-channel median
   statistics, clipping detection, white-balance/color-matrix conversion, and
   EV100 calculation.
-- RAW-only three-frame fusion at ISO 800 or below and five-frame fusion above
-  ISO 800, with only one full-size RAW image in flight at a time.
-- Single-frame compatible metering: try up to three ISP-processed YUV frames
+- RAW uses one frame below ISO 500, two frames from ISO 500 through 1199, and
+  three frames at ISO 1200 or above. Only one full-size RAW image is in flight
+  at a time, reducing delay and motion error.
+- Single-frame preview metering: try up to three ISP-processed YUV frames
   for at most 250 ms, then immediately use one displayed-preview sample.
 - Preview requests never force 60 fps. They select an advertised range at or
   below 30 fps and can retry at 24 fps or without an explicit frame-rate range.
@@ -46,9 +50,13 @@ code.
 - Camera-session recovery from full RAW + tracking to RAW-only, compatible
   YUV, preview-only, and finally a logical-camera route when appropriate.
 - Spot and center-weighted metering.
-- Per-camera metering calibration that records RAW first when supported and
-  then compatible-preview correction without a fixed inter-stage delay.
-- Two-dimensional vignetting calibration for RAW-capable cameras.
+- Per-camera calibration displays separate **RAW stream** and **Preview stream**
+  corrections. High accuracy and Stable calibrate RAW first and preview second;
+  Compatibility mode skips RAW, and cameras without RAW never show a RAW correction.
+- Switching to Compatibility mode shows a bilingual accuracy notice, with a permanent
+  “Don't show again” choice.
+- Two-dimensional vignetting calibration for RAW-capable cameras, with an
+  uncropped full-stream preview and persistent access to its action/history UI.
 - Electronic preview crop and matching metering ROI without requesting Camera2
   digital zoom or silently switching lenses.
 
@@ -120,7 +128,7 @@ app/src/main/java/com/lightmeter/rawmeter
 ├─ CameraController.kt               lifecycle and camera-operation facade
 ├─ CameraSessionCoordinator.kt       Camera2 resources, sessions, open/close
 ├─ RawLightMeter.kt                  bounded RAW capture and metering
-├─ CompatibleLightMeter.kt           YUV/preview compatible metering
+├─ CompatibleLightMeter.kt           YUV/displayed-preview metering
 ├─ TimestampedResultPairer.kt        image/result ownership and pairing
 ├─ CameraRecoveryPolicy.kt           session profiles and recovery decisions
 ├─ CameraRecoveryStateMachine.kt     retry history and route downgrade state

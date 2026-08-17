@@ -24,6 +24,7 @@ class MainActivity : Activity(), CameraControllerCallback {
     private lateinit var cameraController: CameraController
     private val mainHandler = Handler(Looper.getMainLooper())
     private var rawDialogVisible = false
+    private var compatibilityModeDialogVisible = false
     private var calibrationResetDialogVisible = false
     private var vignettingDialogVisible = false
     private var vignettingResetDialogVisible = false
@@ -34,6 +35,7 @@ class MainActivity : Activity(), CameraControllerCallback {
     private var calibrationRawMeasuredEv100: Double? = null
     private var zoneMeasurementPending = false
     private var activityResumed = false
+    private var appliedPipelineMode: MeteringPipelineMode? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -47,6 +49,7 @@ class MainActivity : Activity(), CameraControllerCallback {
 
         meterLayout = MeterLayout(this, state)
         cameraController = CameraController(this, this)
+        appliedPipelineMode = state.meteringPipelineMode
         cameraController.setMeteringPipelineMode(state.meteringPipelineMode)
         val selectedCamera = state.updateCameraCatalog(cameraController.availableCameras())
         selectedCamera?.let(cameraController::selectCamera)
@@ -75,7 +78,22 @@ class MainActivity : Activity(), CameraControllerCallback {
             }
 
             override fun onControlsChanged(frameChanged: Boolean) {
-                cameraController.setMeteringPipelineMode(state.meteringPipelineMode)
+                val previousMode = appliedPipelineMode
+                val currentMode = state.meteringPipelineMode
+                appliedPipelineMode = currentMode
+                cameraController.setMeteringPipelineMode(currentMode)
+                if (previousMode != null && previousMode != currentMode) {
+                    refreshCalibrationCorrections()
+                    if (currentMode == MeteringPipelineMode.FAST) {
+                        // Some vendor window managers can consume a dialog opened inside the
+                        // option's ACTION_UP dispatch. Post it after this touch sequence finishes.
+                        mainHandler.post {
+                            if (appliedPipelineMode == MeteringPipelineMode.FAST) {
+                                showCompatibilityModeWarning()
+                            }
+                        }
+                    }
+                }
                 meterLayout.refresh(frameChanged)
                 if (!frameChanged) {
                     updatePreviewTransform(
@@ -302,7 +320,7 @@ class MainActivity : Activity(), CameraControllerCallback {
         if (meterLayout.isCalibrationOpen) {
             refreshCalibrationCorrections()
         }
-        meterLayout.refresh()
+        meterLayout.refresh(frameChanged = meterLayout.isVignettingCalibrationOpen)
     }
 
     override fun onRawUnavailable() {
@@ -334,13 +352,13 @@ class MainActivity : Activity(), CameraControllerCallback {
         state.measuring = true
         state.transientMessage = if (source == MeteringSource.RAW) {
             localized(
-                "正在进行高精度测光（$frameCount 帧）",
-                "Running high-accuracy metering ($frameCount frames)",
+                "正在读取 RAW 流（$frameCount 张）",
+                "Reading RAW stream ($frameCount frames)",
             )
         } else {
             localized(
-                "正在进行兼容测光",
-                "Running compatible metering",
+                "正在读取预览流",
+                "Reading preview stream",
             )
         }
         meterLayout.refresh()
@@ -366,8 +384,8 @@ class MainActivity : Activity(), CameraControllerCallback {
         state.transientMessage = when {
             reading.source != MeteringSource.RAW ->
                 localized(
-                    "兼容测光完成 · EV ${"%.1f".format(reading.sceneEv100)}",
-                    "Compatible metering complete · EV ${"%.1f".format(reading.sceneEv100)}",
+                    "预览流测光完成 · EV ${"%.1f".format(reading.sceneEv100)}",
+                    "Preview-stream metering complete · EV ${"%.1f".format(reading.sceneEv100)}",
                 )
             reading.clippedFraction > 0.1 ->
                 localized(
@@ -381,8 +399,8 @@ class MainActivity : Activity(), CameraControllerCallback {
                 )
             else ->
                 localized(
-                    "高精度测光完成 · EV ${"%.1f".format(reading.sceneEv100)}",
-                    "High-accuracy metering complete · EV ${"%.1f".format(reading.sceneEv100)}",
+                    "RAW 流测光完成 · EV ${"%.1f".format(reading.sceneEv100)}",
+                    "RAW-stream metering complete · EV ${"%.1f".format(reading.sceneEv100)}",
                 )
         }
         meterLayout.refresh()
@@ -394,9 +412,9 @@ class MainActivity : Activity(), CameraControllerCallback {
         if (calibrationMeasurementPending) {
             if (calibrationStage == MeteringSource.RAW) {
                 calibrationRawMeasuredEv100 = null
-                beginCompatibleCalibration()
+                beginPreviewCalibration()
             } else {
-                finishCalibrationWithCompatibleError(message)
+                finishCalibrationWithPreviewError(message)
             }
             return
         }
@@ -439,7 +457,11 @@ class MainActivity : Activity(), CameraControllerCallback {
         calibrationMeasurementPending = true
         calibrationReferenceEv100 = referenceEv100
         calibrationRawMeasuredEv100 = null
-        val firstSource = if (cameraController.isRawMeteringAvailable()) {
+        // Compatibility mode intentionally skips RAW. Stable mode still runs RAW first, then
+        // switches to the processed preview after the RAW capture and its buffers have finished.
+        val firstSource = if (shouldCalibrateRawStream() &&
+            cameraController.isRawMeteringAvailable()
+        ) {
             MeteringSource.RAW
         } else {
             cameraController.preferredCompatibleMeteringSource()
@@ -474,7 +496,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             MeteringSource.RAW -> {
                 if (reading.source == MeteringSource.RAW) {
                     calibrationRawMeasuredEv100 = reading.sceneEv100
-                    beginCompatibleCalibration()
+                    beginPreviewCalibration()
                 } else {
                     finishCalibration(reading.sceneEv100)
                 }
@@ -486,15 +508,15 @@ class MainActivity : Activity(), CameraControllerCallback {
         }
     }
 
-    private fun beginCompatibleCalibration() {
+    private fun beginPreviewCalibration() {
         if (!calibrationMeasurementPending) return
-        val compatibleSource = cameraController.preferredCompatibleMeteringSource()
-        calibrationStage = compatibleSource
+        val previewSource = cameraController.preferredCompatibleMeteringSource()
+        calibrationStage = previewSource
         meterLayout.calibrationView.setMeasuring(
             true,
-            source = compatibleSource,
+            source = previewSource,
         )
-        startCalibrationMeasurement(compatibleSource)
+        startCalibrationMeasurement(previewSource)
     }
 
     private fun finishCalibration(compatibleMeasuredEv100: Double) {
@@ -517,7 +539,7 @@ class MainActivity : Activity(), CameraControllerCallback {
         meterLayout.refresh()
     }
 
-    private fun finishCalibrationWithCompatibleError(message: String) {
+    private fun finishCalibrationWithPreviewError(message: String) {
         val reference = calibrationReferenceEv100
         val rawMeasured = calibrationRawMeasuredEv100
         if (reference.isFinite() && rawMeasured != null) {
@@ -530,8 +552,8 @@ class MainActivity : Activity(), CameraControllerCallback {
             meterLayout.calibrationView.showPartialResult(
                 record,
                 localized(
-                    "标准校准已保存，兼容校准未完成",
-                    "Standard calibration was saved; compatible calibration did not finish",
+                    "RAW 流校准已保存，预览流校准未完成",
+                    "RAW-stream calibration was saved; preview-stream calibration did not finish",
                 ),
             )
         } else {
@@ -550,7 +572,8 @@ class MainActivity : Activity(), CameraControllerCallback {
 
     private fun refreshCalibrationCorrections() {
         val record = cameraController.currentUserCalibrationRecord()
-        val rawCorrection = if (state.cameraInfo.rawAvailable) {
+        val showRawStream = shouldShowRawCalibration()
+        val rawCorrection = if (showRawStream) {
             record?.rawCorrectionEv ?: 0.0
         } else {
             null
@@ -558,8 +581,18 @@ class MainActivity : Activity(), CameraControllerCallback {
         meterLayout.calibrationView.setCurrentCorrections(
             rawCorrectionEv = rawCorrection,
             compatibleCorrectionEv = record?.compatibleCorrectionEv ?: 0.0,
+            showRawStream = showRawStream,
         )
     }
+
+    /** RAW is displayed only when this mode can use it and the selected camera exposes it. */
+    private fun shouldShowRawCalibration(): Boolean =
+        CalibrationStreamPolicy.includesRaw(
+            mode = state.meteringPipelineMode,
+            rawSupported = state.currentCamera()?.rawAvailable ?: state.cameraInfo.rawAvailable,
+        )
+
+    private fun shouldCalibrateRawStream(): Boolean = shouldShowRawCalibration()
 
     private fun ensureCameraPermission() {
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
@@ -580,14 +613,14 @@ class MainActivity : Activity(), CameraControllerCallback {
         val cameraName = camera?.let(state::cameraName)
             ?: localized("当前摄像头", "Current camera")
         AlertDialog.Builder(this)
-            .setTitle(localized("已使用兼容测光", "Compatible metering enabled"))
+            .setTitle(localized("已切换到预览测光", "Preview metering enabled"))
             .setMessage(
                 localized(
-                    "$cameraName 不支持高精度测光，应用已自动切换到兼容方式。" +
-                        "测光仍然可用，建议再完成一次校准。",
-                    "$cameraName does not support high-accuracy metering. The app has " +
-                        "switched to compatible metering. Metering remains available; " +
-                        "calibration is recommended.",
+                    "$cameraName 不支持 RAW 流，应用已自动使用手机处理后的预览画面测光。" +
+                        "测光仍然可用，建议再完成一次预览流校准。",
+                    "$cameraName does not support a RAW stream. The app is using the " +
+                        "phone-processed preview for metering. Metering remains available; " +
+                        "preview-stream calibration is recommended.",
                 ),
             )
             .setMultiChoiceItems(
@@ -602,6 +635,30 @@ class MainActivity : Activity(), CameraControllerCallback {
                 }
             }
             .setOnDismissListener { rawDialogVisible = false }
+            .show()
+    }
+
+    private fun showCompatibilityModeWarning() {
+        val preferences = getSharedPreferences(PREFERENCES_NAME, MODE_PRIVATE)
+        if (preferences.getBoolean(SUPPRESS_COMPATIBILITY_MODE_WARNING, false) ||
+            compatibilityModeDialogVisible || isFinishing
+        ) return
+        compatibilityModeDialogVisible = true
+        AlertDialog.Builder(this)
+            .setTitle(localized("兼容模式提示", "Compatibility mode"))
+            .setMessage(
+                localized(
+                    "兼容模式不使用 RAW 流。如果高精度模式或稳定模式可以正常使用，" +
+                        "更推荐采用高精度模式或稳定模式。",
+                    "Compatibility mode does not use the RAW stream. If High accuracy or " +
+                        "Stable mode works normally, either is recommended instead.",
+                ),
+            )
+            .setPositiveButton(localized("确定", "OK"), null)
+            .setNeutralButton(localized("不再提示", "Don't show again")) { _, _ ->
+                preferences.edit().putBoolean(SUPPRESS_COMPATIBILITY_MODE_WARNING, true).apply()
+            }
+            .setOnDismissListener { compatibilityModeDialogVisible = false }
             .show()
     }
 
@@ -625,7 +682,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             .setNegativeButton(if (english) "Cancel" else "取消", null)
             .setPositiveButton(if (english) "Reset" else "重置") { _, _ ->
                 cameraController.resetUserCalibration()
-                meterLayout.calibrationView.showReset(state.cameraInfo.rawAvailable)
+                meterLayout.calibrationView.showReset(shouldShowRawCalibration())
             }
             .setOnDismissListener { calibrationResetDialogVisible = false }
             .show()
@@ -686,11 +743,10 @@ class MainActivity : Activity(), CameraControllerCallback {
                 localized(
                     "请将当前镜头对准亮度均匀的画面，让它填满整个取景框。" +
                         "避开阴影、反光和过曝，拍摄时保持手机稳定。\n\n" +
-                        "此提示不会开始拍摄；进入页面后，请点击“拍摄并矫正”开始。",
+                        "进入页面后，请点击“拍摄并矫正”开始。",
                     "Aim the current lens at a uniformly lit scene and fill the full frame. " +
                         "Avoid shadows, glare, and clipping, and hold the phone steady.\n\n" +
-                        "This guide does not start a capture. Tap “Capture and calibrate” " +
-                        "on the page when ready.",
+                        "Tap “Capture and calibrate” on the page when ready.",
                 ),
             )
             .setNeutralButton(localized("不再提示", "Don't show again")) { _, _ ->
@@ -798,6 +854,9 @@ class MainActivity : Activity(), CameraControllerCallback {
 
     companion object {
         private const val CAMERA_PERMISSION_REQUEST = 41
+        private const val PREFERENCES_NAME = "raw_light_meter_state"
+        private const val SUPPRESS_COMPATIBILITY_MODE_WARNING =
+            "suppress_compatibility_mode_warning"
         private val TRANSIENT_TOKEN = Any()
     }
 }

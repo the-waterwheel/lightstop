@@ -40,12 +40,18 @@ internal interface RawLightMeterListener {
 
 /** Device-independent RAW burst size limits. */
 internal object RawMeteringPolicy {
-    fun frameCount(captureIso: Int?): Int =
-        if ((captureIso ?: 0) > HIGH_ISO_THRESHOLD) HIGH_ISO_FRAME_COUNT else LOW_ISO_FRAME_COUNT
+    fun frameCount(captureIso: Int?): Int = when {
+        captureIso == null -> MEDIUM_ISO_FRAME_COUNT
+        captureIso < LOW_ISO_LIMIT -> LOW_ISO_FRAME_COUNT
+        captureIso < HIGH_ISO_LIMIT -> MEDIUM_ISO_FRAME_COUNT
+        else -> HIGH_ISO_FRAME_COUNT
+    }
 
-    private const val HIGH_ISO_THRESHOLD = 800
-    private const val LOW_ISO_FRAME_COUNT = 3
-    private const val HIGH_ISO_FRAME_COUNT = 5
+    private const val LOW_ISO_LIMIT = 500
+    private const val HIGH_ISO_LIMIT = 1200
+    private const val LOW_ISO_FRAME_COUNT = 1
+    private const val MEDIUM_ISO_FRAME_COUNT = 2
+    private const val HIGH_ISO_FRAME_COUNT = 3
 }
 
 /** Mutable state owned by [RawLightMeter] for exactly one RAW burst. */

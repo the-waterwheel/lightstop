@@ -3,7 +3,7 @@ package com.lightmeter.rawmeter
 /**
  * Robustly fuses per-frame measurements into the value shown to the user.
  *
- * Keeping fusion independent of Camera2 makes the 3/5-frame policy easy to test without a
+ * Keeping fusion independent of Camera2 makes the adaptive RAW-frame policy easy to test without a
  * device. Median EV/luma reject a transient frame while clipped fraction remains an average.
  */
 internal object MeteringFusion {

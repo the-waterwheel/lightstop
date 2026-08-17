@@ -87,6 +87,7 @@ class CalibrationView(
     private var geometry: Geometry? = null
     private var currentRawCorrectionEv: Double? = null
     private var currentCompatibleCorrectionEv = 0.0
+    private var rawStreamVisible = false
     private var statusText = ""
     private var statusIsError = false
 
@@ -103,9 +104,14 @@ class CalibrationView(
     fun calculatePreviewFrame(width: Int, height: Int): RectF =
         calculateGeometry(width, height).preview
 
-    fun setCurrentCorrections(rawCorrectionEv: Double?, compatibleCorrectionEv: Double) {
+    fun setCurrentCorrections(
+        rawCorrectionEv: Double?,
+        compatibleCorrectionEv: Double,
+        showRawStream: Boolean,
+    ) {
         currentRawCorrectionEv = rawCorrectionEv
         currentCompatibleCorrectionEv = compatibleCorrectionEv
+        rawStreamVisible = showRawStream
         invalidate()
     }
 
@@ -127,12 +133,12 @@ class CalibrationView(
         if (measuring) {
             statusText = when {
                 source == MeteringSource.RAW && frameCount != null -> localized(
-                    "正在校准高精度测光（$frameCount 帧）…",
-                    "Calibrating high-accuracy metering ($frameCount frames)…",
+                    "正在校准 RAW 流（$frameCount 张）…",
+                    "Calibrating RAW stream ($frameCount frames)…",
                 )
                 source != null && source != MeteringSource.RAW && frameCount != null -> localized(
-                    "正在进行兼容测光…",
-                    "Running compatible measurement…",
+                    "正在校准预览流…",
+                    "Calibrating preview stream…",
                 )
                 else -> localized("正在准备测光…", "Preparing measurement…")
             }
@@ -167,9 +173,10 @@ class CalibrationView(
         invalidate()
     }
 
-    fun showReset(rawAvailable: Boolean) {
+    fun showReset(showRawStream: Boolean) {
         isMeasuring = false
-        currentRawCorrectionEv = if (rawAvailable) 0.0 else null
+        rawStreamVisible = showRawStream
+        currentRawCorrectionEv = if (showRawStream) 0.0 else null
         currentCompatibleCorrectionEv = 0.0
         statusText = localized(
             "当前测光修正已重置，可从历史回退",
@@ -777,11 +784,13 @@ class CalibrationView(
         if (value >= 0.0) "+${"%.2f".format(value)}" else "%.2f".format(value)
 
     private fun correctionSummary(rawCorrectionEv: Double?, compatibleCorrectionEv: Double): String {
-        val highAccuracy = rawCorrectionEv?.let {
-            "${localized("高精度", "High accuracy")} ${signedEv(it)} EV"
-        } ?: localized("高精度不可用", "High accuracy unavailable")
-        return "$highAccuracy · ${localized("兼容", "Compatible")} " +
+        val preview = "${localized("预览流", "Preview stream")} " +
             "${signedEv(compatibleCorrectionEv)} EV"
+        if (!rawStreamVisible) return preview
+        val raw = rawCorrectionEv?.let {
+            "${localized("RAW 流", "RAW stream")} ${signedEv(it)} EV"
+        } ?: localized("RAW 流未校准", "RAW stream not calibrated")
+        return "$raw · $preview"
     }
 
     private fun haptic() {

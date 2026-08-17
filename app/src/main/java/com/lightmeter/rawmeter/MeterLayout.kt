@@ -341,7 +341,12 @@ class MeterLayout @JvmOverloads constructor(
         } else {
             geometry.cameraFrame
         }
-        val textureFrame = previewTextureFrame(cameraFrame, width, height)
+        val textureFrame = previewTextureFrame(
+            cameraFrame = cameraFrame,
+            width = width,
+            height = height,
+            showFullPreview = isVignettingCalibrationOpen,
+        )
         textureView.measure(
             MeasureSpec.makeMeasureSpec(textureFrame.width().toInt(), MeasureSpec.EXACTLY),
             MeasureSpec.makeMeasureSpec(textureFrame.height().toInt(), MeasureSpec.EXACTLY),
@@ -388,7 +393,12 @@ class MeterLayout @JvmOverloads constructor(
         } else {
             geometry.cameraFrame
         }
-        val textureFrame = previewTextureFrame(cameraFrame, width, height)
+        val textureFrame = previewTextureFrame(
+            cameraFrame = cameraFrame,
+            width = width,
+            height = height,
+            showFullPreview = isVignettingCalibrationOpen,
+        )
         textureView.layout(
             textureFrame.left.toInt(),
             textureFrame.top.toInt(),
@@ -780,7 +790,15 @@ class MeterLayout @JvmOverloads constructor(
         start.bottom + (end.bottom - start.bottom) * fraction,
     )
 
-    private fun previewTextureFrame(cameraFrame: RectF, width: Int, height: Int): RectF {
+    private fun previewTextureFrame(
+        cameraFrame: RectF,
+        width: Int,
+        height: Int,
+        showFullPreview: Boolean = false,
+    ): RectF {
+        // Vignetting calibration needs the entire camera output, including the corners. Its
+        // overlay is already fitted to the stream aspect, so never enlarge/crop this TextureView.
+        if (showFullPreview) return RectF(cameraFrame)
         val previewSize = state.cameraInfo.previewSize
         val longAspect = if (previewSize != null && previewSize.width > 0 && previewSize.height > 0) {
             max(previewSize.width, previewSize.height).toFloat() /

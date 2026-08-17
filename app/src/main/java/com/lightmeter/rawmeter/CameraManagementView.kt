@@ -237,12 +237,16 @@ class CameraManagementView(
         val calibrationSummary = if (calibration == null) {
             localized("未校准", "Not calibrated")
         } else {
-            val highAccuracy = calibration.rawCorrectionEv?.let {
-                "${localized("高精度", "High accuracy")} ${signedEv(it)} EV"
-            } ?: localized("高精度不可用", "High accuracy unavailable")
-            "$highAccuracy · ${localized("兼容", "Compatible")} " +
-                "${signedEv(calibration.compatibleCorrectionEv ?: 0.0)} EV" +
-                " · ${calibration.calibrationCount}"
+            val preview = "${localized("预览流", "Preview stream")} " +
+                "${signedEv(calibration.compatibleCorrectionEv ?: 0.0)} EV"
+            if (camera.rawAvailable) {
+                val raw = calibration.rawCorrectionEv?.let {
+                    "${localized("RAW 流", "RAW stream")} ${signedEv(it)} EV"
+                } ?: localized("RAW 流未校准", "RAW stream not calibrated")
+                "$raw · $preview · ${calibration.calibrationCount}"
+            } else {
+                "$preview · ${calibration.calibrationCount}"
+            }
         }
         canvas.drawText(
             ellipsize(calibrationSummary, row.width() - 24f * density, paint),

@@ -5,15 +5,31 @@ All notable user-facing changes are recorded here. The project follows
 
 ## Unreleased
 
+- Renamed the user modes to **High accuracy (recommended)**, **Stable**, and
+  **Compatibility mode**, without changing persisted enum values or old preference
+  migration.
+- Renamed calibration results to **RAW stream** and **Preview stream**. Stable
+  mode now calibrates RAW then preview sequentially; Compatibility mode skips RAW,
+  and non-RAW cameras hide the RAW calibration row.
+- Added a bilingual Compatibility-mode RAW notice with **OK** and a persistent
+  **Don't show again** action.
+- Reduced RAW sampling to one frame below ISO 500, two below ISO 1200, and three
+  at ISO 1200 or above to reduce measurement delay and motion error.
 - Added 6×12, 6×17, 4×5, 5×7, and 8×10 formats, selected-format focal-length
   equivalence, and wrapped format menus that keep every option readable.
-- Added sequential RAW and compatible-preview calibration for RAW-capable
-  cameras, while compatible-only cameras skip RAW calibration.
+- Added sequential RAW and preview-stream calibration for RAW-capable cameras,
+  while cameras without RAW skip and hide RAW calibration.
 - Added bilingual compatibility mode settings and camera-error recovery across
   full, RAW-only, YUV-compatible, preview-only, and logical-camera routes.
-- Reworked metering into three user modes: recommended high accuracy, strictly
-  isolated compatibility, and fast ISP metering. Existing compatible-mode
-  preferences migrate to fast mode so upgrades retain their previous behavior.
+- Reworked metering into three user modes: recommended high accuracy, stable
+  stream isolation, and RAW-free compatibility metering. Existing compatible-mode
+  preferences migrate to the current Compatibility mode.
+- Fixed vignetting-calibration geometry refresh so its camera preview, action
+  button, and correction history remain aligned and visible after camera/session
+  or orientation changes; simplified the bilingual guide text.
+- Unified automatic logical cameras and fixed physical lenses on a common 4:3
+  preview stream when advertised, preventing aspect changes or apparent stretching
+  when Automatic camera and Main camera are backed by the same lens.
 - Limited explicit preview requests to safe advertised ranges at or below
   30 fps, with automatic 24 fps and system-default fallback when rejected.
 - Stopped targeting YUV continuously: it is now attached only for Zone tracking

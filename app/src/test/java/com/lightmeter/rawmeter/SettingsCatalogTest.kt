@@ -6,7 +6,7 @@ import org.junit.Test
 
 class SettingsCatalogTest {
     @Test
-    fun meteringSectionOffersAccuracyCompatibilityAndFastEngines() {
+    fun meteringSectionOffersAccuracyStableAndCompatibilityModes() {
         val metering = SettingsCatalog.sections.single { it.key == SettingsSectionKey.METERING }
         val engine = metering.items.single { it.key == SettingKey.METERING_PIPELINE }
 
@@ -18,6 +18,14 @@ class SettingsCatalogTest {
             ),
             engine.options.map { it.value },
         )
+        assertEquals(
+            listOf("高精度（推荐）", "稳定模式", "兼容模式"),
+            engine.options.map { it.label.resolve(MenuLanguage.CHINESE) },
+        )
+        assertEquals(
+            listOf("High accuracy (recommended)", "Stable", "Compatibility mode"),
+            engine.options.map { it.label.resolve(MenuLanguage.ENGLISH) },
+        )
     }
 
     @Test
@@ -27,6 +35,19 @@ class SettingsCatalogTest {
             MeteringPipelineMode.fromStored("COMPATIBLE"),
         )
         assertEquals(MeteringPipelineMode.AUTO, MeteringPipelineMode.fromStored("unknown"))
+    }
+
+    @Test
+    fun calibrationUsesRawInAccuracyAndStableButNeverCompatibilityMode() {
+        assertTrue(CalibrationStreamPolicy.includesRaw(MeteringPipelineMode.AUTO, true))
+        assertTrue(CalibrationStreamPolicy.includesRaw(MeteringPipelineMode.ISOLATED, true))
+        assertEquals(
+            false,
+            CalibrationStreamPolicy.includesRaw(MeteringPipelineMode.FAST, true),
+        )
+        MeteringPipelineMode.entries.forEach { mode ->
+            assertEquals(false, CalibrationStreamPolicy.includesRaw(mode, false))
+        }
     }
 
 

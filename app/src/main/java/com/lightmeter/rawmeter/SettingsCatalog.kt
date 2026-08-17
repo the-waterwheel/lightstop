@@ -102,13 +102,13 @@ object SettingsCatalog {
                         ),
                         option(
                             MeteringPipelineMode.ISOLATED,
-                            "兼容模式",
-                            "Compatibility",
+                            "稳定模式",
+                            "Stable",
                         ),
                         option(
                             MeteringPipelineMode.FAST,
-                            "快速模式",
-                            "Fast",
+                            "兼容模式",
+                            "Compatibility mode",
                         ),
                     ),
                 ),

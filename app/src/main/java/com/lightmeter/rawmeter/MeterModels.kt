@@ -128,10 +128,10 @@ enum class MeteringPipelineMode {
     /** Uses RAW when possible and automatically falls back when a device rejects it. */
     AUTO,
 
-    /** Keeps RAW and YUV out of the same session to avoid fragile multi-stream combinations. */
+    /** Stable path: retains RAW while keeping it isolated from processed YUV requests. */
     ISOLATED,
 
-    /** Uses one ISP-processed preview sample and never opens a RAW output. */
+    /** Compatibility path: uses one ISP-processed sample and never opens a RAW output. */
     FAST,
 
     ;
@@ -143,6 +143,12 @@ enum class MeteringPipelineMode {
             else -> entries.firstOrNull { it.name == value } ?: AUTO
         }
     }
+}
+
+/** User calibration exposes RAW only when both the selected mode and camera can provide it. */
+internal object CalibrationStreamPolicy {
+    fun includesRaw(mode: MeteringPipelineMode, rawSupported: Boolean): Boolean =
+        mode != MeteringPipelineMode.FAST && rawSupported
 }
 
 enum class MenuLanguage {

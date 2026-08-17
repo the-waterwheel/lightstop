@@ -80,7 +80,7 @@ class VignettingCalibrationView(
     }
 
     fun calculatePreviewFrame(width: Int, height: Int): RectF =
-        calculateGeometry(width, height).preview
+        calculateGeometry(width, height).also { geometry = it }.preview
 
     fun applyTheme() = invalidate()
 
@@ -141,7 +141,9 @@ class VignettingCalibrationView(
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        val g = geometry ?: calculateGeometry(width, height).also { geometry = it }
+        // Preview size can change after a camera/session switch without changing this View's
+        // bounds. Recalculate so the overlay, controls, history, and TextureView stay aligned.
+        val g = calculateGeometry(width, height).also { geometry = it }
         drawSurfaceOutsidePreview(canvas, g.preview)
         drawHeader(canvas, g)
         drawPreviewOverlay(canvas, g)

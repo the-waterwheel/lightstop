@@ -36,25 +36,11 @@ internal object CameraStreamSelector {
         } else {
             4.0 / 3.0
         }
-        val has60Range = characteristics
-            .get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
-            ?.any { it.lower <= 60 && it.upper >= 60 } == true
-        val fast = if (has60Range) {
-            bounded.filter { size ->
-                val duration = map.getOutputMinFrameDuration(SurfaceTexture::class.java, size)
-                val area = size.width.toLong() * size.height.toLong()
-                area >= 1280L * 720L && (duration == 0L || duration <= 20_000_000L)
-            }
-        } else {
-            emptyList()
-        }
-        return fast.ifEmpty { bounded }.minWithOrNull(
-            compareBy<Size> {
-                abs(it.width.toDouble() / it.height.toDouble() - sensorAspect)
-            }.thenByDescending {
-                it.width.toLong() * it.height.toLong()
-            },
-        )
+        val selected = choosePreviewDimensions(
+            sizes = bounded.map { it.width to it.height },
+            sensorAspect = sensorAspect,
+        ) ?: return null
+        return bounded.firstOrNull { it.width == selected.first && it.height == selected.second }
     }
 
     fun chooseTrackingSize(map: StreamConfigurationMap, preview: Size): Size? {
@@ -130,7 +116,46 @@ internal object CameraStreamSelector {
             .maxWithOrNull(compareBy<Pair<Int, Int>> { it.second }.thenBy { it.first })
     }
 
+    /**
+     * Keeps logical and explicitly routed physical cameras on the same common preview shape.
+     *
+     * Some multi-camera HALs describe the logical camera with a 16:9 active array while each
+     * physical lens exposes a 4:3 array. Selecting only by that metadata makes "Automatic camera"
+     * use 1920x1080 and "Main camera" use 1440x1080, so switching between two routes backed by the
+     * same lens changes the viewport and can look like a stretched preview. Prefer an advertised
+     * 4:3 stream on both routes; fall back to the camera's own sensor aspect when 4:3 is absent.
+     */
+    fun choosePreviewDimensions(
+        sizes: List<Pair<Int, Int>>,
+        sensorAspect: Double,
+    ): Pair<Int, Int>? {
+        if (sizes.isEmpty()) return null
+        val fourThirds = 4.0 / 3.0
+        val commonShape = sizes.filter { (width, height) ->
+            width > 0 && height > 0 &&
+                abs(max(width, height).toDouble() / min(width, height) - fourThirds) <=
+                ASPECT_TOLERANCE
+        }
+        val candidates = commonShape.ifEmpty { sizes }
+        val normalizedSensorAspect = if (sensorAspect in 0.0..1.0 && sensorAspect > 0.0) {
+            1.0 / sensorAspect
+        } else {
+            sensorAspect
+        }
+        val targetAspect = if (commonShape.isNotEmpty()) fourThirds else normalizedSensorAspect
+        return candidates.minWithOrNull(
+            compareBy<Pair<Int, Int>> { (width, height) ->
+                if (width > 0 && height > 0) {
+                    abs(max(width, height).toDouble() / min(width, height) - targetAspect)
+                } else {
+                    Double.MAX_VALUE
+                }
+            }.thenByDescending { (width, height) -> width.toLong() * height.toLong() },
+        )
+    }
+
     private const val TRACKING_TARGET_LONG_EDGE = 640
     private const val TRACKING_MAX_LONG_EDGE = 720
     private const val TRACKING_MIN_SHORT_EDGE = 240
+    private const val ASPECT_TOLERANCE = 0.03
 }

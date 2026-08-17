@@ -23,10 +23,10 @@ The user-facing modes map to these profiles as follows:
 
 - **High accuracy (recommended):** starts at normalized `FULL`, uses RAW when
   possible, and automatically follows the full downgrade chain.
-- **Compatibility:** starts at `RAW_ONLY` when RAW exists and otherwise at
+- **Stable:** starts at `RAW_ONLY` when RAW exists and otherwise at
   `PREVIEW_ONLY`. It never configures RAW and YUV in the same session.
-- **Fast:** starts at `COMPATIBLE` and never creates a RAW reader. A preference
-  stored as the old `COMPATIBLE` user mode migrates to Fast.
+- **Compatibility mode:** starts at `COMPATIBLE` and never creates a RAW reader.
+  A preference stored as the old `COMPATIBLE` user mode migrates to this mode.
 
 Session creation failure removes optional streams without crossing the selected
 mode's isolation boundary. The complete high-accuracy chain is:
@@ -42,6 +42,10 @@ vendor preview implementation can still prevent every profile from opening.
 
 On logical multi-camera devices, the catalog exposes the logical route as the
 default automatic camera and gives every fixed physical lens a separate ID.
+Preview selection prefers an advertised 4:3 stream for both routes, even when
+the logical active-array metadata is 16:9, so an automatic route and its fixed
+main-lens route keep the same undistorted viewport. Cameras without 4:3 output
+fall back to the aspect closest to their own sensor metadata.
 Explicit physical routing is therefore opt-in. Monochrome and NIR physical
 sensors are filtered out even if they expose a `SurfaceTexture` output.
 
@@ -61,7 +65,9 @@ sensors are filtered out even if they expose a `SurfaceTexture` output.
 
 - RAW is used only when the selected camera advertises
   `REQUEST_AVAILABLE_CAPABILITIES_RAW` and exposes `RAW_SENSOR` sizes.
-- ISO 800 or below uses three frames; higher ISO uses five frames.
+- ISO below 500 uses one frame, ISO 500–1199 uses two frames, and ISO 1200 or
+  above uses three frames. This favors shorter capture time and lower motion
+  error over redundant noise reduction.
 - Only one full-size RAW request is in flight. The next request is submitted
   after the current `Image` has been analyzed and closed.
 - `Image` and `CaptureResult` are paired by sensor timestamp. Unmatched images
@@ -71,9 +77,9 @@ sensors are filtered out even if they expose a `SurfaceTexture` output.
   transform, exposure, sensitivity, aperture, and post-RAW boost come from the
   selected camera's metadata rather than from manufacturer assumptions.
 
-## Compatible metering
+## Preview-stream metering
 
-Compatible metering consumes ISP-processed data and therefore does not perform
+Preview-stream metering consumes ISP-processed data and therefore does not perform
 multi-frame noise-reduction fusion.
 
 1. Prefer one valid `YUV_420_888` frame when the YUV output is active.
@@ -95,12 +101,13 @@ For a RAW-capable camera, one calibration request uses the same fixed reference
 input for two sequential readings:
 
 ```text
-RAW reading -> close RAW images -> compatible reading -> save both corrections
+RAW-stream reading -> close RAW images -> preview-stream reading -> save both corrections
 ```
 
-There is no fixed delay between the stages. A camera without RAW support skips
-the RAW stage and stores only the compatible correction. RAW and compatible
-corrections remain separate per manufacturer, model, and camera ID.
+There is no fixed delay between the stages. High accuracy and Stable run both
+stages; Compatibility mode skips RAW. A camera without RAW support also hides and
+skips the RAW stage. RAW and preview corrections remain separate per
+manufacturer, model, and camera ID.
 
 ## Thread and resource ownership
 
@@ -176,16 +183,16 @@ lifecycle, calibration stores, stream-profile selection, and user callbacks.
 用户可见的三档模式与内部会话对应如下：
 
 - **高精度（推荐）**：从能力归一化后的 `FULL` 开始，优先 RAW，并允许沿完整链路自动降级。
-- **兼容模式**：有 RAW 时从 `RAW_ONLY` 开始，否则使用 `PREVIEW_ONLY`；RAW 与 YUV 绝不出现在同一会话。
-- **快速模式**：从 `COMPATIBLE` 开始，绝不创建 RAW reader。旧版本保存的“兼容”设置会迁移为快速模式，保持原行为。
+- **稳定模式**：有 RAW 时从 `RAW_ONLY` 开始，否则使用 `PREVIEW_ONLY`；RAW 与 YUV 绝不出现在同一会话。
+- **兼容模式**：从 `COMPATIBLE` 开始，绝不创建 RAW reader。旧版本保存的“兼容”设置会迁移到当前兼容模式，保持原行为。
 
-会话失败时只在当前模式允许的范围内减少输出，不会破坏兼容模式的隔离边界。高精度模式的完整降级链为：
+会话失败时只在当前模式允许的范围内减少输出，不会破坏稳定模式的隔离边界。高精度模式的完整降级链为：
 
 ```text
 FULL -> RAW_ONLY -> COMPATIBLE -> PREVIEW_ONLY
 ```
 
-运行错误会先分类，再决定重试或降级；物理镜头最终还能退回逻辑相机。多摄设备默认列出并选择自动逻辑相机，固定物理镜头仍可手动选择；单色和红外物理传感器不会加入普通镜头列表。权限被拒、系统隐私策略、其他应用长期占用相机，或厂商连基础预览都实现异常时，仍可能无法打开任何档位。
+运行错误会先分类，再决定重试或降级；物理镜头最终还能退回逻辑相机。多摄设备默认列出并选择自动逻辑相机，固定物理镜头仍可手动选择；单色和红外物理传感器不会加入普通镜头列表。逻辑与物理路由优先使用两者都常见的 4:3 预览，即使逻辑相机元数据声明为 16:9，也不会在自动主摄与固定主摄之间切换时改变比例或看起来被拉伸；没有 4:3 输出时才退回最接近传感器元数据的比例。权限被拒、系统隐私策略、其他应用长期占用相机，或厂商连基础预览都实现异常时，仍可能无法打开任何档位。
 
 ### 预览请求与帧率
 
@@ -196,14 +203,14 @@ FULL -> RAW_ONLY -> COMPATIBLE -> PREVIEW_ONLY
 ### RAW 测光
 
 - 只有镜头声明 RAW 能力并提供 `RAW_SENSOR` 尺寸时才启用。
-- ISO 不高于 800 使用 3 帧，高于 800 使用 5 帧。
+- ISO 低于 500 使用 1 张，ISO 500–1199 使用 2 张，ISO 1200 及以上使用 3 张；优先减少捕获等待和手持晃动误差。
 - 同一时刻只允许 1 张全尺寸 RAW 在途；分析并关闭当前 `Image` 后才提交下一帧。
 - `Image` 与 `CaptureResult` 按传感器时间戳配对。成功、失败、超时、相机恢复、切后台或控制器关闭时，所有未配对图像都必须释放。
 - Bayer 排列、黑白电平、曝光、ISO、光圈、白平衡增益和颜色矩阵均读取镜头元数据，不按厂商假设。
 
-### 兼容测光
+### 预览流测光
 
-兼容测光使用 ISP 处理后的数据，不再进行多帧降噪融合：
+预览流测光使用 ISP 处理后的数据，不再进行多帧降噪融合：
 
 1. YUV 输出存在时优先读取 1 个有效的 `YUV_420_888` 帧。
 2. 复用同一块亮度缓冲，避免每个回调都分配整帧数组。
@@ -218,10 +225,10 @@ FULL -> RAW_ONLY -> COMPATIBLE -> PREVIEW_ONLY
 支持 RAW 的镜头使用同一组固定参考输入，依次完成：
 
 ```text
-RAW 测量 -> 关闭 RAW 图像 -> 兼容测量 -> 同时保存两种修正
+RAW 流测量 -> 关闭 RAW 图像 -> 预览流测量 -> 同时保存两种修正
 ```
 
-阶段之间没有固定等待。不支持 RAW 的镜头跳过 RAW，只保存兼容修正。两种修正继续按厂商、型号和 camera ID 分开保存。
+阶段之间没有固定等待。高精度与稳定模式依次完成两个阶段；兼容模式跳过 RAW。不支持 RAW 的镜头也会隐藏并跳过 RAW，只保存预览流修正。两种修正继续按厂商、型号和 camera ID 分开保存。
 
 ### 线程与资源所有权
 
@@ -230,7 +237,7 @@ RAW 测量 -> 关闭 RAW 图像 -> 兼容测量 -> 同时保存两种修正
 - 每个取得的 `Image` 只能有一个明确所有者，并且必须恰好关闭一次。
 - RAW、YUV 和暗角校准的超时任务会在结束或关闭相机时移除，操作 ID 还会拒绝过期回调。
 - 切后台时先清除界面测量状态，再停止相机线程，避免永久停留在“测量中”。
-- Zone 跟踪使用独立的三槽引用计数 Y 平面池；兼容测光使用一块可复用亮度缓冲。
+- Zone 跟踪使用独立的三槽引用计数 Y 平面池；预览流测光使用一块可复用亮度缓冲。
 
 ### 厂商差异与真机验证
 
@@ -244,7 +251,7 @@ Camera2 统一了 API，但没有统一所有 HAL 的稳定性和性能。不同
 
 1. **会话协调器**：拥有设备、会话、输出 surface/reader、打开代次与关闭清理。
 2. **RAW 测光器**：拥有 RAW 请求、单图像捕获窗口、超时、统计累积和最终结果。
-3. **兼容测光器**：拥有 YUV 尝试、亮度缓冲、预览保底、单帧结果和会话级 YUV 健康状态。
+3. **预览流测光器**：拥有 YUV 尝试、亮度缓冲、预览保底、单帧结果和会话级 YUV 健康状态。
 4. **结果配对器**：拥有按时间戳索引的图像/结果，取消时统一关闭未配对图像。
 5. **恢复状态机**：拥有会话档位、失败计数、重试上限、物理/逻辑路线和确定性降级决策。
 

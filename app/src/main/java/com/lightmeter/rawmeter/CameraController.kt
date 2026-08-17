@@ -404,8 +404,8 @@ class CameraController(
             meteringOperationActive = false
             callback.onMeteringError(
                 localized(
-                    "当前摄像头无法使用高精度测光",
-                    "High-accuracy metering is unavailable for this camera",
+                    "当前摄像头无法读取 RAW 流",
+                    "The RAW stream is unavailable for this camera",
                 ),
             )
             return true
@@ -429,8 +429,8 @@ class CameraController(
                 meteringOperationActive = false
                 postMeterError(
                     localized(
-                        "高精度测光尚未就绪",
-                        "High-accuracy metering is not ready",
+                        "RAW 流尚未就绪",
+                        "The RAW stream is not ready",
                     ),
                 )
                 return@post
@@ -740,8 +740,8 @@ class CameraController(
                         scheduleRecovery(
                             CameraSessionProfile.PREVIEW_ONLY,
                             localized(
-                                "已启用更兼容的测光方式",
-                                "Using a more compatible metering method",
+                                "已切换到更稳定的预览方式",
+                                "Using a more stable preview method",
                             ),
                             SESSION_RECOVERY_DELAY_MS,
                         )
@@ -758,8 +758,8 @@ class CameraController(
                     scheduleRecovery(
                         compatible,
                         localized(
-                            "已切换到兼容测光",
-                            "Switched to compatible metering",
+                            "RAW 流不可用，已改用预览流",
+                            "RAW is unavailable; using the preview stream",
                         ),
                         SESSION_RECOVERY_DELAY_MS,
                     )
@@ -957,16 +957,16 @@ class CameraController(
             scheduleRecovery(
                 next,
                 localized(
-                    "当前方式无法启动，正在尝试兼容方式",
-                    "This mode could not start. Trying a compatible mode",
+                    "当前方式无法启动，正在尝试更稳定的方式",
+                    "This method could not start. Trying a more stable one",
                 ),
                 SESSION_RECOVERY_DELAY_MS,
             )
         } else if (!tryLogicalCameraFallback()) {
             finishCameraFailure(
                 localized(
-                    "相机无法正常启动，请尝试兼容模式或重启手机",
-                    "The camera could not start. Try compatible mode or restart the phone",
+                    "相机无法正常启动，请尝试稳定模式或兼容模式，或重启手机",
+                    "The camera could not start. Try Stable or Compatibility mode, or restart the phone",
                 ),
             )
         }
@@ -1099,8 +1099,8 @@ class CameraController(
             "The camera has been disabled by the system",
         )
         CameraFailureKind.DEVICE -> localized(
-            "相机运行异常，正在尝试兼容方式",
-            "The camera stopped unexpectedly. Trying a compatible mode",
+            "相机运行异常，正在尝试更稳定的方式",
+            "The camera stopped unexpectedly. Trying a more stable method",
         )
         CameraFailureKind.SERVICE -> localized(
             "相机暂时无响应，正在重试",
@@ -1130,8 +1130,8 @@ class CameraController(
             "The camera is disabled. Check privacy or device management settings",
         )
         CameraFailureKind.DEVICE -> localized(
-            "相机无法正常启动，请尝试兼容模式或重启手机",
-            "The camera could not start. Try compatible mode or restart the phone",
+            "相机无法正常启动，请尝试稳定模式或兼容模式，或重启手机",
+            "The camera could not start. Try Stable or Compatibility mode, or restart the phone",
         )
         CameraFailureKind.SERVICE -> localized(
             "相机服务无法恢复，请重启手机后重试",
@@ -1266,8 +1266,8 @@ class CameraController(
             scheduleRecovery(
                 sessionProfile ?: CameraSessionProfile.PREVIEW_ONLY,
                 localized(
-                    "正在使用更兼容的预览设置",
-                    "Trying a more compatible preview setting",
+                    "正在使用更稳定的预览设置",
+                    "Trying a more stable preview setting",
                 ),
                 SESSION_RECOVERY_DELAY_MS,
             )
@@ -1282,11 +1282,12 @@ class CameraController(
             MeteringPipelineMode.AUTO -> if (cameraInfo.rawAvailable) {
                 localized("$size · 高精度测光", "$size · High-accuracy metering")
             } else {
-                localized("$size · 快速测光", "$size · Fast metering")
+                localized("$size · 预览流测光", "$size · Preview-stream metering")
             }
             MeteringPipelineMode.ISOLATED ->
+                localized("$size · 稳定模式", "$size · Stable mode")
+            MeteringPipelineMode.FAST ->
                 localized("$size · 兼容模式", "$size · Compatibility mode")
-            MeteringPipelineMode.FAST -> localized("$size · 快速模式", "$size · Fast mode")
         }
     }
 

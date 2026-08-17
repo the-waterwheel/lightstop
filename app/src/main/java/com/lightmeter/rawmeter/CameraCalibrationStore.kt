@@ -19,7 +19,12 @@ data class CameraCalibrationRecord(
         get() = rawMeasuredEv100 ?: compatibleMeasuredEv100
 }
 
-/** Keeps RAW and compatible-preview corrections isolated for every device and camera id. */
+/**
+ * Keeps RAW and preview-stream corrections isolated for every device and camera id.
+ *
+ * The persisted `compatible_*` keys are intentionally retained so existing installations keep
+ * their calibration after the user-facing name changed to "Preview stream".
+ */
 class CameraCalibrationStore(context: Context) {
     private val preferences =
         context.getSharedPreferences("raw_meter_calibration", Context.MODE_PRIVATE)
