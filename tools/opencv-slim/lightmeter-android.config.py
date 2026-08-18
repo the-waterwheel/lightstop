@@ -11,9 +11,31 @@ cmake_common_vars = {
     "ANDROID_MIN_SDK_VERSION": os.environ.get(
         "ANDROID_MIN_SDK_VERSION", ANDROID_NATIVE_API_LEVEL
     ),
-    "ANDROID_GRADLE_PLUGIN_VERSION": "8.2.2",
-    "GRADLE_VERSION": "8.7",
-    "KOTLIN_PLUGIN_VERSION": "1.9.22",
+    "ANDROID_GRADLE_PLUGIN_VERSION": "8.10.0",
+    "GRADLE_VERSION": "8.13",
+    "KOTLIN_PLUGIN_VERSION": "2.1.20",
+    "ANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES": "ON",
+    "CMAKE_SHARED_LINKER_FLAGS": (
+        "-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384"
+    ),
+    # The application ships the Java/native runtime only; OpenCV's C++ test binaries are not
+    # part of the AAR and needlessly multiply clean-build time for every ABI.
+    "BUILD_TESTS": "OFF",
+    "INSTALL_TESTS": "OFF",
+    "WITH_TBB": "OFF",
+    "BUILD_TBB": "OFF",
+    "WITH_IPP": "OFF",
+    "WITH_KLEIDICV": "OFF",
+    "WITH_ITT": "OFF",
+    # Keep imgcodecs' Java ABI and the PNG/JPEG defaults, but omit large optional file formats
+    # that the camera-only application never decodes or encodes.
+    "WITH_OPENJPEG": "OFF",
+    "WITH_TIFF": "OFF",
+    "WITH_WEBP": "OFF",
+    "WITH_OPENEXR": "OFF",
+    "WITH_AVIF": "OFF",
+    "WITH_JASPER": "OFF",
+    "WITH_ADE": "OFF",
 }
 
 # Match app/build.gradle.kts. Keep arm64 first because it is the primary device ABI.

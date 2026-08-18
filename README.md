@@ -229,14 +229,16 @@ release files to the source tree.
 ## Pinned slim OpenCV
 
 The application uses
-`app/libs/opencv-slim-4.12.0-r1.aar`, built from the official OpenCV 4.12.0
+`app/libs/opencv-slim-4.12.0-r2.aar`, built from the official OpenCV 4.12.0
 source instead of resolving a changing Maven dependency. It retains the
 modules needed by lightstop and the official Android Java glue, and includes
-`arm64-v8a`, `armeabi-v7a`, and `x86_64`.
+`arm64-v8a`, `armeabi-v7a`, and `x86_64`. Acceleration and codec backends the
+application never calls (IPP, TBB, KleidiCV, ITT, OpenJPEG, TIFF, WebP,
+OpenEXR, AVIF, Jasper) are disabled in this revision.
 
 ```text
-Size: 63,882,947 bytes
-SHA-256: 0A5C95F697D63C94F87D0B3CBAC8ACB61046D089BCEBCF25BF307A0F796767D0
+Size: 33,514,507 bytes
+SHA-256: 321C84621FE818E35CC7B6401953039BC784E4FE4CFB9D35690B4DBEDF4D57CD
 ```
 
 See [the reproducible OpenCV build guide](tools/opencv-slim/README.md) for the
