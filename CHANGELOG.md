@@ -6,8 +6,8 @@ All notable user-facing changes are recorded here. The project follows
 ## Unreleased
 
 - Rebuilt the pinned OpenCV runtime without the unused IPP, TBB, KleidiCV,
-  ITT, and optional codec backends, shrinking the universal APK by about
-  35 MB with no behavior change.
+  ITT, and optional codec backends, shrinking the universal APK from about
+  72.5 MiB to about 39.8 MiB with no behavior change.
 - Matched YUV buffers to Camera2 exposure metadata by identical sensor timestamps.
 - Added a one-time device/camera-environment change warning; old metering and
   vignetting corrections remain stored but become unavailable until recalibrated.

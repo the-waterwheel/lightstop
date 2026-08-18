@@ -209,10 +209,12 @@ app/build/outputs/apk/release/app-release-unsigned.apk
 app/build/outputs/bundle/release/app-release.aab
 ```
 
-For version 0.2.0, the verified unsigned universal APK is 76,056,239 bytes
-(72.53 MiB), and the release AAB is 32,959,091 bytes (31.43 MiB). Native
-libraries dominate the universal APK; R8 reduces the DEX payload to about
-0.71 MiB.
+For version 0.2.1 with the slimmed r2 OpenCV runtime, the verified unsigned
+universal APK is 41,759,676 bytes (39.82 MiB), and the release AAB is
+18,206,882 bytes (17.36 MiB). Native libraries dominate the universal APK;
+R8 reduces the DEX payload to about 0.71 MiB. The same build with the
+previous r1 OpenCV runtime was 76,056,239 bytes (72.53 MiB) for the universal
+APK and 32,959,091 bytes (31.43 MiB) for the AAB.
 
 The repository deliberately contains no signing key or signing password. The
 APK must be signed before installation or distribution. Android Studio's
@@ -222,9 +224,14 @@ keystore offline and backed up. Never commit `*.jks`, `*.keystore`, signing
 passwords, or `keystore.properties`.
 
 Use an Android App Bundle for an app store so the store can deliver only the
-device's ABI. For GitHub Releases, attach a signed APK, its SHA-256 checksum,
-`LICENSE`, `NOTICE`, and `THIRD_PARTY_NOTICES.md`. Do not commit generated
-release files to the source tree.
+device's ABI. An AAB is a publishing format and cannot be installed directly;
+the store generates per-device APKs from it, so users download only their own
+architecture (about 15 MiB per ABI for this app). For GitHub Releases, attach
+the signed universal APK and its SHA-256 checksum, `LICENSE`, `NOTICE`, and
+`THIRD_PARTY_NOTICES.md`. The universal APK installs on any supported device
+but carries all three ABIs (`arm64-v8a`, `armeabi-v7a`, `x86_64`); per-ABI
+APKs are about a third of that size but must be matched to the device. Do not
+commit generated release files to the source tree.
 
 ## Pinned slim OpenCV
 
