@@ -5,6 +5,16 @@ All notable user-facing changes are recorded here. The project follows
 
 ## Unreleased
 
+- Matched YUV buffers to Camera2 exposure metadata by identical sensor timestamps.
+- Added a one-time device/camera-environment change warning; old metering and
+  vignetting corrections remain stored but become unavailable until recalibrated.
+- Added recoverable camera-permission denial handling and a system-settings route.
+- Made OpenCV initialization fail safely into fixed Zone markers before any native
+  tracker object is created.
+- Added Camera2 session-combination preflight with the existing RAW-first fallback
+  chain, while continuing to prefer every camera that advertises a usable RAW stream.
+- Updated the app build to API 36.1 / target 36 while retaining min API 28, and
+  updated native build inputs for 16 KB page-size compatibility.
 - Renamed the user modes to **High accuracy (recommended)**, **Stable**, and
   **Compatibility mode**, without changing persisted enum values or old preference
   migration.

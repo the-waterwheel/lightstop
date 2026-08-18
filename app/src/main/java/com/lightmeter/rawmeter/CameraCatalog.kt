@@ -325,16 +325,16 @@ class CameraCatalog(private val cameraManager: CameraManager) {
                 it.rawAvailable
         } ?: cameras.firstOrNull {
             it.lensFacing == CameraCharacteristics.LENS_FACING_BACK &&
-                it.lensRole == CameraLensRole.AUTOMATIC
-        } ?: cameras.firstOrNull {
-            it.lensFacing == CameraCharacteristics.LENS_FACING_BACK &&
                 it.lensRole == CameraLensRole.MAIN &&
                 it.rawAvailable
         } ?: cameras.firstOrNull {
+            it.lensFacing == CameraCharacteristics.LENS_FACING_BACK && it.rawAvailable
+        } ?: cameras.firstOrNull {
+            it.lensFacing == CameraCharacteristics.LENS_FACING_BACK &&
+                it.lensRole == CameraLensRole.AUTOMATIC
+        } ?: cameras.firstOrNull {
             it.lensFacing == CameraCharacteristics.LENS_FACING_BACK &&
                 it.lensRole == CameraLensRole.MAIN
-        } ?: cameras.firstOrNull {
-            it.lensFacing == CameraCharacteristics.LENS_FACING_BACK && it.rawAvailable
         } ?: cameras.firstOrNull {
             it.lensFacing == CameraCharacteristics.LENS_FACING_BACK
         } ?: cameras.firstOrNull()

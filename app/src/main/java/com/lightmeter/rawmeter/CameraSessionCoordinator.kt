@@ -3,12 +3,14 @@ package com.lightmeter.rawmeter
 import android.annotation.SuppressLint
 import android.graphics.ImageFormat
 import android.graphics.SurfaceTexture
+import android.hardware.camera2.CameraAccessException
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.SessionConfiguration
 import android.media.ImageReader
+import android.os.Build
 import android.os.Handler
 import android.util.Size
 import android.view.Surface
@@ -230,14 +232,36 @@ internal class CameraSessionCoordinator(
                 }
             }
             val executor = Executor(handler::post)
-            camera.createCaptureSession(
-                SessionConfiguration(
-                    SessionConfiguration.SESSION_REGULAR,
-                    outputConfigurations,
-                    executor,
-                    stateCallback,
-                ),
+            val configuration = SessionConfiguration(
+                SessionConfiguration.SESSION_REGULAR,
+                outputConfigurations,
+                executor,
+                stateCallback,
             )
+            val supported = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                try {
+                    camera.isSessionConfigurationSupported(configuration)
+                } catch (_: UnsupportedOperationException) {
+                    // Some vendor HAL implementations expose the method but cannot answer the
+                    // query. Let actual session creation remain the source of truth.
+                    true
+                } catch (_: CameraAccessException) {
+                    // A transient query failure must not be treated as a definitive unsupported
+                    // combination. The real create call/callback provides the actionable result.
+                    true
+                }
+            } else {
+                // Android 9 has SessionConfiguration but not the preflight method.
+                true
+            }
+            if (!supported) {
+                listener.onSessionConfigurationFailed(
+                    generation,
+                    IllegalArgumentException("Camera HAL rejected the requested stream profile"),
+                )
+                return
+            }
+            camera.createCaptureSession(configuration)
         } catch (error: Exception) {
             if (isActive(generation)) {
                 listener.onSessionConfigurationFailed(generation, error)

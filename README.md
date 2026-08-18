@@ -27,7 +27,8 @@ code.
 
 - Android 9 / API 28 or newer.
 - Camera2 logical and physical camera discovery, selection, labels, and hiding;
-  multi-camera phones default to the safer automatic logical-camera route.
+  default selection prefers back-camera routes that advertise usable RAW, with
+  automatic/main non-RAW routes retained as fallbacks.
 - A common advertised 4:3 preview is preferred for logical and physical routes,
   avoiding viewport aspect changes when Automatic camera and Main camera use the same lens.
 - RAW-first metering with a capability-driven ISP-preview fallback.
@@ -173,11 +174,11 @@ compatibility identifiers; the user-facing product name is lightstop / 光档.
 ## Build requirements
 
 - JDK 17
-- Android SDK 34
-- Android Gradle Plugin 8.2.2
-- Kotlin 1.9.22
-- Gradle 8.7 (checked-in wrapper)
-- Android NDK 25.1.8937393
+- Android SDK 36.1 (target API 36; min API 28)
+- Android Gradle Plugin 8.13.2
+- Kotlin 2.1.20
+- Gradle 8.13 (checked-in wrapper)
+- Android NDK 27.0.12077973
 - CMake 3.22.1
 - OpenCV 4.12.0
 

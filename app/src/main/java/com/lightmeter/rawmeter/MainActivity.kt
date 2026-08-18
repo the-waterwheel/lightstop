@@ -1,11 +1,15 @@
 package com.lightmeter.rawmeter
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -14,14 +18,18 @@ import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
+import android.window.OnBackInvokedCallback
+import android.window.OnBackInvokedDispatcher
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.Toast
+import java.io.File
 
 class MainActivity : Activity(), CameraControllerCallback {
     private lateinit var state: MeterState
     private lateinit var meterLayout: MeterLayout
     private lateinit var cameraController: CameraController
+    private lateinit var calibrationEnvironmentStore: CalibrationEnvironmentStore
     private val mainHandler = Handler(Looper.getMainLooper())
     private var rawDialogVisible = false
     private var compatibilityModeDialogVisible = false
@@ -36,22 +44,27 @@ class MainActivity : Activity(), CameraControllerCallback {
     private var zoneMeasurementPending = false
     private var activityResumed = false
     private var appliedPipelineMode: MeteringPipelineMode? = null
+    private var cameraPermissionDialogVisible = false
+    private var cameraPermissionRequestInFlight = false
+    private var pendingCalibrationEnvironmentChange: CalibrationEnvironmentChange? = null
+    private var backInvokedCallback: OnBackInvokedCallback? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         state = MeterState(this)
-        requestedOrientation = if (state.landscape) {
-            ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-        } else {
-            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-        }
+        calibrationEnvironmentStore = CalibrationEnvironmentStore(this)
+        applyRequestedOrientationFromState()
 
         meterLayout = MeterLayout(this, state)
         cameraController = CameraController(this, this)
         appliedPipelineMode = state.meteringPipelineMode
         cameraController.setMeteringPipelineMode(state.meteringPipelineMode)
         val selectedCamera = state.updateCameraCatalog(cameraController.availableCameras())
+        pendingCalibrationEnvironmentChange = calibrationEnvironmentStore.evaluate(
+            cameras = state.availableCameras,
+            hasCalibrationArtifacts = state.hasCalibrationArtifacts(),
+        )
         selectedCamera?.let(cameraController::selectCamera)
         cameraController.attach(meterLayout.textureView)
         meterLayout.listener = object : MeterLayout.Listener {
@@ -65,12 +78,22 @@ class MainActivity : Activity(), CameraControllerCallback {
             }
 
             override fun onOrientationToggle() {
-                state.landscape = !state.landscape
-                requestedOrientation = if (state.landscape) {
-                    ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-                } else {
-                    ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                if (!canControlWindowOrientation()) {
+                    state.landscape = resources.configuration.orientation ==
+                        Configuration.ORIENTATION_LANDSCAPE
+                    Toast.makeText(
+                        this@MainActivity,
+                        localized(
+                            "大屏设备的方向由系统窗口控制",
+                            "Window orientation is controlled by the system on large screens",
+                        ),
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                    meterLayout.refresh(frameChanged = true)
+                    return
                 }
+                state.landscape = !state.landscape
+                applyRequestedOrientationFromState()
             }
 
             override fun onPreviewGeometryChanged(width: Int, height: Int) {
@@ -219,6 +242,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             }
         }
         setContentView(meterLayout)
+        registerPredictiveBackCallback()
         window.decorView.post { hideSystemBars() }
         ensureCameraPermission()
     }
@@ -231,6 +255,9 @@ class MainActivity : Activity(), CameraControllerCallback {
         cameraController.setTrackingFramesEnabled(meterLayout.isZoneMode)
         if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
             cameraController.start()
+            maybeShowCalibrationEnvironmentChange()
+        } else {
+            ensureCameraPermission()
         }
     }
 
@@ -264,21 +291,46 @@ class MainActivity : Activity(), CameraControllerCallback {
         super.onPause()
     }
 
-    @Suppress("DEPRECATION")
+    @SuppressLint("GestureBackNavigation")
+    @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
     override fun onBackPressed() {
-        if (meterLayout.closeInformationFromBack()) return
-        if (meterLayout.closeCameraManagement()) return
-        if (meterLayout.closeVignettingCalibration()) return
-        if (meterLayout.closeCalibration()) return
-        if (meterLayout.closeSettings()) return
-        if (meterLayout.closeZoneMode()) return
+        if (handleBackNavigation()) return
         super.onBackPressed()
+    }
+
+    private fun handleBackNavigation(): Boolean {
+        if (meterLayout.closeInformationFromBack()) return true
+        if (meterLayout.closeCameraManagement()) return true
+        if (meterLayout.closeVignettingCalibration()) return true
+        if (meterLayout.closeCalibration()) return true
+        if (meterLayout.closeSettings()) return true
+        if (meterLayout.closeZoneMode()) return true
+        return false
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         state.landscape = newConfig.orientation == Configuration.ORIENTATION_LANDSCAPE
         meterLayout.requestLayout()
+    }
+
+    /** Android 16 ignores fixed orientation on sw600dp+ displays for target 36 apps. */
+    private fun canControlWindowOrientation(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.BAKLAVA ||
+            resources.configuration.smallestScreenWidthDp < 600
+
+    private fun applyRequestedOrientationFromState() {
+        if (!canControlWindowOrientation()) {
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            state.landscape = resources.configuration.orientation ==
+                Configuration.ORIENTATION_LANDSCAPE
+            return
+        }
+        requestedOrientation = if (state.landscape) {
+            ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        } else {
+            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        }
     }
 
     override fun onRequestPermissionsResult(
@@ -288,8 +340,10 @@ class MainActivity : Activity(), CameraControllerCallback {
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode != CAMERA_PERMISSION_REQUEST) return
+        cameraPermissionRequestInFlight = false
         if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
-            cameraController.start()
+            if (activityResumed) cameraController.start()
+            maybeShowCalibrationEnvironmentChange()
         } else {
             val message = localized(
                 "需要相机权限才能进行测光。",
@@ -298,6 +352,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             state.cameraInfo = state.cameraInfo.copy(status = message)
             meterLayout.refresh()
             Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+            showCameraPermissionRecoveryDialog()
         }
     }
 
@@ -595,9 +650,115 @@ class MainActivity : Activity(), CameraControllerCallback {
     private fun shouldCalibrateRawStream(): Boolean = shouldShowRawCalibration()
 
     private fun ensureCameraPermission() {
-        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(arrayOf(Manifest.permission.CAMERA), CAMERA_PERMISSION_REQUEST)
+        if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            maybeShowCalibrationEnvironmentChange()
+            return
         }
+        if (cameraPermissionRequestInFlight || cameraPermissionDialogVisible) return
+        if (cameraPermissionRequestMarker().isFile) {
+            showCameraPermissionRecoveryDialog()
+            return
+        }
+        runCatching { cameraPermissionRequestMarker().createNewFile() }
+        requestCameraPermission()
+    }
+
+    private fun cameraPermissionRequestMarker(): File =
+        File(noBackupFilesDir, CAMERA_PERMISSION_REQUEST_MARKER)
+
+    private fun requestCameraPermission() {
+        cameraPermissionRequestInFlight = true
+        requestPermissions(arrayOf(Manifest.permission.CAMERA), CAMERA_PERMISSION_REQUEST)
+    }
+
+    private fun showCameraPermissionRecoveryDialog() {
+        if (!activityResumed || cameraPermissionDialogVisible ||
+            cameraPermissionRequestInFlight || isFinishing
+        ) return
+        cameraPermissionDialogVisible = true
+        val canRequestAgain = shouldShowRequestPermissionRationale(Manifest.permission.CAMERA)
+        AlertDialog.Builder(this)
+            .setTitle(localized("需要相机权限", "Camera permission required"))
+            .setMessage(
+                localized(
+                    if (canRequestAgain) {
+                        "测光需要访问相机画面和曝光参数。应用不会上传相机画面。"
+                    } else {
+                        "相机权限已被关闭。请在系统设置中允许相机权限后再进行测光。"
+                    },
+                    if (canRequestAgain) {
+                        "Metering needs access to camera frames and exposure metadata. " +
+                            "Camera frames are not uploaded."
+                    } else {
+                        "Camera permission is disabled. Allow it in system settings before " +
+                            "using the meter."
+                    },
+                ),
+            )
+            .setNegativeButton(localized("稍后处理", "Later"), null)
+            .setPositiveButton(
+                localized(
+                    if (canRequestAgain) "重新授权" else "打开设置",
+                    if (canRequestAgain) "Try again" else "Open settings",
+                ),
+            ) { _, _ ->
+                if (canRequestAgain) {
+                    requestCameraPermission()
+                } else {
+                    startActivity(
+                        Intent(
+                            android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                            Uri.parse("package:$packageName"),
+                        ),
+                    )
+                }
+            }
+            .setOnDismissListener { cameraPermissionDialogVisible = false }
+            .show()
+    }
+
+    private fun maybeShowCalibrationEnvironmentChange() {
+        val change = pendingCalibrationEnvironmentChange ?: return
+        if (!activityResumed || isFinishing ||
+            checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED
+        ) return
+        pendingCalibrationEnvironmentChange = null
+        calibrationEnvironmentStore.markPrompted(change)
+        AlertDialog.Builder(this)
+            .setTitle(localized("建议重新校准", "Recalibration recommended"))
+            .setMessage(
+                localized(
+                    "检测到设备或者相机环境变化，建议重新校准。",
+                    "A device or camera-environment change was detected. Recalibration is " +
+                        "recommended.",
+                ),
+            )
+            .setNegativeButton(localized("稍后处理", "Later"), null)
+            .setPositiveButton(localized("立即校准", "Calibrate now")) { _, _ ->
+                // Open the Settings calibration choices; do not start either workflow directly.
+                meterLayout.showCalibrationSettings()
+            }
+            .show()
+    }
+
+    private fun registerPredictiveBackCallback() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        val callback = OnBackInvokedCallback {
+            if (!handleBackNavigation()) finishAfterTransition()
+        }
+        onBackInvokedDispatcher.registerOnBackInvokedCallback(
+            OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+            callback,
+        )
+        backInvokedCallback = callback
+    }
+
+    override fun onDestroy() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            backInvokedCallback?.let(onBackInvokedDispatcher::unregisterOnBackInvokedCallback)
+        }
+        backInvokedCallback = null
+        super.onDestroy()
     }
 
     private fun showRawUnavailableDialog(force: Boolean) {
@@ -818,6 +979,7 @@ class MainActivity : Activity(), CameraControllerCallback {
         )
     }
 
+    @Suppress("DEPRECATION")
     private fun hideSystemBars() {
         if (android.os.Build.VERSION.SDK_INT >= 30) {
             val decor = window.decorView
@@ -857,6 +1019,7 @@ class MainActivity : Activity(), CameraControllerCallback {
         private const val PREFERENCES_NAME = "raw_light_meter_state"
         private const val SUPPRESS_COMPATIBILITY_MODE_WARNING =
             "suppress_compatibility_mode_warning"
+        private const val CAMERA_PERMISSION_REQUEST_MARKER = "camera-permission-requested"
         private val TRANSIENT_TOKEN = Any()
     }
 }

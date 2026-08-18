@@ -362,9 +362,7 @@ class MeterLayout @JvmOverloads constructor(
             it != layoutLandscape
         } == true
         lastLayoutLandscape = layoutLandscape
-        if (isZoneMode && zoneOrientationRestartPending && displayOrientationChanged &&
-            previousLayoutLandscape != null
-        ) {
+        if (isZoneMode && zoneOrientationRestartPending && displayOrientationChanged) {
             // The camera did not move; only Android's app coordinate axes rotated. Counter that
             // one-time display rotation before laying out and restarting the tracker.
             zoneView.remapMarkersForLayoutOrientation(
@@ -484,6 +482,12 @@ class MeterLayout @JvmOverloads constructor(
             .setDuration(320L)
             .setInterpolator(DecelerateInterpolator())
             .start()
+    }
+
+    /** Opens Settings at the calibration choices without starting either calibration flow. */
+    fun showCalibrationSettings() {
+        settingsView.selectSection(SettingsSectionKey.CALIBRATION)
+        showSettings()
     }
 
     fun closeSettings(): Boolean {

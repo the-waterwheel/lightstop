@@ -62,6 +62,7 @@ internal class CompatibleLightMeter(
     private var measurementId = 0
     @Volatile
     private var activeYuvMeasurement: YuvMeasurement? = null
+    private val yuvFramePairer = TimestampedResultPairer<Image, CaptureResult>(Image::close)
     private var lumaBuffer = ByteArray(0)
     private var yuvTimeout: Runnable? = null
     private var downgradeYuvSessionAfterSuccess = false
@@ -100,21 +101,28 @@ internal class CompatibleLightMeter(
         } catch (_: IllegalStateException) {
             null
         } ?: return true
-        try {
-            analyzeYuv(image, measurement)
-        } catch (error: Throwable) {
-            Log.e(TAG, "Unable to analyze compatible camera frame", error)
-            fallbackToProcessedPreview(measurement)
-        } finally {
-            image.close()
+        yuvFramePairer.offerImage(image.timestamp, image)?.let { pair ->
+            processYuvFramePair(pair, measurement)
         }
         return true
+    }
+
+    /** Pairs preview metadata with the YUV buffer that has the identical sensor timestamp. */
+    fun onCaptureResult(result: CaptureResult, fallbackSensorTimestamp: Long? = null) {
+        val measurement = activeYuvMeasurement ?: return
+        val timestamp = result.get(CaptureResult.SENSOR_TIMESTAMP)
+            ?: fallbackSensorTimestamp
+            ?: return
+        yuvFramePairer.offerResult(timestamp, result)?.let { pair ->
+            processYuvFramePair(pair, measurement)
+        }
     }
 
     /** Invalidates callbacks and releases only state owned by this component. */
     fun cancel(handler: Handler?, resetYuvAvailability: Boolean = true) {
         measurementId += 1
         activeYuvMeasurement = null
+        yuvFramePairer.clear()
         isMeasuring = false
         cancelYuvTimeout(handler)
         if (resetYuvAvailability) {
@@ -129,11 +137,12 @@ internal class CompatibleLightMeter(
         context: CompatibleMeteringContext,
     ) {
         val handler = context.cameraHandler
-        if (handler == null || !context.cameraReady() || context.latestResult() == null) {
+        if (handler == null || !context.cameraReady()) {
             mainHandler.post { startProcessedPreview(id, meteringMode, null, context) }
             return
         }
         val measurement = YuvMeasurement(id, meteringMode, context)
+        yuvFramePairer.clear()
         activeYuvMeasurement = measurement
         Log.i(TAG, "YUV compatible metering started: mode=$meteringMode")
         mainHandler.post {
@@ -147,14 +156,31 @@ internal class CompatibleLightMeter(
         scheduleYuvTimeout(measurement, handler)
     }
 
-    private fun analyzeYuv(image: Image, measurement: YuvMeasurement) {
+    private fun processYuvFramePair(
+        pair: TimestampedResultPair<Image, CaptureResult>,
+        measurement: YuvMeasurement,
+    ) {
+        try {
+            analyzeYuv(pair.image, pair.result, measurement)
+        } catch (error: Throwable) {
+            Log.e(TAG, "Unable to analyze timestamp-paired compatible camera frame", error)
+            fallbackToProcessedPreview(measurement)
+        } finally {
+            pair.image.close()
+        }
+    }
+
+    private fun analyzeYuv(
+        image: Image,
+        result: CaptureResult,
+        measurement: YuvMeasurement,
+    ) {
         if (activeYuvMeasurement?.id != measurement.id || !isCurrent(measurement.id)) return
         measurement.attemptedFrames += 1
         val requiredBytes = image.width * image.height
         if (lumaBuffer.size != requiredBytes) lumaBuffer = ByteArray(requiredBytes)
-        val result = measurement.context.latestResult()
         val characteristics = measurement.context.characteristics()
-        val stat = if (result != null && characteristics != null) {
+        val stat = if (characteristics != null) {
             MeteringAnalysis.analyzeYuvPreview(
                 image,
                 lumaBuffer,
@@ -173,6 +199,7 @@ internal class CompatibleLightMeter(
             if (reading != null) {
                 cancelYuvTimeout(measurement.context.cameraHandler)
                 activeYuvMeasurement = null
+                yuvFramePairer.clear()
                 finishWithReading(measurement.id, reading)
                 return
             }
@@ -188,6 +215,7 @@ internal class CompatibleLightMeter(
         if (activeYuvMeasurement?.id != measurement.id || !isCurrent(measurement.id)) return
         cancelYuvTimeout(measurement.context.cameraHandler)
         activeYuvMeasurement = null
+        yuvFramePairer.clear()
         yuvAvailable = false
         downgradeYuvSessionAfterSuccess = true
         Log.w(TAG, "YUV compatible metering unavailable; falling back to displayed preview")
@@ -312,6 +340,7 @@ internal class CompatibleLightMeter(
         if (!isCurrent(id)) return
         isMeasuring = false
         activeYuvMeasurement = null
+        yuvFramePairer.clear()
         Log.e(TAG, "Compatible metering failed: $message")
         mainHandler.post {
             if (id == measurementId) listener.onCompatibleMeteringError(message)

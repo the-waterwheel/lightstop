@@ -44,7 +44,8 @@ data class VignettingCalibrationInfo(
 )
 
 internal class VignettingCalibrationStore(context: Context) {
-    private val directory = File(context.filesDir, DIRECTORY_NAME)
+    private val appContext = context.applicationContext
+    private val directory = File(appContext.filesDir, DIRECTORY_NAME)
     private val cache = mutableMapOf<String, VignettingCalibrationMap>()
     private val historyInfoCache = mutableMapOf<String, List<VignettingCalibrationInfo>>()
 
@@ -92,7 +93,10 @@ internal class VignettingCalibrationStore(context: Context) {
     @Synchronized
     fun load(cameraId: String): VignettingCalibrationMap? {
         if (cameraId.isBlank()) return null
-        cache[cameraId]?.let { return it }
+        cache[cameraId]?.let { cached ->
+            if (isValid(cached.createdAtEpochMs)) return cached
+            cache.remove(cameraId)
+        }
         val file = fileFor(cameraId)
         val calibration = readMap(file)
         calibration?.let { cache[cameraId] = it }
@@ -112,6 +116,7 @@ internal class VignettingCalibrationStore(context: Context) {
                 val right = input.readFloat()
                 val bottom = input.readFloat()
                 val createdAt = input.readLong()
+                if (!isValid(createdAt)) return null
                 val gains = FloatArray(width * height) { input.readFloat() }
                 if (gains.any { !it.isFinite() || it !in MIN_STORED_GAIN..MAX_STORED_GAIN } ||
                     left !in 0f..1f || top !in 0f..1f || right !in 0f..1f ||
@@ -135,9 +140,16 @@ internal class VignettingCalibrationStore(context: Context) {
 
     @Synchronized
     fun history(cameraId: String): List<VignettingCalibrationInfo> {
-        historyInfoCache[cameraId]?.let { return it }
+        historyInfoCache[cameraId]?.let { cached ->
+            val valid = cached.filter { isValid(it.createdAtEpochMs) }
+            if (valid.size == cached.size) return valid
+            historyInfoCache[cameraId] = valid
+        }
         return historyMaps(cameraId).map(::toInfo).also { historyInfoCache[cameraId] = it }
     }
+
+    fun hasCalibrationArtifacts(): Boolean =
+        directory.listFiles()?.any { it.isFile && it.name.startsWith("vignette_") } == true
 
     @Synchronized
     fun restore(cameraId: String, createdAtEpochMs: Long): VignettingCalibrationInfo? {
@@ -203,6 +215,9 @@ internal class VignettingCalibrationStore(context: Context) {
         if (stored.isNotEmpty()) return stored.sortedByDescending { it.createdAtEpochMs }
         return listOfNotNull(load(cameraId))
     }
+
+    private fun isValid(timestamp: Long): Boolean =
+        CalibrationEnvironmentStore.isCalibrationTimestampValid(appContext, timestamp)
 
     fun gainAt(
         cameraId: String,

@@ -1300,6 +1300,12 @@ class CameraController(
             val effectiveResult = effectiveCaptureResult(result)
             latestResult = effectiveResult
             updateDynamicLensInfo(effectiveResult)
+            // A few physical-camera HALs omit SENSOR_TIMESTAMP from the physical result even
+            // though the logical TotalCaptureResult carries the timestamp for the same frame.
+            compatibleMeter.onCaptureResult(
+                effectiveResult,
+                result.get(CaptureResult.SENSOR_TIMESTAMP),
+            )
         }
     }
 

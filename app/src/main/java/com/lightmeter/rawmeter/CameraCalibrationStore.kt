@@ -26,13 +26,24 @@ data class CameraCalibrationRecord(
  * their calibration after the user-facing name changed to "Preview stream".
  */
 class CameraCalibrationStore(context: Context) {
+    private val appContext = context.applicationContext
     private val preferences =
-        context.getSharedPreferences("raw_meter_calibration", Context.MODE_PRIVATE)
+        appContext.getSharedPreferences("raw_meter_calibration", Context.MODE_PRIVATE)
 
     @Synchronized
     fun userCorrection(cameraId: String, source: MeteringSource = MeteringSource.RAW): Double {
+        if (!CalibrationEnvironmentStore.isCalibrationTimestampValid(
+                appContext,
+                preferences.getLong(updatedAtKey(cameraId), 0L),
+            )
+        ) return 0.0
         val key = userKey(cameraId, source)
         return preferences.getFloat(key, 0f).toDouble()
+    }
+
+    fun hasCalibrationArtifacts(): Boolean = preferences.all.keys.any { key ->
+        key.startsWith("user_") || key.startsWith("compatible_user_") ||
+            key.startsWith("history_")
     }
 
     @Synchronized
@@ -51,13 +62,17 @@ class CameraCalibrationStore(context: Context) {
         val rawKey = userKey(cameraId, MeteringSource.RAW)
         val compatibleKey = userKey(cameraId, MeteringSource.ISP_PREVIEW)
         if (!preferences.contains(rawKey) && !preferences.contains(compatibleKey)) return null
+        val updatedAt = preferences.getLong(updatedAtKey(cameraId), 0L)
+        if (!CalibrationEnvironmentStore.isCalibrationTimestampValid(appContext, updatedAt)) {
+            return null
+        }
         return CameraCalibrationRecord(
             rawCorrectionEv = preferences.optionalFloat(rawKey),
             compatibleCorrectionEv = preferences.optionalFloat(compatibleKey),
             referenceEv100 = preferences.optionalFloat(referenceKey(cameraId)),
             rawMeasuredEv100 = preferences.optionalFloat(rawMeasuredKey(cameraId)),
             compatibleMeasuredEv100 = preferences.optionalFloat(compatibleMeasuredKey(cameraId)),
-            updatedAtEpochMs = preferences.getLong(updatedAtKey(cameraId), 0L),
+            updatedAtEpochMs = updatedAt,
             calibrationCount = preferences.getInt(countKey(cameraId), 1).coerceAtLeast(1),
         )
     }
@@ -177,6 +192,10 @@ class CameraCalibrationStore(context: Context) {
         if (!preferences.contains(rawCorrection) && !preferences.contains(compatibleCorrection)) {
             return null
         }
+        val updatedAt = preferences.getLong(historyKey(cameraId, index, "updated"), 0L)
+        if (!CalibrationEnvironmentStore.isCalibrationTimestampValid(appContext, updatedAt)) {
+            return null
+        }
         return CameraCalibrationRecord(
             rawCorrectionEv = preferences.optionalFloat(rawCorrection),
             compatibleCorrectionEv = preferences.optionalFloat(compatibleCorrection),
@@ -185,7 +204,7 @@ class CameraCalibrationStore(context: Context) {
             compatibleMeasuredEv100 = preferences.optionalFloat(
                 historyKey(cameraId, index, "compatible_measured"),
             ),
-            updatedAtEpochMs = preferences.getLong(historyKey(cameraId, index, "updated"), 0L),
+            updatedAtEpochMs = updatedAt,
             calibrationCount = preferences.getInt(historyKey(cameraId, index, "count"), index + 1)
                 .coerceAtLeast(1),
         )

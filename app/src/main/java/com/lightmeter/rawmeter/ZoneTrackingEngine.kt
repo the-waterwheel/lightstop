@@ -13,7 +13,6 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
-import org.opencv.android.OpenCVLoader
 import org.opencv.android.Utils
 import org.opencv.calib3d.Calib3d
 import org.opencv.core.Core
@@ -121,15 +120,7 @@ class OpenCvZoneMarkerTracker(
     private val externalFramesSeen = AtomicBoolean(false)
     private val lock = Any()
     private val tracks = linkedMapOf<Int, Track>()
-    private val openCvReady = try {
-        OpenCVLoader.initLocal().also { ready ->
-            Log.i(TAG, "OpenCV ${OpenCVLoader.OPENCV_VERSION} initialized=$ready")
-        }
-    } catch (error: Throwable) {
-        Log.e(TAG, "OpenCV initialization failed", error)
-        false
-    }
-    // Native feature objects must be constructed only after OpenCVLoader has loaded the library.
+    // The factory guarantees that the native library is loaded before this constructor runs.
     private val reentryOrb = ORB.create(REENTRY_FEATURE_COUNT)
     private val reentryMatcher = DescriptorMatcher.create(DescriptorMatcher.BRUTEFORCE_HAMMING)
     private val framePreprocessor = ZoneOpenCvFramePreprocessor(tuning.trackingLongEdge)
@@ -350,7 +341,7 @@ class OpenCvZoneMarkerTracker(
     }
 
     override fun tryReserveFrame(): Boolean {
-        if (!running || !openCvReady || externalFramesDisabled) return false
+        if (!running || externalFramesDisabled) return false
         if (!processing.compareAndSet(false, true)) return false
         externalFrameReserved.set(true)
         return true
@@ -367,7 +358,7 @@ class OpenCvZoneMarkerTracker(
             frame.close()
             return
         }
-        if (!running || !openCvReady || frame.width <= 0 || frame.height <= 0 ||
+        if (!running || frame.width <= 0 || frame.height <= 0 ||
             frame.luma.size < frame.width * frame.height
         ) {
             frame.close()
@@ -526,7 +517,7 @@ class OpenCvZoneMarkerTracker(
 
     private fun captureFrame() {
         if (SystemClock.elapsedRealtime() - lastExternalFrameAtMs < EXTERNAL_FRAME_TIMEOUT_MS) return
-        if (!running || !openCvReady || processing.getAndSet(true)) return
+        if (!running || processing.getAndSet(true)) return
         val viewWidth = textureView.width
         val viewHeight = textureView.height
         if (!textureView.isAvailable || viewWidth <= 0 || viewHeight <= 0) {

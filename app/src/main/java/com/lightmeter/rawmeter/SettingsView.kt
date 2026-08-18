@@ -60,6 +60,14 @@ class SettingsView(
     private var scrollOffset = 0f
     private var maxScrollOffset = 0f
 
+    fun selectSection(key: SettingsSectionKey) {
+        val index = SettingsCatalog.sections.indexOfFirst { it.key == key }
+        if (index < 0) return
+        selectedSectionIndex = index
+        scrollOffset = 0f
+        invalidate()
+    }
+
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val background = if (state.isDarkMode) Color.BLACK else Color.WHITE

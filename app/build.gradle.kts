@@ -5,13 +5,17 @@ plugins {
 
 android {
     namespace = "com.lightmeter.rawmeter"
-    compileSdk = 34
-    ndkVersion = "25.1.8937393"
+    compileSdk {
+        version = release(36) {
+            minorApiLevel = 1
+        }
+    }
+    ndkVersion = "27.0.12077973"
 
     defaultConfig {
         applicationId = "com.lightmeter.rawmeter"
         minSdk = 28
-        targetSdk = 34
+        targetSdk = 36
         versionCode = 5
         versionName = "0.2.1"
 

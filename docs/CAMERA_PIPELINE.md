@@ -35,13 +35,21 @@ mode's isolation boundary. The complete high-accuracy chain is:
 FULL -> RAW_ONLY -> COMPATIBLE -> PREVIEW_ONLY
 ```
 
+Before creating a session, Android 10 / API 29+ is asked whether the complete
+output configuration is supported. A definitive rejection enters this same
+downgrade chain immediately. Android 9, and HALs that cannot implement the
+query, attempt real session creation, which remains the final compatibility
+test.
+
 Runtime camera errors are classified before retry or downgrade. A physical
 camera route can finally fall back to its logical camera. Permission denial,
 camera privacy policy, another application holding the camera, or a broken
 vendor preview implementation can still prevent every profile from opening.
 
-On logical multi-camera devices, the catalog exposes the logical route as the
-default automatic camera and gives every fixed physical lens a separate ID.
+On logical multi-camera devices, the catalog exposes the logical route as an
+automatic camera and gives every fixed physical lens a separate ID. Default
+selection ranks back cameras with a usable advertised RAW stream first
+(automatic, then main, then any RAW lens); non-RAW automatic/main routes follow.
 Preview selection prefers an advertised 4:3 stream for both routes, even when
 the logical active-array metadata is 16:9, so an automatic route and its fixed
 main-lens route keep the same undistorted viewport. Cameras without 4:3 output
@@ -83,12 +91,14 @@ Preview-stream metering consumes ISP-processed data and therefore does not perfo
 multi-frame noise-reduction fusion.
 
 1. Prefer one valid `YUV_420_888` frame when the YUV output is active.
-2. Reuse one luminance buffer instead of allocating a frame-sized array for
+2. Pair the YUV `Image.timestamp` with the `CaptureResult.SENSOR_TIMESTAMP` of
+   the same frame; never apply exposure metadata from an unrelated latest frame.
+3. Reuse one luminance buffer instead of allocating a frame-sized array for
    every callback.
-3. Try at most three YUV frames and never wait longer than 250 ms.
-4. If YUV is missing or invalid, immediately analyze one 96 x 96 sample of the
+4. Try at most three YUV frames and never wait longer than 250 ms.
+5. If YUV is missing or invalid, immediately analyze one 96 x 96 sample of the
    displayed preview.
-5. Remember the YUV failure for the current camera session. In the internal
+6. Remember the YUV failure for the current camera session. In the internal
    YUV profile, reopen as `PREVIEW_ONLY` after delivering the reading so later
    measurements do not repeatedly pay the timeout or keep the unused stream.
 
@@ -108,6 +118,13 @@ There is no fixed delay between the stages. High accuracy and Stable run both
 stages; Compatibility mode skips RAW. A camera without RAW support also hides and
 skips the RAW stage. RAW and preview corrections remain separate per
 manufacturer, model, and camera ID.
+
+An installation token excluded from Android backup is compared with the backed
+camera-environment record. After a device restore or a changed camera catalog,
+all older metering and vignetting timestamps fall before a new validity cutoff.
+The data is retained but cannot be applied or restored. One bilingual prompt
+offers Later or opens Settings at the Calibration section; it never starts a
+calibration capture directly.
 
 ## Thread and resource ownership
 
@@ -192,7 +209,9 @@ lifecycle, calibration stores, stream-profile selection, and user callbacks.
 FULL -> RAW_ONLY -> COMPATIBLE -> PREVIEW_ONLY
 ```
 
-运行错误会先分类，再决定重试或降级；物理镜头最终还能退回逻辑相机。多摄设备默认列出并选择自动逻辑相机，固定物理镜头仍可手动选择；单色和红外物理传感器不会加入普通镜头列表。逻辑与物理路由优先使用两者都常见的 4:3 预览，即使逻辑相机元数据声明为 16:9，也不会在自动主摄与固定主摄之间切换时改变比例或看起来被拉伸；没有 4:3 输出时才退回最接近传感器元数据的比例。权限被拒、系统隐私策略、其他应用长期占用相机，或厂商连基础预览都实现异常时，仍可能无法打开任何档位。
+Android 10（API 29）及以上会先询问 Camera HAL 是否支持完整输出组合；明确拒绝时立即进入同一降级链。Android 9 以及无法实现该查询的定制 HAL 会直接尝试实际创建会话，以真实结果作为最终判据。
+
+运行错误会先分类，再决定重试或降级；物理镜头最终还能退回逻辑相机。多摄设备会列出自动逻辑相机和各固定物理镜头；默认选择先按“自动 RAW、主摄 RAW、其他 RAW”排序，再考虑不支持 RAW 的自动/主摄，因此厂商声明且实际提供 `RAW_SENSOR` 尺寸时优先 RAW。单色和红外物理传感器不会加入普通镜头列表。逻辑与物理路由优先使用两者都常见的 4:3 预览，即使逻辑相机元数据声明为 16:9，也不会在自动主摄与固定主摄之间切换时改变比例或看起来被拉伸；没有 4:3 输出时才退回最接近传感器元数据的比例。权限被拒、系统隐私策略、其他应用长期占用相机，或厂商连基础预览都实现异常时，仍可能无法打开任何档位。
 
 ### 预览请求与帧率
 
@@ -213,10 +232,11 @@ FULL -> RAW_ONLY -> COMPATIBLE -> PREVIEW_ONLY
 预览流测光使用 ISP 处理后的数据，不再进行多帧降噪融合：
 
 1. YUV 输出存在时优先读取 1 个有效的 `YUV_420_888` 帧。
-2. 复用同一块亮度缓冲，避免每个回调都分配整帧数组。
-3. 最多尝试 3 个 YUV 帧，总等待不超过 250 ms。
-4. YUV 缺失或无效时，立即分析 1 个 96 x 96 的显示预览样本。
-5. 当前会话会记住 YUV 失败。处于内部 YUV 会话时，在返回本次结果后重开为 `PREVIEW_ONLY`，后续测光不再重复等待，也不再保留无用 YUV 流。
+2. 仅把 `Image.timestamp` 与相同 `CaptureResult.SENSOR_TIMESTAMP` 的曝光元数据配对，不再套用无关的“最近一帧”结果。
+3. 复用同一块亮度缓冲，避免每个回调都分配整帧数组。
+4. 最多尝试 3 个 YUV 帧，总等待不超过 250 ms。
+5. YUV 缺失或无效时，立即分析 1 个 96 x 96 的显示预览样本。
+6. 当前会话会记住 YUV 失败。处于内部 YUV 会话时，在返回本次结果后重开为 `PREVIEW_ONLY`，后续测光不再重复等待，也不再保留无用 YUV 流。
 
 因此 YUV 是快速路径而不是必要条件。实际兼容边界是：设备能够向普通第三方应用提供基础 Camera2 预览。
 
@@ -229,6 +249,8 @@ RAW 流测量 -> 关闭 RAW 图像 -> 预览流测量 -> 同时保存两种修�
 ```
 
 阶段之间没有固定等待。高精度与稳定模式依次完成两个阶段；兼容模式跳过 RAW。不支持 RAW 的镜头也会隐藏并跳过 RAW，只保存预览流修正。两种修正继续按厂商、型号和 camera ID 分开保存。
+
+应用把不参与 Android 备份的安装标识与可备份的相机环境记录比较。检测到换机恢复或相机目录变化后，会建立新的有效时间门槛；旧测光和暗角数据继续保留，但不能再应用或回退。中英文提示只出现一次，提供“稍后处理”和“立即校准”；后者只打开设置的“校准”栏目，不直接启动测光或暗角拍摄。
 
 ### 线程与资源所有权
 

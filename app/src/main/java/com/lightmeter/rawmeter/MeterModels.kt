@@ -511,6 +511,10 @@ class MeterState(context: Context) {
         vignettingCalibrationStore.invalidate(cameraId)
     }
 
+    fun hasCalibrationArtifacts(): Boolean =
+        cameraCalibrationStore.hasCalibrationArtifacts() ||
+            vignettingCalibrationStore.hasCalibrationArtifacts()
+
     fun setCameraNote(cameraId: String, note: String) {
         cameraSelectionStore.setNote(cameraId, note)
     }
@@ -542,13 +546,14 @@ class MeterState(context: Context) {
         cameras.firstOrNull {
             it.lensRole == CameraLensRole.AUTOMATIC && it.rawAvailable
         } ?: cameras.firstOrNull {
-            it.lensRole == CameraLensRole.AUTOMATIC
-        } ?: cameras.firstOrNull {
             it.lensRole == CameraLensRole.MAIN && it.rawAvailable
         } ?: cameras.firstOrNull {
+            it.rawAvailable
+        } ?: cameras.firstOrNull {
+            it.lensRole == CameraLensRole.AUTOMATIC
+        } ?: cameras.firstOrNull {
             it.lensRole == CameraLensRole.MAIN
-        } ?: cameras.firstOrNull { it.rawAvailable }
-            ?: cameras.firstOrNull()
+        } ?: cameras.firstOrNull()
 
     private fun cameraZoomKey(cameraId: String) = "camera_zoom_$cameraId"
 
