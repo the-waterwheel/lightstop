@@ -60,7 +60,6 @@ internal object ZoneLayoutCalculator {
         val clearTrack: RectF
         val clearHandle: RectF
         val markButton: RectF
-        val touchMarking = state.zoneMarkingMethod == ZoneMarkingMethod.TOUCH
         val aspect = if (state.frameLandscape) {
             state.frameFormat.landscapeAspect
         } else {
@@ -72,7 +71,7 @@ internal object ZoneLayoutCalculator {
                 pad,
                 pad,
                 w - pad,
-                h * if (touchMarking) 0.46f else 0.42f,
+                h * 0.42f,
             )
             val frameArea = RectF(
                 previewPanel.left + gap,
@@ -138,21 +137,13 @@ internal object ZoneLayoutCalculator {
                 72f * density,
                 min(recordPanel.width() * 0.20f, recordPanel.height() * 0.34f),
             )
-            markButton = if (touchMarking) {
-                RectF()
-            } else {
-                RectF(
-                    recordPanel.right - gap - markSize,
-                    recordPanel.centerY() - markSize / 2f,
-                    recordPanel.right - gap,
-                    recordPanel.centerY() + markSize / 2f,
-                )
-            }
-            val recordContentRight = if (touchMarking) {
-                recordPanel.right - gap
-            } else {
-                markButton.left - gap
-            }
+            markButton = RectF(
+                recordPanel.right - gap - markSize,
+                recordPanel.centerY() - markSize / 2f,
+                recordPanel.right - gap,
+                recordPanel.centerY() + markSize / 2f,
+            )
+            val recordContentRight = markButton.left - gap
             clearTrack = RectF(
                 recordPanel.left + gap,
                 recordPanel.top + gap,
@@ -172,7 +163,7 @@ internal object ZoneLayoutCalculator {
                 recordPanel.bottom - gap,
             )
         } else {
-            val previewWidth = w * if (touchMarking) 0.47f else 0.43f
+            val previewWidth = w * 0.43f
             previewPanel = if (state.isLeftHanded) {
                 RectF(w - previewWidth + pad, pad, w - pad, h - pad)
             } else {
@@ -296,21 +287,13 @@ internal object ZoneLayoutCalculator {
                 68f * density,
                 min(recordPanel.width() * 0.18f, recordPanel.height() * 0.42f),
             )
-            markButton = if (touchMarking) {
-                RectF()
-            } else {
-                RectF(
-                    recordPanel.right - gap - markSize,
-                    recordPanel.centerY() - markSize / 2f,
-                    recordPanel.right - gap,
-                    recordPanel.centerY() + markSize / 2f,
-                )
-            }
-            val recordContentRight = if (touchMarking) {
-                recordPanel.right - gap
-            } else {
-                markButton.left - gap
-            }
+            markButton = RectF(
+                recordPanel.right - gap - markSize,
+                recordPanel.centerY() - markSize / 2f,
+                recordPanel.right - gap,
+                recordPanel.centerY() + markSize / 2f,
+            )
+            val recordContentRight = markButton.left - gap
             clearTrack = RectF(
                 recordPanel.left + gap,
                 recordPanel.bottom - 28f * density,

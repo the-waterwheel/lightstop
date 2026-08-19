@@ -166,6 +166,12 @@ enum class Handedness {
     LEFT,
 }
 
+/**
+ * Zone point placement methods. Constant names are persisted in preferences and must not be
+ * renamed. BUTTON is "button only" (仅按键): the mark button places points at the frame center.
+ * TOUCH is "button and touch" (按键与触屏): the mark button and direct preview taps both place
+ * points; touch points are refined on the RAW stream by template matching.
+ */
 enum class ZoneMarkingMethod {
     BUTTON,
     TOUCH,

@@ -116,8 +116,8 @@ object SettingsCatalog {
                     key = SettingKey.ZONE_MARKING_METHOD,
                     label = LocalizedLabel("标点方式", "Marking method"),
                     options = listOf(
-                        option(ZoneMarkingMethod.BUTTON, "按键标点", "Button marking"),
-                        option(ZoneMarkingMethod.TOUCH, "触屏标点", "Touch marking"),
+                        option(ZoneMarkingMethod.TOUCH, "按键与触屏", "Button and touch"),
+                        option(ZoneMarkingMethod.BUTTON, "仅按键", "Button only"),
                     ),
                 ),
             ),

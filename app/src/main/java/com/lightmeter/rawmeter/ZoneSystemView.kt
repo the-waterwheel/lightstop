@@ -244,26 +244,24 @@ class ZoneSystemView(
 
     private fun drawCameraOverlay(canvas: Canvas, g: Geometry) {
         val spotRadius = min(g.cameraFrame.width(), g.cameraFrame.height()) * 0.045f
-        if (state.zoneMarkingMethod == ZoneMarkingMethod.BUTTON) {
-            paint.style = Paint.Style.STROKE
-            paint.strokeWidth = 2f * density
-            paint.color = surface
-            canvas.drawCircle(
-                g.cameraFrame.centerX(),
-                g.cameraFrame.centerY(),
-                spotRadius + density,
-                paint,
-            )
-            paint.strokeWidth = 1f * density
-            paint.color = foreground
-            canvas.drawCircle(g.cameraFrame.centerX(), g.cameraFrame.centerY(), spotRadius, paint)
-            canvas.drawCircle(
-                g.cameraFrame.centerX(),
-                g.cameraFrame.centerY(),
-                1.4f * density,
-                paint,
-            )
-        }
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 2f * density
+        paint.color = surface
+        canvas.drawCircle(
+            g.cameraFrame.centerX(),
+            g.cameraFrame.centerY(),
+            spotRadius + density,
+            paint,
+        )
+        paint.strokeWidth = 1f * density
+        paint.color = foreground
+        canvas.drawCircle(g.cameraFrame.centerX(), g.cameraFrame.centerY(), spotRadius, paint)
+        canvas.drawCircle(
+            g.cameraFrame.centerX(),
+            g.cameraFrame.centerY(),
+            1.4f * density,
+            paint,
+        )
 
         drawPreviewMarkers(canvas, g.cameraFrame)
         if (state.measuring) {
@@ -638,9 +636,7 @@ class ZoneSystemView(
         canvas.drawRect(g.recordPanel, paint)
 
         drawClearSlider(canvas, g)
-        if (state.zoneMarkingMethod == ZoneMarkingMethod.BUTTON) {
-            drawMarkButton(canvas, g.markButton)
-        }
+        drawMarkButton(canvas, g.markButton)
 
         val rowHeight = 34f * density
         val totalHeight = session.markers.size * rowHeight
@@ -911,8 +907,7 @@ class ZoneSystemView(
                 if (session.selectedMarkerId != null) session.selectMarker(null)
                 touchTarget = when {
                     g.normalHandle.contains(event.x, event.y) && !state.measuring -> TouchTarget.EXIT
-                    state.zoneMarkingMethod == ZoneMarkingMethod.BUTTON &&
-                        g.markButton.contains(event.x, event.y) -> TouchTarget.MARK_BUTTON
+                    g.markButton.contains(event.x, event.y) -> TouchTarget.MARK_BUTTON
                     g.clearHandle.contains(event.x, event.y) -> TouchTarget.CLEAR
                     g.lockTrack.contains(event.x, event.y) -> TouchTarget.LOCK
                     g.zoneScale.contains(event.x, event.y) || g.markerRail.contains(event.x, event.y) -> TouchTarget.ZONE_RAIL

@@ -5,6 +5,10 @@ All notable user-facing changes are recorded here. The project follows
 
 ## Unreleased
 
+- Renamed Zone marking methods to **Button and touch** (按键与触屏) and
+  **Button only** (仅按键). Both methods keep the mark button; Button and
+  touch additionally places points by tapping the preview, reusing the
+  RAW-side template matching for touch points.
 - Removed Zone marker tap selection and double-tap deletion; marker dots are
   inert and are removed only from the record list.
 - Rebuilt the pinned OpenCV runtime without the unused IPP, TBB, KleidiCV,

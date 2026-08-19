@@ -84,7 +84,9 @@ code.
 
 ### Zone System
 
-- Button-based or touch-based point placement.
+- Button-and-touch or button-only point placement; both methods keep the
+  mark button, and button-and-touch additionally places points by tapping
+  the preview.
 - Independent EV values and Zone 0–X placement for multiple points.
 - Marker dots ignore preview taps; points are removed from the record list
   with a horizontal swipe or the clear control.
