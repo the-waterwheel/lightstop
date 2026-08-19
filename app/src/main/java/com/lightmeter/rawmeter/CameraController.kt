@@ -49,7 +49,10 @@ class CameraController(
         val id: Int,
         val cameraId: String,
         val framePairer: TimestampedResultPairer<Image, CaptureResult> =
-            TimestampedResultPairer(Image::close),
+            TimestampedResultPairer(
+                releaseImage = Image::close,
+                toleranceNs = VIGNETTING_PAIRING_TOLERANCE_NS,
+            ),
     )
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -1535,5 +1538,6 @@ class CameraController(
         private const val RAW_FAILURES_BEFORE_DOWNGRADE = 2
         private const val DEFAULT_PREVIEW_FPS_CEILING = 30
         private const val CONSERVATIVE_PREVIEW_FPS_CEILING = 24
+        private const val VIGNETTING_PAIRING_TOLERANCE_NS = 16_000_000L
     }
 }

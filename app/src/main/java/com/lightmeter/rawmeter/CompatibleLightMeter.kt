@@ -62,7 +62,10 @@ internal class CompatibleLightMeter(
     private var measurementId = 0
     @Volatile
     private var activeYuvMeasurement: YuvMeasurement? = null
-    private val yuvFramePairer = TimestampedResultPairer<Image, CaptureResult>(Image::close)
+    private val yuvFramePairer = TimestampedResultPairer<Image, CaptureResult>(
+        releaseImage = Image::close,
+        toleranceNs = YUV_PAIRING_TOLERANCE_NS,
+    )
     private var lumaBuffer = ByteArray(0)
     private var yuvTimeout: Runnable? = null
     private var downgradeYuvSessionAfterSuccess = false
@@ -372,5 +375,8 @@ internal class CompatibleLightMeter(
     private companion object {
         private const val TAG = "CompatibleLightMeter"
         private const val FALLBACK_BITMAP_SIZE = 96
+        // Half the app's 30 fps preview ceiling: tolerates small buffer/metadata timestamp
+        // offsets without pairing a frame with its neighbor's exposure metadata.
+        private const val YUV_PAIRING_TOLERANCE_NS = 16_000_000L
     }
 }

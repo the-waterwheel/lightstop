@@ -87,7 +87,10 @@ sensors are filtered out even if they expose a `SurfaceTexture` output.
   HALs reject or clamp the preview value.
 - Only one full-size RAW request is in flight. The next request is submitted
   after the current `Image` has been analyzed and closed.
-- `Image` and `CaptureResult` are paired by sensor timestamp. Unmatched images
+- `Image` and `CaptureResult` are paired by sensor timestamp, exact-first,
+  with a bounded tolerance of at most half a frame period so the small
+  buffer/metadata offsets some vendor HALs report do not stall metering.
+  Unmatched images
   remain owned by the active operation and are closed on success, failure,
   timeout, camera recovery, activity pause, or controller shutdown.
 - Bayer layout, dynamic/fixed black level, white level, color gains, color
@@ -234,7 +237,7 @@ Android 10（API 29）及以上会先询问 Camera HAL 是否支持完整输出�
 - ISO 低于 500 使用 1 张，ISO 500–1199 使用 2 张，ISO 1200 及以上使用 3 张；优先减少捕获等待和手持晃动误差。
 - RAW 捕获请求使用最小 `RAW_SENSOR` 尺寸的 `getOutputMinFrameDuration` 声明值，而不是预览帧时长：全尺寸 RAW 传感器模式可能比预览模式更慢，部分 HAL 会拒绝或静默钳制预览值。
 - 同一时刻只允许 1 张全尺寸 RAW 在途；分析并关闭当前 `Image` 后才提交下一帧。
-- `Image` 与 `CaptureResult` 按传感器时间戳配对。成功、失败、超时、相机恢复、切后台或控制器关闭时，所有未配对图像都必须释放。
+- `Image` 与 `CaptureResult` 按传感器时间戳配对：精确匹配优先，并允许最多半帧周期的容差，兼容部分厂商 HAL 报告的缓冲/元数据小偏移。成功、失败、超时、相机恢复、切后台或控制器关闭时，所有未配对图像都必须释放。
 - Bayer 排列、黑白电平、曝光、ISO、光圈、白平衡增益和颜色矩阵均读取镜头元数据，不按厂商假设。
 
 ### 预览流测光

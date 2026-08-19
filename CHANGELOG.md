@@ -5,6 +5,9 @@ All notable user-facing changes are recorded here. The project follows
 
 ## Unreleased
 
+- Paired camera images and results exact-first with a bounded half-frame-period
+  tolerance, tolerating the small buffer/metadata timestamp offsets some
+  vendor HALs report.
 - Prefer the logical-camera route when a logical camera reports APPROXIMATE
   physical synchronization, avoiding timestamp-domain mismatch on physical
   routes.

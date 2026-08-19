@@ -37,7 +37,8 @@ code.
 - Three bilingual metering modes: **High accuracy (recommended)**, **Stable**
   (RAW retained with processed-stream requests isolated), and **Compatibility
   mode** (one ISP-processed sample and no RAW resources).
-- Timestamp pairing between `Image` and `CaptureResult`.
+- Timestamp pairing between `Image` and `CaptureResult`, exact-first with a
+  bounded half-frame-period tolerance for vendor buffer/metadata offsets.
 - Bayer black-level subtraction, white-level normalization, per-channel median
   statistics, clipping detection, white-balance/color-matrix conversion, and
   EV100 calculation.
