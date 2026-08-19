@@ -5,6 +5,8 @@ All notable user-facing changes are recorded here. The project follows
 
 ## Unreleased
 
+- Removed Zone marker tap selection and double-tap deletion; marker dots are
+  inert and are removed only from the record list.
 - Rebuilt the pinned OpenCV runtime without the unused IPP, TBB, KleidiCV,
   ITT, and optional codec backends, shrinking the universal APK from about
   72.5 MiB to about 39.8 MiB with no behavior change.

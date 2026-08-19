@@ -86,6 +86,8 @@ code.
 
 - Button-based or touch-based point placement.
 - Independent EV values and Zone 0–X placement for multiple points.
+- Marker dots ignore preview taps; points are removed from the record list
+  with a horizontal swipe or the clear control.
 - Low-resolution YUV luminance tracking with preview-screenshot fallback.
 - Pyramidal Lucas–Kanade optical flow, forward/backward validation, RANSAC
   affine motion, local feature correction, gyroscope prediction, and ORB

@@ -893,14 +893,12 @@ class ZoneSystemView(
                     invalidate()
                     return true
                 }
-                val markerId = markerAt(event.x, event.y, g.cameraFrame)
-                if (markerId != null) {
-                    val alreadySelected = session.selectMarker(markerId)
-                    if (alreadySelected) removeMarker(markerId)
-                    haptic()
-                    invalidate()
+                // Marker taps are intentionally inert: no selection highlight and no
+                // double-tap deletion. Markers are removed from the record list.
+                if (markerAt(event.x, event.y, g.cameraFrame) != null) {
                     return true
-                } else if (g.cameraFrame.contains(event.x, event.y)) {
+                }
+                if (g.cameraFrame.contains(event.x, event.y)) {
                     session.selectMarker(null)
                     if (state.zoneMarkingMethod == ZoneMarkingMethod.TOUCH &&
                         !state.measuring
