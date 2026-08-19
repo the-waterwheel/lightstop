@@ -50,6 +50,9 @@ On logical multi-camera devices, the catalog exposes the logical route as an
 automatic camera and gives every fixed physical lens a separate ID. Default
 selection ranks back cameras with a usable advertised RAW stream first
 (automatic, then main, then any RAW lens); non-RAW automatic/main routes follow.
+Physical routing is preferred only when the logical camera reports CALIBRATED
+physical synchronization; APPROXIMATE-sync logical cameras keep the logical
+route so RAW buffers and physical results stay in the same timestamp domain.
 Preview selection prefers an advertised 4:3 stream for both routes, even when
 the logical active-array metadata is 16:9, so an automatic route and its fixed
 main-lens route keep the same undistorted viewport. Cameras without 4:3 output
@@ -73,9 +76,15 @@ sensors are filtered out even if they expose a `SurfaceTexture` output.
 
 - RAW is used only when the selected camera advertises
   `REQUEST_AVAILABLE_CAPABILITIES_RAW` and exposes `RAW_SENSOR` sizes.
+  LEGACY hardware-level devices are treated as non-RAW even if they stray
+  into advertising RAW output.
 - ISO below 500 uses one frame, ISO 500–1199 uses two frames, and ISO 1200 or
   above uses three frames. This favors shorter capture time and lower motion
   error over redundant noise reduction.
+- RAW capture requests use the advertised `getOutputMinFrameDuration` for the
+  smallest `RAW_SENSOR` size instead of the preview frame duration, because
+  the full-size RAW sensor mode may be slower than the preview mode and some
+  HALs reject or clamp the preview value.
 - Only one full-size RAW request is in flight. The next request is submitted
   after the current `Image` has been analyzed and closed.
 - `Image` and `CaptureResult` are paired by sensor timestamp. Unmatched images
@@ -211,7 +220,7 @@ FULL -> RAW_ONLY -> COMPATIBLE -> PREVIEW_ONLY
 
 Android 10（API 29）及以上会先询问 Camera HAL 是否支持完整输出组合；明确拒绝时立即进入同一降级链。Android 9 以及无法实现该查询的定制 HAL 会直接尝试实际创建会话，以真实结果作为最终判据。
 
-运行错误会先分类，再决定重试或降级；物理镜头最终还能退回逻辑相机。多摄设备会列出自动逻辑相机和各固定物理镜头；默认选择先按“自动 RAW、主摄 RAW、其他 RAW”排序，再考虑不支持 RAW 的自动/主摄，因此厂商声明且实际提供 `RAW_SENSOR` 尺寸时优先 RAW。单色和红外物理传感器不会加入普通镜头列表。逻辑与物理路由优先使用两者都常见的 4:3 预览，即使逻辑相机元数据声明为 16:9，也不会在自动主摄与固定主摄之间切换时改变比例或看起来被拉伸；没有 4:3 输出时才退回最接近传感器元数据的比例。权限被拒、系统隐私策略、其他应用长期占用相机，或厂商连基础预览都实现异常时，仍可能无法打开任何档位。
+运行错误会先分类，再决定重试或降级；物理镜头最终还能退回逻辑相机。多摄设备会列出自动逻辑相机和各固定物理镜头；默认选择先按“自动 RAW、主摄 RAW、其他 RAW”排序，再考虑不支持 RAW 的自动/主摄，因此厂商声明且实际提供 `RAW_SENSOR` 尺寸时优先 RAW。物理路由只在逻辑相机声明 CALIBRATED 物理同步时优先；APPROXIMATE 同步的逻辑相机保持逻辑路由，避免 RAW 缓冲与物理结果处于不同时间戳域。单色和红外物理传感器不会加入普通镜头列表。逻辑与物理路由优先使用两者都常见的 4:3 预览，即使逻辑相机元数据声明为 16:9，也不会在自动主摄与固定主摄之间切换时改变比例或看起来被拉伸；没有 4:3 输出时才退回最接近传感器元数据的比例。权限被拒、系统隐私策略、其他应用长期占用相机，或厂商连基础预览都实现异常时，仍可能无法打开任何档位。
 
 ### 预览请求与帧率
 
@@ -221,8 +230,9 @@ Android 10（API 29）及以上会先询问 Camera HAL 是否支持完整输出�
 
 ### RAW 测光
 
-- 只有镜头声明 RAW 能力并提供 `RAW_SENSOR` 尺寸时才启用。
+- 只有镜头声明 RAW 能力并提供 `RAW_SENSOR` 尺寸时才启用。LEGACY 硬件级别的设备即使异常声明 RAW 输出，也按不支持 RAW 处理。
 - ISO 低于 500 使用 1 张，ISO 500–1199 使用 2 张，ISO 1200 及以上使用 3 张；优先减少捕获等待和手持晃动误差。
+- RAW 捕获请求使用最小 `RAW_SENSOR` 尺寸的 `getOutputMinFrameDuration` 声明值，而不是预览帧时长：全尺寸 RAW 传感器模式可能比预览模式更慢，部分 HAL 会拒绝或静默钳制预览值。
 - 同一时刻只允许 1 张全尺寸 RAW 在途；分析并关闭当前 `Image` 后才提交下一帧。
 - `Image` 与 `CaptureResult` 按传感器时间戳配对。成功、失败、超时、相机恢复、切后台或控制器关闭时，所有未配对图像都必须释放。
 - Bayer 排列、黑白电平、曝光、ISO、光圈、白平衡增益和颜色矩阵均读取镜头元数据，不按厂商假设。

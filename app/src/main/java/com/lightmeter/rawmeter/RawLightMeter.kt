@@ -1,5 +1,6 @@
 package com.lightmeter.rawmeter
 
+import android.graphics.ImageFormat
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
@@ -150,7 +151,12 @@ internal class RawLightMeter(
     fun buildCaptureRequest(context: RawMeteringContext): CaptureRequest {
         val exposureTime = context.latestResult?.get(CaptureResult.SENSOR_EXPOSURE_TIME)
         val sensitivity = context.latestResult?.get(CaptureResult.SENSOR_SENSITIVITY)
-        val frameDuration = context.latestResult?.get(CaptureResult.SENSOR_FRAME_DURATION)
+        val previewFrameDuration = context.latestResult?.get(CaptureResult.SENSOR_FRAME_DURATION)
+        // The full-size RAW stream may run in a sensor mode whose minimum frame duration is
+        // longer than the preview's. Prefer the advertised RAW minimum; some HALs silently clamp
+        // or reject a RAW request that reuses the preview frame duration.
+        val frameDuration = rawMinimumFrameDuration(context.characteristics)
+            ?: previewFrameDuration
         val useManual = context.cameraInfo.manualSensorAvailable &&
             exposureTime != null && sensitivity != null
         return context.device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
@@ -175,6 +181,14 @@ internal class RawLightMeter(
             }
             setSupportedAutoFocus(this, context.characteristics)
         }.build()
+    }
+
+    private fun rawMinimumFrameDuration(characteristics: CameraCharacteristics): Long? {
+        val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+            ?: return null
+        val rawSizes = map.getOutputSizes(ImageFormat.RAW_SENSOR) ?: return null
+        val rawSize = rawSizes.minByOrNull { it.width.toLong() * it.height.toLong() } ?: return null
+        return map.getOutputMinFrameDuration(ImageFormat.RAW_SENSOR, rawSize).takeIf { it > 0L }
     }
 
     /** Acquires and either pairs or immediately closes the next full-size RAW image. */

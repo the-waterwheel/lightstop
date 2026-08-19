@@ -31,7 +31,9 @@ code.
   automatic/main non-RAW routes retained as fallbacks.
 - A common advertised 4:3 preview is preferred for logical and physical routes,
   avoiding viewport aspect changes when Automatic camera and Main camera use the same lens.
-- RAW-first metering with a capability-driven ISP-preview fallback.
+- RAW-first metering with a capability-driven ISP-preview fallback. LEGACY
+  hardware-level devices are treated as non-RAW, and APPROXIMATE-sync logical
+  cameras prefer the logical route over physical routing.
 - Three bilingual metering modes: **High accuracy (recommended)**, **Stable**
   (RAW retained with processed-stream requests isolated), and **Compatibility
   mode** (one ISP-processed sample and no RAW resources).

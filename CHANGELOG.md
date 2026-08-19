@@ -5,6 +5,14 @@ All notable user-facing changes are recorded here. The project follows
 
 ## Unreleased
 
+- Prefer the logical-camera route when a logical camera reports APPROXIMATE
+  physical synchronization, avoiding timestamp-domain mismatch on physical
+  routes.
+- Treat RAW as unavailable on LEGACY hardware-level devices even when they
+  advertise RAW output.
+- Use the advertised RAW minimum frame duration for RAW capture requests
+  instead of reusing the preview frame duration, which some HALs reject or
+  clamp silently.
 - Renamed Zone marking methods to **Button and touch** (按键与触屏) and
   **Button only** (仅按键). Both methods keep the mark button; Button and
   touch additionally places points by tapping the preview, reusing the

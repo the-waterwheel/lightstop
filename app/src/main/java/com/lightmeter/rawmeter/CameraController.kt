@@ -803,8 +803,21 @@ class CameraController(
                 ?: cameraCatalog.preferredCamera(discovered)
             val selection = selected?.let { descriptor ->
                 val logicalChars = cameraManager.getCameraCharacteristics(descriptor.logicalCameraId)
-                val effectivePhysicalId = descriptor.physicalCameraId
-                    ?.takeUnless { useLogicalCameraFallback }
+                val syncType = logicalChars.get(
+                    CameraCharacteristics.LOGICAL_MULTI_CAMERA_SENSOR_SYNC_TYPE,
+                )
+                val approximateSync = syncType ==
+                    CameraMetadata.LOGICAL_MULTI_CAMERA_SENSOR_SYNC_TYPE_APPROXIMATE
+                val routePhysical = descriptor.physicalCameraId != null &&
+                    !useLogicalCameraFallback && !approximateSync
+                if (descriptor.physicalCameraId != null && approximateSync) {
+                    Log.i(
+                        TAG,
+                        "Logical camera ${descriptor.logicalCameraId} reports APPROXIMATE " +
+                            "physical sync; using the logical route",
+                    )
+                }
+                val effectivePhysicalId = if (routePhysical) descriptor.physicalCameraId else null
                 val streamChars = effectivePhysicalId?.let {
                     cameraManager.getCameraCharacteristics(it)
                 } ?: logicalChars
@@ -819,10 +832,10 @@ class CameraController(
                 return
             }
             val (descriptor, effectivePhysicalId, chars) = selection
-            val activeCameraId = if (useLogicalCameraFallback) {
-                descriptor.logicalCameraId
-            } else {
+            val activeCameraId = if (effectivePhysicalId != null) {
                 descriptor.cameraId
+            } else {
+                descriptor.logicalCameraId
             }
             requestedCameraId = activeCameraId
             selectedPhysicalCameraId = effectivePhysicalId
@@ -837,8 +850,13 @@ class CameraController(
                 ?: throw IllegalStateException(
                     localized("相机没有输出配置", "Camera has no output configuration"),
                 )
+            val hardwareLevel = chars.get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL)
+            // LEGACY devices guarantee neither RAW_SENSOR output nor per-frame control; treat a
+            // stray RAW advertisement on a LEGACY HAL as unusable instead of letting the session
+            // fail later.
             rawHardwareAvailable = rawCapability &&
-                !map.getOutputSizes(ImageFormat.RAW_SENSOR).isNullOrEmpty()
+                !map.getOutputSizes(ImageFormat.RAW_SENSOR).isNullOrEmpty() &&
+                hardwareLevel != CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_LEGACY
             val chosenPreview = CameraStreamSelector.choosePreviewSize(chars)
                 ?: throw IllegalStateException(
                     localized("没有合适的预览尺寸", "No suitable preview size is available"),
@@ -917,7 +935,7 @@ class CameraController(
                 TAG,
                 "Opening selection=${descriptor.cameraId}, logical=${descriptor.logicalCameraId}, " +
                     "physical=$effectivePhysicalId, profile=$profile, focal=$focal, " +
-                    "raw=$rawAvailable",
+                    "raw=$rawAvailable, hardwareLevel=$hardwareLevel",
             )
             sessionCoordinator.open(
                 logicalCameraId = descriptor.logicalCameraId,
