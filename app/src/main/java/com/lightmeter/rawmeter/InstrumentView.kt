@@ -19,6 +19,7 @@ import android.view.animation.DecelerateInterpolator
 import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
+import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.roundToInt
@@ -172,18 +173,12 @@ class InstrumentView(
         drawZoneEntryHandle(canvas, g)
 
         val equivalent = state.equivalentFrameFocalMm()
-        val focalText = buildString {
-            val focal = state.cameraInfo.focalLengthMm
-            if (focal > 0f) append("${"%.1f".format(focal)} mm")
-            if (equivalent != null) {
-                val format = InstrumentPresentation.formatShortLabel(
-                    state.frameFormat,
-                    state.menuLanguage,
-                )
-                append("  ≈ ${equivalent} mm ($format)")
-            }
-        }
-        if (focalText.isNotBlank()) {
+        if (equivalent != null) {
+            val format = InstrumentPresentation.formatShortLabel(
+                state.frameFormat,
+                state.menuLanguage,
+            )
+            val focalText = "≈ $equivalent mm ($format)"
             paint.style = Paint.Style.FILL
             paint.color = Color.argb(
                 168,
@@ -195,11 +190,18 @@ class InstrumentView(
             paint.typeface = Typeface.DEFAULT_BOLD
             val textWidth = paint.measureText(focalText)
             val baseline = g.cameraFrame.bottom - 8f * density
+            val horizontalPadding = 6f * density
+            // Anchor to the viewfinder's bottom-right corner; the clamp keeps the label inside
+            // the frame on devices with narrow fitted images.
+            val left = max(
+                g.cameraFrame.left,
+                g.cameraFrame.right - textWidth - horizontalPadding * 2f,
+            )
             canvas.drawRoundRect(
                 RectF(
-                    g.cameraFrame.centerX() - textWidth / 2f - 6f * density,
+                    left,
                     baseline - 13f * density,
-                    g.cameraFrame.centerX() + textWidth / 2f + 6f * density,
+                    left + textWidth + horizontalPadding * 2f,
                     baseline + 3f * density,
                 ),
                 4f * density,
@@ -207,7 +209,7 @@ class InstrumentView(
                 paint,
             )
             paint.color = black
-            canvas.drawText(focalText, g.cameraFrame.centerX() - textWidth / 2f, baseline, paint)
+            canvas.drawText(focalText, left + horizontalPadding, baseline, paint)
         }
     }
 

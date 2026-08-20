@@ -10,6 +10,7 @@ internal data class ZoneLayoutGeometry(
     val cameraFrame: RectF,
     val formatButton: RectF,
     val orientationButton: RectF,
+    val settingsButton: RectF,
     val zoomTrack: RectF,
     val normalHandle: RectF,
     val apertureRow: RectF,
@@ -48,6 +49,7 @@ internal object ZoneLayoutCalculator {
         val cameraFrame: RectF
         val formatButton: RectF
         val orientationButton: RectF
+        val settingsButton: RectF
         val zoomTrack: RectF
         val normalHandle: RectF
         val apertureRow: RectF
@@ -91,6 +93,14 @@ internal object ZoneLayoutCalculator {
                 previewPanel.top + gap,
                 previewPanel.right - gap,
                 previewPanel.top + gap + button,
+            )
+            // Anchored to the viewfinder panel corner like the normal-mode settings button,
+            // so it never moves when the selected frame format changes the fitted image.
+            settingsButton = RectF(
+                previewPanel.left + gap,
+                previewPanel.bottom - gap - button,
+                previewPanel.left + gap + button,
+                previewPanel.bottom - gap,
             )
             zoomTrack = RectF(
                 previewPanel.right - 30f * density,
@@ -197,6 +207,14 @@ internal object ZoneLayoutCalculator {
                 previewPanel.top + gap,
                 previewPanel.right - gap,
                 previewPanel.top + gap + button,
+            )
+            // Anchored to the viewfinder panel corner like the normal-mode settings button,
+            // so it never moves when the selected frame format changes the fitted image.
+            settingsButton = RectF(
+                previewPanel.left + gap,
+                previewPanel.bottom - gap - button,
+                previewPanel.left + gap + button,
+                previewPanel.bottom - gap,
             )
             zoomTrack = if (state.isLeftHanded) {
                 RectF(
@@ -332,6 +350,7 @@ internal object ZoneLayoutCalculator {
             clearTrack = clearTrack,
             clearHandle = clearHandle,
             markButton = markButton,
+            settingsButton = settingsButton,
         )
     }
 

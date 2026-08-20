@@ -83,7 +83,9 @@ code.
   and 8×10 frame formats. The long edge remains horizontal in the viewfinder.
 - Focal-length guidance is converted to the selected film format using its
   representative image diagonal; the selector wraps into rows instead of
-  compressing labels, and the preview is never stretched.
+  compressing labels, and the preview is never stretched. The readout is
+  anchored to the viewfinder's bottom-right corner and shows only the
+  equivalent focal length.
 
 ### Zone System
 
@@ -119,7 +121,7 @@ code.
 - Tap the red outlined meter button to update the exposure reading.
 - Drag the `zone` handle into the page to enter Zone System mode.
 - Tap the gear for metering, general, camera-management, and calibration
-  settings.
+  settings; Zone mode has the same gear at its viewfinder's bottom-left corner.
 - Open `General` → `About` for the metering-result notice; the open-source
   license browser is available after the About text.
 

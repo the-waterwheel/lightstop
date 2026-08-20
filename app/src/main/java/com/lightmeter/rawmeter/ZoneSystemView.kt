@@ -19,9 +19,11 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.view.animation.DecelerateInterpolator
 import kotlin.math.abs
+import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.math.sin
 
 private typealias Geometry = ZoneLayoutGeometry
 
@@ -39,6 +41,7 @@ class ZoneSystemView(
         fun onPreviewMappingChanged()
         fun onZoomMappingChanged(zoom: Float)
         fun onControlsChanged(frameChanged: Boolean)
+        fun onSettingsRequested()
     }
 
     private enum class TouchTarget {
@@ -55,6 +58,7 @@ class ZoneSystemView(
         ZOOM,
         FORMAT,
         ORIENTATION,
+        SETTINGS,
     }
 
     private data class MarkerDisplayMotion(
@@ -277,9 +281,10 @@ class ZoneSystemView(
         }
         drawOutlinedButton(canvas, g.formatButton, shortFormatLabel(), formatMenuOpen)
         drawOrientationButton(canvas, g.orientationButton)
+        drawSettingsButton(canvas, g.settingsButton)
         drawZoom(canvas, g.zoomTrack)
         drawNormalHandle(canvas, g)
-        drawFocalInfo(canvas, g.cameraFrame)
+        drawFocalInfo(canvas, g)
         if (formatMenuOpen) drawFormatMenu(canvas, g)
     }
 
@@ -309,18 +314,18 @@ class ZoneSystemView(
         canvas.drawArc(bounds, phase * 360f - 90f, METERING_SPINNER_SWEEP_DEGREES, false, paint)
     }
 
-    private fun drawFocalInfo(canvas: Canvas, frame: RectF) {
-        val equivalent = state.equivalentFrameFocalMm()
-        val focalText = buildString {
-            val focal = state.cameraInfo.focalLengthMm
-            if (focal > 0f) append("${"%.1f".format(focal)} mm")
-            if (equivalent != null) append("  ≈ $equivalent mm (${shortFormatLabel()})")
-        }
-        if (focalText.isBlank()) return
+    private fun drawFocalInfo(canvas: Canvas, g: Geometry) {
+        val frame = g.cameraFrame
+        val equivalent = state.equivalentFrameFocalMm() ?: return
+        val focalText = "≈ $equivalent mm (${shortFormatLabel()})"
 
         boldPaint.textSize = 10f * density
         val textWidth = boldPaint.measureText(focalText)
         val baseline = frame.bottom - 8f * density
+        val horizontalPadding = 6f * density
+        // Anchor the label to the viewfinder's bottom-right corner in every orientation;
+        // the clamp keeps it inside the frame on devices with narrow fitted images.
+        val left = max(frame.left, frame.right - textWidth - horizontalPadding * 2f)
         paint.style = Paint.Style.FILL
         paint.color = Color.argb(
             168,
@@ -330,9 +335,9 @@ class ZoneSystemView(
         )
         canvas.drawRoundRect(
             RectF(
-                frame.centerX() - textWidth / 2f - 6f * density,
+                left,
                 baseline - 13f * density,
-                frame.centerX() + textWidth / 2f + 6f * density,
+                left + textWidth + horizontalPadding * 2f,
                 baseline + 3f * density,
             ),
             4f * density,
@@ -340,7 +345,7 @@ class ZoneSystemView(
             paint,
         )
         boldPaint.color = foreground
-        canvas.drawText(focalText, frame.centerX() - textWidth / 2f, baseline, boldPaint)
+        canvas.drawText(focalText, left + horizontalPadding, baseline, boldPaint)
     }
 
     private fun drawNormalHandle(canvas: Canvas, g: Geometry) {
@@ -802,6 +807,33 @@ class ZoneSystemView(
         canvas.drawArc(RectF(rect.left + 6f * density, rect.top + 5f * density, rect.right - 6f * density, rect.bottom - 5f * density), 205f, 80f, false, paint)
     }
 
+    private fun drawSettingsButton(canvas: Canvas, rect: RectF) {
+        paint.style = Paint.Style.FILL
+        paint.color = surface
+        canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 1f * density
+        paint.color = foreground
+        canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
+        val outerRadius = min(rect.width(), rect.height()) * 0.27f
+        val rootRadius = outerRadius * 0.78f
+        val innerRadius = outerRadius * 0.31f
+        val gear = Path()
+        repeat(16) { index ->
+            val angle = Math.toRadians((-90.0 + index * 22.5))
+            val radius = if (index % 2 == 0) outerRadius else rootRadius
+            val x = rect.centerX() + cos(angle).toFloat() * radius
+            val y = rect.centerY() + sin(angle).toFloat() * radius
+            if (index == 0) gear.moveTo(x, y) else gear.lineTo(x, y)
+        }
+        gear.close()
+        paint.style = Paint.Style.FILL
+        paint.color = foreground
+        canvas.drawPath(gear, paint)
+        paint.color = surface
+        canvas.drawCircle(rect.centerX(), rect.centerY(), innerRadius, paint)
+    }
+
     private fun drawZoom(canvas: Canvas, track: RectF) {
         val vertical = track.height() > track.width()
         val maxZoom = state.cameraInfo.maxDisplayZoom.coerceAtLeast(1.01f)
@@ -874,6 +906,8 @@ class ZoneSystemView(
                         TouchTarget.FORMAT
                     g.orientationButton.containsAccessibleTarget(event.x, event.y, density) ->
                         TouchTarget.ORIENTATION
+                    g.settingsButton.containsAccessibleTarget(event.x, event.y, density) ->
+                        TouchTarget.SETTINGS
                     g.normalHandle.containsAccessibleTarget(event.x, event.y, density) &&
                         !state.measuring -> TouchTarget.EXIT
                     g.zoomTrack.contains(event.x, event.y) -> TouchTarget.ZOOM
@@ -1030,6 +1064,7 @@ class ZoneSystemView(
                         listener?.onPreviewMappingChanged()
                         listener?.onOrientationToggle()
                     }
+                    TouchTarget.SETTINGS -> if (!cancelled) listener?.onSettingsRequested()
                     else -> Unit
                 }
                 touchTarget = TouchTarget.NONE

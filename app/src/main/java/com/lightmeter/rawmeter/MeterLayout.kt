@@ -7,6 +7,7 @@ import android.content.Context
 import android.graphics.Color
 import android.graphics.RectF
 import android.graphics.SurfaceTexture
+import android.util.Log
 import android.util.AttributeSet
 import android.view.TextureView
 import android.view.View
@@ -77,6 +78,8 @@ class MeterLayout @JvmOverloads constructor(
     private var lastLayoutLandscape: Boolean? = null
     private var zoneOrientationRestartPending = false
     private var cameraManagementOrigin = CameraManagementOrigin.SETTINGS
+    private var settingsOpenedFromZone = false
+    private var pendingActionAfterZoneExit: (() -> Unit)? = null
     var listener: Listener? = null
         set(value) {
             field = value
@@ -127,6 +130,25 @@ class MeterLayout @JvmOverloads constructor(
                 }
 
                 override fun onActionRequested(key: SettingActionKey) {
+                    if (settingsOpenedFromZone && key != SettingActionKey.SHOW_ABOUT) {
+                        exitZoneForAction {
+                            when (key) {
+                                SettingActionKey.MANAGE_CAMERAS -> {
+                                    showCameraManagement(CameraManagementOrigin.SETTINGS)
+                                }
+                                SettingActionKey.START_METERING_CALIBRATION -> {
+                                    showCalibration()
+                                    value?.onCalibrationOpened()
+                                }
+                                SettingActionKey.START_VIGNETTING_CALIBRATION -> {
+                                    showVignettingCalibration()
+                                    value?.onVignettingCalibrationOpened()
+                                }
+                                else -> Unit
+                            }
+                        }
+                        return
+                    }
                     when (key) {
                         SettingActionKey.MANAGE_CAMERAS -> {
                             showCameraManagement(CameraManagementOrigin.SETTINGS)
@@ -266,6 +288,10 @@ class MeterLayout @JvmOverloads constructor(
                 override fun onControlsChanged(frameChanged: Boolean) {
                     if (frameChanged) requestLayout()
                     value?.onControlsChanged(frameChanged)
+                }
+
+                override fun onSettingsRequested() {
+                    showSettingsFromZone()
                 }
             }
         }
@@ -471,6 +497,22 @@ class MeterLayout @JvmOverloads constructor(
             isCameraManagementOpen ||
             isZoneMode || zoneTransitionFraction > 0f
         ) return
+        settingsOpenedFromZone = false
+        openSettingsPage()
+    }
+
+    /** Opens Settings from the Zone overlay; calibration actions then exit Zone first. */
+    fun showSettingsFromZone() {
+        if (isSettingsOpen || isCalibrationOpen || isVignettingCalibrationOpen ||
+            isCameraManagementOpen ||
+            !isZoneMode || zoneTransitionFraction < 1f
+        ) return
+        Log.i("lightstop", "Settings opened from Zone overlay")
+        settingsOpenedFromZone = true
+        openSettingsPage()
+    }
+
+    private fun openSettingsPage() {
         isSettingsOpen = true
         settingsView.animate().cancel()
         settingsView.visibility = View.VISIBLE
@@ -763,6 +805,13 @@ class MeterLayout @JvmOverloads constructor(
         }
     }
 
+    private fun exitZoneForAction(action: () -> Unit) {
+        settingsOpenedFromZone = false
+        closeSettings()
+        pendingActionAfterZoneExit = action
+        animateZoneTransition(0f)
+    }
+
     private fun finishZoneTransition(target: Float) {
         applyZoneTransition(target)
         if (target >= 1f) {
@@ -784,6 +833,9 @@ class MeterLayout @JvmOverloads constructor(
             zoneMarkerTracker.stop()
             listener?.onZoneTrackingActiveChanged(false)
         }
+        val pending = pendingActionAfterZoneExit
+        pendingActionAfterZoneExit = null
+        pending?.invoke()
         requestLayout()
     }
 

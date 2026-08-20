@@ -5,6 +5,12 @@ All notable user-facing changes are recorded here. The project follows
 
 ## Unreleased
 
+- Added a settings button to the Zone overlay at the viewfinder panel's
+  bottom-left corner; calibration, vignetting, and camera-management actions
+  exit Zone first.
+- Anchored the focal-length readout to the viewfinder's bottom-right corner
+  in every mode and show only the selected frame format's equivalent focal
+  length.
 - Paired camera images and results exact-first with a bounded half-frame-period
   tolerance, tolerating the small buffer/metadata timestamp offsets some
   vendor HALs report.
