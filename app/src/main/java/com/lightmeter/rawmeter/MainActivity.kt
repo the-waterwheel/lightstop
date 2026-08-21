@@ -8,6 +8,9 @@ import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -48,6 +51,8 @@ class MainActivity : Activity(), CameraControllerCallback {
     private var cameraPermissionRequestInFlight = false
     private var pendingCalibrationEnvironmentChange: CalibrationEnvironmentChange? = null
     private var backInvokedCallback: OnBackInvokedCallback? = null
+    private var parameterLocation: RecordedLocation? = null
+    private var parameterLocationListener: LocationListener? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -240,6 +245,19 @@ class MainActivity : Activity(), CameraControllerCallback {
             override fun onZoneTrackingActiveChanged(active: Boolean) {
                 cameraController.setTrackingFramesEnabled(active)
             }
+
+            override fun onParameterGpsEnableRequested() {
+                enableParameterGps()
+            }
+
+            override fun onParameterCaptureRequested(
+                draftId: String,
+                snapshot: ParameterMeterSnapshot,
+                options: ParameterRecordOptions,
+                previewPath: String,
+            ) {
+                captureParameterRecord(draftId, snapshot, options, previewPath)
+            }
         }
         setContentView(meterLayout)
         registerPredictiveBackCallback()
@@ -259,10 +277,20 @@ class MainActivity : Activity(), CameraControllerCallback {
         } else {
             ensureCameraPermission()
         }
+        if (meterLayout.isParameterGpsEnabled() &&
+            (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+                checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED)
+        ) {
+            enableParameterGps()
+        }
     }
 
     override fun onPause() {
         activityResumed = false
+        parameterLocationListener?.let { listener ->
+            (getSystemService(LOCATION_SERVICE) as? LocationManager)?.removeUpdates(listener)
+        }
+        parameterLocationListener = null
         cameraController.setTrackingFramesEnabled(false)
         meterLayout.pauseZoneTracking()
         if (zoneMeasurementPending) {
@@ -300,10 +328,12 @@ class MainActivity : Activity(), CameraControllerCallback {
 
     private fun handleBackNavigation(): Boolean {
         if (meterLayout.closeInformationFromBack()) return true
+        if (meterLayout.closeParameterHistoryFromBack()) return true
         if (meterLayout.closeCameraManagement()) return true
         if (meterLayout.closeVignettingCalibration()) return true
         if (meterLayout.closeCalibration()) return true
         if (meterLayout.closeFilmSelector()) return true
+        if (meterLayout.closeParameterEditorFromBack()) return true
         if (meterLayout.closeSettings()) return true
         if (meterLayout.closeTools()) return true
         if (meterLayout.closeZoneMode()) return true
@@ -341,6 +371,23 @@ class MainActivity : Activity(), CameraControllerCallback {
         grantResults: IntArray,
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == LOCATION_PERMISSION_REQUEST) {
+            val granted = permissions.indices.any { index ->
+                permissions[index] in LOCATION_PERMISSIONS &&
+                    grantResults.getOrNull(index) == PackageManager.PERMISSION_GRANTED
+            }
+            if (granted) {
+                enableParameterGps()
+            } else {
+                meterLayout.setParameterGpsEnabled(false)
+                Toast.makeText(
+                    this,
+                    localized("未获得定位权限，GPS 记录保持关闭", "Location permission was denied; GPS recording remains off"),
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
+            return
+        }
         if (requestCode != CAMERA_PERMISSION_REQUEST) return
         cameraPermissionRequestInFlight = false
         if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
@@ -961,6 +1008,138 @@ class MainActivity : Activity(), CameraControllerCallback {
             .show()
     }
 
+    private fun enableParameterGps() {
+        val hasFine = checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+        val hasCoarse = checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+        if (!hasFine && !hasCoarse) {
+            requestPermissions(LOCATION_PERMISSIONS, LOCATION_PERMISSION_REQUEST)
+            return
+        }
+        val manager = getSystemService(LOCATION_SERVICE) as? LocationManager
+        val candidates = if (hasFine) {
+            listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
+        } else {
+            listOf(LocationManager.NETWORK_PROVIDER)
+        }
+        val provider = candidates
+            .firstOrNull { name ->
+                manager != null && runCatching { manager.isProviderEnabled(name) }.getOrDefault(false)
+            }
+        if (manager == null || provider == null) {
+            meterLayout.setParameterGpsEnabled(false)
+            Toast.makeText(
+                this,
+                localized("系统定位未开启，GPS 记录保持关闭", "System location is off; GPS recording remains disabled"),
+                Toast.LENGTH_LONG,
+            ).show()
+            return
+        }
+        meterLayout.setParameterGpsEnabled(true)
+        refreshParameterLocation(manager, provider)
+    }
+
+    @SuppressLint("MissingPermission")
+    @Suppress("DEPRECATION")
+    private fun refreshParameterLocation(manager: LocationManager, provider: String) {
+        parameterLocationListener?.let(manager::removeUpdates)
+        manager.getLastKnownLocation(provider)?.let(::rememberParameterLocation)
+        val listener = object : LocationListener {
+            override fun onLocationChanged(location: Location) {
+                rememberParameterLocation(location)
+                parameterLocationListener?.let(manager::removeUpdates)
+                parameterLocationListener = null
+            }
+
+            @Deprecated("Legacy LocationListener callback")
+            override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) = Unit
+
+            override fun onProviderEnabled(provider: String) = Unit
+
+            override fun onProviderDisabled(provider: String) {
+                if (parameterLocationListener === this) {
+                    parameterLocationListener = null
+                    meterLayout.setParameterGpsEnabled(false)
+                }
+            }
+        }
+        parameterLocationListener = listener
+        runCatching { manager.requestSingleUpdate(provider, listener, mainLooper) }
+            .onFailure {
+                parameterLocationListener = null
+                meterLayout.setParameterGpsEnabled(false)
+            }
+    }
+
+    private fun rememberParameterLocation(location: Location) {
+        parameterLocation = RecordedLocation(
+            latitude = location.latitude,
+            longitude = location.longitude,
+            accuracyMeters = if (location.hasAccuracy()) location.accuracy else null,
+        )
+    }
+
+    private fun captureParameterRecord(
+        draftId: String,
+        snapshot: ParameterMeterSnapshot,
+        options: ParameterRecordOptions,
+        previewPath: String,
+    ) {
+        if (options.recordGps && parameterLocation == null) {
+            meterLayout.setParameterGpsEnabled(false)
+            Toast.makeText(
+                this,
+                localized("暂时无法取得定位，本条记录不包含 GPS", "No location fix is available; this record will not include GPS"),
+                Toast.LENGTH_LONG,
+            ).show()
+        }
+        val draft = ParameterCaptureDraft(
+            id = draftId,
+            snapshot = snapshot,
+            previewTempPath = previewPath,
+            location = parameterLocation.takeIf { options.recordGps },
+            capturedAtEpochMs = System.currentTimeMillis().takeIf { options.recordTime },
+        )
+        if (!options.recordRaw) {
+            meterLayout.completeParameterCapture(draft)
+            return
+        }
+        val rawFile = meterLayout.createParameterRawFile(draftId)
+        val previewAspect = if (state.frameLandscape) {
+            state.frameFormat.landscapeAspect
+        } else {
+            1f / state.frameFormat.landscapeAspect
+        }
+        cameraController.captureRawRecord(rawFile, previewAspect, state.zoom) { result ->
+            val completed = result.fold(
+                onSuccess = { artifact ->
+                    draft.copy(
+                        rawTempPath = artifact.filePath,
+                        rawGrid = artifact.rawGrid.rebasedForKnownPoints(
+                            snapshot.ev100,
+                            snapshot.zonePoints,
+                        ),
+                    )
+                },
+                onFailure = { error ->
+                    rawFile.delete()
+                    Toast.makeText(
+                        this,
+                        error.message ?: localized("RAW 记录失败，仍可保存其他参数", "RAW capture failed; other parameters can still be saved"),
+                        Toast.LENGTH_LONG,
+                    ).show()
+                    draft
+                },
+            )
+            if (activityResumed) {
+                meterLayout.completeParameterCapture(completed)
+            } else {
+                meterLayout.discardParameterCapture(completed)
+            }
+        }
+    }
+
     private fun updatePreviewTransform(width: Int, height: Int) {
         if (width <= 0 || height <= 0) return
         @Suppress("DEPRECATION")
@@ -1018,6 +1197,11 @@ class MainActivity : Activity(), CameraControllerCallback {
 
     companion object {
         private const val CAMERA_PERMISSION_REQUEST = 41
+        private const val LOCATION_PERMISSION_REQUEST = 42
+        private val LOCATION_PERMISSIONS = arrayOf(
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION,
+        )
         private const val PREFERENCES_NAME = "raw_light_meter_state"
         private const val SUPPRESS_COMPATIBILITY_MODE_WARNING =
             "suppress_compatibility_mode_warning"

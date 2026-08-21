@@ -480,6 +480,25 @@ class InstrumentView(
         releasedDependentCoordinate = releasedDependentCoordinate,
     ).aperture
 
+    fun currentShutterCoordinate(): Double = InstrumentPresentation.exposureCenters(
+        state = state,
+        evAtIso = animatedExposureValue(),
+        lockedDisplayCoordinate = lockedScaleDisplayCoordinate,
+        frozenDependentCoordinate = frozenDependentCoordinate,
+        releasedDependentCoordinate = releasedDependentCoordinate,
+    ).shutter
+
+    fun recordButtonRect(): RectF = RectF(
+        (geometry ?: LayoutGeometry.calculate(
+            width,
+            height,
+            density,
+            state.frameFormat,
+            state.frameLandscape,
+            state.isLeftHanded,
+        )).meterButton,
+    )
+
     private fun animatedExposureValue(): Double {
         val fallback = state.lockedApertureStop - state.lockedShutterLogSeconds
         val target = state.effectiveEv100

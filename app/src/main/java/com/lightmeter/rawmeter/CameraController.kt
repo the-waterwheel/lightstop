@@ -16,6 +16,7 @@ import android.hardware.camera2.CaptureFailure
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
+import android.hardware.camera2.DngCreator
 import android.media.Image
 import android.media.ImageReader
 import android.os.Handler
@@ -29,6 +30,8 @@ import android.view.TextureView
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.io.File
+import java.io.FileOutputStream
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.roundToInt
@@ -52,6 +55,19 @@ class CameraController(
             TimestampedResultPairer(
                 releaseImage = Image::close,
                 toleranceNs = VIGNETTING_PAIRING_TOLERANCE_NS,
+            ),
+    )
+
+    private data class RawRecordCapture(
+        val id: Int,
+        val outputFile: File,
+        val screenAspect: Float,
+        val zoom: Float,
+        val callback: (Result<RawRecordArtifact>) -> Unit,
+        val framePairer: TimestampedResultPairer<Image, CaptureResult> =
+            TimestampedResultPairer(
+                releaseImage = Image::close,
+                toleranceNs = RAW_RECORD_PAIRING_TOLERANCE_NS,
             ),
     )
 
@@ -222,6 +238,9 @@ class CameraController(
     @Volatile
     private var activeVignettingCapture: VignettingCapture? = null
     private var vignettingMeasurementTimeout: Runnable? = null
+    @Volatile
+    private var activeRawRecordCapture: RawRecordCapture? = null
+    private var rawRecordTimeout: Runnable? = null
     private var downgradeAfterCompatibleMeasurement = false
     @Volatile
     private var meteringOperationActive = false
@@ -490,6 +509,54 @@ class CameraController(
             }
         }
         return true
+    }
+
+    /** Captures one full-resolution DNG and a compact RAW sample map for history point metering. */
+    fun captureRawRecord(
+        outputFile: File,
+        screenAspect: Float,
+        zoom: Float,
+        completion: (Result<RawRecordArtifact>) -> Unit,
+    ) {
+        val handler = cameraHandler
+        if (handler == null) {
+            completion(Result.failure(IllegalStateException(localized("相机尚未就绪", "Camera is not ready"))))
+            return
+        }
+        handler.post {
+            if (meteringOperationActive || rawMeter.isMeasuring || compatibleMeter.isMeasuring ||
+                activeVignettingCapture != null || activeRawRecordCapture != null
+            ) {
+                mainHandler.post {
+                    completion(Result.failure(IllegalStateException(localized("请等待当前操作完成", "Wait for the current operation"))))
+                }
+                return@post
+            }
+            val context = rawMeteringContext()
+            if (!cameraInfo.rawAvailable || context == null) {
+                mainHandler.post {
+                    completion(Result.failure(UnsupportedOperationException(localized("当前摄像头不支持 RAW 记录", "This camera does not support RAW recording"))))
+                }
+                return@post
+            }
+            val capture = RawRecordCapture(
+                measurementId.incrementAndGet(),
+                outputFile,
+                screenAspect,
+                zoom,
+                completion,
+            )
+            activeRawRecordCapture = capture
+            meteringOperationActive = true
+            try {
+                outputFile.parentFile?.mkdirs()
+                pausePreviewForRawCapture()
+                scheduleRawRecordTimeout(capture, handler)
+                context.session.capture(rawMeter.buildCaptureRequest(context), rawRecordCaptureCallback, handler)
+            } catch (error: Exception) {
+                finishRawRecord(Result.failure(error))
+            }
+        }
     }
 
     private fun rawMeteringContext(): RawMeteringContext? {
@@ -1403,6 +1470,18 @@ class CameraController(
     }
 
     private fun onRawImageAvailable(reader: ImageReader) {
+        val rawRecord = activeRawRecordCapture
+        if (rawRecord != null) {
+            val image = try {
+                reader.acquireNextImage()
+            } catch (_: IllegalStateException) {
+                null
+            } ?: return
+            rawRecord.framePairer.offerImage(image.timestamp, image)?.let { pair ->
+                processRawRecordPair(rawRecord, pair)
+            }
+            return
+        }
         val vignetting = activeVignettingCapture
         if (vignetting != null) {
             val image = try {
@@ -1416,6 +1495,102 @@ class CameraController(
             return
         }
         rawMeter.onImageAvailable(reader)
+    }
+
+    private fun processRawRecordPair(
+        active: RawRecordCapture,
+        pair: TimestampedResultPair<Image, CaptureResult>,
+    ) {
+        val chars = characteristics
+        try {
+            if (chars == null) {
+                finishRawRecord(Result.failure(IllegalStateException(localized("RAW 元数据无效", "RAW metadata is invalid"))))
+                return
+            }
+            val sensorOrientation = chars.get(CameraCharacteristics.SENSOR_ORIENTATION)
+                ?: cameraInfo.sensorOrientationDegrees
+            val displayDegrees = when (lastDisplayRotation) {
+                Surface.ROTATION_90 -> 90
+                Surface.ROTATION_180 -> 180
+                Surface.ROTATION_270 -> 270
+                else -> 0
+            }
+            val screenToSensorRotation = (sensorOrientation - displayDegrees + 360) % 360
+            val sensorAspect = CameraPreviewTransform.screenAspectInSensorCoordinates(
+                active.screenAspect,
+                sensorOrientation,
+                lastDisplayRotation,
+            )
+            val grid = RecordedRawGridSampler.sample(
+                pair.image,
+                pair.result,
+                chars,
+                sensorAspect,
+                active.zoom,
+                screenToSensorRotation,
+            )
+                ?: throw IllegalStateException(localized("RAW 数据无效", "RAW data is invalid"))
+            FileOutputStream(active.outputFile).use { stream ->
+                DngCreator(chars, pair.result).use { creator -> creator.writeImage(stream, pair.image) }
+            }
+            finishRawRecord(Result.success(RawRecordArtifact(active.outputFile.absolutePath, grid)))
+        } catch (error: Exception) {
+            finishRawRecord(Result.failure(error))
+        } finally {
+            pair.image.close()
+        }
+    }
+
+    private val rawRecordCaptureCallback = object : CameraCaptureSession.CaptureCallback() {
+        override fun onCaptureCompleted(
+            session: CameraCaptureSession,
+            request: CaptureRequest,
+            result: TotalCaptureResult,
+        ) {
+            val effective = effectiveCaptureResult(result)
+            latestResult = effective
+            val timestamp = effective.get(CaptureResult.SENSOR_TIMESTAMP)
+                ?: result.get(CaptureResult.SENSOR_TIMESTAMP)
+                ?: return
+            val active = activeRawRecordCapture ?: return
+            active.framePairer.offerResult(timestamp, effective)?.let { pair -> processRawRecordPair(active, pair) }
+        }
+
+        override fun onCaptureFailed(
+            session: CameraCaptureSession,
+            request: CaptureRequest,
+            failure: CaptureFailure,
+        ) {
+            finishRawRecord(Result.failure(IllegalStateException(localized("RAW 记录失败", "RAW recording failed"))))
+        }
+    }
+
+    private fun scheduleRawRecordTimeout(active: RawRecordCapture, handler: Handler) {
+        cancelRawRecordTimeout(handler)
+        lateinit var timeout: Runnable
+        timeout = Runnable {
+            if (rawRecordTimeout !== timeout || activeRawRecordCapture?.id != active.id) return@Runnable
+            rawRecordTimeout = null
+            finishRawRecord(Result.failure(IllegalStateException(localized("RAW 记录超时", "RAW recording timed out"))))
+        }
+        rawRecordTimeout = timeout
+        handler.postDelayed(timeout, RAW_RECORD_TIMEOUT_MS)
+    }
+
+    private fun cancelRawRecordTimeout(handler: Handler? = cameraHandler) {
+        rawRecordTimeout?.let { handler?.removeCallbacks(it) }
+        rawRecordTimeout = null
+    }
+
+    private fun finishRawRecord(result: Result<RawRecordArtifact>) {
+        val active = activeRawRecordCapture ?: return
+        activeRawRecordCapture = null
+        cancelRawRecordTimeout()
+        active.framePairer.clear()
+        meteringOperationActive = false
+        resumePreviewAfterRawCapture()
+        if (result.isFailure) active.outputFile.delete()
+        mainHandler.post { active.callback(result) }
     }
 
     private fun processVignettingFramePair(
@@ -1491,6 +1666,15 @@ class CameraController(
         cameraGeneration += 1
         cameraFailureStage = CameraFailureStage.OPENING
         cancelVignettingMeasurementTimeout()
+        activeRawRecordCapture?.let { capture ->
+            activeRawRecordCapture = null
+            cancelRawRecordTimeout()
+            capture.framePairer.clear()
+            capture.outputFile.delete()
+            mainHandler.post {
+                capture.callback(Result.failure(IllegalStateException(localized("RAW 记录已中止", "RAW recording was interrupted"))))
+            }
+        }
         rawMeter.cancel(cameraHandler)
         compatibleMeter.cancel(cameraHandler, resetYuvAvailability = true)
         meteringOperationActive = false
@@ -1532,6 +1716,8 @@ class CameraController(
         private const val MAX_METERING_REFERENCE_AGE_NS = 350_000_000L
         private const val PREVIEW_REFERENCE_LONG_EDGE = 384
         private const val VIGNETTING_TIMEOUT_MS = 8_000L
+        private const val RAW_RECORD_TIMEOUT_MS = 8_000L
+        private const val RAW_RECORD_PAIRING_TOLERANCE_NS = 40_000_000L
         private const val SESSION_RECOVERY_DELAY_MS = 300L
         private const val STABLE_PREVIEW_RESET_DELAY_MS = 10_000L
         private const val MAX_TOTAL_RECOVERY_ATTEMPTS = 6

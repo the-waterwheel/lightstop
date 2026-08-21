@@ -1453,6 +1453,28 @@ class ZoneSystemView(
 
     fun currentApertureCoordinate(): Double = session.apertureCoordinate
 
+    fun currentShutterCoordinate(): Double = session.shutterCoordinate
+
+    fun currentMeanEv100(): Double? = if (session.markers.any { it.ev100 != null }) {
+        session.weightedMeanEv100()
+    } else {
+        state.effectiveEv100
+    }
+
+    fun recordedZonePoints(): List<RecordedZonePoint> = session.markers.map { marker ->
+        RecordedZonePoint(
+            id = marker.id,
+            normalizedX = marker.normalizedX,
+            normalizedY = marker.normalizedY,
+            ev100 = marker.ev100,
+            source = marker.source,
+        )
+    }
+
+    fun recordButtonRect(): RectF = RectF(
+        (geometry ?: calculateGeometry(width, height)).markButton,
+    )
+
     private companion object {
         private const val MAX_FORMAT_MENU_ROWS = 6
         private const val MIN_MARKER_INTERPOLATION_MS = 12L

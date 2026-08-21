@@ -4,6 +4,7 @@ import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.RectF
 import android.graphics.SurfaceTexture
@@ -14,6 +15,8 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
+import android.widget.Toast
+import java.util.UUID
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -26,6 +29,7 @@ class MeterLayout @JvmOverloads constructor(
 ) : ViewGroup(context, attributeSet) {
 
     private enum class CameraManagementOrigin { SETTINGS, CALIBRATION, VIGNETTING }
+    private enum class FilmSelectionTarget { LATITUDE, PARAMETER_RECORD }
 
     interface Listener {
         fun onMeasureRequested()
@@ -45,6 +49,13 @@ class MeterLayout @JvmOverloads constructor(
         fun onVignettingHistoryRestoreRequested(createdAtEpochMs: Long)
         fun onZoneMeasureRequested(marker: ZoneMarker, target: ZoneMeteringTarget?)
         fun onZoneTrackingActiveChanged(active: Boolean)
+        fun onParameterGpsEnableRequested()
+        fun onParameterCaptureRequested(
+            draftId: String,
+            snapshot: ParameterMeterSnapshot,
+            options: ParameterRecordOptions,
+            previewPath: String,
+        )
     }
 
     val textureView = TextureView(context).apply {
@@ -62,6 +73,11 @@ class MeterLayout @JvmOverloads constructor(
     val depthOfFieldView = DepthOfFieldView(context, state)
     private val latitudeView = LatitudeView(context, state, filmLatitudeRepository)
     private val filmSelectorView = FilmSelectorView(context, state, filmLatitudeRepository)
+    private val parameterRecordRepository = ParameterRecordRepository(context)
+    private val parameterRecordToolView = ParameterRecordToolView(context, state, parameterRecordRepository)
+    private val parameterRecordEditorView = ParameterRecordEditorView(context, state)
+    private val parameterHistoryView = ParameterHistoryView(context, state, parameterRecordRepository)
+    private val recordCaptureSliderView = RecordCaptureSliderView(context, state)
     private val toolsHost = FrameLayout(context)
     private val zoneMarkerTracker: ZoneMarkerTracker = DeferredZoneMarkerTracker {
         trackerFactory.create(textureView, state) { id, x, y, trackingState ->
@@ -82,7 +98,12 @@ class MeterLayout @JvmOverloads constructor(
         private set
     var isFilmSelectorOpen: Boolean = false
         private set
+    var isParameterEditorOpen: Boolean = false
+        private set
+    var isParameterHistoryOpen: Boolean = false
+        private set
     private var activeToolId: ToolId? = null
+    private var filmSelectionTarget = FilmSelectionTarget.LATITUDE
     var isZoneMode: Boolean = false
         private set
     private var zoneTransitionFraction = 0f
@@ -359,9 +380,23 @@ class MeterLayout @JvmOverloads constructor(
                 FrameLayout.LayoutParams.MATCH_PARENT,
             ),
         )
+        parameterRecordToolView.visibility = View.GONE
+        toolsHost.addView(
+            parameterRecordToolView,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
         addView(toolsHost)
+        recordCaptureSliderView.visibility = View.GONE
+        addView(recordCaptureSliderView)
+        parameterRecordEditorView.visibility = View.GONE
+        addView(parameterRecordEditorView)
         filmSelectorView.visibility = View.GONE
         addView(filmSelectorView)
+        parameterHistoryView.visibility = View.GONE
+        addView(parameterHistoryView)
         zoneView.setAppliedLatitude(filmLatitudeRepository.loadApplied()?.range)
         toolsView.listener = object : ToolsView.Listener {
             override fun onCloseRequested() {
@@ -372,6 +407,7 @@ class MeterLayout @JvmOverloads constructor(
                 when (spec.id) {
                     ToolId.DEPTH_OF_FIELD -> showDepthOfField()
                     ToolId.LATITUDE -> showLatitude()
+                    ToolId.PARAMETER_LOG -> showParameterRecord()
                     else -> Log.i("lightstop", "Tool requested: ${spec.id}")
                 }
             }
@@ -401,11 +437,98 @@ class MeterLayout @JvmOverloads constructor(
             }
 
             override fun onFilmSelectionRequested() {
-                showFilmSelector()
+                showFilmSelector(FilmSelectionTarget.LATITUDE)
             }
 
             override fun onAppliedLatitudeChanged(value: AppliedFilmLatitude?) {
                 zoneView.setAppliedLatitude(value?.range)
+            }
+        }
+        parameterRecordToolView.listener = object : ParameterRecordToolView.Listener {
+            override fun onBackToToolsRequested() {
+                activeToolId = null
+                parameterRecordToolView.visibility = View.GONE
+                toolsView.visibility = View.VISIBLE
+                toolsView.bringToFront()
+            }
+
+            override fun onCloseRequested() {
+                closeTools()
+            }
+
+            override fun onHistoryRequested() {
+                showParameterHistory()
+            }
+
+            override fun onRecordingStateChanged(recording: Boolean) {
+                setRecordSliderVisible(recording)
+                if (recording && isToolsOpen) closeTools()
+            }
+
+            override fun onGpsEnableRequested() {
+                listener?.onParameterGpsEnableRequested()
+            }
+        }
+        parameterRecordEditorView.listener = object : ParameterRecordEditorView.Listener {
+            override fun onCancelRequested(draft: ParameterCaptureDraft) {
+                parameterRecordRepository.discard(draft)
+                closeParameterEditor(resetCapture = true)
+            }
+
+            override fun onFilmSelectionRequested() {
+                showFilmSelector(FilmSelectionTarget.PARAMETER_RECORD)
+            }
+
+            override fun onSaveRequested(draft: ParameterCaptureDraft) {
+                runCatching { parameterRecordRepository.save(draft) }
+                    .onSuccess { closeParameterEditor(resetCapture = true) }
+                    .onFailure {
+                        Log.e("lightstop", "Unable to save parameter record", it)
+                        Toast.makeText(
+                            context,
+                            if (state.menuLanguage == MenuLanguage.ENGLISH) {
+                                "Unable to save this record. Check available storage."
+                            } else {
+                                "无法保存本条记录，请检查可用存储空间"
+                            },
+                            Toast.LENGTH_LONG,
+                        ).show()
+                    }
+            }
+        }
+        parameterHistoryView.listener = object : ParameterHistoryView.Listener {
+            override fun onCloseRequested() {
+                closeParameterHistory()
+            }
+
+            override fun onRepositoryChanged() {
+                if (parameterRecordRepository.activeCategoryId == null) {
+                    parameterRecordToolView.stopRecording()
+                }
+                parameterRecordToolView.invalidate()
+            }
+        }
+        recordCaptureSliderView.onCaptureRequested = {
+            val id = UUID.randomUUID().toString()
+            val preview = captureParameterPreview(id)
+            if (preview == null) {
+                recordCaptureSliderView.setCapturePending(false)
+                Toast.makeText(
+                    context,
+                    if (state.menuLanguage == MenuLanguage.ENGLISH) {
+                        "Unable to capture the current preview. Try again."
+                    } else {
+                        "无法截取当前画面，请重试"
+                    },
+                    Toast.LENGTH_LONG,
+                ).show()
+            } else {
+                listener?.onParameterCaptureRequested(
+                    id,
+                    currentParameterSnapshot(),
+                    parameterRecordRepository.options,
+                    preview,
+                ) ?: recordCaptureSliderView.setCapturePending(false)
             }
         }
         filmSelectorView.listener = object : FilmSelectorView.Listener {
@@ -414,12 +537,17 @@ class MeterLayout @JvmOverloads constructor(
             }
 
             override fun onFilmSelected(profile: FilmLatitudeProfile) {
-                latitudeView.selectFilm(profile)
+                when (filmSelectionTarget) {
+                    FilmSelectionTarget.LATITUDE -> latitudeView.selectFilm(profile)
+                    FilmSelectionTarget.PARAMETER_RECORD -> parameterRecordEditorView.selectFilm(profile)
+                }
                 closeFilmSelector()
             }
 
             override fun onFilmRangeReset(profile: FilmLatitudeProfile) {
-                latitudeView.onFilmRangeReset(profile)
+                if (filmSelectionTarget == FilmSelectionTarget.LATITUDE) {
+                    latitudeView.onFilmRangeReset(profile)
+                }
             }
         }
     }
@@ -460,8 +588,20 @@ class MeterLayout @JvmOverloads constructor(
             MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
             MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
         )
+        recordCaptureSliderView.measure(
+            MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
+        )
+        parameterHistoryView.measure(
+            MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
+        )
         val toolsRect = toolsPanelRect(width, height)
         toolsHost.measure(
+            MeasureSpec.makeMeasureSpec(toolsRect.width().roundToInt().coerceAtLeast(0), MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(toolsRect.height().roundToInt().coerceAtLeast(0), MeasureSpec.EXACTLY),
+        )
+        parameterRecordEditorView.measure(
             MeasureSpec.makeMeasureSpec(toolsRect.width().roundToInt().coerceAtLeast(0), MeasureSpec.EXACTLY),
             MeasureSpec.makeMeasureSpec(toolsRect.height().roundToInt().coerceAtLeast(0), MeasureSpec.EXACTLY),
         )
@@ -562,7 +702,17 @@ class MeterLayout @JvmOverloads constructor(
         vignettingCalibrationView.layout(0, 0, width, height)
         zoneView.layout(0, 0, width, height)
         layoutToolsPanel()
+        recordCaptureSliderView.layout(0, 0, width, height)
+        val parameterPanel = toolsPanelRect(width, height)
+        parameterRecordEditorView.layout(
+            parameterPanel.left.toInt(),
+            parameterPanel.top.toInt(),
+            parameterPanel.right.toInt(),
+            parameterPanel.bottom.toInt(),
+        )
         filmSelectorView.layout(0, 0, width, height)
+        parameterHistoryView.layout(0, 0, width, height)
+        updateRecordSliderAnchor()
         // A format change can resize this child while the ViewGroup's own bounds stay the
         // same, so `changed` is not a reliable signal. Publish geometry after every layout.
         post {
@@ -614,6 +764,10 @@ class MeterLayout @JvmOverloads constructor(
         toolsView.invalidate()
         depthOfFieldView.invalidate()
         latitudeView.invalidate()
+        parameterRecordToolView.resumePage()
+        parameterRecordEditorView.invalidate()
+        parameterHistoryView.invalidate()
+        recordCaptureSliderView.invalidate()
         filmSelectorView.applyTheme()
     }
 
@@ -672,6 +826,7 @@ class MeterLayout @JvmOverloads constructor(
             ToolId.DEPTH_OF_FIELD -> {
                 toolsView.visibility = View.GONE
                 latitudeView.visibility = View.GONE
+                parameterRecordToolView.visibility = View.GONE
                 depthOfFieldView.visibility = View.VISIBLE
                 depthOfFieldView.resumePage()
                 depthOfFieldView.bringToFront()
@@ -679,13 +834,23 @@ class MeterLayout @JvmOverloads constructor(
             ToolId.LATITUDE -> {
                 toolsView.visibility = View.GONE
                 depthOfFieldView.visibility = View.GONE
+                parameterRecordToolView.visibility = View.GONE
                 latitudeView.visibility = View.VISIBLE
                 latitudeView.resumePage()
                 latitudeView.bringToFront()
             }
+            ToolId.PARAMETER_LOG -> {
+                toolsView.visibility = View.GONE
+                depthOfFieldView.visibility = View.GONE
+                latitudeView.visibility = View.GONE
+                parameterRecordToolView.visibility = View.VISIBLE
+                parameterRecordToolView.resumePage()
+                parameterRecordToolView.bringToFront()
+            }
             else -> {
                 depthOfFieldView.visibility = View.GONE
                 latitudeView.visibility = View.GONE
+                parameterRecordToolView.visibility = View.GONE
                 toolsView.visibility = View.VISIBLE
                 toolsView.bringToFront()
             }
@@ -784,6 +949,7 @@ class MeterLayout @JvmOverloads constructor(
         depthOfFieldView.openWithMeterDefaults(apertureStop)
         toolsView.visibility = View.GONE
         latitudeView.visibility = View.GONE
+        parameterRecordToolView.visibility = View.GONE
         depthOfFieldView.visibility = View.VISIBLE
         depthOfFieldView.bringToFront()
         Log.i("lightstop", "Depth-of-field tool opened")
@@ -794,13 +960,30 @@ class MeterLayout @JvmOverloads constructor(
         latitudeView.openPage()
         toolsView.visibility = View.GONE
         depthOfFieldView.visibility = View.GONE
+        parameterRecordToolView.visibility = View.GONE
         latitudeView.visibility = View.VISIBLE
         latitudeView.bringToFront()
         Log.i("lightstop", "Latitude tool opened")
     }
 
-    private fun showFilmSelector() {
-        if (isFilmSelectorOpen || !isToolsOpen || activeToolId != ToolId.LATITUDE) return
+    private fun showParameterRecord() {
+        activeToolId = ToolId.PARAMETER_LOG
+        parameterRecordToolView.resumePage()
+        toolsView.visibility = View.GONE
+        depthOfFieldView.visibility = View.GONE
+        latitudeView.visibility = View.GONE
+        parameterRecordToolView.visibility = View.VISIBLE
+        parameterRecordToolView.bringToFront()
+        Log.i("lightstop", "Parameter-record tool opened")
+    }
+
+    private fun showFilmSelector(target: FilmSelectionTarget) {
+        val allowed = when (target) {
+            FilmSelectionTarget.LATITUDE -> isToolsOpen && activeToolId == ToolId.LATITUDE
+            FilmSelectionTarget.PARAMETER_RECORD -> isParameterEditorOpen
+        }
+        if (isFilmSelectorOpen || !allowed) return
+        filmSelectionTarget = target
         isFilmSelectorOpen = true
         filmSelectorView.open()
         filmSelectorView.animate().cancel()
@@ -847,6 +1030,202 @@ class MeterLayout @JvmOverloads constructor(
             }
             .start()
         return true
+    }
+
+    private fun currentParameterSnapshot(): ParameterMeterSnapshot = if (isZoneMode) {
+        ParameterMeterSnapshot(
+            mode = ParameterRecordMode.ZONE,
+            apertureCoordinate = zoneView.currentApertureCoordinate(),
+            shutterCoordinate = zoneView.currentShutterCoordinate(),
+            ei = zoneView.session.iso,
+            ev100 = zoneView.currentMeanEv100(),
+            zonePoints = zoneView.recordedZonePoints(),
+        )
+    } else {
+        ParameterMeterSnapshot(
+            mode = ParameterRecordMode.NORMAL,
+            apertureCoordinate = instrumentView.currentApertureCoordinate(),
+            shutterCoordinate = instrumentView.currentShutterCoordinate(),
+            ei = state.iso,
+            ev100 = state.effectiveEv100,
+            zonePoints = emptyList(),
+        )
+    }
+
+    private fun captureParameterPreview(id: String): String? {
+        val file = parameterRecordRepository.createPendingPreviewFile(id)
+        return runCatching {
+            val sourceWidth = textureView.width.coerceAtLeast(1)
+            val sourceHeight = textureView.height.coerceAtLeast(1)
+            val scale = min(1f, 1600f / max(sourceWidth, sourceHeight).toFloat())
+            val source = checkNotNull(textureView.getBitmap(
+                (sourceWidth * scale).roundToInt().coerceAtLeast(1),
+                (sourceHeight * scale).roundToInt().coerceAtLeast(1),
+            ))
+            var bitmap: Bitmap? = null
+            try {
+                val cameraFrame = if (isZoneMode) {
+                    zoneView.calculatePreviewFrame(width, height)
+                } else {
+                    LayoutGeometry.calculate(
+                        width,
+                        height,
+                        resources.displayMetrics.density,
+                        state.frameFormat,
+                        state.frameLandscape,
+                        state.isLeftHanded,
+                    ).cameraFrame
+                }
+                val cropLeft = (((cameraFrame.left - textureView.left) / sourceWidth) * source.width)
+                    .roundToInt().coerceIn(0, source.width - 1)
+                val cropTop = (((cameraFrame.top - textureView.top) / sourceHeight) * source.height)
+                    .roundToInt().coerceIn(0, source.height - 1)
+                val cropRight = (((cameraFrame.right - textureView.left) / sourceWidth) * source.width)
+                    .roundToInt().coerceIn(cropLeft + 1, source.width)
+                val cropBottom = (((cameraFrame.bottom - textureView.top) / sourceHeight) * source.height)
+                    .roundToInt().coerceIn(cropTop + 1, source.height)
+                val cropped = Bitmap.createBitmap(
+                    source,
+                    cropLeft,
+                    cropTop,
+                    cropRight - cropLeft,
+                    cropBottom - cropTop,
+                )
+                bitmap = cropped
+                file.outputStream().use { output ->
+                    check(cropped.compress(Bitmap.CompressFormat.JPEG, 92, output))
+                }
+                file.absolutePath
+            } finally {
+                bitmap?.takeIf { it !== source }?.recycle()
+                source.recycle()
+            }
+        }.onFailure {
+            file.delete()
+            Log.e("lightstop", "Unable to capture parameter-record preview", it)
+        }.getOrNull()
+    }
+
+    fun createParameterRawFile(id: String) = parameterRecordRepository.createPendingRawFile(id)
+
+    fun setParameterGpsEnabled(enabled: Boolean) {
+        parameterRecordToolView.setGpsEnabled(enabled)
+    }
+
+    fun isParameterGpsEnabled(): Boolean = parameterRecordRepository.options.recordGps
+
+    fun completeParameterCapture(draft: ParameterCaptureDraft) {
+        showParameterEditor(draft)
+    }
+
+    fun discardParameterCapture(draft: ParameterCaptureDraft) {
+        parameterRecordRepository.discard(draft)
+        recordCaptureSliderView.setCapturePending(false)
+    }
+
+    private fun showParameterEditor(draft: ParameterCaptureDraft) {
+        if (isParameterEditorOpen) return
+        isParameterEditorOpen = true
+        parameterRecordEditorView.open(draft)
+        parameterRecordEditorView.animate().cancel()
+        parameterRecordEditorView.visibility = View.VISIBLE
+        parameterRecordEditorView.bringToFront()
+        val rect = toolsPanelRect(width, height)
+        val landscape = width > height
+        parameterRecordEditorView.translationX = if (landscape) {
+            if (state.isLeftHanded) -rect.width() else rect.width()
+        } else {
+            0f
+        }
+        parameterRecordEditorView.translationY = if (landscape) 0f else rect.height()
+        parameterRecordEditorView.animate()
+            .translationX(0f)
+            .translationY(0f)
+            .setDuration(300L)
+            .setInterpolator(DecelerateInterpolator())
+            .start()
+    }
+
+    private fun closeParameterEditor(resetCapture: Boolean): Boolean {
+        if (!isParameterEditorOpen) return false
+        if (isFilmSelectorOpen) closeFilmSelector(animate = false)
+        isParameterEditorOpen = false
+        val rect = toolsPanelRect(width, height)
+        val landscape = width > height
+        parameterRecordEditorView.animate().cancel()
+        parameterRecordEditorView.animate()
+            .translationX(if (landscape) {
+                if (state.isLeftHanded) -rect.width() else rect.width()
+            } else 0f)
+            .translationY(if (landscape) 0f else rect.height())
+            .setDuration(260L)
+            .setInterpolator(DecelerateInterpolator())
+            .withEndAction {
+                if (!isParameterEditorOpen) parameterRecordEditorView.visibility = View.GONE
+                if (resetCapture) recordCaptureSliderView.setCapturePending(false)
+                if (parameterRecordToolView.recording) recordCaptureSliderView.bringToFront()
+            }
+            .start()
+        return true
+    }
+
+    fun closeParameterEditorFromBack(): Boolean {
+        val draft = parameterRecordEditorView.currentDraft() ?: return false
+        parameterRecordRepository.discard(draft)
+        return closeParameterEditor(resetCapture = true)
+    }
+
+    private fun showParameterHistory() {
+        if (isParameterHistoryOpen) return
+        isParameterHistoryOpen = true
+        parameterHistoryView.open()
+        parameterHistoryView.animate().cancel()
+        parameterHistoryView.visibility = View.VISIBLE
+        parameterHistoryView.bringToFront()
+        parameterHistoryView.translationY = -height.toFloat().coerceAtLeast(1f)
+        parameterHistoryView.animate()
+            .translationY(0f)
+            .setDuration(300L)
+            .setInterpolator(DecelerateInterpolator())
+            .start()
+    }
+
+    private fun closeParameterHistory(): Boolean {
+        if (!isParameterHistoryOpen) return false
+        isParameterHistoryOpen = false
+        parameterRecordToolView.invalidate()
+        parameterHistoryView.animate().cancel()
+        parameterHistoryView.animate()
+            .translationY(-height.toFloat().coerceAtLeast(1f))
+            .setDuration(260L)
+            .setInterpolator(DecelerateInterpolator())
+            .withEndAction {
+                if (!isParameterHistoryOpen) parameterHistoryView.visibility = View.GONE
+            }
+            .start()
+        return true
+    }
+
+    fun closeParameterHistoryFromBack(): Boolean {
+        if (!isParameterHistoryOpen) return false
+        if (parameterHistoryView.navigateBack()) return true
+        return closeParameterHistory()
+    }
+
+    private fun setRecordSliderVisible(visible: Boolean) {
+        recordCaptureSliderView.visibility = if (visible) View.VISIBLE else View.GONE
+        recordCaptureSliderView.setCapturePending(false)
+        if (visible) {
+            updateRecordSliderAnchor()
+            recordCaptureSliderView.bringToFront()
+        }
+    }
+
+    private fun updateRecordSliderAnchor() {
+        if (recordCaptureSliderView.visibility != View.VISIBLE) return
+        recordCaptureSliderView.setAnchor(
+            if (isZoneMode) zoneView.recordButtonRect() else instrumentView.recordButtonRect(),
+        )
     }
 
     fun closeSettings(): Boolean {
