@@ -92,6 +92,8 @@ class ZoneSystemView(
     private val dividerColor: Int
         get() = if (state.isDarkMode) Color.rgb(84, 84, 80) else Color.rgb(190, 190, 186)
     private val red = Color.rgb(166, 27, 36)
+    private val latitudeOutsideRed: Int
+        get() = if (state.isDarkMode) Color.rgb(196, 116, 120) else Color.rgb(231, 151, 155)
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
@@ -103,6 +105,7 @@ class ZoneSystemView(
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
 
     private var geometry: Geometry? = null
+    private var appliedLatitudeRange: FilmLatitudeRange? = null
     private var touchTarget = TouchTarget.NONE
     private var touchStartX = 0f
     private var touchStartY = 0f
@@ -206,6 +209,11 @@ class ZoneSystemView(
         listScrollOffset = 0f
         // Orientation/layout changes are discontinuous coordinate remaps, not camera motion.
         markerDisplayMotions.clear()
+    }
+
+    fun setAppliedLatitude(range: FilmLatitudeRange?) {
+        appliedLatitudeRange = range
+        invalidate()
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -423,17 +431,22 @@ class ZoneSystemView(
             val y = frame.top + display.y * frame.height()
             val radius = 9f * density
             val selected = marker.id == session.selectedMarkerId
+            val outsideLatitude = isOutsideAppliedLatitude(marker)
             // RAW capture temporarily freezes the preview and can make tracking report
             // UNCERTAIN/LOST. Keep the marker geometry stable: every state uses a solid circle.
             paint.pathEffect = null
             paint.style = Paint.Style.FILL
-            paint.color = if (selected) Color.argb(150, Color.red(red), Color.green(red), Color.blue(red)) else surface
+            paint.color = when {
+                outsideLatitude -> latitudeOutsideRed
+                selected -> Color.argb(150, Color.red(red), Color.green(red), Color.blue(red))
+                else -> surface
+            }
             canvas.drawCircle(x, y, radius, paint)
             paint.style = Paint.Style.STROKE
             paint.strokeWidth = 1f * density
-            paint.color = if (selected) red else foreground
+            paint.color = if (outsideLatitude || selected) red else foreground
             canvas.drawCircle(x, y, radius, paint)
-            boldPaint.color = if (selected && !state.isDarkMode) Color.WHITE else foreground
+            boldPaint.color = if ((outsideLatitude || selected) && !state.isDarkMode) Color.WHITE else foreground
             boldPaint.textSize = 7f * density
             drawCenteredText(canvas, marker.id.toString(), x, y, boldPaint)
         }
@@ -597,6 +610,7 @@ class ZoneSystemView(
         paint.strokeWidth = 1f * density
         paint.color = foreground
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
+        drawLatitudeBoundaries(canvas, rect, g.landscape)
     }
 
     private fun drawMarkerRail(canvas: Canvas, g: Geometry) {
@@ -607,6 +621,7 @@ class ZoneSystemView(
         paint.strokeWidth = 1f * density
         paint.color = foreground
         canvas.drawRect(g.markerRail, paint)
+        drawLatitudeBoundaries(canvas, g.markerRail, g.landscape)
         val meanZone = session.weightedMeanZone(session.iso)
         if (meanZone != null) {
             paint.color = red
@@ -631,14 +646,19 @@ class ZoneSystemView(
                 y = g.markerRail.centerY() + ((index % 3) - 1) * 6f * density
             }
             val radius = 7.5f * density
+            val outsideLatitude = isOutsideAppliedLatitude(marker)
             paint.style = Paint.Style.FILL
-            paint.color = if (marker.id == session.selectedMarkerId) Color.argb(170, Color.red(red), Color.green(red), Color.blue(red)) else surface
+            paint.color = when {
+                outsideLatitude -> latitudeOutsideRed
+                marker.id == session.selectedMarkerId -> Color.argb(170, Color.red(red), Color.green(red), Color.blue(red))
+                else -> surface
+            }
             canvas.drawCircle(x, y, radius, paint)
             paint.style = Paint.Style.STROKE
             paint.strokeWidth = 1f * density
-            paint.color = if (marker.id == session.selectedMarkerId) red else foreground
+            paint.color = if (outsideLatitude || marker.id == session.selectedMarkerId) red else foreground
             canvas.drawCircle(x, y, radius, paint)
-            boldPaint.color = foreground
+            boldPaint.color = if (outsideLatitude && !state.isDarkMode) Color.WHITE else foreground
             boldPaint.textSize = 6f * density
             drawCenteredText(canvas, marker.id.toString(), x, y, boldPaint)
         }
@@ -678,7 +698,7 @@ class ZoneSystemView(
             val evText = marker.ev100?.let { "%.2f".format(it) } ?: "…"
             val zoneText = session.formattedZone(marker, session.iso)
             paint.style = Paint.Style.FILL
-            paint.color = foreground
+            paint.color = if (isOutsideAppliedLatitude(marker)) latitudeOutsideRed else foreground
             paint.textSize = 8f * density
             paint.typeface = Typeface.DEFAULT_BOLD
             canvas.drawText("${marker.id}   EV100 $evText   $zoneText", shifted.left + 10f * density, shifted.centerY() + 3f * density, paint)
@@ -1350,6 +1370,30 @@ class ZoneSystemView(
 
     private fun zonePositionY(rect: RectF, zone: Double): Float =
         rect.bottom - (zone.coerceIn(0.0, 10.0) / 10.0 * rect.height()).toFloat()
+
+    private fun drawLatitudeBoundaries(canvas: Canvas, rect: RectF, landscape: Boolean) {
+        val range = appliedLatitudeRange ?: return
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 2f * density
+        paint.color = red
+        if (landscape) {
+            listOf(range.lowerZone, range.upperZone).forEach { zone ->
+                val y = zonePositionY(rect, zone)
+                canvas.drawLine(rect.left, y, rect.right, y, paint)
+            }
+        } else {
+            listOf(range.lowerZone, range.upperZone).forEach { zone ->
+                val x = zonePositionX(rect, zone)
+                canvas.drawLine(x, rect.top, x, rect.bottom, paint)
+            }
+        }
+    }
+
+    private fun isOutsideAppliedLatitude(marker: ZoneMarker): Boolean {
+        val range = appliedLatitudeRange ?: return false
+        val zone = session.zoneFor(marker, session.iso) ?: return false
+        return !range.containsZone(zone)
+    }
 
     private fun shortFormatLabel(): String = InstrumentPresentation.formatShortLabel(
         state.frameFormat,

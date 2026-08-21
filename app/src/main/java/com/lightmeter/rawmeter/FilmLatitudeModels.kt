@@ -1,0 +1,81 @@
+package com.lightmeter.rawmeter
+
+import android.content.Context
+import org.json.JSONArray
+
+/** Latitude endpoints are expressed in EV relative to an 18% gray card (Zone V). */
+data class FilmLatitudeRange(
+    val shadowEv: Double,
+    val highlightEv: Double,
+) {
+    val lowerZone: Double get() = (MIDDLE_GRAY_ZONE + shadowEv).coerceIn(MIN_ZONE, MAX_ZONE)
+    val upperZone: Double get() = (MIDDLE_GRAY_ZONE + highlightEv).coerceIn(MIN_ZONE, MAX_ZONE)
+
+    fun containsZone(zone: Double): Boolean =
+        zone + COMPARISON_EPSILON >= MIDDLE_GRAY_ZONE + shadowEv &&
+            zone - COMPARISON_EPSILON <= MIDDLE_GRAY_ZONE + highlightEv
+
+    fun ordered(): FilmLatitudeRange = if (shadowEv <= highlightEv) {
+        this
+    } else {
+        FilmLatitudeRange(highlightEv, shadowEv)
+    }
+
+    companion object {
+        const val MIN_ZONE = 0.0
+        const val MAX_ZONE = 10.0
+        const val MIDDLE_GRAY_ZONE = 5.0
+        const val MIN_CUSTOM_EV = -20.0
+        const val MAX_CUSTOM_EV = 20.0
+        private const val COMPARISON_EPSILON = 1e-6
+        val FULL_SCALE = FilmLatitudeRange(-5.0, 5.0)
+    }
+}
+
+data class FilmLatitudeProfile(
+    val id: String,
+    val manufacturer: String,
+    val model: String,
+    val iso: Int?,
+    val type: String,
+    val discontinued: Boolean,
+    val originalRange: FilmLatitudeRange,
+    val custom: Boolean = false,
+) {
+    val displayName: String
+        get() = listOf(manufacturer, model).filter(String::isNotBlank).joinToString(" ")
+}
+
+data class AppliedFilmLatitude(
+    val range: FilmLatitudeRange,
+    val filmId: String?,
+    val filmName: String?,
+)
+
+/** Parses the immutable database exported from the supplied 2026-08-17 workbook. */
+internal class FilmLatitudeCatalog(context: Context) {
+    val films: List<FilmLatitudeProfile> = context.assets
+        .open("film_latitude_2026_08_17.json")
+        .bufferedReader()
+        .use { reader -> parse(JSONArray(reader.readText())) }
+
+    private fun parse(array: JSONArray): List<FilmLatitudeProfile> = buildList(array.length()) {
+        for (index in 0 until array.length()) {
+            val item = array.getJSONObject(index)
+            add(
+                FilmLatitudeProfile(
+                    id = "builtin-${item.getInt("id")}",
+                    manufacturer = item.optString("manufacturer"),
+                    model = item.optString("model"),
+                    iso = item.optInt("iso").takeIf { it > 0 },
+                    type = item.optString("type"),
+                    discontinued = item.optBoolean("discontinued"),
+                    originalRange = FilmLatitudeRange(
+                        shadowEv = item.getDouble("shadowEv"),
+                        highlightEv = item.getDouble("highlightEv"),
+                    ).ordered(),
+                ),
+            )
+        }
+    }
+}

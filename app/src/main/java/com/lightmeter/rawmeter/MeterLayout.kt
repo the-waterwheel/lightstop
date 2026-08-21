@@ -58,7 +58,10 @@ class MeterLayout @JvmOverloads constructor(
     val vignettingCalibrationView = VignettingCalibrationView(context, state)
     val zoneView = ZoneSystemView(context, state)
     val toolsView = ToolsView(context, state)
+    private val filmLatitudeRepository = FilmLatitudeRepository(context)
     val depthOfFieldView = DepthOfFieldView(context, state)
+    private val latitudeView = LatitudeView(context, state, filmLatitudeRepository)
+    private val filmSelectorView = FilmSelectorView(context, state, filmLatitudeRepository)
     private val toolsHost = FrameLayout(context)
     private val zoneMarkerTracker: ZoneMarkerTracker = DeferredZoneMarkerTracker {
         trackerFactory.create(textureView, state) { id, x, y, trackingState ->
@@ -76,6 +79,8 @@ class MeterLayout @JvmOverloads constructor(
     var isCameraManagementOpen: Boolean = false
         private set
     var isToolsOpen: Boolean = false
+        private set
+    var isFilmSelectorOpen: Boolean = false
         private set
     private var activeToolId: ToolId? = null
     var isZoneMode: Boolean = false
@@ -346,17 +351,28 @@ class MeterLayout @JvmOverloads constructor(
                 FrameLayout.LayoutParams.MATCH_PARENT,
             ),
         )
+        latitudeView.visibility = View.GONE
+        toolsHost.addView(
+            latitudeView,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
         addView(toolsHost)
+        filmSelectorView.visibility = View.GONE
+        addView(filmSelectorView)
+        zoneView.setAppliedLatitude(filmLatitudeRepository.loadApplied()?.range)
         toolsView.listener = object : ToolsView.Listener {
             override fun onCloseRequested() {
                 closeTools()
             }
 
             override fun onToolRequested(spec: ToolSpec) {
-                if (spec.id == ToolId.DEPTH_OF_FIELD) {
-                    showDepthOfField()
-                } else {
-                    Log.i("lightstop", "Tool requested: ${spec.id}")
+                when (spec.id) {
+                    ToolId.DEPTH_OF_FIELD -> showDepthOfField()
+                    ToolId.LATITUDE -> showLatitude()
+                    else -> Log.i("lightstop", "Tool requested: ${spec.id}")
                 }
             }
         }
@@ -370,6 +386,40 @@ class MeterLayout @JvmOverloads constructor(
 
             override fun onCloseRequested() {
                 closeTools()
+            }
+        }
+        latitudeView.listener = object : LatitudeView.Listener {
+            override fun onBackToToolsRequested() {
+                activeToolId = null
+                latitudeView.visibility = View.GONE
+                toolsView.visibility = View.VISIBLE
+                toolsView.bringToFront()
+            }
+
+            override fun onCloseRequested() {
+                closeTools()
+            }
+
+            override fun onFilmSelectionRequested() {
+                showFilmSelector()
+            }
+
+            override fun onAppliedLatitudeChanged(value: AppliedFilmLatitude?) {
+                zoneView.setAppliedLatitude(value?.range)
+            }
+        }
+        filmSelectorView.listener = object : FilmSelectorView.Listener {
+            override fun onCloseRequested() {
+                closeFilmSelector()
+            }
+
+            override fun onFilmSelected(profile: FilmLatitudeProfile) {
+                latitudeView.selectFilm(profile)
+                closeFilmSelector()
+            }
+
+            override fun onFilmRangeReset(profile: FilmLatitudeProfile) {
+                latitudeView.onFilmRangeReset(profile)
             }
         }
     }
@@ -403,6 +453,10 @@ class MeterLayout @JvmOverloads constructor(
             MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
         )
         zoneView.measure(
+            MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
+        )
+        filmSelectorView.measure(
             MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
             MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
         )
@@ -508,6 +562,7 @@ class MeterLayout @JvmOverloads constructor(
         vignettingCalibrationView.layout(0, 0, width, height)
         zoneView.layout(0, 0, width, height)
         layoutToolsPanel()
+        filmSelectorView.layout(0, 0, width, height)
         // A format change can resize this child while the ViewGroup's own bounds stay the
         // same, so `changed` is not a reliable signal. Publish geometry after every layout.
         post {
@@ -558,6 +613,8 @@ class MeterLayout @JvmOverloads constructor(
         zoneView.invalidate()
         toolsView.invalidate()
         depthOfFieldView.invalidate()
+        latitudeView.invalidate()
+        filmSelectorView.applyTheme()
     }
 
     fun showSettings() {
@@ -611,15 +668,27 @@ class MeterLayout @JvmOverloads constructor(
         ) return
         isToolsOpen = true
         Log.i("lightstop", "Tools panel opened")
-        if (activeToolId == ToolId.DEPTH_OF_FIELD) {
-            toolsView.visibility = View.VISIBLE
-            depthOfFieldView.visibility = View.VISIBLE
-            depthOfFieldView.resumePage()
-            depthOfFieldView.bringToFront()
-        } else {
-            depthOfFieldView.visibility = View.GONE
-            toolsView.visibility = View.VISIBLE
-            toolsView.bringToFront()
+        when (activeToolId) {
+            ToolId.DEPTH_OF_FIELD -> {
+                toolsView.visibility = View.GONE
+                latitudeView.visibility = View.GONE
+                depthOfFieldView.visibility = View.VISIBLE
+                depthOfFieldView.resumePage()
+                depthOfFieldView.bringToFront()
+            }
+            ToolId.LATITUDE -> {
+                toolsView.visibility = View.GONE
+                depthOfFieldView.visibility = View.GONE
+                latitudeView.visibility = View.VISIBLE
+                latitudeView.resumePage()
+                latitudeView.bringToFront()
+            }
+            else -> {
+                depthOfFieldView.visibility = View.GONE
+                latitudeView.visibility = View.GONE
+                toolsView.visibility = View.VISIBLE
+                toolsView.bringToFront()
+            }
         }
         toolsHost.bringToFront()
         layoutToolsPanel()
@@ -653,6 +722,7 @@ class MeterLayout @JvmOverloads constructor(
 
     fun closeTools(): Boolean {
         if (!isToolsOpen) return false
+        if (isFilmSelectorOpen) closeFilmSelector(animate = false)
         isToolsOpen = false
         val rect = toolsPanelRect(width, height)
         val landscape = width > height
@@ -712,9 +782,71 @@ class MeterLayout @JvmOverloads constructor(
             instrumentView.currentApertureCoordinate()
         }
         depthOfFieldView.openWithMeterDefaults(apertureStop)
+        toolsView.visibility = View.GONE
+        latitudeView.visibility = View.GONE
         depthOfFieldView.visibility = View.VISIBLE
         depthOfFieldView.bringToFront()
         Log.i("lightstop", "Depth-of-field tool opened")
+    }
+
+    private fun showLatitude() {
+        activeToolId = ToolId.LATITUDE
+        latitudeView.openPage()
+        toolsView.visibility = View.GONE
+        depthOfFieldView.visibility = View.GONE
+        latitudeView.visibility = View.VISIBLE
+        latitudeView.bringToFront()
+        Log.i("lightstop", "Latitude tool opened")
+    }
+
+    private fun showFilmSelector() {
+        if (isFilmSelectorOpen || !isToolsOpen || activeToolId != ToolId.LATITUDE) return
+        isFilmSelectorOpen = true
+        filmSelectorView.open()
+        filmSelectorView.animate().cancel()
+        filmSelectorView.visibility = View.VISIBLE
+        filmSelectorView.bringToFront()
+        val landscape = width > height
+        filmSelectorView.translationX = if (landscape) {
+            if (state.isLeftHanded) -width.toFloat() else width.toFloat()
+        } else {
+            0f
+        }
+        filmSelectorView.translationY = if (landscape) 0f else -height.toFloat()
+        filmSelectorView.animate()
+            .translationX(0f)
+            .translationY(0f)
+            .setDuration(300L)
+            .setInterpolator(DecelerateInterpolator())
+            .start()
+    }
+
+    fun closeFilmSelector(animate: Boolean = true): Boolean {
+        if (!isFilmSelectorOpen) return false
+        isFilmSelectorOpen = false
+        filmSelectorView.releaseInput()
+        filmSelectorView.animate().cancel()
+        if (!animate) {
+            filmSelectorView.visibility = View.GONE
+            filmSelectorView.translationX = 0f
+            filmSelectorView.translationY = 0f
+            return true
+        }
+        val landscape = width > height
+        filmSelectorView.animate()
+            .translationX(if (landscape) {
+                if (state.isLeftHanded) -width.toFloat() else width.toFloat()
+            } else {
+                0f
+            })
+            .translationY(if (landscape) 0f else -height.toFloat())
+            .setDuration(260L)
+            .setInterpolator(DecelerateInterpolator())
+            .withEndAction {
+                if (!isFilmSelectorOpen) filmSelectorView.visibility = View.GONE
+            }
+            .start()
+        return true
     }
 
     fun closeSettings(): Boolean {
