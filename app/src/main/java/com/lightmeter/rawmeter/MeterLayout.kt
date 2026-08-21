@@ -109,6 +109,7 @@ class MeterLayout @JvmOverloads constructor(
                 }
 
                 override fun onZoneEntryDrag(progress: Float, released: Boolean) {
+                    if (isToolsOpen) return
                     if (!released) {
                         prepareZoneTransition()
                         applyZoneTransition(progress)
@@ -249,6 +250,7 @@ class MeterLayout @JvmOverloads constructor(
             }
             zoneView.listener = object : ZoneSystemView.Listener {
                 override fun onExitDrag(progress: Float, released: Boolean) {
+                    if (isToolsOpen) return
                     if (!released) {
                         applyZoneTransition(1f - progress)
                     } else {
@@ -560,7 +562,7 @@ class MeterLayout @JvmOverloads constructor(
 
     fun showSettings() {
         if (isSettingsOpen || isCalibrationOpen || isVignettingCalibrationOpen ||
-            isCameraManagementOpen || isToolsOpen ||
+            isCameraManagementOpen ||
             isZoneMode || zoneTransitionFraction > 0f
         ) return
         settingsOpenedFromZone = false
@@ -570,7 +572,7 @@ class MeterLayout @JvmOverloads constructor(
     /** Opens Settings from the Zone overlay; calibration actions then exit Zone first. */
     fun showSettingsFromZone() {
         if (isSettingsOpen || isCalibrationOpen || isVignettingCalibrationOpen ||
-            isCameraManagementOpen || isToolsOpen ||
+            isCameraManagementOpen ||
             !isZoneMode || zoneTransitionFraction < 1f
         ) return
         Log.i("lightstop", "Settings opened from Zone overlay")

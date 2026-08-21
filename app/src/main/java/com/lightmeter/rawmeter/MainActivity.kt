@@ -300,11 +300,11 @@ class MainActivity : Activity(), CameraControllerCallback {
 
     private fun handleBackNavigation(): Boolean {
         if (meterLayout.closeInformationFromBack()) return true
-        if (meterLayout.closeTools()) return true
         if (meterLayout.closeCameraManagement()) return true
         if (meterLayout.closeVignettingCalibration()) return true
         if (meterLayout.closeCalibration()) return true
         if (meterLayout.closeSettings()) return true
+        if (meterLayout.closeTools()) return true
         if (meterLayout.closeZoneMode()) return true
         return false
     }

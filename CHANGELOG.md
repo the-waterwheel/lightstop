@@ -14,6 +14,8 @@ All notable user-facing changes are recorded here. The project follows
   presets/custom values, metering-step aperture and logarithmic focus dials,
   animated near/focus/far markers, hyperfocal distance, and matching
   portrait/landscape, Normal/Zone, and left-handed panel transitions.
+- Keep the active Tools page open underneath Settings and restore it on Back;
+  Normal/Zone mode handles are disabled while the Tools panel is open.
 - Added a settings button to the Zone overlay at the viewfinder panel's
   bottom-left corner; calibration, vignetting, and camera-management actions
   exit Zone first.
