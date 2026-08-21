@@ -42,6 +42,7 @@ class ZoneSystemView(
         fun onZoomMappingChanged(zoom: Float)
         fun onControlsChanged(frameChanged: Boolean)
         fun onSettingsRequested()
+        fun onToolsRequested()
     }
 
     private enum class TouchTarget {
@@ -59,6 +60,7 @@ class ZoneSystemView(
         FORMAT,
         ORIENTATION,
         SETTINGS,
+        TOOLS,
     }
 
     private data class MarkerDisplayMotion(
@@ -279,9 +281,20 @@ class ZoneSystemView(
             drawMeteringSpinner(canvas, centerX, centerY, spotRadius)
             postInvalidateOnAnimation()
         }
-        drawOutlinedButton(canvas, g.formatButton, shortFormatLabel(), formatMenuOpen)
-        drawOrientationButton(canvas, g.orientationButton)
-        drawSettingsButton(canvas, g.settingsButton)
+        drawOutlinedButton(
+            canvas,
+            g.formatButton,
+            shortFormatLabel(),
+            formatMenuOpen,
+            overlayAlpha(g.formatButton, g.cameraFrame),
+        )
+        drawOrientationButton(
+            canvas,
+            g.orientationButton,
+            overlayAlpha(g.orientationButton, g.cameraFrame),
+        )
+        drawSettingsButton(canvas, g.settingsButton, overlayAlpha(g.settingsButton, g.cameraFrame))
+        drawToolsButton(canvas, g.toolsButton, overlayAlpha(g.toolsButton, g.cameraFrame))
         drawZoom(canvas, g.zoomTrack)
         drawNormalHandle(canvas, g)
         drawFocalInfo(canvas, g)
@@ -778,42 +791,56 @@ class ZoneSystemView(
         drawCenteredText(canvas, "+", rect.centerX(), rect.centerY(), paint)
     }
 
-    private fun drawOutlinedButton(canvas: Canvas, rect: RectF, label: String, selected: Boolean) {
+    private fun drawOutlinedButton(
+        canvas: Canvas,
+        rect: RectF,
+        label: String,
+        selected: Boolean,
+        alpha: Int = 255,
+    ) {
         paint.style = Paint.Style.FILL
-        paint.color = if (selected) foreground else surface
+        paint.withAlpha(if (selected) foreground else surface, alpha)
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1f * density
-        paint.color = if (selected) red else foreground
+        paint.withAlpha(if (selected) red else foreground, alpha)
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
         paint.style = Paint.Style.FILL
-        paint.color = if (selected) surface else foreground
+        paint.withAlpha(if (selected) surface else foreground, alpha)
         paint.textSize = 7f * density
         paint.typeface = Typeface.DEFAULT_BOLD
         drawCenteredText(canvas, label, rect.centerX(), rect.centerY(), paint)
     }
 
-    private fun drawOrientationButton(canvas: Canvas, rect: RectF) {
+    /** Buttons overlapping the fitted viewfinder image become semi-transparent. */
+    private fun overlayAlpha(rect: RectF, cameraFrame: RectF): Int =
+        if (RectF.intersects(rect, cameraFrame)) OVERLAY_ALPHA else 255
+
+    private fun Paint.withAlpha(color: Int, alpha: Int) {
+        this.color = Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color))
+    }
+
+    private fun drawOrientationButton(canvas: Canvas, rect: RectF, alpha: Int = 255) {
         paint.style = Paint.Style.FILL
-        paint.color = surface
+        paint.withAlpha(surface, alpha)
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1f * density
-        paint.color = foreground
+        paint.withAlpha(foreground, alpha)
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
         val phone = RectF(rect.centerX() - 6f * density, rect.centerY() - 10f * density, rect.centerX() + 6f * density, rect.centerY() + 10f * density)
         canvas.drawRoundRect(phone, 2f * density, 2f * density, paint)
-        paint.color = red
+        paint.withAlpha(red, alpha)
         canvas.drawArc(RectF(rect.left + 6f * density, rect.top + 5f * density, rect.right - 6f * density, rect.bottom - 5f * density), 205f, 80f, false, paint)
     }
 
-    private fun drawSettingsButton(canvas: Canvas, rect: RectF) {
+    private fun drawSettingsButton(canvas: Canvas, rect: RectF, alpha: Int = 255) {
         paint.style = Paint.Style.FILL
-        paint.color = surface
+        paint.withAlpha(surface, alpha)
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1f * density
-        paint.color = foreground
+        paint.withAlpha(foreground, alpha)
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
         val outerRadius = min(rect.width(), rect.height()) * 0.27f
         val rootRadius = outerRadius * 0.78f
@@ -827,11 +854,52 @@ class ZoneSystemView(
             if (index == 0) gear.moveTo(x, y) else gear.lineTo(x, y)
         }
         gear.close()
-        paint.style = Paint.Style.FILL
-        paint.color = foreground
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 1f * density
+        paint.withAlpha(foreground, alpha)
         canvas.drawPath(gear, paint)
-        paint.color = surface
         canvas.drawCircle(rect.centerX(), rect.centerY(), innerRadius, paint)
+    }
+
+    /** Four hollow squares with the top-right one rotated 45 degrees around its own center. */
+    private fun drawToolsButton(canvas: Canvas, rect: RectF, alpha: Int = 255) {
+        paint.style = Paint.Style.FILL
+        paint.withAlpha(surface, alpha)
+        canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 1f * density
+        paint.withAlpha(foreground, alpha)
+        canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
+        val cell = rect.width() * 0.26f
+        val innerGap = rect.width() * 0.07f
+        val left = rect.centerX() - cell - innerGap / 2f
+        val top = rect.centerY() - cell - innerGap / 2f
+        paint.strokeWidth = 0.9f * density
+        canvas.drawRect(left, top, left + cell, top + cell, paint)
+        canvas.drawRect(
+            left,
+            top + cell + innerGap,
+            left + cell,
+            top + cell * 2f + innerGap,
+            paint,
+        )
+        canvas.drawRect(
+            left + cell + innerGap,
+            top + cell + innerGap,
+            left + cell * 2f + innerGap,
+            top + cell * 2f + innerGap,
+            paint,
+        )
+        val rotated = RectF(
+            left + cell + innerGap,
+            top,
+            left + cell * 2f + innerGap,
+            top + cell,
+        )
+        canvas.save()
+        canvas.rotate(45f, rotated.centerX(), rotated.centerY())
+        canvas.drawRect(rotated, paint)
+        canvas.restore()
     }
 
     private fun drawZoom(canvas: Canvas, track: RectF) {
@@ -908,6 +976,8 @@ class ZoneSystemView(
                         TouchTarget.ORIENTATION
                     g.settingsButton.containsAccessibleTarget(event.x, event.y, density) ->
                         TouchTarget.SETTINGS
+                    g.toolsButton.containsAccessibleTarget(event.x, event.y, density) ->
+                        TouchTarget.TOOLS
                     g.normalHandle.containsAccessibleTarget(event.x, event.y, density) &&
                         !state.measuring -> TouchTarget.EXIT
                     g.zoomTrack.contains(event.x, event.y) -> TouchTarget.ZOOM
@@ -1065,6 +1135,7 @@ class ZoneSystemView(
                         listener?.onOrientationToggle()
                     }
                     TouchTarget.SETTINGS -> if (!cancelled) listener?.onSettingsRequested()
+                    TouchTarget.TOOLS -> if (!cancelled) listener?.onToolsRequested()
                     else -> Unit
                 }
                 touchTarget = TouchTarget.NONE
@@ -1336,6 +1407,8 @@ class ZoneSystemView(
         }
     }
 
+    fun currentApertureCoordinate(): Double = session.apertureCoordinate
+
     private companion object {
         private const val MAX_FORMAT_MENU_ROWS = 6
         private const val MIN_MARKER_INTERPOLATION_MS = 12L
@@ -1343,5 +1416,6 @@ class ZoneSystemView(
         private const val MAX_MARKER_INTERPOLATION_MS = 48L
         private const val METERING_SPINNER_PERIOD_MS = 820L
         private const val METERING_SPINNER_SWEEP_DEGREES = 108f
+        private const val OVERLAY_ALPHA = 168
     }
 }

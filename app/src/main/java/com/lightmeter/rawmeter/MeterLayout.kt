@@ -13,8 +13,10 @@ import android.view.TextureView
 import android.view.View
 import android.view.ViewGroup
 import android.view.animation.DecelerateInterpolator
+import android.widget.FrameLayout
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 
 class MeterLayout @JvmOverloads constructor(
     context: Context,
@@ -55,6 +57,9 @@ class MeterLayout @JvmOverloads constructor(
     val calibrationView = CalibrationView(context, state)
     val vignettingCalibrationView = VignettingCalibrationView(context, state)
     val zoneView = ZoneSystemView(context, state)
+    val toolsView = ToolsView(context, state)
+    val depthOfFieldView = DepthOfFieldView(context, state)
+    private val toolsHost = FrameLayout(context)
     private val zoneMarkerTracker: ZoneMarkerTracker = DeferredZoneMarkerTracker {
         trackerFactory.create(textureView, state) { id, x, y, trackingState ->
             zoneView.updateMarkerTracking(id, x, y, trackingState)
@@ -70,6 +75,9 @@ class MeterLayout @JvmOverloads constructor(
         private set
     var isCameraManagementOpen: Boolean = false
         private set
+    var isToolsOpen: Boolean = false
+        private set
+    private var activeToolId: ToolId? = null
     var isZoneMode: Boolean = false
         private set
     private var zoneTransitionFraction = 0f
@@ -94,6 +102,10 @@ class MeterLayout @JvmOverloads constructor(
 
                 override fun onMoreRequested() {
                     showSettings()
+                }
+
+                override fun onToolsRequested() {
+                    toggleTools()
                 }
 
                 override fun onZoneEntryDrag(progress: Float, released: Boolean) {
@@ -293,6 +305,10 @@ class MeterLayout @JvmOverloads constructor(
                 override fun onSettingsRequested() {
                     showSettingsFromZone()
                 }
+
+                override fun onToolsRequested() {
+                    toggleTools()
+                }
             }
         }
 
@@ -312,6 +328,48 @@ class MeterLayout @JvmOverloads constructor(
         addView(vignettingCalibrationView)
         zoneView.visibility = View.GONE
         addView(zoneView)
+        toolsHost.visibility = View.GONE
+        toolsHost.addView(
+            toolsView,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        depthOfFieldView.visibility = View.GONE
+        toolsHost.addView(
+            depthOfFieldView,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        addView(toolsHost)
+        toolsView.listener = object : ToolsView.Listener {
+            override fun onCloseRequested() {
+                closeTools()
+            }
+
+            override fun onToolRequested(spec: ToolSpec) {
+                if (spec.id == ToolId.DEPTH_OF_FIELD) {
+                    showDepthOfField()
+                } else {
+                    Log.i("lightstop", "Tool requested: ${spec.id}")
+                }
+            }
+        }
+        depthOfFieldView.listener = object : DepthOfFieldView.Listener {
+            override fun onBackToToolsRequested() {
+                activeToolId = null
+                depthOfFieldView.visibility = View.GONE
+                toolsView.visibility = View.VISIBLE
+                toolsView.bringToFront()
+            }
+
+            override fun onCloseRequested() {
+                closeTools()
+            }
+        }
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
@@ -345,6 +403,11 @@ class MeterLayout @JvmOverloads constructor(
         zoneView.measure(
             MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
             MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
+        )
+        val toolsRect = toolsPanelRect(width, height)
+        toolsHost.measure(
+            MeasureSpec.makeMeasureSpec(toolsRect.width().roundToInt().coerceAtLeast(0), MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(toolsRect.height().roundToInt().coerceAtLeast(0), MeasureSpec.EXACTLY),
         )
         val geometry = LayoutGeometry.calculate(
             width,
@@ -442,6 +505,7 @@ class MeterLayout @JvmOverloads constructor(
         calibrationView.layout(0, 0, width, height)
         vignettingCalibrationView.layout(0, 0, width, height)
         zoneView.layout(0, 0, width, height)
+        layoutToolsPanel()
         // A format change can resize this child while the ViewGroup's own bounds stay the
         // same, so `changed` is not a reliable signal. Publish geometry after every layout.
         post {
@@ -490,11 +554,13 @@ class MeterLayout @JvmOverloads constructor(
         calibrationView.invalidate()
         vignettingCalibrationView.invalidate()
         zoneView.invalidate()
+        toolsView.invalidate()
+        depthOfFieldView.invalidate()
     }
 
     fun showSettings() {
         if (isSettingsOpen || isCalibrationOpen || isVignettingCalibrationOpen ||
-            isCameraManagementOpen ||
+            isCameraManagementOpen || isToolsOpen ||
             isZoneMode || zoneTransitionFraction > 0f
         ) return
         settingsOpenedFromZone = false
@@ -504,7 +570,7 @@ class MeterLayout @JvmOverloads constructor(
     /** Opens Settings from the Zone overlay; calibration actions then exit Zone first. */
     fun showSettingsFromZone() {
         if (isSettingsOpen || isCalibrationOpen || isVignettingCalibrationOpen ||
-            isCameraManagementOpen ||
+            isCameraManagementOpen || isToolsOpen ||
             !isZoneMode || zoneTransitionFraction < 1f
         ) return
         Log.i("lightstop", "Settings opened from Zone overlay")
@@ -530,6 +596,123 @@ class MeterLayout @JvmOverloads constructor(
     fun showCalibrationSettings() {
         settingsView.selectSection(SettingsSectionKey.CALIBRATION)
         showSettings()
+    }
+
+    /**
+     * The Tools panel replaces the parameter area while the viewfinder stays interactive. The
+     * covered region is derived from the active mode's preview panel, so Normal and Zone (whose
+     * parameter areas differ) both keep their own viewfinder untouched.
+     */
+    fun showTools() {
+        if (isToolsOpen || isSettingsOpen || isCalibrationOpen || isVignettingCalibrationOpen ||
+            isCameraManagementOpen || isInformationOpen
+        ) return
+        isToolsOpen = true
+        Log.i("lightstop", "Tools panel opened")
+        if (activeToolId == ToolId.DEPTH_OF_FIELD) {
+            toolsView.visibility = View.VISIBLE
+            depthOfFieldView.visibility = View.VISIBLE
+            depthOfFieldView.resumePage()
+            depthOfFieldView.bringToFront()
+        } else {
+            depthOfFieldView.visibility = View.GONE
+            toolsView.visibility = View.VISIBLE
+            toolsView.bringToFront()
+        }
+        toolsHost.bringToFront()
+        layoutToolsPanel()
+        val rect = toolsPanelRect(width, height)
+        val landscape = width > height
+        // Position off-screen before becoming visible so the first frame is already mid-slide
+        // instead of flashing at the final position.
+        toolsHost.animate().cancel()
+        toolsHost.translationX = if (landscape) {
+            if (state.isLeftHanded) -rect.width() else rect.width()
+        } else {
+            0f
+        }
+        toolsHost.translationY = if (landscape) 0f else rect.height()
+        toolsHost.visibility = View.VISIBLE
+        toolsHost.animate()
+            .translationX(0f)
+            .translationY(0f)
+            .setDuration(300L)
+            .setInterpolator(DecelerateInterpolator())
+            .start()
+    }
+
+    fun toggleTools() {
+        if (isToolsOpen) {
+            closeTools()
+        } else {
+            showTools()
+        }
+    }
+
+    fun closeTools(): Boolean {
+        if (!isToolsOpen) return false
+        isToolsOpen = false
+        val rect = toolsPanelRect(width, height)
+        val landscape = width > height
+        toolsHost.animate().cancel()
+        toolsHost.animate()
+            .translationX(if (landscape) {
+                if (state.isLeftHanded) -rect.width() else rect.width()
+            } else {
+                0f
+            })
+            .translationY(if (landscape) 0f else rect.height())
+            .setDuration(260L)
+            .setInterpolator(DecelerateInterpolator())
+            .withEndAction {
+                if (!isToolsOpen) toolsHost.visibility = View.GONE
+            }
+            .start()
+        return true
+    }
+
+    private fun toolsPanelRect(width: Int, height: Int): RectF {
+        val density = resources.displayMetrics.density
+        val landscape = width > height
+        val previewPanel = if (isZoneMode || zoneTransitionFraction > 0f) {
+            ZoneLayoutCalculator.calculate(width, height, density, state).previewPanel
+        } else {
+            LayoutGeometry.calculate(
+                width,
+                height,
+                density,
+                state.frameFormat,
+                state.frameLandscape,
+                state.isLeftHanded,
+            ).previewPanel
+        }
+        return if (landscape) {
+            if (state.isLeftHanded) {
+                RectF(0f, 0f, previewPanel.left, height.toFloat())
+            } else {
+                RectF(previewPanel.right, 0f, width.toFloat(), height.toFloat())
+            }
+        } else {
+            RectF(0f, previewPanel.bottom, width.toFloat(), height.toFloat())
+        }
+    }
+
+    private fun layoutToolsPanel() {
+        val rect = toolsPanelRect(width, height)
+        toolsHost.layout(rect.left.toInt(), rect.top.toInt(), rect.right.toInt(), rect.bottom.toInt())
+    }
+
+    private fun showDepthOfField() {
+        activeToolId = ToolId.DEPTH_OF_FIELD
+        val apertureStop = if (isZoneMode) {
+            zoneView.currentApertureCoordinate()
+        } else {
+            instrumentView.currentApertureCoordinate()
+        }
+        depthOfFieldView.openWithMeterDefaults(apertureStop)
+        depthOfFieldView.visibility = View.VISIBLE
+        depthOfFieldView.bringToFront()
+        Log.i("lightstop", "Depth-of-field tool opened")
     }
 
     fun closeSettings(): Boolean {
@@ -753,6 +936,7 @@ class MeterLayout @JvmOverloads constructor(
 
     private fun prepareZoneTransition() {
         if (zoneTransitionPrepared) return
+        if (isToolsOpen) closeTools()
         zoneTransitionPrepared = true
         zoneView.enter()
         zoneView.visibility = View.VISIBLE

@@ -5,6 +5,15 @@ All notable user-facing changes are recorded here. The project follows
 
 ## Unreleased
 
+- Added the Tools panel framework: a button beside Settings opens a
+  scrollable three-column tools grid (depth of field, latitude, parameter
+  log, reciprocity, flash index, color temperature, exposure correction)
+  that replaces the parameter area in Normal and Zone modes while the
+  viewfinder stays interactive.
+- Implemented the depth-of-field tool with format and circle-of-confusion
+  presets/custom values, metering-step aperture and logarithmic focus dials,
+  animated near/focus/far markers, hyperfocal distance, and matching
+  portrait/landscape, Normal/Zone, and left-handed panel transitions.
 - Added a settings button to the Zone overlay at the viewfinder panel's
   bottom-left corner; calibration, vignetting, and camera-management actions
   exit Zone first.

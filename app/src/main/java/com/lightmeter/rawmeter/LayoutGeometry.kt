@@ -11,6 +11,7 @@ data class LayoutGeometry(
     val formatButton: RectF,
     val orientationButton: RectF,
     val moreButton: RectF,
+    val toolsButton: RectF,
     val zoneEntryHandle: RectF,
     val apertureRow: RectF,
     val shutterRow: RectF,
@@ -127,6 +128,12 @@ data class LayoutGeometry(
                 previewPanel.bottom - gap - buttonSize,
                 previewPanel.left + gap + buttonSize,
                 previewPanel.bottom - gap,
+            )
+            val toolsButton = RectF(
+                moreButton.right + gap,
+                moreButton.top,
+                moreButton.right + gap + buttonSize,
+                moreButton.bottom,
             )
             val zoneHandleLongSide = 76f * density
             val zoneHandleShortSide = 22f * density
@@ -305,6 +312,7 @@ data class LayoutGeometry(
                 formatButton = formatButton,
                 orientationButton = orientationButton,
                 moreButton = moreButton,
+                toolsButton = toolsButton,
                 zoneEntryHandle = zoneEntryHandle,
                 apertureRow = apertureRow,
                 shutterRow = shutterRow,

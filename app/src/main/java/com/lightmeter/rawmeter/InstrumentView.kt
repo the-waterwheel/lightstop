@@ -34,6 +34,7 @@ class InstrumentView(
         fun onMeasureRequested()
         fun onOrientationToggle()
         fun onMoreRequested()
+        fun onToolsRequested()
         fun onZoneEntryDrag(progress: Float, released: Boolean)
         fun onControlsChanged(frameChanged: Boolean)
     }
@@ -165,11 +166,18 @@ class InstrumentView(
             g.formatButton,
             InstrumentPresentation.formatShortLabel(state.frameFormat, state.menuLanguage),
             formatMenuOpen,
+            overlayAlpha(g.formatButton, g.cameraFrame),
         )
         if (formatMenuOpen) drawFormatMenu(canvas, g)
-        drawOrientationButton(canvas, g.orientationButton, g.landscape)
+        drawOrientationButton(
+            canvas,
+            g.orientationButton,
+            g.landscape,
+            overlayAlpha(g.orientationButton, g.cameraFrame),
+        )
         drawZoom(canvas, g.zoomTrack)
-        drawSettingsButton(canvas, g.moreButton)
+        drawSettingsButton(canvas, g.moreButton, overlayAlpha(g.moreButton, g.cameraFrame))
+        drawToolsButton(canvas, g.toolsButton, overlayAlpha(g.toolsButton, g.cameraFrame))
         drawZoneEntryHandle(canvas, g)
 
         val equivalent = state.equivalentFrameFocalMm()
@@ -318,13 +326,18 @@ class InstrumentView(
         }
     }
 
-    private fun drawOrientationButton(canvas: Canvas, rect: RectF, landscape: Boolean) {
+    private fun drawOrientationButton(
+        canvas: Canvas,
+        rect: RectF,
+        landscape: Boolean,
+        alpha: Int = 255,
+    ) {
         paint.style = Paint.Style.FILL
-        paint.color = surfaceColor
+        paint.withAlpha(surfaceColor, alpha)
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1.3f * density
-        paint.color = black
+        paint.withAlpha(black, alpha)
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
         val iconW = if (landscape) rect.width() * 0.52f else rect.width() * 0.36f
         val iconH = if (landscape) rect.height() * 0.36f else rect.height() * 0.52f
@@ -345,17 +358,17 @@ class InstrumentView(
             rect.right - 5f * density,
             rect.bottom - 5f * density,
         )
-        paint.color = red
+        paint.withAlpha(red, alpha)
         canvas.drawArc(arc, 205f, 86f, false, paint)
     }
 
-    private fun drawSettingsButton(canvas: Canvas, rect: RectF) {
+    private fun drawSettingsButton(canvas: Canvas, rect: RectF, alpha: Int = 255) {
         paint.style = Paint.Style.FILL
-        paint.color = surfaceColor
+        paint.withAlpha(surfaceColor, alpha)
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1.2f * density
-        paint.color = black
+        paint.withAlpha(black, alpha)
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
         val outerRadius = min(rect.width(), rect.height()) * 0.27f
         val rootRadius = outerRadius * 0.78f
@@ -369,11 +382,52 @@ class InstrumentView(
             if (index == 0) gear.moveTo(x, y) else gear.lineTo(x, y)
         }
         gear.close()
-        paint.style = Paint.Style.FILL
-        paint.color = black
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 1.2f * density
+        paint.withAlpha(black, alpha)
         canvas.drawPath(gear, paint)
-        paint.color = surfaceColor
         canvas.drawCircle(rect.centerX(), rect.centerY(), innerRadius, paint)
+    }
+
+    /** Four hollow squares with the top-right one rotated 45 degrees around its own center. */
+    private fun drawToolsButton(canvas: Canvas, rect: RectF, alpha: Int = 255) {
+        paint.style = Paint.Style.FILL
+        paint.withAlpha(surfaceColor, alpha)
+        canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 1.2f * density
+        paint.withAlpha(black, alpha)
+        canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
+        val cell = rect.width() * 0.26f
+        val innerGap = rect.width() * 0.07f
+        val left = rect.centerX() - cell - innerGap / 2f
+        val top = rect.centerY() - cell - innerGap / 2f
+        paint.strokeWidth = 1.1f * density
+        canvas.drawRect(left, top, left + cell, top + cell, paint)
+        canvas.drawRect(
+            left,
+            top + cell + innerGap,
+            left + cell,
+            top + cell * 2f + innerGap,
+            paint,
+        )
+        canvas.drawRect(
+            left + cell + innerGap,
+            top + cell + innerGap,
+            left + cell * 2f + innerGap,
+            top + cell * 2f + innerGap,
+            paint,
+        )
+        val rotated = RectF(
+            left + cell + innerGap,
+            top,
+            left + cell * 2f + innerGap,
+            top + cell,
+        )
+        canvas.save()
+        canvas.rotate(45f, rotated.centerX(), rotated.centerY())
+        canvas.drawRect(rotated, paint)
+        canvas.restore()
     }
 
     private fun drawZoom(canvas: Canvas, track: RectF) {
@@ -417,6 +471,14 @@ class InstrumentView(
         }
         exposureRenderer.draw(canvas, g, centers, exposureLockSliderFraction)
     }
+
+    fun currentApertureCoordinate(): Double = InstrumentPresentation.exposureCenters(
+        state = state,
+        evAtIso = animatedExposureValue(),
+        lockedDisplayCoordinate = lockedScaleDisplayCoordinate,
+        frozenDependentCoordinate = frozenDependentCoordinate,
+        releasedDependentCoordinate = releasedDependentCoordinate,
+    ).aperture
 
     private fun animatedExposureValue(): Double {
         val fallback = state.lockedApertureStop - state.lockedShutterLogSeconds
@@ -747,18 +809,27 @@ class InstrumentView(
         rect: RectF,
         text: String,
         accented: Boolean,
+        alpha: Int = 255,
     ) {
         paint.style = Paint.Style.FILL
-        paint.color = surfaceColor
+        paint.withAlpha(surfaceColor, alpha)
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1.2f * density
-        paint.color = if (accented) red else black
+        paint.withAlpha(if (accented) red else black, alpha)
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
         paint.style = Paint.Style.FILL
         paint.textSize = 9f * density
         paint.typeface = Typeface.DEFAULT_BOLD
         drawCenteredText(canvas, text, rect.centerX(), rect.centerY(), paint)
+    }
+
+    /** Buttons overlapping the fitted viewfinder image become semi-transparent. */
+    private fun overlayAlpha(rect: RectF, cameraFrame: RectF): Int =
+        if (RectF.intersects(rect, cameraFrame)) OVERLAY_ALPHA else 255
+
+    private fun Paint.withAlpha(color: Int, alpha: Int) {
+        this.color = Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color))
     }
 
     private fun drawCenteredText(
@@ -802,6 +873,12 @@ class InstrumentView(
                         formatMenuOpen = false
                         haptic()
                         listener?.onMoreRequested()
+                        return true
+                    }
+                    g.toolsButton.containsAccessibleTarget(event.x, event.y, density) -> {
+                        formatMenuOpen = false
+                        haptic()
+                        listener?.onToolsRequested()
                         return true
                     }
                     g.orientationButton.containsAccessibleTarget(event.x, event.y, density) -> {
@@ -1204,5 +1281,6 @@ class InstrumentView(
     private companion object {
         private const val METERING_SPINNER_PERIOD_MS = 820L
         private const val METERING_SPINNER_SWEEP_DEGREES = 108f
+        private const val OVERLAY_ALPHA = 168
     }
 }

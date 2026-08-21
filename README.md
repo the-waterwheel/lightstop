@@ -122,6 +122,9 @@ code.
 - Drag the `zone` handle into the page to enter Zone System mode.
 - Tap the gear for metering, general, camera-management, and calibration
   settings; Zone mode has the same gear at its viewfinder's bottom-left corner.
+- Tap Tools and choose Depth of field to calculate animated near/focus/far
+  limits from the current frame, field of view, and metering aperture; frame
+  size and circle of confusion can also be selected or entered manually.
 - Open `General` → `About` for the metering-result notice; the open-source
   license browser is available after the About text.
 

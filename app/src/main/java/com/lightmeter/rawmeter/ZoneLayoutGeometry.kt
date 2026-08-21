@@ -11,6 +11,7 @@ internal data class ZoneLayoutGeometry(
     val formatButton: RectF,
     val orientationButton: RectF,
     val settingsButton: RectF,
+    val toolsButton: RectF,
     val zoomTrack: RectF,
     val normalHandle: RectF,
     val apertureRow: RectF,
@@ -50,6 +51,7 @@ internal object ZoneLayoutCalculator {
         val formatButton: RectF
         val orientationButton: RectF
         val settingsButton: RectF
+        val toolsButton: RectF
         val zoomTrack: RectF
         val normalHandle: RectF
         val apertureRow: RectF
@@ -101,6 +103,12 @@ internal object ZoneLayoutCalculator {
                 previewPanel.bottom - gap - button,
                 previewPanel.left + gap + button,
                 previewPanel.bottom - gap,
+            )
+            toolsButton = RectF(
+                settingsButton.right + gap,
+                settingsButton.top,
+                settingsButton.right + gap + button,
+                settingsButton.bottom,
             )
             zoomTrack = RectF(
                 previewPanel.right - 30f * density,
@@ -215,6 +223,12 @@ internal object ZoneLayoutCalculator {
                 previewPanel.bottom - gap - button,
                 previewPanel.left + gap + button,
                 previewPanel.bottom - gap,
+            )
+            toolsButton = RectF(
+                settingsButton.right + gap,
+                settingsButton.top,
+                settingsButton.right + gap + button,
+                settingsButton.bottom,
             )
             zoomTrack = if (state.isLeftHanded) {
                 RectF(
@@ -351,6 +365,7 @@ internal object ZoneLayoutCalculator {
             clearHandle = clearHandle,
             markButton = markButton,
             settingsButton = settingsButton,
+            toolsButton = toolsButton,
         )
     }
 
