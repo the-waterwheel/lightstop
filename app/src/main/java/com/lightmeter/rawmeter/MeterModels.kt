@@ -122,6 +122,7 @@ enum class ExposureStep(val denominator: Int) {
 enum class MeteringMode {
     CENTER_WEIGHTED,
     SPOT,
+    ANGLE,
 }
 
 enum class MeteringPipelineMode {
@@ -296,6 +297,14 @@ class MeterState(context: Context) {
         MeteringMode.SPOT,
     )
 
+    var angleMeteringDegrees: Int = AngleMeteringMath.nearestSelectableDegrees(
+        preferences.getInt(
+            angleMeteringKey(cameraSelectionStore.selectedCameraId.orEmpty()),
+            AngleMeteringMath.DEFAULT_DEGREES,
+        ),
+    )
+        private set
+
     // Preserve the old no-RAW behavior instead of silently moving existing users to isolation.
     var meteringPipelineMode: MeteringPipelineMode = MeteringPipelineMode.fromStored(
         preferences.getString("metering_pipeline_mode", null),
@@ -355,6 +364,10 @@ class MeterState(context: Context) {
             lockedShutterLogSeconds =
                 ExposureMath.nearestShutterLogSeconds(lockedShutterLogSeconds, shutterStep)
         }
+        meteringMode = MeteringAreaPolicy.resolveForPipeline(
+            meteringMode,
+            meteringPipelineMode,
+        )
         persist()
     }
 
@@ -436,7 +449,8 @@ class MeterState(context: Context) {
         persist()
     }
 
-    fun updateSetting(key: SettingKey, value: String) {
+    /** Returns false when a requested combination is deliberately unavailable. */
+    fun updateSetting(key: SettingKey, value: String): Boolean {
         when (key) {
             SettingKey.APERTURE_STEP -> apertureStep = enumValue(value, apertureStep)
             SettingKey.SHUTTER_STEP -> shutterStep = enumValue(value, shutterStep)
@@ -447,9 +461,18 @@ class MeterState(context: Context) {
                     exposureCompensationStep,
                 )
             }
-            SettingKey.METERING_MODE -> meteringMode = enumValue(value, meteringMode)
-            SettingKey.METERING_PIPELINE ->
+            SettingKey.METERING_MODE -> {
+                val requested = enumValue(value, meteringMode)
+                if (!MeteringAreaPolicy.canSelect(requested, meteringPipelineMode)) return false
+                meteringMode = requested
+            }
+            SettingKey.METERING_PIPELINE -> {
                 meteringPipelineMode = enumValue(value, meteringPipelineMode)
+                meteringMode = MeteringAreaPolicy.resolveForPipeline(
+                    meteringMode,
+                    meteringPipelineMode,
+                )
+            }
             SettingKey.ZONE_MARKING_METHOD ->
                 zoneMarkingMethod = enumValue(value, zoneMarkingMethod)
             SettingKey.LANGUAGE -> menuLanguage = enumValue(value, menuLanguage)
@@ -457,6 +480,17 @@ class MeterState(context: Context) {
             SettingKey.HANDEDNESS -> handedness = enumValue(value, handedness)
         }
         persist()
+        return true
+    }
+
+    fun selectAngleMeteringDegrees(value: Int): Boolean {
+        val next = AngleMeteringMath.nearestSelectableDegrees(value)
+        if (next == angleMeteringDegrees) return false
+        angleMeteringDegrees = next
+        preferences.edit()
+            .putInt(angleMeteringKey(selectedCameraId), angleMeteringDegrees)
+            .apply()
+        return true
     }
 
     fun updateCameraCatalog(cameras: List<CameraDescriptor>): String? {
@@ -476,6 +510,12 @@ class MeterState(context: Context) {
         selectedCameraId = selected?.cameraId.orEmpty()
         cameraSelectionStore.selectedCameraId = selectedCameraId
         zoom = preferences.getFloat(cameraZoomKey(selectedCameraId), 1f).coerceAtLeast(1f)
+        angleMeteringDegrees = AngleMeteringMath.nearestSelectableDegrees(
+            preferences.getInt(
+                angleMeteringKey(selectedCameraId),
+                AngleMeteringMath.DEFAULT_DEGREES,
+            ),
+        )
         return selectedCameraId.ifBlank { null }
     }
 
@@ -488,6 +528,9 @@ class MeterState(context: Context) {
         selectedCameraId = cameraId
         cameraSelectionStore.selectedCameraId = cameraId
         zoom = preferences.getFloat(cameraZoomKey(cameraId), 1f).coerceAtLeast(1f)
+        angleMeteringDegrees = AngleMeteringMath.nearestSelectableDegrees(
+            preferences.getInt(angleMeteringKey(cameraId), AngleMeteringMath.DEFAULT_DEGREES),
+        )
         sceneEv100 = null
         lastReading = null
         return true
@@ -563,6 +606,8 @@ class MeterState(context: Context) {
 
     private fun cameraZoomKey(cameraId: String) = "camera_zoom_$cameraId"
 
+    private fun angleMeteringKey(cameraId: String) = "angle_metering_degrees_$cameraId"
+
     fun settingValue(key: SettingKey): String = when (key) {
         SettingKey.APERTURE_STEP -> apertureStep.name
         SettingKey.SHUTTER_STEP -> shutterStep.name
@@ -581,17 +626,7 @@ class MeterState(context: Context) {
             return null
         }
         val sensorAspect = info.sensorWidthMm / info.sensorHeightMm
-        val screenFrameAspect =
-            if (frameLandscape) frameFormat.landscapeAspect else 1f / frameFormat.landscapeAspect
-        val assumedDisplayDegrees = if (landscape) 90 else 0
-        val relativeRotation =
-            (info.sensorOrientationDegrees - assumedDisplayDegrees + 360) % 360
-        val frameAspect =
-            if (relativeRotation == 90 || relativeRotation == 270) {
-                1f / screenFrameAspect
-            } else {
-                screenFrameAspect
-            }
+        val frameAspect = currentSensorFrameAspect().toFloat()
         val effectiveWidth: Double
         val effectiveHeight: Double
         if (sensorAspect > frameAspect) {
@@ -615,6 +650,48 @@ class MeterState(context: Context) {
     fun equivalentFrameFocalMm(): Int? = effectiveFullFrameEquivalentMm()
         ?.let(frameFormat::focalLengthForFullFrameEquivalent)
 
+    fun maximumAngleMeteringDegrees(): Double? {
+        val info = cameraInfo
+        if (selectedCameraId.isNotBlank() && info.cameraId != selectedCameraId) return null
+        return AngleMeteringMath.maximumSupportedDegrees(
+            focalLengthMm = info.focalLengthMm.toDouble(),
+            sensorWidthMm = info.sensorWidthMm.toDouble(),
+            sensorHeightMm = info.sensorHeightMm.toDouble(),
+            sensorFrameAspect = currentSensorFrameAspect(),
+            zoom = zoom.toDouble(),
+        )
+    }
+
+    fun angleMeteringRoiFraction(): Float? {
+        val info = cameraInfo
+        if (selectedCameraId.isNotBlank() && info.cameraId != selectedCameraId) return null
+        return AngleMeteringMath.roiFraction(
+            angleDegrees = angleMeteringDegrees,
+            focalLengthMm = info.focalLengthMm.toDouble(),
+            sensorWidthMm = info.sensorWidthMm.toDouble(),
+            sensorHeightMm = info.sensorHeightMm.toDouble(),
+            sensorFrameAspect = currentSensorFrameAspect(),
+            zoom = zoom.toDouble(),
+        )
+    }
+
+    private fun currentSensorFrameAspect(): Double {
+        val info = cameraInfo
+        val screenAspect = if (frameLandscape) {
+            frameFormat.landscapeAspect
+        } else {
+            1f / frameFormat.landscapeAspect
+        }
+        val assumedDisplayDegrees = if (landscape) 90 else 0
+        val relativeRotation =
+            (info.sensorOrientationDegrees - assumedDisplayDegrees + 360) % 360
+        return if (relativeRotation == 90 || relativeRotation == 270) {
+            1.0 / screenAspect
+        } else {
+            screenAspect.toDouble()
+        }
+    }
+
     private fun persist() {
         preferences.edit()
             .putInt("iso_index", isoIndex)
@@ -636,6 +713,7 @@ class MeterState(context: Context) {
             .putString("exposure_compensation_step", exposureCompensationStep.name)
             .putString("metering_mode", meteringMode.name)
             .putString("metering_pipeline_mode", meteringPipelineMode.name)
+            .putInt(angleMeteringKey(selectedCameraId), angleMeteringDegrees)
             .putString("zone_marking_method", zoneMarkingMethod.name)
             .putString("menu_language", menuLanguage.name)
             .putString("app_theme", appTheme.name)

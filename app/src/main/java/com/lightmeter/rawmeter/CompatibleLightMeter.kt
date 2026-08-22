@@ -46,6 +46,7 @@ internal class CompatibleLightMeter(
     private data class YuvMeasurement(
         val id: Int,
         val meteringMode: MeteringMode,
+        val meteringRoiFraction: Float?,
         val context: CompatibleMeteringContext,
         var attemptedFrames: Int = 0,
     )
@@ -82,6 +83,7 @@ internal class CompatibleLightMeter(
         target: ZoneMeteringTarget?,
         context: CompatibleMeteringContext,
         forceProcessedPreview: Boolean = false,
+        meteringRoiFraction: Float? = null,
     ): Boolean {
         if (isMeasuring) return false
         isMeasuring = true
@@ -89,9 +91,11 @@ internal class CompatibleLightMeter(
         if (!forceProcessedPreview && target == null &&
             context.trackingReaderAvailable && yuvAvailable
         ) {
-            startYuv(id, meteringMode, context)
+            startYuv(id, meteringMode, meteringRoiFraction, context)
         } else {
-            mainHandler.post { startProcessedPreview(id, meteringMode, target, context) }
+            mainHandler.post {
+                startProcessedPreview(id, meteringMode, target, meteringRoiFraction, context)
+            }
         }
         return true
     }
@@ -137,14 +141,17 @@ internal class CompatibleLightMeter(
     private fun startYuv(
         id: Int,
         meteringMode: MeteringMode,
+        meteringRoiFraction: Float?,
         context: CompatibleMeteringContext,
     ) {
         val handler = context.cameraHandler
         if (handler == null || !context.cameraReady()) {
-            mainHandler.post { startProcessedPreview(id, meteringMode, null, context) }
+            mainHandler.post {
+                startProcessedPreview(id, meteringMode, null, meteringRoiFraction, context)
+            }
             return
         }
-        val measurement = YuvMeasurement(id, meteringMode, context)
+        val measurement = YuvMeasurement(id, meteringMode, meteringRoiFraction, context)
         yuvFramePairer.clear()
         activeYuvMeasurement = measurement
         Log.i(TAG, "YUV compatible metering started: mode=$meteringMode")
@@ -192,6 +199,7 @@ internal class CompatibleLightMeter(
                 measurement.context.cameraId(),
                 measurement.meteringMode,
                 calibrationStore,
+                measurement.meteringRoiFraction,
             )
         } else {
             null
@@ -227,6 +235,7 @@ internal class CompatibleLightMeter(
                 measurement.id,
                 measurement.meteringMode,
                 target = null,
+                meteringRoiFraction = measurement.meteringRoiFraction,
                 context = measurement.context,
             )
         }
@@ -236,6 +245,7 @@ internal class CompatibleLightMeter(
         id: Int,
         meteringMode: MeteringMode,
         target: ZoneMeteringTarget?,
+        meteringRoiFraction: Float?,
         context: CompatibleMeteringContext,
     ) {
         if (!isCurrent(id)) return
@@ -256,13 +266,14 @@ internal class CompatibleLightMeter(
             MeteringSource.ISP_PREVIEW,
             CompatibleMeteringPolicy.FRAME_COUNT,
         )
-        captureProcessedPreview(id, meteringMode, target, context)
+        captureProcessedPreview(id, meteringMode, target, meteringRoiFraction, context)
     }
 
     private fun captureProcessedPreview(
         id: Int,
         meteringMode: MeteringMode,
         target: ZoneMeteringTarget?,
+        meteringRoiFraction: Float?,
         context: CompatibleMeteringContext,
     ) {
         if (!isCurrent(id)) return
@@ -293,6 +304,7 @@ internal class CompatibleLightMeter(
                         meteringMode,
                         calibrationStore,
                         target,
+                        meteringRoiFraction,
                     )
                 }
             } finally {

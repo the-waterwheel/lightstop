@@ -81,7 +81,7 @@ object SettingsCatalog {
                 ),
                 SettingItemSpec(
                     key = SettingKey.METERING_MODE,
-                    label = LocalizedLabel("测光方式", "Metering mode"),
+                    label = LocalizedLabel("测光区域", "Metering area"),
                     options = listOf(
                         option(
                             MeteringMode.CENTER_WEIGHTED,
@@ -89,6 +89,7 @@ object SettingsCatalog {
                             "Center-weighted",
                         ),
                         option(MeteringMode.SPOT, "点测光", "Spot"),
+                        option(MeteringMode.ANGLE, "按角度测光", "Angle"),
                     ),
                 ),
                 SettingItemSpec(

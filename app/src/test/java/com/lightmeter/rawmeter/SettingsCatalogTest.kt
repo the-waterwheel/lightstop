@@ -29,6 +29,23 @@ class SettingsCatalogTest {
     }
 
     @Test
+    fun meteringAreaOffersCenterSpotAndAngleWithoutDuplicatingMethodLabel() {
+        val metering = SettingsCatalog.sections.single { it.key == SettingsSectionKey.METERING }
+        val area = metering.items.single { it.key == SettingKey.METERING_MODE }
+
+        assertEquals("测光区域", area.label.resolve(MenuLanguage.CHINESE))
+        assertEquals("Metering area", area.label.resolve(MenuLanguage.ENGLISH))
+        assertEquals(
+            listOf(
+                MeteringMode.CENTER_WEIGHTED.name,
+                MeteringMode.SPOT.name,
+                MeteringMode.ANGLE.name,
+            ),
+            area.options.map { it.value },
+        )
+    }
+
+    @Test
     fun oldCompatiblePreferenceMigratesToFastMode() {
         assertEquals(
             MeteringPipelineMode.FAST,

@@ -21,6 +21,7 @@ class SettingsView(
     interface Listener {
         fun onCloseRequested()
         fun onSettingChanged(key: SettingKey)
+        fun onSettingRejected(key: SettingKey, value: String)
         fun onActionRequested(key: SettingActionKey)
     }
 
@@ -352,7 +353,11 @@ class SettingsView(
         }
         val target = optionTargets.firstOrNull { it.rect.contains(x, y) } ?: return
         if (state.settingValue(target.item.key) == target.option.value) return
-        state.updateSetting(target.item.key, target.option.value)
+        if (!state.updateSetting(target.item.key, target.option.value)) {
+            haptic()
+            listener?.onSettingRejected(target.item.key, target.option.value)
+            return
+        }
         haptic()
         listener?.onSettingChanged(target.item.key)
         invalidate()

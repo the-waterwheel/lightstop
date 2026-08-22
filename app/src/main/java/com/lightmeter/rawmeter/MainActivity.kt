@@ -36,6 +36,7 @@ class MainActivity : Activity(), CameraControllerCallback {
     private val mainHandler = Handler(Looper.getMainLooper())
     private var rawDialogVisible = false
     private var compatibilityModeDialogVisible = false
+    private var angleCompatibilityDialogVisible = false
     private var calibrationResetDialogVisible = false
     private var vignettingDialogVisible = false
     private var vignettingResetDialogVisible = false
@@ -79,6 +80,7 @@ class MainActivity : Activity(), CameraControllerCallback {
                     state.frameLandscape,
                     state.zoom,
                     state.meteringMode,
+                    meteringAngleDegrees = state.angleMeteringDegrees,
                 )
             }
 
@@ -128,6 +130,12 @@ class MainActivity : Activity(), CameraControllerCallback {
                         meterLayout.textureView.width,
                         meterLayout.textureView.height,
                     )
+                }
+            }
+
+            override fun onSettingRejected(key: SettingKey, value: String) {
+                if (key == SettingKey.METERING_MODE && value == MeteringMode.ANGLE.name) {
+                    showAngleCompatibilityWarning()
                 }
             }
 
@@ -228,6 +236,7 @@ class MainActivity : Activity(), CameraControllerCallback {
                     state.zoom,
                     state.meteringMode,
                     target,
+                    meteringAngleDegrees = state.angleMeteringDegrees,
                 )
                 if (!accepted) {
                     zoneMeasurementPending = false
@@ -582,6 +591,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             state.frameLandscape,
             state.zoom,
             state.meteringMode,
+            meteringAngleDegrees = state.angleMeteringDegrees,
             requestedSource = source,
         )
         if (!accepted) {
@@ -869,6 +879,32 @@ class MainActivity : Activity(), CameraControllerCallback {
                 preferences.edit().putBoolean(SUPPRESS_COMPATIBILITY_MODE_WARNING, true).apply()
             }
             .setOnDismissListener { compatibilityModeDialogVisible = false }
+            .show()
+    }
+
+    private fun showAngleCompatibilityWarning() {
+        val preferences = getSharedPreferences(PREFERENCES_NAME, MODE_PRIVATE)
+        if (preferences.getBoolean(SUPPRESS_ANGLE_COMPATIBILITY_WARNING, false) ||
+            angleCompatibilityDialogVisible || isFinishing
+        ) return
+        angleCompatibilityDialogVisible = true
+        AlertDialog.Builder(this)
+            .setTitle(localized("按角度测光不可用", "Angle metering unavailable"))
+            .setMessage(
+                localized(
+                    "兼容模式的预览分辨率不足，无法提供有意义的角度测光精度。" +
+                        "请先选择高精度模式或稳定模式。",
+                    "Compatibility mode does not have enough preview resolution for meaningful " +
+                        "angle-metering accuracy. Select High accuracy or Stable mode first.",
+                ),
+            )
+            .setPositiveButton(localized("确定", "OK"), null)
+            .setNeutralButton(localized("不再提示", "Don't show again")) { _, _ ->
+                preferences.edit()
+                    .putBoolean(SUPPRESS_ANGLE_COMPATIBILITY_WARNING, true)
+                    .apply()
+            }
+            .setOnDismissListener { angleCompatibilityDialogVisible = false }
             .show()
     }
 
@@ -1205,6 +1241,8 @@ class MainActivity : Activity(), CameraControllerCallback {
         private const val PREFERENCES_NAME = "raw_light_meter_state"
         private const val SUPPRESS_COMPATIBILITY_MODE_WARNING =
             "suppress_compatibility_mode_warning"
+        private const val SUPPRESS_ANGLE_COMPATIBILITY_WARNING =
+            "suppress_angle_compatibility_warning"
         private const val CAMERA_PERMISSION_REQUEST_MARKER = "camera-permission-requested"
         private val TRANSIENT_TOKEN = Any()
     }

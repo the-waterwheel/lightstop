@@ -179,6 +179,7 @@ class CameraController(
                 message: String,
                 meteringMode: MeteringMode,
                 target: ZoneMeteringTarget?,
+                meteringRoiFraction: Float?,
             ) {
                 resumePreviewAfterRawCapture()
                 val canUsePreview = textureView?.isAvailable == true &&
@@ -186,7 +187,7 @@ class CameraController(
                 if (canUsePreview) {
                     downgradeAfterCompatibleMeasurement =
                         recoveryState.recordRawMeasurementFailed(meteringPipelineMode)
-                    measureCompatiblePreview(meteringMode, target)
+                    measureCompatiblePreview(meteringMode, target, meteringRoiFraction)
                 } else {
                     meteringOperationActive = false
                     postMeterError(message)
@@ -402,12 +403,38 @@ class CameraController(
         displayZoom: Float,
         meteringMode: MeteringMode,
         target: ZoneMeteringTarget? = null,
+        meteringAngleDegrees: Int = AngleMeteringMath.DEFAULT_DEGREES,
         requestedSource: MeteringSource? = null,
     ): Boolean {
         if (meteringOperationActive) return false
         meteringOperationActive = true
+        val screenAspect = if (frameLandscape) {
+            frameFormat.landscapeAspect
+        } else {
+            1f / frameFormat.landscapeAspect
+        }
+        val sensorOrientation =
+            characteristics?.get(CameraCharacteristics.SENSOR_ORIENTATION)
+                ?: cameraInfo.sensorOrientationDegrees
+        val sensorFrameAspect = CameraPreviewTransform.screenAspectInSensorCoordinates(
+            screenAspect = screenAspect,
+            sensorOrientationDegrees = sensorOrientation,
+            displayRotation = lastDisplayRotation,
+        )
+        val meteringRoiFraction = if (meteringMode == MeteringMode.ANGLE) {
+            AngleMeteringMath.roiFraction(
+                angleDegrees = meteringAngleDegrees,
+                focalLengthMm = cameraInfo.focalLengthMm.toDouble(),
+                sensorWidthMm = cameraInfo.sensorWidthMm.toDouble(),
+                sensorHeightMm = cameraInfo.sensorHeightMm.toDouble(),
+                sensorFrameAspect = sensorFrameAspect.toDouble(),
+                zoom = displayZoom.toDouble(),
+            )
+        } else {
+            null
+        }
         if (requestedSource == MeteringSource.ISP_PREVIEW) {
-            measureProcessedPreview(meteringMode, target)
+            measureProcessedPreview(meteringMode, target, meteringRoiFraction)
             return true
         }
         if (requestedSource == MeteringSource.YUV_PREVIEW ||
@@ -418,7 +445,9 @@ class CameraController(
                 meteringOperationActive = false
                 callback.onMeteringError(localized("相机尚未就绪", "Camera is not ready"))
             } else {
-                handler.post { measureCompatiblePreview(meteringMode, target) }
+                handler.post {
+                    measureCompatiblePreview(meteringMode, target, meteringRoiFraction)
+                }
             }
             return true
         }
@@ -458,15 +487,6 @@ class CameraController(
                 return@post
             }
 
-            val screenAspect =
-                if (frameLandscape) {
-                    frameFormat.landscapeAspect
-                } else {
-                    1f / frameFormat.landscapeAspect
-                }
-            val sensorOrientation =
-                characteristics?.get(CameraCharacteristics.SENSOR_ORIENTATION)
-                    ?: cameraInfo.sensorOrientationDegrees
             val displayDegrees = when (lastDisplayRotation) {
                 Surface.ROTATION_90 -> 90
                 Surface.ROTATION_180 -> 180
@@ -475,11 +495,6 @@ class CameraController(
             }
             val screenToSensorRotation =
                 (sensorOrientation - displayDegrees + 360) % 360
-            val sensorFrameAspect = CameraPreviewTransform.screenAspectInSensorCoordinates(
-                screenAspect = screenAspect,
-                sensorOrientationDegrees = sensorOrientation,
-                displayRotation = lastDisplayRotation,
-            )
             val recentTrackingFrame = zoneCameraFrames.latestFrame(MAX_METERING_REFERENCE_AGE_NS)
             val previewReference = if (target != null && recentTrackingFrame != null) {
                 MeteringAnalysis.createPreviewReference(
@@ -491,13 +506,18 @@ class CameraController(
             } else {
                 displayedPreviewReference
             }
-            Log.i(TAG, "Starting RAW metering for frame format=${frameFormat.id}")
+            Log.i(
+                TAG,
+                "Starting RAW metering for frame format=${frameFormat.id} " +
+                    "mode=$meteringMode angle=$meteringAngleDegrees roi=$meteringRoiFraction",
+            )
             pausePreviewForRawCapture()
             val accepted = rawMeter.start(
                 context = rawContext,
                 frameAspect = sensorFrameAspect,
                 zoom = displayZoom.coerceAtLeast(1f),
                 meteringMode = meteringMode,
+                meteringRoiFraction = meteringRoiFraction,
                 target = target,
                 previewReference = previewReference,
                 screenToSensorRotationDegrees = screenToSensorRotation,
@@ -755,6 +775,7 @@ class CameraController(
     private fun measureCompatiblePreview(
         meteringMode: MeteringMode,
         target: ZoneMeteringTarget?,
+        meteringRoiFraction: Float? = null,
         forceProcessedPreview: Boolean = false,
     ) {
         if (compatibleMeter.isMeasuring || rawMeter.isMeasuring ||
@@ -773,6 +794,7 @@ class CameraController(
             target = target,
             context = compatibleMeteringContext(),
             forceProcessedPreview = useProcessedPreview,
+            meteringRoiFraction = meteringRoiFraction,
         )
         if (!accepted) {
             meteringOperationActive = false
@@ -796,8 +818,14 @@ class CameraController(
     private fun measureProcessedPreview(
         meteringMode: MeteringMode,
         target: ZoneMeteringTarget?,
+        meteringRoiFraction: Float?,
     ) {
-        measureCompatiblePreview(meteringMode, target, forceProcessedPreview = true)
+        measureCompatiblePreview(
+            meteringMode,
+            target,
+            meteringRoiFraction,
+            forceProcessedPreview = true,
+        )
     }
 
     private fun afterCompatibleMeasurement(requiresPreviewOnlySession: Boolean) {

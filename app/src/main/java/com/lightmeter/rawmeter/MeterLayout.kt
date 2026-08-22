@@ -36,6 +36,7 @@ class MeterLayout @JvmOverloads constructor(
         fun onOrientationToggle()
         fun onPreviewGeometryChanged(width: Int, height: Int)
         fun onControlsChanged(frameChanged: Boolean)
+        fun onSettingRejected(key: SettingKey, value: String)
         fun onCalibrationOpened()
         fun onCameraSelected(cameraId: String)
         fun onCameraNoteRequested(cameraId: String)
@@ -77,6 +78,7 @@ class MeterLayout @JvmOverloads constructor(
     private val parameterRecordToolView = ParameterRecordToolView(context, state, parameterRecordRepository)
     private val parameterRecordEditorView = ParameterRecordEditorView(context, state)
     private val parameterHistoryView = ParameterHistoryView(context, state, parameterRecordRepository)
+    private val angleMeteringDialView = AngleMeteringDialView(context, state)
     private val recordCaptureSliderView = RecordCaptureSliderView(context, state)
     private val toolsHost = FrameLayout(context)
     private val zoneMarkerTracker: ZoneMarkerTracker = DeferredZoneMarkerTracker {
@@ -166,6 +168,10 @@ class MeterLayout @JvmOverloads constructor(
                     instrumentView.invalidate()
                     settingsView.invalidate()
                     value?.onControlsChanged(frameChanged)
+                }
+
+                override fun onSettingRejected(key: SettingKey, rejectedValue: String) {
+                    value?.onSettingRejected(key, rejectedValue)
                 }
 
                 override fun onActionRequested(key: SettingActionKey) {
@@ -389,6 +395,8 @@ class MeterLayout @JvmOverloads constructor(
             ),
         )
         addView(toolsHost)
+        angleMeteringDialView.visibility = View.GONE
+        addView(angleMeteringDialView)
         recordCaptureSliderView.visibility = View.GONE
         addView(recordCaptureSliderView)
         parameterRecordEditorView.visibility = View.GONE
@@ -398,6 +406,10 @@ class MeterLayout @JvmOverloads constructor(
         parameterHistoryView.visibility = View.GONE
         addView(parameterHistoryView)
         zoneView.setAppliedLatitude(filmLatitudeRepository.loadApplied()?.range)
+        angleMeteringDialView.onAngleChanged = {
+            instrumentView.invalidate()
+            zoneView.invalidate()
+        }
         toolsView.listener = object : ToolsView.Listener {
             override fun onCloseRequested() {
                 closeTools()
@@ -592,6 +604,10 @@ class MeterLayout @JvmOverloads constructor(
             MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
             MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
         )
+        angleMeteringDialView.measure(
+            MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
+        )
         parameterHistoryView.measure(
             MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
             MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
@@ -702,6 +718,7 @@ class MeterLayout @JvmOverloads constructor(
         vignettingCalibrationView.layout(0, 0, width, height)
         zoneView.layout(0, 0, width, height)
         layoutToolsPanel()
+        angleMeteringDialView.layout(0, 0, width, height)
         recordCaptureSliderView.layout(0, 0, width, height)
         val parameterPanel = toolsPanelRect(width, height)
         parameterRecordEditorView.layout(
@@ -712,6 +729,7 @@ class MeterLayout @JvmOverloads constructor(
         )
         filmSelectorView.layout(0, 0, width, height)
         parameterHistoryView.layout(0, 0, width, height)
+        updateAngleMeteringControl()
         updateRecordSliderAnchor()
         // A format change can resize this child while the ViewGroup's own bounds stay the
         // same, so `changed` is not a reliable signal. Publish geometry after every layout.
@@ -768,6 +786,7 @@ class MeterLayout @JvmOverloads constructor(
         parameterRecordEditorView.invalidate()
         parameterHistoryView.invalidate()
         recordCaptureSliderView.invalidate()
+        updateAngleMeteringControl()
         filmSelectorView.applyTheme()
     }
 
@@ -793,6 +812,8 @@ class MeterLayout @JvmOverloads constructor(
 
     private fun openSettingsPage() {
         isSettingsOpen = true
+        angleMeteringDialView.collapse()
+        updateAngleMeteringControl()
         settingsView.animate().cancel()
         settingsView.visibility = View.VISIBLE
         settingsView.bringToFront()
@@ -822,7 +843,9 @@ class MeterLayout @JvmOverloads constructor(
         ) return
         instrumentView.setModeTransitionEnabled(false)
         zoneView.setModeTransitionEnabled(false)
+        angleMeteringDialView.collapse()
         isToolsOpen = true
+        updateAngleMeteringControl()
         Log.i("lightstop", "Tools panel opened")
         when (activeToolId) {
             ToolId.DEPTH_OF_FIELD -> {
@@ -908,6 +931,7 @@ class MeterLayout @JvmOverloads constructor(
                     toolsHost.visibility = View.GONE
                     instrumentView.setModeTransitionEnabled(true)
                     zoneView.setModeTransitionEnabled(true)
+                    updateAngleMeteringControl()
                 }
             }
             .start()
@@ -1234,6 +1258,30 @@ class MeterLayout @JvmOverloads constructor(
         )
     }
 
+    private fun updateAngleMeteringControl() {
+        val transitionSettled = zoneTransitionFraction <= 0f || zoneTransitionFraction >= 1f
+        val visible = state.meteringMode == MeteringMode.ANGLE &&
+            state.meteringPipelineMode != MeteringPipelineMode.FAST &&
+            transitionSettled &&
+            !isCalibrationOpen && !isVignettingCalibrationOpen &&
+            !isCameraManagementOpen && !isInformationOpen &&
+            !isSettingsOpen && !isToolsOpen && !isFilmSelectorOpen &&
+            !isParameterEditorOpen && !isParameterHistoryOpen
+        angleMeteringDialView.visibility = if (visible) View.VISIBLE else View.GONE
+        if (!visible) {
+            angleMeteringDialView.collapse()
+            return
+        }
+        angleMeteringDialView.setAnchor(
+            if (isZoneMode) zoneView.recordButtonRect() else instrumentView.recordButtonRect(),
+        )
+        angleMeteringDialView.refreshSupport()
+        angleMeteringDialView.bringToFront()
+        if (recordCaptureSliderView.visibility == View.VISIBLE) {
+            recordCaptureSliderView.bringToFront()
+        }
+    }
+
     fun closeSettings(): Boolean {
         if (isInformationOpen) return closeInformationFromBack()
         if (!isSettingsOpen) return false
@@ -1244,7 +1292,10 @@ class MeterLayout @JvmOverloads constructor(
             .setDuration(260L)
             .setInterpolator(DecelerateInterpolator())
             .withEndAction {
-                if (!isSettingsOpen) settingsView.visibility = View.GONE
+                if (!isSettingsOpen) {
+                    settingsView.visibility = View.GONE
+                    updateAngleMeteringControl()
+                }
             }
             .start()
         return true

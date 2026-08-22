@@ -36,12 +36,13 @@ internal object MeteringAnalysis {
         meteringMode: MeteringMode,
         calibrationStore: CameraCalibrationStore,
         target: ZoneMeteringTarget? = null,
+        meteringRoiFraction: Float? = null,
     ): MeteringFrameStat? {
         val centerX = target?.previewX ?: 0.5f
         val centerY = target?.previewY ?: 0.5f
         val spot = analyzePreviewRegion(
             bitmap,
-            SPOT_ROI_FRACTION,
+            spotRoiFraction(meteringMode, meteringRoiFraction),
             centerX,
             centerY,
         ) ?: return null
@@ -92,6 +93,7 @@ internal object MeteringAnalysis {
         cameraId: String,
         meteringMode: MeteringMode,
         calibrationStore: CameraCalibrationStore,
+        meteringRoiFraction: Float? = null,
     ): MeteringFrameStat? {
         if (image.format != android.graphics.ImageFormat.YUV_420_888) return null
         if (luma.size < image.width * image.height) return null
@@ -100,7 +102,7 @@ internal object MeteringAnalysis {
             luma,
             image.width,
             image.height,
-            SPOT_ROI_FRACTION,
+            spotRoiFraction(meteringMode, meteringRoiFraction),
         ) ?: return null
         val region = if (meteringMode == MeteringMode.CENTER_WEIGHTED) {
             val wide = analyzeYuvRegion(
@@ -150,6 +152,7 @@ internal object MeteringAnalysis {
         rawMeterPoint: RawMeterPoint? = null,
         vignettingStore: VignettingCalibrationStore? = null,
         applyVignettingCalibration: Boolean = false,
+        meteringRoiFraction: Float? = null,
     ): MeteringFrameStat? {
         val plane = image.planes.firstOrNull() ?: return null
         val black = result.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)
@@ -169,7 +172,7 @@ internal object MeteringAnalysis {
             activeArray = cameraInfo.activeArray,
             frameAspect = frameAspect,
             zoom = zoom,
-            roiFraction = SPOT_ROI_FRACTION,
+            roiFraction = spotRoiFraction(meteringMode, meteringRoiFraction),
             rawMeterPoint = rawMeterPoint,
         )
         val values = if (meteringMode == MeteringMode.CENTER_WEIGHTED) {
@@ -677,6 +680,15 @@ internal object MeteringAnalysis {
         }
     }
 
+    private fun spotRoiFraction(
+        meteringMode: MeteringMode,
+        meteringRoiFraction: Float?,
+    ): Float = if (meteringMode == MeteringMode.ANGLE) {
+        meteringRoiFraction?.coerceIn(MIN_ROI_FRACTION, 1f) ?: SPOT_ROI_FRACTION
+    } else {
+        SPOT_ROI_FRACTION
+    }
+
     private fun rawMeterRoi(
         imageWidth: Int,
         imageHeight: Int,
@@ -1016,6 +1028,7 @@ internal object MeteringAnalysis {
     private const val RAW_REFERENCE_LEVEL = 0.18
     private const val YUV_CLIP_LEVEL = 250
     private const val SPOT_ROI_FRACTION = 0.08f
+    private const val MIN_ROI_FRACTION = 0.001f
     private const val CENTER_WEIGHTED_ROI_FRACTION = 0.30f
     private const val CENTER_SPOT_WEIGHT = 0.7
     private const val CENTER_WIDE_WEIGHT = 0.3

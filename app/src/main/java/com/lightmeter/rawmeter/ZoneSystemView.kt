@@ -268,7 +268,14 @@ class ZoneSystemView(
     }
 
     private fun drawCameraOverlay(canvas: Canvas, g: Geometry) {
-        val spotRadius = min(g.cameraFrame.width(), g.cameraFrame.height()) * 0.045f
+        val roiFraction = if (state.meteringMode == MeteringMode.ANGLE) {
+            state.angleMeteringRoiFraction() ?: DEFAULT_SPOT_DIAMETER_FRACTION
+        } else {
+            DEFAULT_SPOT_DIAMETER_FRACTION
+        }
+        val spotRadius = (
+            min(g.cameraFrame.width(), g.cameraFrame.height()) * roiFraction / 2f
+            ).coerceAtLeast(4f * density)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 2f * density
         paint.color = surface
@@ -1495,6 +1502,7 @@ class ZoneSystemView(
         private const val MAX_MARKER_INTERPOLATION_MS = 48L
         private const val METERING_SPINNER_PERIOD_MS = 820L
         private const val METERING_SPINNER_SWEEP_DEGREES = 108f
+        private const val DEFAULT_SPOT_DIAMETER_FRACTION = 0.09f
         private const val OVERLAY_ALPHA = 168
     }
 }

@@ -37,6 +37,7 @@ internal interface RawLightMeterListener {
         message: String,
         meteringMode: MeteringMode,
         target: ZoneMeteringTarget?,
+        meteringRoiFraction: Float?,
     )
 }
 
@@ -64,6 +65,7 @@ private data class MeasurementAccumulator(
     val frameAspect: Float,
     val zoom: Float,
     val meteringMode: MeteringMode,
+    val meteringRoiFraction: Float? = null,
     val target: ZoneMeteringTarget? = null,
     val previewReference: PreviewLumaReference? = null,
     val screenToSensorRotationDegrees: Int = 0,
@@ -108,6 +110,7 @@ internal class RawLightMeter(
         frameAspect: Float,
         zoom: Float,
         meteringMode: MeteringMode,
+        meteringRoiFraction: Float?,
         target: ZoneMeteringTarget?,
         previewReference: PreviewLumaReference?,
         screenToSensorRotationDegrees: Int,
@@ -129,6 +132,7 @@ internal class RawLightMeter(
             frameAspect = frameAspect,
             zoom = zoom.coerceAtLeast(1f),
             meteringMode = meteringMode,
+            meteringRoiFraction = meteringRoiFraction,
             target = target,
             previewReference = previewReference,
             screenToSensorRotationDegrees = screenToSensorRotationDegrees,
@@ -142,6 +146,7 @@ internal class RawLightMeter(
             "RAW metering started: frames=$count " +
                 "captureIso=${context.latestResult?.get(CaptureResult.SENSOR_SENSITIVITY) ?: "unknown"} " +
                 "zoom=${accumulator.zoom} sensorAspect=$frameAspect mode=$meteringMode " +
+                "roi=${accumulator.meteringRoiFraction ?: "default"} " +
                 "touchTarget=${target != null} ispReference=${previewReference != null}",
         )
         listener.onRawMeteringStarted(count)
@@ -358,6 +363,7 @@ internal class RawLightMeter(
                     active.rawMeterPoint,
                     vignettingCalibrationStore,
                     applyVignettingCalibration = active.target != null,
+                    meteringRoiFraction = active.meteringRoiFraction,
                 )
             }
         } finally {
@@ -394,6 +400,7 @@ internal class RawLightMeter(
             frameAspect = active.frameAspect,
             zoom = active.zoom,
             meteringMode = active.meteringMode,
+            meteringRoiFraction = active.meteringRoiFraction,
             target = active.target,
             previewReference = active.previewReference,
             screenToSensorRotationDegrees = active.screenToSensorRotationDegrees,
@@ -493,7 +500,12 @@ internal class RawLightMeter(
         isMeasuring = false
         active.framePairer.clear()
         Log.e(TAG, "RAW metering failed: $message")
-        listener.onRawMeteringError(message, active.meteringMode, active.target)
+        listener.onRawMeteringError(
+            message,
+            active.meteringMode,
+            active.target,
+            active.meteringRoiFraction,
+        )
     }
 
     private fun scheduleTimeout(active: MeasurementAccumulator, handler: Handler) {
