@@ -151,17 +151,18 @@ internal object ZoneLayoutCalculator {
                 zoneScale.bottom + gap * 0.45f + h * 0.052f,
             )
             recordPanel = RectF(pad, markerRail.bottom + gap, w - pad, h - pad)
+            val recordContentRight =
+                recordPanel.left + recordPanel.width() * RECORD_CONTENT_FRACTION
             val markSize = min(
                 72f * density,
                 min(recordPanel.width() * 0.20f, recordPanel.height() * 0.34f),
             )
             markButton = RectF(
-                recordPanel.right - gap - markSize,
+                recordContentRight + gap,
                 recordPanel.centerY() - markSize / 2f,
-                recordPanel.right - gap,
+                recordContentRight + gap + markSize,
                 recordPanel.centerY() + markSize / 2f,
             )
-            val recordContentRight = markButton.left - gap
             clearTrack = RectF(
                 recordPanel.left + gap,
                 recordPanel.top + gap,
@@ -315,17 +316,18 @@ internal object ZoneLayoutCalculator {
                 recordPanel.right,
                 recordPanel.bottom,
             )
+            val recordContentRight =
+                recordPanel.left + recordPanel.width() * RECORD_CONTENT_FRACTION
             val markSize = min(
                 68f * density,
                 min(recordPanel.width() * 0.18f, recordPanel.height() * 0.42f),
             )
             markButton = RectF(
-                recordPanel.right - gap - markSize,
+                recordContentRight + gap,
                 recordPanel.centerY() - markSize / 2f,
-                recordPanel.right - gap,
+                recordContentRight + gap + markSize,
                 recordPanel.centerY() + markSize / 2f,
             )
-            val recordContentRight = markButton.left - gap
             clearTrack = RectF(
                 recordPanel.left + gap,
                 recordPanel.bottom - 28f * density,
@@ -389,4 +391,6 @@ internal object ZoneLayoutCalculator {
             )
         }
     }
+
+    private const val RECORD_CONTENT_FRACTION = 0.5f
 }
