@@ -10,6 +10,7 @@ local.properties
 __pycache__/
 *.pyc
 captures/
+/*-latest.png
 dist/
 .externalNativeBuild/
 keystore.properties

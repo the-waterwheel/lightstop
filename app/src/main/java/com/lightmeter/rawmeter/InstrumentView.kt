@@ -83,6 +83,7 @@ class InstrumentView(
     private var exposureLockDragStartFraction = 0f
     private var exposureLockDragMoved = false
     private var zoneTransitionFraction = 0f
+    private var modeTransitionEnabled = true
     private var zoneDragStartX = 0f
     private var zoneDragStartY = 0f
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
@@ -244,6 +245,16 @@ class InstrumentView(
 
     fun setZoneTransitionFraction(fraction: Float) {
         zoneTransitionFraction = fraction.coerceIn(0f, 1f)
+        invalidate()
+    }
+
+    /** Prevents the covered Normal/Zone handle from retaining a partial drag under Tools. */
+    fun setModeTransitionEnabled(enabled: Boolean) {
+        modeTransitionEnabled = enabled
+        if (!enabled) {
+            if (touchTarget == TouchTarget.ZONE_ENTRY) touchTarget = TouchTarget.NONE
+            zoneTransitionFraction = 0f
+        }
         invalidate()
     }
 
@@ -880,7 +891,8 @@ class InstrumentView(
                     }
                 }
                 when {
-                    g.zoneEntryHandle.containsAccessibleTarget(event.x, event.y, density) &&
+                    modeTransitionEnabled &&
+                        g.zoneEntryHandle.containsAccessibleTarget(event.x, event.y, density) &&
                         !state.measuring -> {
                         formatMenuOpen = false
                         touchTarget = TouchTarget.ZONE_ENTRY

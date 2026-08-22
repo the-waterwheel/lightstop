@@ -67,16 +67,16 @@ internal object DepthOfFieldGeometryCalculator {
 
         val controlsTop = ruler.bottom + max(4f * density, availableHeight * 0.012f)
         val controlsHeight = (h - controlsTop).coerceAtLeast(1f)
-        val selectorGap = max(5f * density, w * 0.012f)
-        val selectorWidth = min(142f * density, (w - pad * 2f - selectorGap) / 2f)
-        val selectorHeight = min(42f * density, controlsHeight * 0.28f).coerceAtLeast(min(32f * density, controlsHeight))
-        val selectorsWidth = selectorWidth * 2f + selectorGap
-        val selectorLeft = (w - selectorsWidth) / 2f
+        val selectorGap = max(5f * density, controlsHeight * 0.025f)
+        val selectorWidth = min(116f * density, w * 0.30f)
+        val selectorHeight = min(38f * density, (controlsHeight - selectorGap) / 2f)
+            .coerceAtLeast(min(30f * density, controlsHeight / 2f))
+        val selectorLeft = (w - selectorWidth) / 2f
         val frame = RectF(selectorLeft, controlsTop, selectorLeft + selectorWidth, controlsTop + selectorHeight)
-        val coc = RectF(frame.right + selectorGap, controlsTop, frame.right + selectorGap + selectorWidth, controlsTop + selectorHeight)
+        val coc = RectF(selectorLeft, frame.bottom + selectorGap, selectorLeft + selectorWidth, frame.bottom + selectorGap + selectorHeight)
 
-        val dialAvailableHeight = (h - frame.bottom - pad - 5f * density).coerceAtLeast(1f)
-        val dialSize = min(min(w * 0.275f, 112f * density), dialAvailableHeight)
+        val dialAvailableHeight = (h - controlsTop - pad).coerceAtLeast(1f)
+        val dialSize = min(min(w * 0.33f, 132f * density), dialAvailableHeight)
             .coerceAtLeast(min(64f * density, dialAvailableHeight))
         val dialTop = h - pad - dialSize
         val apertureDial = RectF(pad, dialTop, pad + dialSize, dialTop + dialSize)

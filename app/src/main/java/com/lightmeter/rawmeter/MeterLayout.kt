@@ -820,6 +820,8 @@ class MeterLayout @JvmOverloads constructor(
         if (isToolsOpen || isSettingsOpen || isCalibrationOpen || isVignettingCalibrationOpen ||
             isCameraManagementOpen || isInformationOpen
         ) return
+        instrumentView.setModeTransitionEnabled(false)
+        zoneView.setModeTransitionEnabled(false)
         isToolsOpen = true
         Log.i("lightstop", "Tools panel opened")
         when (activeToolId) {
@@ -902,7 +904,11 @@ class MeterLayout @JvmOverloads constructor(
             .setDuration(260L)
             .setInterpolator(DecelerateInterpolator())
             .withEndAction {
-                if (!isToolsOpen) toolsHost.visibility = View.GONE
+                if (!isToolsOpen) {
+                    toolsHost.visibility = View.GONE
+                    instrumentView.setModeTransitionEnabled(true)
+                    zoneView.setModeTransitionEnabled(true)
+                }
             }
             .start()
         return true

@@ -77,12 +77,24 @@ internal class RecordCaptureSliderView(
         paint.style = Paint.Style.FILL
         paint.color = if (capturePending) Color.rgb(150, 150, 146) else red
         canvas.drawCircle(x, track.centerY(), knobRadius, paint)
-        paint.color = if (state.isDarkMode) Color.BLACK else Color.WHITE
-        paint.textSize = 8f * density
+
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 1.6f * density
+        paint.strokeCap = Paint.Cap.ROUND
+        paint.color = Color.WHITE
+        val chevronHalf = 3.2f * density
+        canvas.drawLine(x - chevronHalf, track.centerY() - chevronHalf, x + chevronHalf, track.centerY(), paint)
+        canvas.drawLine(x + chevronHalf, track.centerY(), x - chevronHalf, track.centerY() + chevronHalf, paint)
+        paint.strokeCap = Paint.Cap.BUTT
+
+        paint.style = Paint.Style.FILL
+        paint.color = foreground
+        paint.textSize = 8f * density * resources.configuration.fontScale
         paint.textAlign = Paint.Align.CENTER
         val text = if (capturePending) localized("处理中", "Saving") else localized("滑动记录", "Slide")
         val metrics = paint.fontMetrics
-        canvas.drawText(text, x, track.centerY() - (metrics.ascent + metrics.descent) / 2f, paint)
+        val textStart = start + knobRadius + 3f * density
+        canvas.drawText(text, (textStart + end) / 2f, track.centerY() - (metrics.ascent + metrics.descent) / 2f, paint)
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {

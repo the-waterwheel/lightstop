@@ -47,9 +47,9 @@ internal class LatitudeView(
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
-        typeface = Typeface.create("sans", Typeface.NORMAL)
+        typeface = Typeface.create("sans-serif", Typeface.NORMAL)
     }
-    private val boldPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans", Typeface.BOLD) }
+    private val boldPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans-serif", Typeface.BOLD) }
     private val path = Path()
     private val background: Int get() = if (state.isDarkMode) Color.BLACK else Color.WHITE
     private val foreground: Int get() = if (state.isDarkMode) Color.rgb(224, 224, 220) else Color.rgb(20, 20, 20)
@@ -122,7 +122,7 @@ internal class LatitudeView(
         canvas.drawLine(closeX + 7f * density, y - 7f * density, closeX - 7f * density, y + 7f * density, paint)
         boldPaint.textAlign = Paint.Align.CENTER
         boldPaint.color = foreground
-        boldPaint.textSize = 13f * scaledDensity
+        boldPaint.textSize = 14f * scaledDensity
         centeredText(canvas, localized("宽容度", "Latitude"), width / 2f, y, boldPaint)
         paint.style = Paint.Style.FILL
         paint.color = muted
@@ -130,53 +130,78 @@ internal class LatitudeView(
     }
 
     private fun drawLatitudeRail(canvas: Canvas) {
-        val left = geometry.rail.left + 8f * density
-        val right = geometry.rail.right - 8f * density
-        val lineY = geometry.rail.top + geometry.rail.height() * 0.34f
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 1.4f * density
-        paint.color = foreground
-        canvas.drawLine(left, lineY, right, lineY, paint)
-        paint.textAlign = Paint.Align.CENTER
-        paint.textSize = 8f * scaledDensity
-        paint.color = foreground
+        val scale = latitudeScaleRect()
         for (zone in 0..10) {
-            val x = left + (right - left) * zone / 10f
-            val tick = if (zone == 5) 9f * density else 6f * density
-            canvas.drawLine(x, lineY - tick, x, lineY + tick, paint)
-            canvas.drawText(zone.toString(), x, lineY - 12f * density, paint)
+            val cellLeft = scale.left + scale.width() * zone / 11f
+            val cellRight = scale.left + scale.width() * (zone + 1) / 11f
+            val cell = RectF(cellLeft, scale.top, cellRight, scale.bottom)
+            val maximum = if (state.isDarkMode) 210 else 255
+            val luma = (maximum * zone / 10f).toInt()
+            paint.style = Paint.Style.FILL
+            paint.color = Color.rgb(luma, luma, luma)
+            canvas.drawRect(cell, paint)
+            boldPaint.textAlign = Paint.Align.CENTER
+            boldPaint.textSize = 8.5f * scaledDensity
+            boldPaint.color = if (luma < 120) Color.rgb(225, 225, 222) else Color.rgb(20, 20, 20)
+            centeredText(canvas, ZoneMeterSession.ZONE_LABELS[zone], cell.centerX(), cell.centerY(), boldPaint)
         }
-        val shadowX = zoneX(left, right, displayedRange.lowerZone)
-        val highlightX = zoneX(left, right, displayedRange.upperZone)
-        drawFilmMarker(canvas, shadowX, lineY, displayedRange.shadowEv, isShadow = true)
-        drawFilmMarker(canvas, highlightX, lineY, displayedRange.highlightEv, isShadow = false)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 1f * density
+        paint.color = foreground
+        canvas.drawRoundRect(scale, 3f * density, 3f * density, paint)
+
+        val shadowX = zoneX(scale.left, scale.right, displayedRange.lowerZone)
+        val highlightX = zoneX(scale.left, scale.right, displayedRange.upperZone)
+        drawFilmMarker(canvas, shadowX, scale, displayedRange.shadowEv, isShadow = true)
+        drawFilmMarker(canvas, highlightX, scale, displayedRange.highlightEv, isShadow = false)
     }
 
-    private fun drawFilmMarker(canvas: Canvas, x: Float, lineY: Float, ev: Double, isShadow: Boolean) {
-        val tabWidth = 38f * density
-        val tabHeight = 27f * density
-        val tabTop = lineY + 15f * density
+    private fun drawFilmMarker(canvas: Canvas, x: Float, scale: RectF, ev: Double, isShadow: Boolean) {
+        val tabWidth = 40f * density
+        val tabHeight = 24f * density
+        val tabTop = scale.bottom + 16f * density
         val preferredLeft = if (isShadow) x - tabWidth * 0.82f else x - tabWidth * 0.18f
         val tabLeft = preferredLeft.coerceIn(geometry.rail.left, geometry.rail.right - tabWidth)
         val tab = RectF(tabLeft, tabTop, tabLeft + tabWidth, tabTop + tabHeight)
         paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 2.4f * density
+        paint.strokeWidth = 2f * density
         paint.color = red
-        canvas.drawLine(x, lineY - 11f * density, x, tab.top, paint)
+        canvas.drawLine(x, scale.top - 4f * density, x, scale.bottom + 8f * density, paint)
         paint.style = Paint.Style.FILL
         path.reset()
-        path.moveTo(tab.left + 4f * density, tab.top)
-        path.lineTo(tab.right - 4f * density, tab.top)
-        path.lineTo(tab.right, tab.centerY())
-        path.lineTo(tab.right - 4f * density, tab.bottom)
-        path.lineTo(tab.left + 4f * density, tab.bottom)
-        path.lineTo(tab.left, tab.centerY())
+        path.moveTo(x - 5f * density, scale.bottom + 7f * density)
+        path.lineTo(x + 5f * density, scale.bottom + 7f * density)
+        path.lineTo(x, scale.bottom + 13f * density)
         path.close()
+        paint.color = red
         canvas.drawPath(path, paint)
+
+        paint.color = Color.rgb(248, 248, 246)
+        canvas.drawRoundRect(tab, 3f * density, 3f * density, paint)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 1.2f * density
+        paint.color = Color.rgb(22, 22, 22)
+        canvas.drawRoundRect(tab, 3f * density, 3f * density, paint)
         boldPaint.textAlign = Paint.Align.CENTER
-        boldPaint.textSize = 8f * scaledDensity
+        boldPaint.textSize = 9f * scaledDensity
         boldPaint.color = Color.rgb(22, 22, 22)
-        centeredText(canvas, "片 ${signed(ev)}", tab.centerX(), tab.centerY(), boldPaint)
+        centeredText(
+            canvas,
+            if (state.menuLanguage == MenuLanguage.ENGLISH) "${signed(ev)} EV" else "${signed(ev)} 档",
+            tab.centerX(),
+            tab.centerY(),
+            boldPaint,
+        )
+    }
+
+    private fun latitudeScaleRect(): RectF {
+        val height = (geometry.rail.height() * 0.38f).coerceIn(28f * density, 42f * density)
+        return RectF(
+            geometry.rail.left,
+            geometry.rail.top + 5f * density,
+            geometry.rail.right,
+            geometry.rail.top + 5f * density + height,
+        )
     }
 
     private fun drawFilmCard(canvas: Canvas) {
@@ -190,7 +215,7 @@ internal class LatitudeView(
         val selected = repository.find(session.selectedFilmId)
         val display = selected ?: repository.films().firstOrNull()
         boldPaint.textAlign = Paint.Align.LEFT
-        boldPaint.textSize = 12f * scaledDensity
+        boldPaint.textSize = 13f * scaledDensity
         boldPaint.color = if (selected == null) muted else foreground
         val available = (geometry.filmCard.width() - 18f * density).coerceAtLeast(1f)
         val label = display?.displayName ?: localized("没有胶片数据", "No film data")
@@ -200,7 +225,7 @@ internal class LatitudeView(
         canvas.drawText(fitted.toString(), x, centerY - 2f * density, boldPaint)
         paint.style = Paint.Style.FILL
         paint.textAlign = Paint.Align.LEFT
-        paint.textSize = 8f * scaledDensity
+        paint.textSize = 9.5f * scaledDensity
         paint.color = if (selected == null) muted else foreground
         canvas.drawText(
             "${signed(session.range.shadowEv)} / ${signed(session.range.highlightEv)} EV",
@@ -212,15 +237,77 @@ internal class LatitudeView(
 
     private fun drawActions(canvas: Canvas) {
         drawButton(canvas, geometry.selectFilm, localized("选择胶片", "Select film"), false)
-        drawButton(
-            canvas,
-            geometry.apply,
-            if (session.applied) localized("取消应用宽容度", "Cancel metering latitude")
+        drawApplyButton(
+            canvas = canvas,
+            rect = geometry.apply,
+            label = if (session.applied) localized("取消应用宽容度", "Cancel metering latitude")
             else localized("应用宽容度到测光", "Apply latitude to meter"),
-            session.applied,
+            active = session.applied,
         )
-        drawButton(canvas, geometry.reset, localized("重置宽容度", "Reset latitude"), false)
+        drawResetAction(canvas)
         drawButton(canvas, geometry.record, localized("记录当前宽容度到数据", "Save current latitude"), false)
+    }
+
+    private fun drawApplyButton(canvas: Canvas, rect: RectF, label: String, active: Boolean) {
+        paint.style = Paint.Style.FILL
+        paint.color = if (active) Color.rgb(218, 218, 214) else Color.WHITE
+        canvas.drawRoundRect(rect, 7f * density, 7f * density, paint)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 1.8f * density
+        paint.color = red
+        canvas.drawRoundRect(rect, 7f * density, 7f * density, paint)
+        boldPaint.textAlign = Paint.Align.CENTER
+        boldPaint.color = Color.rgb(22, 22, 22)
+        boldPaint.textSize = min(11.5f * scaledDensity, rect.height() * 0.25f)
+        val fitted = TextUtils.ellipsize(
+            label,
+            boldPaint,
+            (rect.width() - 12f * density).coerceAtLeast(1f),
+            TextUtils.TruncateAt.END,
+        )
+        centeredText(canvas, fitted.toString(), rect.centerX(), rect.centerY(), boldPaint)
+    }
+
+    private fun drawResetAction(canvas: Canvas) {
+        val rect = geometry.reset
+        val radius = min(rect.width(), rect.height()) / 2f
+        paint.style = Paint.Style.FILL
+        paint.color = if (state.isDarkMode) panel else Color.WHITE
+        canvas.drawCircle(rect.centerX(), rect.centerY(), radius, paint)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 1.2f * density
+        paint.color = foreground
+        canvas.drawCircle(rect.centerX(), rect.centerY(), radius - density, paint)
+
+        paint.color = red
+        paint.strokeWidth = 2f * density
+        val arrowRadius = radius * 0.48f
+        val arc = RectF(
+            rect.centerX() - arrowRadius,
+            rect.centerY() - arrowRadius,
+            rect.centerX() + arrowRadius,
+            rect.centerY() + arrowRadius,
+        )
+        canvas.drawArc(arc, -65f, 300f, false, paint)
+        paint.style = Paint.Style.FILL
+        path.reset()
+        val arrowX = rect.centerX() + arrowRadius * 0.88f
+        val arrowY = rect.centerY() - arrowRadius * 0.48f
+        path.moveTo(arrowX + 4f * density, arrowY - 1f * density)
+        path.lineTo(arrowX - 1f * density, arrowY - 4f * density)
+        path.lineTo(arrowX, arrowY + 3f * density)
+        path.close()
+        canvas.drawPath(path, paint)
+
+        boldPaint.textAlign = Paint.Align.CENTER
+        boldPaint.color = foreground
+        boldPaint.textSize = 9.5f * scaledDensity
+        canvas.drawText(
+            localized("重置宽容度", "Reset"),
+            rect.centerX(),
+            rect.bottom + 16f * density,
+            boldPaint,
+        )
     }
 
     private fun drawButton(canvas: Canvas, rect: RectF, label: String, active: Boolean) {
@@ -233,12 +320,12 @@ internal class LatitudeView(
         canvas.drawRoundRect(rect, 6f * density, 6f * density, paint)
         boldPaint.textAlign = Paint.Align.CENTER
         boldPaint.color = if (active) background else foreground
-        boldPaint.textSize = min(10f * scaledDensity, rect.height() * 0.28f)
+        boldPaint.textSize = min(11f * scaledDensity, rect.height() * 0.30f)
         val availableWidth = (rect.width() - 10f * density).coerceAtLeast(1f)
         if (boldPaint.measureText(label) <= availableWidth) {
             centeredText(canvas, label, rect.centerX(), rect.centerY(), boldPaint)
         } else {
-            boldPaint.textSize = min(9f * scaledDensity, rect.height() * 0.20f)
+            boldPaint.textSize = min(10f * scaledDensity, rect.height() * 0.22f)
             val lines = splitButtonLabel(label)
             val lineHeight = boldPaint.textSize * 1.15f
             lines.forEachIndexed { index, line ->
@@ -276,8 +363,9 @@ internal class LatitudeView(
                     else -> null
                 }
                 if (boundary != null) {
-                    val left = geometry.rail.left + 8f * density
-                    val right = geometry.rail.right - 8f * density
+                    val scale = latitudeScaleRect()
+                    val left = scale.left
+                    val right = scale.right
                     val zone = ((event.x - left) / (right - left) * 10.0).coerceIn(0.0, 10.0)
                     if (session.setBoundary(boundary, zone)) {
                         displayedRange = session.range
@@ -317,8 +405,9 @@ internal class LatitudeView(
         if (geometry.apply.contains(x, y)) return TouchTarget.APPLY
         if (geometry.reset.contains(x, y)) return TouchTarget.RESET
         if (geometry.record.contains(x, y)) return TouchTarget.RECORD
-        val left = geometry.rail.left + 8f * density
-        val right = geometry.rail.right - 8f * density
+        val scale = latitudeScaleRect()
+        val left = scale.left
+        val right = scale.right
         val shadowX = zoneX(left, right, session.range.lowerZone)
         val highlightX = zoneX(left, right, session.range.upperZone)
         val expanded = RectF(geometry.rail.left, geometry.rail.top, geometry.rail.right, geometry.rail.bottom)

@@ -36,8 +36,8 @@ internal class ParameterRecordToolView(
 
     private val density = resources.displayMetrics.density
     private val scaledDensity = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 1f, resources.displayMetrics)
-    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans", Typeface.NORMAL) }
-    private val boldPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans", Typeface.BOLD) }
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans-serif", Typeface.NORMAL) }
+    private val boldPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans-serif", Typeface.BOLD) }
     private val path = Path()
     private val background: Int get() = if (state.isDarkMode) Color.BLACK else Color.WHITE
     private val foreground: Int get() = if (state.isDarkMode) Color.rgb(224, 224, 220) else Color.rgb(20, 20, 20)
@@ -79,14 +79,8 @@ internal class ParameterRecordToolView(
         drawOption(canvas, geometry.timeRow, geometry.timeToggle, localized("记录时间", "Record time"), options.recordTime, true)
         drawOption(canvas, geometry.rawRow, geometry.rawToggle, localized("记录 RAW 数据", "Record RAW data"), options.recordRaw, state.cameraInfo.rawAvailable)
         drawHelp(canvas)
-        drawAction(canvas, geometry.finishCategory, localized("结束该类记录", "Finish category"), Color.rgb(118, 75, 145), repository.activeCategoryId != null)
-        drawAction(
-            canvas,
-            geometry.startStop,
-            if (recording) localized("停止记录", "Stop recording") else localized("开始记录", "Start recording"),
-            if (recording) red else Color.rgb(48, 125, 79),
-            true,
-        )
+        drawFinishAction(canvas, repository.activeCategoryId != null)
+        drawStartStopAction(canvas)
     }
 
     private fun drawHeader(canvas: Canvas) {
@@ -101,7 +95,7 @@ internal class ParameterRecordToolView(
         canvas.drawLine(closeX + 7f * density, y - 7f * density, closeX - 7f * density, y + 7f * density, paint)
         boldPaint.textAlign = Paint.Align.CENTER
         boldPaint.color = foreground
-        boldPaint.textSize = 13f * scaledDensity
+        boldPaint.textSize = 14f * scaledDensity
         centered(canvas, localized("参数记录", "Parameter log"), width / 2f, y, boldPaint)
     }
 
@@ -126,14 +120,14 @@ internal class ParameterRecordToolView(
         canvas.drawCircle(icon.right - 9f * density, icon.top + 9f * density, 3f * density, paint)
         boldPaint.textAlign = Paint.Align.LEFT
         boldPaint.color = foreground
-        boldPaint.textSize = 13f * scaledDensity
+        boldPaint.textSize = 14f * scaledDensity
         centered(canvas, localized("过往记录", "History"), icon.right + 12f * density, geometry.history.centerY(), boldPaint)
     }
 
     private fun drawOption(canvas: Canvas, row: RectF, toggle: RectF, label: String, enabled: Boolean, available: Boolean) {
         drawPanel(canvas, row)
         boldPaint.textAlign = Paint.Align.LEFT
-        boldPaint.textSize = 11f * scaledDensity
+        boldPaint.textSize = 12.5f * scaledDensity
         boldPaint.color = if (available) foreground else muted
         centered(canvas, label, row.left + 12f * density, row.centerY(), boldPaint)
         val track = RectF(
@@ -161,19 +155,61 @@ internal class ParameterRecordToolView(
         val radius = 9f * density
         canvas.drawCircle(geometry.rawHelp.centerX(), geometry.rawHelp.centerY(), radius, paint)
         boldPaint.textAlign = Paint.Align.CENTER
-        boldPaint.textSize = 10f * scaledDensity
+        boldPaint.textSize = 11f * scaledDensity
         boldPaint.color = paint.color
         centered(canvas, "?", geometry.rawHelp.centerX(), geometry.rawHelp.centerY(), boldPaint)
     }
 
-    private fun drawAction(canvas: Canvas, rect: RectF, label: String, color: Int, enabled: Boolean) {
+    private fun drawFinishAction(canvas: Canvas, enabled: Boolean) {
+        val rect = geometry.finishCategory
         paint.style = Paint.Style.FILL
-        paint.color = if (enabled) color else muted
-        canvas.drawRoundRect(rect, 7f * density, 7f * density, paint)
+        paint.color = if (enabled) red else muted
+        canvas.drawRoundRect(rect, 6f * density, 6f * density, paint)
+        val iconSize = minOf(rect.width(), rect.height()) * 0.30f
+        paint.color = Color.WHITE
+        canvas.drawRect(
+            rect.centerX() - iconSize / 2f,
+            rect.centerY() - iconSize / 2f,
+            rect.centerX() + iconSize / 2f,
+            rect.centerY() + iconSize / 2f,
+            paint,
+        )
         boldPaint.textAlign = Paint.Align.CENTER
         boldPaint.textSize = 10f * scaledDensity
-        boldPaint.color = Color.WHITE
-        centered(canvas, label, rect.centerX(), rect.centerY(), boldPaint)
+        boldPaint.color = if (enabled) foreground else muted
+        canvas.drawText(
+            localized("结束该类记录", "Finish category"),
+            rect.centerX(),
+            rect.bottom + 17f * density,
+            boldPaint,
+        )
+    }
+
+    private fun drawStartStopAction(canvas: Canvas) {
+        val rect = geometry.startStop
+        val radius = minOf(rect.width(), rect.height()) / 2f
+        paint.style = Paint.Style.FILL
+        paint.color = if (recording) panel else Color.WHITE
+        canvas.drawCircle(rect.centerX(), rect.centerY(), radius, paint)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 2f * density
+        paint.color = red
+        canvas.drawCircle(rect.centerX(), rect.centerY(), radius - density, paint)
+        paint.style = Paint.Style.FILL
+        paint.color = red
+        val iconSize = radius * 0.36f
+        if (!recording) {
+            canvas.drawCircle(rect.centerX(), rect.centerY(), iconSize, paint)
+        }
+        boldPaint.textAlign = Paint.Align.CENTER
+        boldPaint.textSize = 11f * scaledDensity
+        boldPaint.color = foreground
+        canvas.drawText(
+            if (recording) localized("停止记录", "Stop recording") else localized("开始记录", "Start recording"),
+            rect.centerX(),
+            rect.bottom + 18f * density,
+            boldPaint,
+        )
     }
 
     private fun drawPanel(canvas: Canvas, rect: RectF) {

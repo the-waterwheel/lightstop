@@ -42,31 +42,32 @@ internal object LatitudeGeometryCalculator {
         val contentTop = rail.bottom + gap
         val contentBottom = h - pad
         val contentHeight = (contentBottom - contentTop).coerceAtLeast(1f)
-        val narrow = w < 420f * density && h > w * 1.15f
+        val filmHeight = (contentHeight * 0.36f).coerceIn(44f * density, 66f * density)
+        val filmWidth = (w * 0.56f).coerceAtLeast(w * 0.48f)
+        val filmCard = RectF(pad, contentTop, filmWidth, contentTop + filmHeight)
+        val select = RectF(filmCard.right + gap, contentTop, w - pad, contentTop + filmHeight)
+        val buttonsTop = filmCard.bottom + gap
+        val availableActionHeight = (contentBottom - buttonsTop).coerceAtLeast(1f)
 
-        return if (narrow) {
-            val filmHeight = (contentHeight * 0.20f).coerceAtLeast(42f * density)
-            val filmCard = RectF(pad, contentTop, w - pad, contentTop + filmHeight)
-            val buttonsTop = filmCard.bottom + gap
-            val buttonHeight = ((contentBottom - buttonsTop - gap) / 2f).coerceAtLeast(1f)
-            val columnWidth = ((w - pad * 2f - gap) / 2f).coerceAtLeast(1f)
-            val select = RectF(pad, buttonsTop, pad + columnWidth, buttonsTop + buttonHeight)
-            val apply = RectF(select.right + gap, buttonsTop, w - pad, buttonsTop + buttonHeight)
-            val reset = RectF(pad, select.bottom + gap, pad + columnWidth, contentBottom)
-            val record = RectF(reset.right + gap, apply.bottom + gap, w - pad, contentBottom)
+        return if (w >= 300f * density) {
+            val applyHeight = min(60f * density, availableActionHeight)
+            val applyWidth = min(168f * density, w * 0.42f)
+            val apply = RectF(w - pad - applyWidth, buttonsTop, w - pad, buttonsTop + applyHeight)
+            val resetSize = min(38f * density, applyHeight * 0.68f)
+            val reset = RectF(pad, buttonsTop, pad + resetSize, buttonsTop + resetSize)
+            val recordLeft = reset.right + gap
+            val recordWidth = min(148f * density, (apply.left - gap - recordLeft).coerceAtLeast(1f))
+            val recordHeight = min(44f * density, applyHeight * 0.78f)
+            val recordTop = buttonsTop + (applyHeight - recordHeight) / 2f
+            val record = RectF(recordLeft, recordTop, recordLeft + recordWidth, recordTop + recordHeight)
             LatitudeGeometry(back, close, rail, filmCard, select, apply, reset, record)
         } else {
-            val filmHeight = (contentHeight * 0.38f).coerceIn(44f * density, 72f * density)
-            val filmWidth = (w * 0.56f).coerceAtLeast(w * 0.48f)
-            val filmCard = RectF(pad, contentTop, filmWidth, contentTop + filmHeight)
-            val select = RectF(filmCard.right + gap, contentTop, w - pad, contentTop + filmHeight)
-            val buttonsTop = filmCard.bottom + gap
-            val buttonHeight = (contentBottom - buttonsTop).coerceAtLeast(34f * density)
-            val columnGap = gap
-            val columnWidth = (w - pad * 2f - columnGap * 2f) / 3f
-            val apply = RectF(pad, buttonsTop, pad + columnWidth, buttonsTop + buttonHeight)
-            val reset = RectF(apply.right + columnGap, buttonsTop, apply.right + columnGap + columnWidth, buttonsTop + buttonHeight)
-            val record = RectF(reset.right + columnGap, buttonsTop, w - pad, buttonsTop + buttonHeight)
+            val applyWidth = (w - pad * 2f) * 0.44f
+            val apply = RectF(w - pad - applyWidth, buttonsTop, w - pad, contentBottom)
+            val compactRight = apply.left - gap
+            val compactHeight = ((contentBottom - buttonsTop - gap) / 2f).coerceAtLeast(1f)
+            val reset = RectF(pad, buttonsTop, compactRight, buttonsTop + compactHeight)
+            val record = RectF(pad, reset.bottom + gap, compactRight, contentBottom)
             LatitudeGeometry(back, close, rail, filmCard, select, apply, reset, record)
         }
     }

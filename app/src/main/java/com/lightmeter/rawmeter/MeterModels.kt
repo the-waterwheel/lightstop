@@ -741,7 +741,14 @@ object ExposureMath {
     val minApertureStop: Double get() = apertureStops.first()
     val maxApertureStop: Double get() = apertureStops.last()
     val minShutterLogSeconds: Double get() = shutterLogSeconds.last()
-    val maxShutterLogSeconds: Double get() = shutterLogSeconds.first()
+    /** Last coordinate with a printed scale tick (30 seconds). */
+    val maxMarkedShutterLogSeconds: Double get() = shutterLogSeconds.first()
+
+    /**
+     * Long-exposure tail. It deliberately has no printed ticks after 30 seconds, but the
+     * centered value remains available and snaps at the configured stop interval.
+     */
+    val maxShutterLogSeconds: Double get() = maxMarkedShutterLogSeconds + 7.0
 
     fun primaryPair(
         ev100: Double?,
@@ -846,6 +853,11 @@ object ExposureMath {
         step: ExposureStep = ExposureStep.THIRD,
     ): Double {
         val values = shutterStops(step)
+        val markedMaximum = values.maxOrNull() ?: return target
+        if (target > markedMaximum) {
+            return ((target.coerceAtMost(maxShutterLogSeconds) * step.denominator).roundToInt()
+                .toDouble() / step.denominator).coerceAtMost(maxShutterLogSeconds)
+        }
         return values.minByOrNull { abs(it - target) } ?: values.first()
     }
 

@@ -16,6 +16,7 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.view.animation.DecelerateInterpolator
 import kotlin.math.abs
+import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -90,8 +91,7 @@ class DepthOfFieldView(
     private var touchTarget = TouchTarget.NONE
     private var touchStartX = 0f
     private var touchStartY = 0f
-    private var lastTouchX = 0f
-    private var lastTouchY = 0f
+    private var lastDialAngle = 0f
     private var dialStepAccumulator = 0f
     private var apertureVisualOffset = 0f
     private var focalVisualOffset = 0f
@@ -159,7 +159,7 @@ class DepthOfFieldView(
         canvas.drawLine(closeX - 7f * density, centerY - 7f * density, closeX + 7f * density, centerY + 7f * density, paint)
         canvas.drawLine(closeX + 7f * density, centerY - 7f * density, closeX - 7f * density, centerY + 7f * density, paint)
         boldPaint.color = foreground
-        boldPaint.textSize = 13f * scaledDensity
+        boldPaint.textSize = 14f * scaledDensity
         boldPaint.textAlign = Paint.Align.CENTER
         drawTextCentered(
             canvas,
@@ -207,8 +207,9 @@ class DepthOfFieldView(
         paint.color = red
         canvas.drawCircle(focusX, rulerY - 18f * density, 3.2f * density, paint)
 
-        drawFlower(canvas, lineLeft, rulerY - 13f * density)
-        drawMountain(canvas, lineRight, rulerY - 11f * density)
+        // Keep the pictograms inside the ruler region: clear of both the header and the scale.
+        drawFlower(canvas, lineLeft, rulerY - 18f * density)
+        drawMountain(canvas, lineRight, rulerY - 15f * density)
 
         val labelY = geometry.ruler.top + min(91f * density, geometry.ruler.height() * 0.64f)
         val labelCenters = floatArrayOf(
@@ -226,8 +227,9 @@ class DepthOfFieldView(
         drawDistanceLabel(canvas, localized("远界", "Far"), formatDistance(current?.farLimitM, infinityWhenNull = current != null), labelCenters[2], labelY, red)
 
         val summaryY = geometry.ruler.bottom - 9f * density
+        paint.style = Paint.Style.FILL
         paint.color = foreground
-        paint.textSize = 9f * scaledDensity
+        paint.textSize = 10f * scaledDensity
         paint.textAlign = Paint.Align.CENTER
         val focal = focalLengthMm()
         val summary = if (current == null) {
@@ -291,20 +293,22 @@ class DepthOfFieldView(
         canvas.drawCircle(centerX, centerY, radius - 0.8f * density, paint)
         canvas.drawCircle(centerX, centerY, radius * 0.70f, paint)
 
-        for (offset in -3..3) {
-            val angle = -90f + (offset - visualOffset.coerceIn(-1f, 1f)) * 12f
-            val radians = Math.toRadians(angle.toDouble())
-            val inner = radius - if (offset == 0) 11f * density else 7f * density
-            val outer = radius - 2f * density
-            paint.strokeWidth = if (offset == 0) 2.2f * density else 0.9f * density
-            paint.color = if (offset == 0) red else muted
-            canvas.drawLine(
-                centerX + cos(radians).toFloat() * inner,
-                centerY + sin(radians).toFloat() * inner,
-                centerX + cos(radians).toFloat() * outer,
-                centerY + sin(radians).toFloat() * outer,
-                paint,
-            )
+        for (baseAngle in floatArrayOf(-90f, 90f)) {
+            for (offset in -3..3) {
+                val angle = baseAngle + (offset - visualOffset.coerceIn(-1f, 1f)) * 12f
+                val radians = Math.toRadians(angle.toDouble())
+                val inner = radius - if (offset == 0) 11f * density else 7f * density
+                val outer = radius - 2f * density
+                paint.strokeWidth = if (offset == 0) 2.2f * density else 0.9f * density
+                paint.color = if (offset == 0) red else muted
+                canvas.drawLine(
+                    centerX + cos(radians).toFloat() * inner,
+                    centerY + sin(radians).toFloat() * inner,
+                    centerX + cos(radians).toFloat() * outer,
+                    centerY + sin(radians).toFloat() * outer,
+                    paint,
+                )
+            }
         }
 
         boldPaint.color = foreground
@@ -317,7 +321,7 @@ class DepthOfFieldView(
         canvas.drawCircle(centerX, bounds.top + 2.5f * density, 2.4f * density, paint)
         paint.color = muted
         paint.textAlign = Paint.Align.CENTER
-        paint.textSize = 7f * scaledDensity
+        paint.textSize = 8.5f * scaledDensity
         canvas.drawText(caption, centerX, centerY + radius * 0.50f, paint)
     }
 
@@ -332,11 +336,11 @@ class DepthOfFieldView(
         paint.style = Paint.Style.FILL
         paint.color = muted
         paint.textAlign = Paint.Align.CENTER
-        paint.textSize = 7f * scaledDensity
+        paint.textSize = 8.5f * scaledDensity
         canvas.drawText(title, bounds.centerX(), bounds.top + bounds.height() * 0.34f, paint)
         boldPaint.color = foreground
         boldPaint.textAlign = Paint.Align.CENTER
-        boldPaint.textSize = 9f * scaledDensity
+        boldPaint.textSize = 10.5f * scaledDensity
         canvas.drawText(value, bounds.centerX(), bounds.bottom - bounds.height() * 0.20f, boldPaint)
     }
 
@@ -346,8 +350,6 @@ class DepthOfFieldView(
                 parent?.requestDisallowInterceptTouchEvent(true)
                 touchStartX = event.x
                 touchStartY = event.y
-                lastTouchX = event.x
-                lastTouchY = event.y
                 moved = false
                 dialStepAccumulator = 0f
                 apertureVisualOffset = 0f
@@ -363,6 +365,11 @@ class DepthOfFieldView(
                     geometry.focalDial.contains(event.x, event.y) -> TouchTarget.FOCAL_LENGTH
                     else -> TouchTarget.NONE
                 }
+                if (touchTarget == TouchTarget.APERTURE) {
+                    lastDialAngle = angleFor(event.x, event.y, geometry.apertureDial)
+                } else if (touchTarget == TouchTarget.FOCAL_LENGTH) {
+                    lastDialAngle = angleFor(event.x, event.y, geometry.focalDial)
+                }
                 if (touchTarget == TouchTarget.FOCUS_RULER) selectFocusForX(event.x)
                 return true
             }
@@ -374,12 +381,10 @@ class DepthOfFieldView(
                 when (touchTarget) {
                     TouchTarget.FOCUS_RULER -> selectFocusForX(event.x)
                     TouchTarget.APERTURE, TouchTarget.FOCAL_LENGTH -> if (moved) {
-                        updateDialDrag(event.x - lastTouchX, event.y - lastTouchY)
+                        updateDialRotation(event.x, event.y)
                     }
                     else -> Unit
                 }
-                lastTouchX = event.x
-                lastTouchY = event.y
                 return true
             }
 
@@ -450,27 +455,56 @@ class DepthOfFieldView(
         updateMarkers(animate = false)
     }
 
-    private fun updateDialDrag(deltaX: Float, deltaY: Float) {
-        val motion = -deltaY + when (touchTarget) {
-            TouchTarget.APERTURE -> deltaX * 0.45f
-            TouchTarget.FOCAL_LENGTH -> -deltaX * 0.45f
-            else -> 0f
+    private fun updateDialRotation(x: Float, y: Float) {
+        val bounds = if (touchTarget == TouchTarget.APERTURE) geometry.apertureDial else geometry.focalDial
+        val angle = angleFor(x, y, bounds)
+        var delta = angle - lastDialAngle
+        if (delta > 180f) delta -= 360f
+        if (delta < -180f) delta += 360f
+        lastDialAngle = angle
+        val stepAngle = 12f
+        dialStepAccumulator += delta
+
+        val currentIndex: Int
+        val lastIndex: Int
+        if (touchTarget == TouchTarget.APERTURE) {
+            val values = apertureValues()
+            currentIndex = apertureIndex()
+            lastIndex = values.lastIndex
+        } else {
+            currentIndex = session.focalIndex()
+            lastIndex = DepthOfFieldMath.commonFocalLengthsMm.lastIndex
         }
-        val stepDistance = 16f * density
-        dialStepAccumulator += motion
-        val steps = (dialStepAccumulator / stepDistance).toInt()
+        // At either end the wheel becomes mechanically firm in that direction. Resetting the
+        // partial visual travel also prevents tick animation from continuing past the last value.
+        if ((currentIndex <= 0 && dialStepAccumulator < 0f) ||
+            (currentIndex >= lastIndex && dialStepAccumulator > 0f)
+        ) {
+            dialStepAccumulator = 0f
+        }
+        val steps = (dialStepAccumulator / stepAngle).toInt()
         if (steps != 0) {
+            val targetIndex = (currentIndex + steps).coerceIn(0, lastIndex)
+            val appliedSteps = targetIndex - currentIndex
             when (touchTarget) {
-                TouchTarget.APERTURE -> selectApertureIndex(apertureIndex() + steps)
-                TouchTarget.FOCAL_LENGTH -> selectFocalIndex(session.focalIndex() + steps)
+                TouchTarget.APERTURE -> selectApertureIndex(targetIndex)
+                TouchTarget.FOCAL_LENGTH -> selectFocalIndex(targetIndex)
                 else -> Unit
             }
-            dialStepAccumulator -= steps * stepDistance
+            dialStepAccumulator = if (appliedSteps == steps) {
+                dialStepAccumulator - appliedSteps * stepAngle
+            } else {
+                0f
+            }
         }
-        val visual = (dialStepAccumulator / stepDistance).coerceIn(-1f, 1f)
+        val visual = (dialStepAccumulator / stepAngle).coerceIn(-1f, 1f)
         if (touchTarget == TouchTarget.APERTURE) apertureVisualOffset = visual else focalVisualOffset = visual
         invalidate()
     }
+
+    private fun angleFor(x: Float, y: Float, bounds: RectF): Float = Math.toDegrees(
+        atan2((y - bounds.centerY()).toDouble(), (x - bounds.centerX()).toDouble()),
+    ).toFloat()
 
     private fun animateCurrentResult() = updateMarkers(animate = true)
 
@@ -519,13 +553,14 @@ class DepthOfFieldView(
     }
 
     private fun drawDistanceLabel(canvas: Canvas, title: String, value: String, x: Float, y: Float, color: Int) {
+        paint.style = Paint.Style.FILL
         paint.textAlign = Paint.Align.CENTER
         paint.color = color
-        paint.textSize = 8f * scaledDensity
+        paint.textSize = 9.5f * scaledDensity
         canvas.drawText(title, x, y, paint)
         boldPaint.textAlign = Paint.Align.CENTER
         boldPaint.color = foreground
-        boldPaint.textSize = 11f * scaledDensity
+        boldPaint.textSize = 12.5f * scaledDensity
         canvas.drawText(value, x, y + 17f * density, boldPaint)
     }
 

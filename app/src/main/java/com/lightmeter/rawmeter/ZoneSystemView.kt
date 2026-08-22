@@ -118,6 +118,7 @@ class ZoneSystemView(
     private var listGestureHorizontal = false
     private var clearDragDistance = 0f
     private var exitProgress = 0f
+    private var modeTransitionEnabled = true
     private var formatMenuOpen = false
     private var lastHapticAt = 0L
     private var lockSliderFraction = Float.NaN
@@ -144,6 +145,16 @@ class ZoneSystemView(
         lockAnimator?.cancel()
         lockAnimator = null
         lockSliderFraction = if (state.exposureLockMode == ExposureLockMode.APERTURE) 0f else 1f
+        invalidate()
+    }
+
+    /** Cancels and disables the covered Zone/Normal handle while the Tools host is visible. */
+    fun setModeTransitionEnabled(enabled: Boolean) {
+        modeTransitionEnabled = enabled
+        if (!enabled) {
+            if (touchTarget == TouchTarget.EXIT) touchTarget = TouchTarget.NONE
+            exitProgress = 0f
+        }
         invalidate()
     }
 
@@ -998,7 +1009,8 @@ class ZoneSystemView(
                         TouchTarget.SETTINGS
                     g.toolsButton.containsAccessibleTarget(event.x, event.y, density) ->
                         TouchTarget.TOOLS
-                    g.normalHandle.containsAccessibleTarget(event.x, event.y, density) &&
+                    modeTransitionEnabled &&
+                        g.normalHandle.containsAccessibleTarget(event.x, event.y, density) &&
                         !state.measuring -> TouchTarget.EXIT
                     g.zoomTrack.contains(event.x, event.y) -> TouchTarget.ZOOM
                     else -> TouchTarget.NONE
@@ -1030,7 +1042,8 @@ class ZoneSystemView(
                 }
                 if (session.selectedMarkerId != null) session.selectMarker(null)
                 touchTarget = when {
-                    g.normalHandle.contains(event.x, event.y) && !state.measuring -> TouchTarget.EXIT
+                    modeTransitionEnabled && g.normalHandle.contains(event.x, event.y) &&
+                        !state.measuring -> TouchTarget.EXIT
                     g.markButton.contains(event.x, event.y) -> TouchTarget.MARK_BUTTON
                     g.clearHandle.contains(event.x, event.y) -> TouchTarget.CLEAR
                     g.lockTrack.contains(event.x, event.y) -> TouchTarget.LOCK
