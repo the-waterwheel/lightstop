@@ -92,6 +92,7 @@ data class ParameterCaptureDraft(
     val capturedAtEpochMs: Long? = null,
     val filmId: String? = null,
     val filmName: String? = null,
+    val filmIso: Int? = null,
     val notes: List<String> = emptyList(),
 )
 
@@ -108,6 +109,7 @@ data class ParameterRecordEntry(
     val ev100: Double?,
     val filmId: String?,
     val filmName: String?,
+    val filmIso: Int?,
     val notes: List<String>,
     val location: RecordedLocation?,
     val zonePoints: List<RecordedZonePoint>,
@@ -122,6 +124,13 @@ data class ParameterRecordCategory(
 ) {
     val coverPath: String? get() = records.lastOrNull()?.previewPath
 
+    val defaultFilm: ParameterFilmSelection?
+        get() = records.firstNotNullOfOrNull { record ->
+            val id = record.filmId ?: return@firstNotNullOfOrNull null
+            val name = record.filmName ?: return@firstNotNullOfOrNull null
+            ParameterFilmSelection(id, name, record.filmIso)
+        }
+
     val filmSummary: String?
         get() {
             val names = records.mapNotNull(ParameterRecordEntry::filmName).distinct()
@@ -132,6 +141,12 @@ data class ParameterRecordCategory(
             }
         }
 }
+
+data class ParameterFilmSelection(
+    val id: String,
+    val name: String,
+    val iso: Int?,
+)
 
 data class RawRecordArtifact(
     val filePath: String,

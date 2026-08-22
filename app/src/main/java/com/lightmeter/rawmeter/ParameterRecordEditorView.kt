@@ -75,7 +75,15 @@ internal class ParameterRecordEditorView(
     fun currentDraft(): ParameterCaptureDraft? = draft
 
     fun selectFilm(profile: FilmLatitudeProfile) {
-        draft = draft?.copy(filmId = profile.id, filmName = profile.displayName)
+        draft = draft?.let { current ->
+            current.copy(
+                filmId = profile.id,
+                filmName = profile.displayName,
+                filmIso = profile.iso,
+                snapshot = profile.iso?.let { current.snapshot.copy(ei = it) } ?: current.snapshot,
+            )
+        }
+        draft?.let(::syncSelectorPositions)
         invalidate()
     }
 
@@ -91,7 +99,7 @@ internal class ParameterRecordEditorView(
         drawNotes(canvas, value)
         drawSelector(canvas, geometry.aperture, localized("光圈", "Aperture"), apertureLabels(), aperturePosition)
         drawSelector(canvas, geometry.shutter, localized("快门", "Shutter"), shutterLabels(), shutterPosition)
-        drawSelector(canvas, geometry.ei, "EI", state.isoValues.map(Int::toString), eiPosition)
+        drawSelector(canvas, geometry.ei, "EI", eiValues(value).map(Int::toString), eiPosition)
         drawSave(canvas)
     }
 
@@ -295,7 +303,7 @@ internal class ParameterRecordEditorView(
             }
             Target.EI -> {
                 eiPosition = position
-                draft = current.copy(snapshot = current.snapshot.copy(ei = state.isoValues[index]))
+                draft = current.copy(snapshot = current.snapshot.copy(ei = eiValues(current)[index]))
             }
             else -> Unit
         }
@@ -333,7 +341,7 @@ internal class ParameterRecordEditorView(
         shutterPosition = shutterTicks.indices.minByOrNull {
             abs(shutterTicks[it].coordinate - value.snapshot.shutterCoordinate)
         }?.toFloat() ?: 0f
-        eiPosition = state.isoValues.indexOf(value.snapshot.ei).coerceAtLeast(0).toFloat()
+        eiPosition = eiValues(value).indexOf(value.snapshot.ei).coerceAtLeast(0).toFloat()
     }
 
     private fun apertureLabels(): List<String> = ExposureMath.apertureTicks(state.apertureStep)
@@ -352,12 +360,15 @@ internal class ParameterRecordEditorView(
     private fun selectorLastIndex(selector: Target): Int = when (selector) {
         Target.APERTURE -> ExposureMath.apertureTicks(state.apertureStep).lastIndex
         Target.SHUTTER -> ExposureMath.shutterTicks(state.shutterStep).lastIndex
-        Target.EI -> state.isoValues.lastIndex
+        Target.EI -> draft?.let(::eiValues)?.lastIndex ?: -1
         else -> -1
     }
 
     private fun isSelector(value: Target): Boolean =
         value == Target.APERTURE || value == Target.SHUTTER || value == Target.EI
+
+    private fun eiValues(value: ParameterCaptureDraft): List<Int> =
+        (state.isoValues.asList() + value.snapshot.ei).distinct().sorted()
 
     private fun noteIndexAt(y: Float, value: ParameterCaptureDraft): Int? {
         val index = ((y - geometry.notes.top + noteScroll) / (38f * density)).toInt()

@@ -1,6 +1,7 @@
 package com.lightmeter.rawmeter
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Test
 
 class ParameterRecordModelsTest {
@@ -33,6 +34,19 @@ class ParameterRecordModelsTest {
         assertEquals("Portra 400…", category(listOf(first, second)).filmSummary)
     }
 
+    @Test
+    fun `category keeps its first selected film as the capture default`() {
+        val unselected = record("1", null, null)
+        val firstSelection = record("2", "Portra 400", 400)
+        val laterSelection = record("3", "HP5 Plus", 800)
+
+        val default = category(listOf(unselected, firstSelection, laterSelection)).defaultFilm
+
+        assertNotNull(default)
+        assertEquals("Portra 400", default?.name)
+        assertEquals(400, default?.iso)
+    }
+
     private fun category(records: List<ParameterRecordEntry>) = ParameterRecordCategory(
         id = "category",
         startedAtEpochMs = 1L,
@@ -40,7 +54,7 @@ class ParameterRecordModelsTest {
         records = records,
     )
 
-    private fun record(id: String, filmName: String) = ParameterRecordEntry(
+    private fun record(id: String, filmName: String?, filmIso: Int? = 400) = ParameterRecordEntry(
         id = id,
         categoryId = "category",
         capturedAtEpochMs = null,
@@ -53,6 +67,7 @@ class ParameterRecordModelsTest {
         ev100 = null,
         filmId = filmName,
         filmName = filmName,
+        filmIso = filmIso,
         notes = emptyList(),
         location = null,
         zonePoints = emptyList(),

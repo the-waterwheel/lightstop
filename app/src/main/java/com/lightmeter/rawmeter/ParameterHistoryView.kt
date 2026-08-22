@@ -1,6 +1,7 @@
 package com.lightmeter.rawmeter
 
 import android.annotation.SuppressLint
+import android.animation.ValueAnimator
 import android.app.AlertDialog
 import android.content.Context
 import android.graphics.Bitmap
@@ -19,12 +20,14 @@ import android.util.TypedValue
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
+import android.view.animation.DecelerateInterpolator
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.min
+import kotlin.math.roundToInt
 
 @SuppressLint("ViewConstructor")
 internal class ParameterHistoryView(
@@ -74,8 +77,11 @@ internal class ParameterHistoryView(
     private var longPressTriggered = false
     private var longPressRunnable: Runnable? = null
     private var deletingCategoryId: String? = null
-    private var detailStartRecord: ParameterRecordEntry? = null
     private var detailWorkingRecord: ParameterRecordEntry? = null
+    private var detailPlayback: RecordedMeteringSession? = null
+    private var detailStartPlayback: RecordedMeteringSession? = null
+    private var meteringTarget = RecordedMeteringTarget.NONE
+    private var snapAnimator: ValueAnimator? = null
     private var detailScroll = 0f
     private var detailScrollStart = 0f
     private var detailMaxScroll = 0f
@@ -87,6 +93,7 @@ internal class ParameterHistoryView(
         detailIndex = 0
         scroll = 0f
         detailWorkingRecord = null
+        detailPlayback = null
         detailScroll = 0f
         invalidate()
     }
@@ -95,6 +102,7 @@ internal class ParameterHistoryView(
         Page.DETAIL -> {
             page = Page.CATEGORY
             detailWorkingRecord = null
+            detailPlayback = null
             detailScroll = 0f
             scroll = 0f
             invalidate()
@@ -230,40 +238,97 @@ internal class ParameterHistoryView(
 
     private fun drawDetail(canvas: Canvas) {
         val category = repository.category(categoryId) ?: return
-        val record = detailWorkingRecord ?: category.records.getOrNull(detailIndex)?.also { detailWorkingRecord = it } ?: return
+        val record = detailWorkingRecord ?: category.records.getOrNull(detailIndex)?.also(::showDetailRecord) ?: return
+        val playback = detailPlayback ?: RecordedMeteringSession.from(record).also { detailPlayback = it }
         drawImage(canvas, geometry.image, record.previewPath)
-        drawRecordedPoints(canvas, imageDrawRect, record.zonePoints)
+        if (playback.mode == ParameterRecordMode.ZONE) {
+            drawRecordedPoints(canvas, imageDrawRect, record.zonePoints)
+        }
         drawDetailText(canvas, geometry.data, record)
-        meteringRenderer.draw(canvas, geometry.metering, record)
+        meteringRenderer.draw(canvas, geometry.metering, record, playback)
     }
 
     private fun drawDetailText(canvas: Canvas, rect: RectF, record: ParameterRecordEntry) {
+        val viewportBottom = geometry.metering.top - 5f * density
+        val viewportHeight = (viewportBottom - rect.top).coerceAtLeast(0f)
+        val lineHeight = 18f * density
+        val noteRowHeight = 25f * density
+        val parameterLines = buildList {
+            record.capturedAtEpochMs?.let { add(dateFormat.format(Date(it))) }
+            add(
+                localized("拍摄参数  ", "Captured  ") +
+                    "${ExposureMath.formatAperture(ExposureMath.apertureValueForCoordinate(record.apertureCoordinate, state.apertureStep))}  " +
+                    "${ExposureMath.formatShutter(ExposureMath.shutterValueForCoordinate(record.shutterCoordinate, state.shutterStep))}  " +
+                    "EI ${record.ei}",
+            )
+            record.ev100?.let { add("EV100 ${"%.2f".format(it)}") }
+            record.filmName?.let { add(localized("胶片  $it", "Film  $it")) }
+            record.location?.let { add(formatLocation(it)) }
+        }
+        var contentHeight = 8f * density + parameterLines.size * lineHeight
+        if (record.notes.isNotEmpty()) {
+            contentHeight += lineHeight + lineHeight + record.notes.size * noteRowHeight
+        }
+        if (record.rawPath != null) contentHeight += lineHeight + lineHeight
+        detailMaxScroll = (contentHeight - viewportHeight).coerceAtLeast(0f)
+        detailScroll = detailScroll.coerceIn(0f, detailMaxScroll)
+
         canvas.save()
-        canvas.clipRect(rect.left, rect.top, rect.right, geometry.metering.top - 5f * density)
+        canvas.clipRect(rect.left, rect.top, rect.right, viewportBottom)
         paint.color = foreground
         paint.textAlign = Paint.Align.LEFT
         paint.textSize = 10f * scaledDensity
-        val lineHeight = 16f * density
-        val lineCount = 1 + (if (record.capturedAtEpochMs != null) 1 else 0) +
-            (if (record.ev100 != null) 1 else 0) + (if (record.filmName != null) 1 else 0) +
-            record.notes.size + (if (record.location != null) 1 else 0) +
-            (if (record.rawPath != null) 1 else 0)
-        val availableHeight = (geometry.metering.top - 5f * density - rect.top).coerceAtLeast(0f)
-        detailMaxScroll = (lineCount * lineHeight + 8f * density - availableHeight).coerceAtLeast(0f)
-        detailScroll = detailScroll.coerceIn(0f, detailMaxScroll)
         var y = rect.top + 14f * density - detailScroll
-        fun line(text: String) {
-            canvas.drawText(text, rect.left + 5f * density, y, paint)
+        val textLeft = rect.left + 5f * density
+        val textRight = rect.right - 5f * density
+        fun line(text: String, color: Int = foreground) {
+            paint.color = color
+            val fitted = TextUtils.ellipsize(text, TextPaint(paint), textRight - textLeft, TextUtils.TruncateAt.END)
+            canvas.drawText(fitted.toString(), textLeft, y, paint)
             y += lineHeight
         }
-        record.capturedAtEpochMs?.let { line(dateFormat.format(Date(it))) }
-        line("${ExposureMath.formatAperture(ExposureMath.apertureValueForCoordinate(record.apertureCoordinate, state.apertureStep))}   ${ExposureMath.formatShutter(ExposureMath.shutterValueForCoordinate(record.shutterCoordinate, state.shutterStep))}   EI ${record.ei}")
-        record.ev100?.let { line("EV100 ${"%.2f".format(it)}") }
-        record.filmName?.let(::line)
-        record.notes.forEach { line("• $it") }
-        record.location?.let { line("GPS ${"%.5f".format(it.latitude)}, ${"%.5f".format(it.longitude)}") }
-        if (record.rawPath != null) line(localized("RAW 已保存 · 点击图片增减标点", "RAW saved · tap image to add/remove points"))
+        parameterLines.forEach(::line)
+        if (record.notes.isNotEmpty()) {
+            y += lineHeight
+            line(localized("备注", "Notes"))
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 1f * density
+            paint.color = muted
+            canvas.drawLine(textLeft, y - lineHeight * 0.48f, textRight, y - lineHeight * 0.48f, paint)
+            record.notes.forEach { note ->
+                paint.style = Paint.Style.FILL
+                paint.color = foreground
+                paint.textSize = 10f * scaledDensity
+                val fitted = TextUtils.ellipsize(note, TextPaint(paint), textRight - textLeft, TextUtils.TruncateAt.END)
+                centered(canvas, fitted.toString(), textLeft, y - lineHeight * 0.48f + noteRowHeight / 2f, paint)
+                y += noteRowHeight
+                paint.style = Paint.Style.STROKE
+                paint.strokeWidth = 1f * density
+                paint.color = muted
+                canvas.drawLine(textLeft, y - lineHeight * 0.48f, textRight, y - lineHeight * 0.48f, paint)
+            }
+        }
+        if (record.rawPath != null) {
+            y += lineHeight
+            line(
+                localized("RAW 已保存 · 点击图片增减标点", "RAW saved · tap image to add/remove points"),
+                red,
+            )
+        }
         canvas.restore()
+    }
+
+    private fun formatLocation(location: RecordedLocation): String {
+        val latitude = kotlin.math.abs(location.latitude)
+        val longitude = kotlin.math.abs(location.longitude)
+        val latitudeSide = if (location.latitude >= 0.0) localized("北纬", "N") else localized("南纬", "S")
+        val longitudeSide = if (location.longitude >= 0.0) localized("东经", "E") else localized("西经", "W")
+        val coordinates = if (state.menuLanguage == MenuLanguage.ENGLISH) {
+            "GPS ${"%.5f".format(latitude)}° $latitudeSide · ${"%.5f".format(longitude)}° $longitudeSide"
+        } else {
+            "GPS $latitudeSide ${"%.5f".format(latitude)}° · $longitudeSide ${"%.5f".format(longitude)}°"
+        }
+        return location.accuracyMeters?.let { "$coordinates  ±${it.roundToInt()} m" } ?: coordinates
     }
 
     private fun drawRecordedPoints(canvas: Canvas, rect: RectF, points: List<RecordedZonePoint>) {
@@ -335,7 +400,8 @@ internal class ParameterHistoryView(
                 longPressTriggered = false
                 target = targetAt(event.x, event.y)
                 if (page == Page.DETAIL && target == Target.METERING) {
-                    detailStartRecord = detailWorkingRecord
+                    snapAnimator?.cancel()
+                    detailStartPlayback = detailPlayback
                 }
                 if (page == Page.CATEGORIES && target == Target.GRID && touchedCategoryId != null) scheduleLongPress()
                 return target != Target.NONE
@@ -354,8 +420,11 @@ internal class ParameterHistoryView(
                     detailScroll = (detailScrollStart - dy).coerceIn(0f, detailMaxScroll)
                     invalidate()
                 } else if (target == Target.METERING && page == Page.DETAIL) {
-                    detailStartRecord?.let { start ->
-                        detailWorkingRecord = meteringRenderer.shifted(start, (dx / (80f * density)).toDouble())
+                    if (meteringTarget.isDraggable()) detailStartPlayback?.let { start ->
+                        detailPlayback = start.shifted(
+                            -dx / meteringRenderer.pixelsPerStop(geometry.metering),
+                            state,
+                        )
                         invalidate()
                     }
                 }
@@ -370,13 +439,14 @@ internal class ParameterHistoryView(
                         handleTap(event.x, event.y)
                     } else handleSwipe(event.x - touchStartX)
                 }
-                if (!cancelled && target == Target.METERING) {
-                    detailWorkingRecord?.let(repository::updateRecord)
+                if (!cancelled && target == Target.METERING && moved && meteringTarget.isDraggable()) {
+                    animatePlaybackSnap(meteringTarget)
                 }
                 target = Target.NONE
                 touchedCategoryId = null
                 touchedRecordIndex = null
-                detailStartRecord = null
+                detailStartPlayback = null
+                meteringTarget = RecordedMeteringTarget.NONE
                 return true
             }
         }
@@ -388,7 +458,12 @@ internal class ParameterHistoryView(
         if (page == Page.CATEGORY && geometry.delete.contains(x, y)) return Target.DELETE
         if (page == Page.DETAIL) {
             if (geometry.image.contains(x, y)) return Target.IMAGE
-            if (geometry.metering.contains(x, y)) return Target.METERING
+            if (geometry.metering.contains(x, y)) {
+                meteringTarget = detailPlayback?.let { playback ->
+                    meteringRenderer.targetAt(geometry.metering, playback.mode, x, y)
+                } ?: RecordedMeteringTarget.NONE
+                return if (meteringTarget == RecordedMeteringTarget.NONE) Target.NONE else Target.METERING
+            }
             if (geometry.data.contains(x, y)) return Target.DATA
             return Target.NONE
         }
@@ -412,13 +487,18 @@ internal class ParameterHistoryView(
             } else {
                 touchedRecordIndex?.let {
                     detailIndex = it
-                    detailWorkingRecord = repository.category(categoryId)?.records?.getOrNull(it)
+                    repository.category(categoryId)?.records?.getOrNull(it)?.let(::showDetailRecord)
                     detailScroll = 0f
                     page = Page.DETAIL
                     invalidate()
                 }
             }
             Target.IMAGE -> editRawPoint(x, y)
+            Target.METERING -> when (meteringTarget) {
+                RecordedMeteringTarget.NORMAL_MODE -> setPlaybackMode(ParameterRecordMode.NORMAL)
+                RecordedMeteringTarget.ZONE_MODE -> setPlaybackMode(ParameterRecordMode.ZONE)
+                else -> Unit
+            }
             else -> Unit
         }
     }
@@ -429,7 +509,7 @@ internal class ParameterHistoryView(
         if (records.isEmpty()) return
         detailIndex = if (dx < 0f) (detailIndex + 1).coerceAtMost(records.lastIndex)
         else (detailIndex - 1).coerceAtLeast(0)
-        detailWorkingRecord = records[detailIndex]
+        showDetailRecord(records[detailIndex])
         detailScroll = 0f
         invalidate()
     }
@@ -457,9 +537,54 @@ internal class ParameterHistoryView(
                 source = MeteringSource.RAW,
             )
         }
-        detailWorkingRecord = record.copy(zonePoints = points)
-        repository.updateRecord(detailWorkingRecord!!)
+        detailWorkingRecord = repository.updateZonePoints(record.categoryId, record.id, points) ?: return
+        detailPlayback = (detailPlayback ?: RecordedMeteringSession.from(record)).copy(
+            mode = ParameterRecordMode.ZONE,
+        )
         invalidate()
+    }
+
+    private fun showDetailRecord(record: ParameterRecordEntry) {
+        snapAnimator?.cancel()
+        detailWorkingRecord = record
+        detailPlayback = RecordedMeteringSession.from(record)
+    }
+
+    private fun setPlaybackMode(mode: ParameterRecordMode) {
+        val playback = detailPlayback ?: return
+        if (playback.mode == mode) return
+        detailPlayback = playback.copy(mode = mode)
+        invalidate()
+    }
+
+    private fun animatePlaybackSnap(anchor: RecordedMeteringTarget) {
+        val start = detailPlayback ?: return
+        val end = start.snapped(anchor, state)
+        if (start == end) return
+        snapAnimator?.cancel()
+        snapAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 150L
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { animation ->
+                val fraction = animation.animatedValue as Float
+                detailPlayback = start.copy(
+                    apertureCoordinate = start.apertureCoordinate +
+                        (end.apertureCoordinate - start.apertureCoordinate) * fraction,
+                    shutterCoordinate = start.shutterCoordinate +
+                        (end.shutterCoordinate - start.shutterCoordinate) * fraction,
+                )
+                invalidate()
+            }
+            start()
+        }
+    }
+
+    private fun RecordedMeteringTarget.isDraggable(): Boolean = when (this) {
+        RecordedMeteringTarget.APERTURE,
+        RecordedMeteringTarget.SHUTTER,
+        RecordedMeteringTarget.ZONE_RAIL,
+        -> true
+        else -> false
     }
 
     private fun categoryAt(x: Float, y: Float): String? {
@@ -533,6 +658,17 @@ internal class ParameterHistoryView(
                             bitmapCache.evictAll()
                             listener?.onRepositoryChanged()
                             invalidate()
+                        } else {
+                            AlertDialog.Builder(context)
+                                .setTitle(localized("未删除记录", "Record not deleted"))
+                                .setMessage(
+                                    localized(
+                                        "安全校验未通过，文件保持原样。请勿手动移动记录目录中的文件。",
+                                        "The safety check failed and all files were kept. Do not move files inside the record directory manually.",
+                                    ),
+                                )
+                                .setPositiveButton(localized("确定", "OK"), null)
+                                .show()
                         }
                     }
                 }, "parameter-record-delete").start()
@@ -555,6 +691,7 @@ internal class ParameterHistoryView(
 
     override fun onDetachedFromWindow() {
         cancelPendingLongPress()
+        snapAnimator?.cancel()
         bitmapCache.evictAll()
         super.onDetachedFromWindow()
     }

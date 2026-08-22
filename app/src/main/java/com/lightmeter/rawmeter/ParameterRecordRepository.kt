@@ -35,8 +35,16 @@ internal class ParameterRecordRepository(context: Context) {
         get() = preferences.getBoolean(KEY_RAW_WARNING, false)
         set(value) { preferences.edit().putBoolean(KEY_RAW_WARNING, value).apply() }
 
+    init {
+        cleanupQuarantinedDeletes()
+    }
+
     @Synchronized
-    fun categories(): List<ParameterRecordCategory> = categories.sortedByDescending { it.startedAtEpochMs }
+    fun categories(): List<ParameterRecordCategory> = categories
+        .asSequence()
+        .filter { it.records.isNotEmpty() }
+        .sortedByDescending { it.startedAtEpochMs }
+        .toList()
 
     @Synchronized
     fun category(id: String?): ParameterRecordCategory? = categories.firstOrNull { it.id == id }
@@ -62,6 +70,13 @@ internal class ParameterRecordRepository(context: Context) {
     fun finishActiveCategory(now: Long = System.currentTimeMillis()): ParameterRecordCategory? {
         val id = activeCategoryId ?: return null
         val current = category(id) ?: return null
+        if (current.records.isEmpty()) {
+            synchronized(this) { categories.removeAll { it.id == id } }
+            activeCategoryId = null
+            preferences.edit().remove(KEY_ACTIVE_CATEGORY).apply()
+            saveIndex()
+            return null
+        }
         val updated = current.copy(endedAtEpochMs = now)
         replaceCategory(updated)
         activeCategoryId = null
@@ -70,15 +85,33 @@ internal class ParameterRecordRepository(context: Context) {
         return updated
     }
 
-    fun createPendingPreviewFile(id: String): File = File(pending, "$id.jpg")
+    fun createPendingPreviewFile(id: String): File =
+        requireNotNull(ParameterRecordPathPolicy.pendingFile(pending, id, "jpg"))
 
-    fun createPendingRawFile(id: String): File = File(pending, "$id.dng")
+    fun createPendingRawFile(id: String): File =
+        requireNotNull(ParameterRecordPathPolicy.pendingFile(pending, id, "dng"))
+
+    fun applyActiveCategoryDefaults(draft: ParameterCaptureDraft): ParameterCaptureDraft {
+        val selection = category(activeCategoryId)?.defaultFilm ?: return draft
+        return draft.copy(
+            filmId = selection.id,
+            filmName = selection.name,
+            filmIso = selection.iso,
+            snapshot = selection.iso?.let { draft.snapshot.copy(ei = it) } ?: draft.snapshot,
+        )
+    }
 
     fun save(draft: ParameterCaptureDraft): ParameterRecordEntry {
         val category = startCategory()
-        val directory = File(root, category.id).apply { mkdirs() }
+        require(ParameterRecordPathPolicy.isIdentifier(draft.id)) { "Invalid parameter-record id" }
+        val directory = requireNotNull(ParameterRecordPathPolicy.categoryDirectory(root, category.id))
+            .apply { mkdirs() }
+        val expectedPreview = requireNotNull(ParameterRecordPathPolicy.pendingFile(pending, draft.id, "jpg"))
+        require(File(draft.previewTempPath).canonicalFile == expectedPreview) { "Preview is outside the pending record directory" }
         val preview = moveInto(File(draft.previewTempPath), File(directory, "${draft.id}.jpg"))
         val raw = draft.rawTempPath?.let { source ->
+            val expectedRaw = requireNotNull(ParameterRecordPathPolicy.pendingFile(pending, draft.id, "dng"))
+            require(File(source).canonicalFile == expectedRaw) { "RAW file is outside the pending record directory" }
             File(source).takeIf(File::exists)?.let { moveInto(it, File(directory, "${draft.id}.dng")) }
         }
         val entry = ParameterRecordEntry(
@@ -94,6 +127,7 @@ internal class ParameterRecordRepository(context: Context) {
             ev100 = draft.snapshot.ev100,
             filmId = draft.filmId,
             filmName = draft.filmName,
+            filmIso = draft.filmIso,
             notes = draft.notes.take(MAX_NOTES),
             location = draft.location,
             zonePoints = draft.snapshot.zonePoints,
@@ -110,36 +144,65 @@ internal class ParameterRecordRepository(context: Context) {
         draft.rawTempPath?.let(::deletePending)
     }
 
-    fun updateRecord(updated: ParameterRecordEntry) {
-        val category = category(updated.categoryId) ?: return
-        if (category.records.none { it.id == updated.id }) return
+    /** The history screen may edit RAW-derived points, but never captured exposure or file paths. */
+    fun updateZonePoints(
+        categoryId: String,
+        recordId: String,
+        points: List<RecordedZonePoint>,
+    ): ParameterRecordEntry? {
+        val category = category(categoryId) ?: return null
+        val existing = category.records.firstOrNull { it.id == recordId } ?: return null
+        if (existing.rawPath == null || existing.rawGrid == null) return null
+        val validated = points
+            .take(MAX_RAW_POINTS)
+            .takeIf { values ->
+                values.map(RecordedZonePoint::id).distinct().size == values.size &&
+                    values.all { point ->
+                        point.id > 0 && point.normalizedX.isFinite() && point.normalizedX in 0f..1f &&
+                            point.normalizedY.isFinite() && point.normalizedY in 0f..1f &&
+                            (point.ev100 == null || point.ev100.isFinite())
+                    }
+            } ?: return null
+        val updated = existing.copy(zonePoints = validated)
         replaceCategory(
-            category.copy(records = category.records.map { if (it.id == updated.id) updated else it }),
+            category.copy(records = category.records.map { if (it.id == recordId) updated else it }),
         )
         saveIndex()
+        return updated
     }
 
-    /** Called only after the UI's destructive-delete confirmation. */
+    /** Called only after confirmation; refuses unknown files, subdirectories, or path escapes. */
+    @Synchronized
     fun deleteCategory(id: String): Boolean {
         val category = category(id) ?: return false
-        val directory = File(root, category.id)
-        val rootPath = root.canonicalFile.toPath()
-        val directoryPath = directory.canonicalFile.toPath()
-        if (!directoryPath.startsWith(rootPath) || directoryPath == rootPath) return false
-        if (directory.exists() && !directory.deleteRecursively()) return false
-        synchronized(this) {
-            categories.removeAll { it.id == id }
-            if (activeCategoryId == id) {
-                activeCategoryId = null
-                preferences.edit().remove(KEY_ACTIVE_CATEGORY).apply()
-            }
-            saveIndex()
+        val directory = ParameterRecordPathPolicy.categoryDirectory(root, category.id) ?: return false
+        if (directory.exists() && ParameterRecordPathPolicy.validateCategoryContents(directory, category) == null) {
+            return false
         }
-        return true
+        val quarantine = File(root.canonicalFile, ".delete-${category.id}-${UUID.randomUUID()}").canonicalFile
+        if (quarantine.parentFile != root.canonicalFile) return false
+        if (directory.exists() && !directory.renameTo(quarantine)) return false
+        val previousCategories = categories.toList()
+        val previousActive = activeCategoryId
+        return try {
+            categories.removeAll { it.id == id }
+            if (previousActive == id) activeCategoryId = null
+            persistActiveCategory()
+            saveIndex()
+            deleteQuarantine(quarantine)
+            true
+        } catch (_: Exception) {
+            categories = previousCategories.toMutableList()
+            activeCategoryId = previousActive
+            persistActiveCategory()
+            if (quarantine.exists() && !directory.exists()) quarantine.renameTo(directory)
+            false
+        }
     }
 
     private fun moveInto(source: File, target: File): File {
         require(source.exists()) { "Pending record file is missing" }
+        require(!target.exists()) { "A parameter-record file with this id already exists" }
         target.parentFile?.mkdirs()
         if (!source.renameTo(target)) {
             source.inputStream().use { input -> target.outputStream().use(input::copyTo) }
@@ -151,10 +214,38 @@ internal class ParameterRecordRepository(context: Context) {
     private fun deletePending(path: String) {
         val file = File(path)
         runCatching {
-            val pendingPath = pending.canonicalFile.toPath()
-            val target = file.canonicalFile.toPath()
-            if (target.startsWith(pendingPath) && target != pendingPath) file.delete()
+            val target = file.canonicalFile
+            val name = target.name
+            val separator = name.lastIndexOf('.')
+            if (separator <= 0) return@runCatching
+            val expected = ParameterRecordPathPolicy.pendingFile(
+                pending,
+                name.substring(0, separator),
+                name.substring(separator + 1),
+            )
+            if (expected == target) target.delete()
         }
+    }
+
+    private fun persistActiveCategory() {
+        val editor = preferences.edit()
+        if (activeCategoryId == null) editor.remove(KEY_ACTIVE_CATEGORY)
+        else editor.putString(KEY_ACTIVE_CATEGORY, activeCategoryId)
+        editor.apply()
+    }
+
+    private fun cleanupQuarantinedDeletes() {
+        root.listFiles().orEmpty()
+            .filter { ParameterRecordPathPolicy.isDeleteQuarantine(root, it) }
+            .forEach(::deleteQuarantine)
+    }
+
+    private fun deleteQuarantine(directory: File) {
+        if (!directory.exists() || directory.parentFile?.canonicalFile != root.canonicalFile) return
+        val children = directory.listFiles() ?: return
+        if (children.any { !ParameterRecordPathPolicy.isOwnedRecordFile(directory, it) }) return
+        children.forEach { it.delete() }
+        if (directory.listFiles().orEmpty().isEmpty()) directory.delete()
     }
 
     private fun replaceCategory(value: ParameterRecordCategory) {
@@ -206,6 +297,7 @@ internal class ParameterRecordRepository(context: Context) {
         .put("ev100", ev100)
         .put("filmId", filmId)
         .put("filmName", filmName)
+        .put("filmIso", filmIso)
         .put("notes", JSONArray(notes))
         .put("location", location?.toJson())
         .put("zonePoints", JSONArray().also { values -> zonePoints.forEach { values.put(it.toJson()) } })
@@ -266,6 +358,7 @@ internal class ParameterRecordRepository(context: Context) {
             ev100 = nullableDouble("ev100"),
             filmId = nullableString("filmId"),
             filmName = nullableString("filmName"),
+            filmIso = nullableInt("filmIso"),
             notes = optJSONArray("notes").strings(MAX_NOTES),
             location = optJSONObject("location")?.toLocation(),
             zonePoints = optJSONArray("zonePoints").zonePoints(),
@@ -325,8 +418,12 @@ internal class ParameterRecordRepository(context: Context) {
     private fun JSONObject.nullableLong(key: String): Long? =
         if (isNull(key) || !has(key)) null else optLong(key)
 
+    private fun JSONObject.nullableInt(key: String): Int? =
+        if (isNull(key) || !has(key)) null else optInt(key).takeIf { it > 0 }
+
     private companion object {
         const val MAX_NOTES = 10
+        const val MAX_RAW_POINTS = 100
         const val KEY_ACTIVE_CATEGORY = "active_category"
         const val KEY_GPS = "record_gps"
         const val KEY_TIME = "record_time"

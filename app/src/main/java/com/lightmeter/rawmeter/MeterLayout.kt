@@ -1242,7 +1242,7 @@ class MeterLayout @JvmOverloads constructor(
     private fun showParameterEditor(draft: ParameterCaptureDraft) {
         if (isParameterEditorOpen) return
         isParameterEditorOpen = true
-        parameterRecordEditorView.open(draft)
+        parameterRecordEditorView.open(parameterRecordRepository.applyActiveCategoryDefaults(draft))
         parameterRecordEditorView.animate().cancel()
         parameterRecordEditorView.visibility = View.VISIBLE
         parameterRecordEditorView.bringToFront()

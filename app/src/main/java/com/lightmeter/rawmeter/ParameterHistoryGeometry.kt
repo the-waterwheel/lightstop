@@ -39,7 +39,13 @@ internal object ParameterHistoryGeometryCalculator {
             image = RectF(content.left, content.top, content.right, content.top + content.height() * 0.46f)
             data = RectF(content.left, image.bottom + pad, content.right, content.bottom)
         }
-        val meteringHeight = (data.height() * 0.44f).coerceAtLeast(92f * density)
+        // The playback panel contains a mode switch, Zone/marker rails, and two full exposure
+        // scales. Derive its size from the available panel while keeping it usable on short,
+        // wide screens instead of assuming one phone resolution.
+        val preferredMeteringHeight = data.height() * if (landscape) 0.64f else 0.60f
+        val meteringHeight = preferredMeteringHeight
+            .coerceAtLeast(min(132f * density, data.height()))
+            .coerceAtMost(min(205f * density, data.height()))
         val metering = RectF(data.left, data.bottom - meteringHeight, data.right, data.bottom)
         return ParameterHistoryGeometry(back, delete, content, image, data, metering, landscape)
     }
