@@ -15,6 +15,7 @@ import android.os.Handler
 import android.util.Log
 import android.view.Surface
 import kotlin.math.max
+import kotlin.math.roundToInt
 
 /** Immutable camera/session inputs used for one RAW measurement. */
 internal data class RawMeteringContext(
@@ -59,6 +60,7 @@ internal object RawMeteringPolicy {
 private data class MeasurementAccumulator(
     val id: Int,
     val expectedFrames: Int,
+    val highlightProtectionStage: Int,
     val frameAspect: Float,
     val zoom: Float,
     val meteringMode: MeteringMode,
@@ -66,8 +68,9 @@ private data class MeasurementAccumulator(
     val previewReference: PreviewLumaReference? = null,
     val screenToSensorRotationDegrees: Int = 0,
     val startedAtNs: Long = System.nanoTime(),
+    val pairingToleranceNs: Long,
     val framePairer: TimestampedResultPairer<Image, CaptureResult> =
-        TimestampedResultPairer(Image::close),
+        TimestampedResultPairer(Image::close, pairingToleranceNs),
     val stats: MutableList<MeteringFrameStat> = mutableListOf(),
     var submittedFrames: Int = 0,
     var completedFrames: Int = 0,
@@ -122,16 +125,14 @@ internal class RawLightMeter(
         val accumulator = MeasurementAccumulator(
             id = ++nextMeasurementId,
             expectedFrames = count,
+            highlightProtectionStage = 0,
             frameAspect = frameAspect,
             zoom = zoom.coerceAtLeast(1f),
             meteringMode = meteringMode,
             target = target,
             previewReference = previewReference,
             screenToSensorRotationDegrees = screenToSensorRotationDegrees,
-            framePairer = TimestampedResultPairer(
-                releaseImage = Image::close,
-                toleranceNs = pairingToleranceNs,
-            ),
+            pairingToleranceNs = pairingToleranceNs,
         )
         activeMeasurement = accumulator
         activeContext = context
@@ -158,7 +159,10 @@ internal class RawLightMeter(
     }
 
     /** Builds the same single-RAW request used by metering and vignetting calibration. */
-    fun buildCaptureRequest(context: RawMeteringContext): CaptureRequest {
+    fun buildCaptureRequest(
+        context: RawMeteringContext,
+        exposureReductionEv: Int = 0,
+    ): CaptureRequest {
         val exposureTime = context.latestResult?.get(CaptureResult.SENSOR_EXPOSURE_TIME)
         val sensitivity = context.latestResult?.get(CaptureResult.SENSOR_SENSITIVITY)
         val previewFrameDuration = context.latestResult?.get(CaptureResult.SENSOR_FRAME_DURATION)
@@ -169,6 +173,25 @@ internal class RawLightMeter(
             ?: previewFrameDuration
         val useManual = context.cameraInfo.manualSensorAvailable &&
             exposureTime != null && sensitivity != null
+        val manualExposure = if (useManual) {
+            val exposureRange = context.characteristics.get(
+                CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE,
+            )
+            val sensitivityRange = context.characteristics.get(
+                CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE,
+            )
+            ExposureReductionPlanner.plan(
+                baseExposureTimeNs = exposureTime!!,
+                baseSensitivity = sensitivity!!,
+                reductionEv = exposureReductionEv,
+                minimumExposureTimeNs = exposureRange?.lower ?: 1L,
+                maximumExposureTimeNs = exposureRange?.upper ?: exposureTime,
+                minimumSensitivity = sensitivityRange?.lower ?: 1,
+                maximumSensitivity = sensitivityRange?.upper ?: sensitivity,
+            )
+        } else {
+            null
+        }
         return context.device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
             addTarget(context.rawSurface)
             set(
@@ -179,18 +202,44 @@ internal class RawLightMeter(
             if (useManual) {
                 set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
                 set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
-                set(CaptureRequest.SENSOR_EXPOSURE_TIME, exposureTime)
-                set(CaptureRequest.SENSOR_SENSITIVITY, sensitivity)
+                set(CaptureRequest.SENSOR_EXPOSURE_TIME, manualExposure!!.exposureTimeNs)
+                set(CaptureRequest.SENSOR_SENSITIVITY, manualExposure.sensitivity)
                 frameDuration?.let {
-                    set(CaptureRequest.SENSOR_FRAME_DURATION, max(it, exposureTime!!))
+                    set(CaptureRequest.SENSOR_FRAME_DURATION, max(it, manualExposure.exposureTimeNs))
                 }
             } else {
                 set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
                 set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
-                set(CaptureRequest.CONTROL_AE_LOCK, true)
+                set(CaptureRequest.CONTROL_AE_LOCK, exposureReductionEv == 0)
+                aeCompensationSteps(context.characteristics, exposureReductionEv)?.let { steps ->
+                    set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, steps)
+                }
             }
             setSupportedAutoFocus(this, context.characteristics)
-        }.build()
+        }.build().also {
+            if (exposureReductionEv > 0) {
+                Log.i(
+                    TAG,
+                    "RAW highlight request: reductionEv=$exposureReductionEv " +
+                        "exposureNs=${manualExposure?.exposureTimeNs ?: "AE"} " +
+                        "iso=${manualExposure?.sensitivity ?: "AE"}",
+                )
+            }
+        }
+    }
+
+    private fun aeCompensationSteps(
+        characteristics: CameraCharacteristics,
+        exposureReductionEv: Int,
+    ): Int? {
+        if (exposureReductionEv <= 0) return null
+        val range = characteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
+            ?: return null
+        val step = characteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)
+            ?: return null
+        if (step.numerator <= 0 || step.denominator <= 0) return null
+        val stepEv = step.numerator.toDouble() / step.denominator.toDouble()
+        return (-exposureReductionEv / stepEv).roundToInt().coerceIn(range.lower, range.upper)
     }
 
     private fun rawMinimumFrameDuration(characteristics: CameraCharacteristics): Long? {
@@ -274,6 +323,7 @@ internal class RawLightMeter(
         pair: TimestampedResultPair<Image, CaptureResult>,
     ) {
         val context = activeContext
+        var stat: MeteringFrameStat? = null
         try {
             if (context != null) {
                 if (active.target != null && active.rawMeterPoint == null) {
@@ -296,7 +346,7 @@ internal class RawLightMeter(
                         )
                     }
                 }
-                MeteringAnalysis.analyzeRaw(
+                stat = MeteringAnalysis.analyzeRaw(
                     pair.image,
                     pair.result,
                     context.characteristics,
@@ -308,18 +358,67 @@ internal class RawLightMeter(
                     active.rawMeterPoint,
                     vignettingCalibrationStore,
                     applyVignettingCalibration = active.target != null,
-                )?.let(active.stats::add)
+                )
             }
         } finally {
             pair.image.close()
             active.completedFrames += 1
         }
+        if (stat != null && retryForClippedHighlights(active, stat)) return
+        stat?.let(active.stats::add)
         when {
             active.stats.size >= active.expectedFrames -> finishWithReading(active)
             active.completedFrames >= active.expectedFrames -> finishWithError(
                 localized("测光数据无效，请重试", "Metering data was invalid. Please try again"),
             )
             else -> fillPipeline(active)
+        }
+    }
+
+    private fun retryForClippedHighlights(
+        active: MeasurementAccumulator,
+        stat: MeteringFrameStat,
+    ): Boolean {
+        val nextStage = RawHighlightProtectionPolicy.nextStage(
+            clippedFraction = stat.clipped,
+            currentStage = active.highlightProtectionStage,
+        ) ?: return false
+        if (activeMeasurement?.id != active.id) return true
+        val context = activeContext ?: return false
+        val reductionEv = RawHighlightProtectionPolicy.exposureReductionEv(nextStage)
+        active.framePairer.clear()
+        val retry = MeasurementAccumulator(
+            id = ++nextMeasurementId,
+            expectedFrames = RawHighlightProtectionPolicy.SINGLE_FRAME_COUNT,
+            highlightProtectionStage = nextStage,
+            frameAspect = active.frameAspect,
+            zoom = active.zoom,
+            meteringMode = active.meteringMode,
+            target = active.target,
+            previewReference = active.previewReference,
+            screenToSensorRotationDegrees = active.screenToSensorRotationDegrees,
+            startedAtNs = active.startedAtNs,
+            pairingToleranceNs = active.pairingToleranceNs,
+            rawMeterPoint = active.rawMeterPoint,
+        )
+        activeMeasurement = retry
+        return try {
+            activeRequest = buildCaptureRequest(context, reductionEv)
+            scheduleTimeout(retry, context.handler)
+            Log.w(
+                TAG,
+                "RAW highlights clipped: fraction=${stat.clipped} " +
+                    "recaptureStage=$nextStage reductionEv=$reductionEv frames=1",
+            )
+            listener.onRawMeteringStarted(RawHighlightProtectionPolicy.SINGLE_FRAME_COUNT)
+            fillPipeline(retry)
+            true
+        } catch (error: Exception) {
+            Log.e(TAG, "Unable to start RAW highlight-protection recapture", error)
+            finishWithError(
+                localized("无法进行高光保护重拍，请重试", "Unable to recapture protected highlights"),
+            )
+            true
         }
     }
 
@@ -378,6 +477,7 @@ internal class RawLightMeter(
             TAG,
             "RAW metering completed: frames=${reading.frameCount} ev100=${reading.sceneEv100} " +
                 "luma=${reading.rawLuma} clipped=${reading.clippedFraction} " +
+                "highlightStage=${active.highlightProtectionStage} " +
                 "elapsedMs=${"%.1f".format(elapsedMs)} pipelineDepth=$PIPELINE_DEPTH",
         )
         listener.onRawMeteringReading(reading)
