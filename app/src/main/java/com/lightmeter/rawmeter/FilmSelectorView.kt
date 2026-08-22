@@ -56,12 +56,12 @@ internal class FilmSelectorView(
     private var visibleFilms: List<FilmLatitudeProfile> = emptyList()
     private var favoritesOnly = false
     private var scrollOffset = 0f
-    private var scrollStart = 0f
     private var touchStartX = 0f
     private var touchStartY = 0f
     private var touchTarget = TouchTarget.NONE
     private var touchFilm: FilmLatitudeProfile? = null
     private var dragging = false
+    private val flingScroller = VerticalFlingScroller(context)
     private val dialogs = FilmLatitudeDialogs(context, state)
 
     private val searchField = EditText(context).apply {
@@ -86,6 +86,7 @@ internal class FilmSelectorView(
     }
 
     fun open() {
+        flingScroller.cancel()
         applyTheme()
         refreshFilms()
         scrollOffset = 0f
@@ -163,7 +164,11 @@ internal class FilmSelectorView(
         if (visibleFilms.isEmpty()) {
             drawEmpty(canvas)
         } else {
-            visibleFilms.forEachIndexed { index, profile ->
+            val firstIndex = (scrollOffset / geometry.rowHeight).toInt().coerceIn(0, visibleFilms.lastIndex)
+            val lastIndex = ((scrollOffset + geometry.list.height()) / geometry.rowHeight)
+                .toInt().plus(1).coerceIn(firstIndex, visibleFilms.lastIndex)
+            for (index in firstIndex..lastIndex) {
+                val profile = visibleFilms[index]
                 val top = geometry.list.top + index * geometry.rowHeight - scrollOffset
                 val row = RectF(geometry.list.left, top, geometry.list.right, top + geometry.rowHeight - 5f * density)
                 if (RectF.intersects(row, geometry.list)) drawFilmRow(canvas, row, profile)
@@ -233,7 +238,6 @@ internal class FilmSelectorView(
             MotionEvent.ACTION_DOWN -> {
                 touchStartX = event.x
                 touchStartY = event.y
-                scrollStart = scrollOffset
                 dragging = false
                 touchFilm = null
                 touchTarget = when {
@@ -244,6 +248,7 @@ internal class FilmSelectorView(
                     geometry.list.contains(event.x, event.y) -> targetForRow(event.x, event.y)
                     else -> TouchTarget.NONE
                 }
+                if (geometry.list.contains(event.x, event.y)) flingScroller.begin(event)
                 return touchTarget != TouchTarget.NONE
             }
             MotionEvent.ACTION_MOVE -> {
@@ -254,8 +259,8 @@ internal class FilmSelectorView(
                 ) dragging = true
                 if (dragging) {
                     val maxScroll = max(0f, visibleFilms.size * geometry.rowHeight - geometry.list.height())
-                    scrollOffset = (scrollStart - dy).coerceIn(0f, maxScroll)
-                    invalidate()
+                    scrollOffset = flingScroller.drag(event, scrollOffset, maxScroll)
+                    postInvalidateOnAnimation()
                 }
                 return true
             }
@@ -264,6 +269,12 @@ internal class FilmSelectorView(
                 if (!cancelled && !dragging) {
                     performClick()
                     handleTap()
+                    flingScroller.cancel()
+                } else if (!cancelled && dragging) {
+                    val maxScroll = max(0f, visibleFilms.size * geometry.rowHeight - geometry.list.height())
+                    if (flingScroller.finish(event, scrollOffset, maxScroll)) postInvalidateOnAnimation()
+                } else {
+                    flingScroller.cancel()
                 }
                 touchTarget = TouchTarget.NONE
                 touchFilm = null
@@ -272,6 +283,14 @@ internal class FilmSelectorView(
             }
         }
         return super.onTouchEvent(event)
+    }
+
+    override fun computeScroll() {
+        val maxScroll = max(0f, visibleFilms.size * geometry.rowHeight - geometry.list.height())
+        flingScroller.compute(maxScroll)?.let {
+            scrollOffset = it
+            postInvalidateOnAnimation()
+        }
     }
 
     private fun targetForRow(x: Float, y: Float): TouchTarget {
@@ -380,5 +399,10 @@ internal class FilmSelectorView(
     override fun performClick(): Boolean {
         super.performClick()
         return true
+    }
+
+    override fun onDetachedFromWindow() {
+        flingScroller.cancel()
+        super.onDetachedFromWindow()
     }
 }

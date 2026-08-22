@@ -64,8 +64,8 @@ class InformationView(
     private var maxScrollOffset = 0f
     private var downX = 0f
     private var downY = 0f
-    private var lastY = 0f
     private var dragging = false
+    private val flingScroller = VerticalFlingScroller(context)
     private var cachedAssetPath: String? = null
     private var cachedAssetText = ""
     private var cachedTextLayoutKey: String? = null
@@ -116,6 +116,7 @@ class InformationView(
     )
 
     fun show(page: Page) {
+        flingScroller.cancel()
         this.page = page
         selectedLicense = null
         scrollOffset = 0f
@@ -387,11 +388,12 @@ class InformationView(
         bodyPaint.color = foreground
         bodyPaint.textSize = (if (width > height) 10.5f else 12f) * density
         val introWidth = (width - padding * 2f).toInt().coerceAtLeast(1)
-        val introLayout = StaticLayout.Builder.obtain(intro, 0, intro.length, bodyPaint, introWidth)
-            .setAlignment(Layout.Alignment.ALIGN_NORMAL)
-            .setIncludePad(false)
-            .setLineSpacing(2f * density, 1f)
-            .build()
+        val introLayout = textLayout(
+            intro,
+            introWidth,
+            2f * density,
+            "license-index|$introWidth|${bodyPaint.textSize}|${intro.hashCode()}",
+        )
         val contentHeight = padding + introLayout.height + padding +
             licenseEntries.size * rowHeight + max(0, licenseEntries.size - 1) * rowGap + padding
         maxScrollOffset = max(0f, contentHeight - (height - headerHeight))
@@ -409,6 +411,12 @@ class InformationView(
         val targets = mutableListOf<LicenseHitTarget>()
         licenseEntries.forEach { entry ->
             val row = RectF(padding, y, width - padding, y + rowHeight)
+            val screenTop = row.top - scrollOffset
+            val screenBottom = row.bottom - scrollOffset
+            if (screenBottom < headerHeight || screenTop > height) {
+                y += rowHeight + rowGap
+                return@forEach
+            }
             paint.style = Paint.Style.FILL
             paint.color = if (state.isDarkMode) Color.rgb(18, 18, 18) else Color.WHITE
             canvas.drawRect(row, paint)
@@ -456,35 +464,51 @@ class InformationView(
             MotionEvent.ACTION_DOWN -> {
                 downX = event.x
                 downY = event.y
-                lastY = event.y
                 dragging = false
+                flingScroller.begin(event)
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
-                val delta = event.y - lastY
                 if (abs(event.y - downY) > touchSlop) dragging = true
                 if (dragging && maxScrollOffset > 0f) {
-                    scrollOffset = (scrollOffset - delta).coerceIn(0f, maxScrollOffset)
-                    invalidate()
+                    scrollOffset = flingScroller.drag(event, scrollOffset, maxScrollOffset)
+                    postInvalidateOnAnimation()
                 }
-                lastY = event.y
                 return true
             }
             MotionEvent.ACTION_UP -> {
                 if (!dragging && abs(event.x - downX) <= touchSlop * 2f) {
                     handleTap(event.x, event.y)
+                    flingScroller.cancel()
+                } else if (dragging && flingScroller.finish(event, scrollOffset, maxScrollOffset)) {
+                    postInvalidateOnAnimation()
                 }
                 performClick()
                 return true
             }
-            MotionEvent.ACTION_CANCEL -> return true
+            MotionEvent.ACTION_CANCEL -> {
+                flingScroller.cancel()
+                return true
+            }
         }
         return super.onTouchEvent(event)
+    }
+
+    override fun computeScroll() {
+        flingScroller.compute(maxScrollOffset)?.let {
+            scrollOffset = it
+            postInvalidateOnAnimation()
+        }
     }
 
     override fun performClick(): Boolean {
         super.performClick()
         return true
+    }
+
+    override fun onDetachedFromWindow() {
+        flingScroller.cancel()
+        super.onDetachedFromWindow()
     }
 
     private fun handleTap(x: Float, y: Float) {

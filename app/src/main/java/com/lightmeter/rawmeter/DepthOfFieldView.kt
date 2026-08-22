@@ -35,7 +35,9 @@ class DepthOfFieldView(
 
     var listener: Listener? = null
 
-    private enum class TouchTarget { BACK, CLOSE, FRAME, COC, APERTURE, DISTANCE, NONE }
+    private enum class TouchTarget {
+        BACK, CLOSE, FRAME, COC, APERTURE, FOCAL_LENGTH, FOCUS_RULER, FOCUS_VALUE, NONE
+    }
 
     private val density = resources.displayMetrics.density
     private val scaledDensity = TypedValue.applyDimension(
@@ -46,12 +48,12 @@ class DepthOfFieldView(
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
-        typeface = Typeface.create("sans", Typeface.NORMAL)
+        typeface = Typeface.create("sans-serif", Typeface.NORMAL)
     }
     private val boldPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
-        typeface = Typeface.create("sans", Typeface.BOLD)
+        typeface = Typeface.create("sans-serif", Typeface.BOLD)
     }
     private val path = Path()
     private var geometry = DepthOfFieldGeometry.EMPTY
@@ -75,6 +77,10 @@ class DepthOfFieldView(
             session.selectCircleOfConfusion(it)
             animateCurrentResult()
         },
+        onFocusDistanceSelected = {
+            session.selectFocusDistance(it)
+            animateCurrentResult()
+        },
     )
     private var markerAnimator: ValueAnimator? = null
     private var displayedNearFraction = 0.0
@@ -84,8 +90,11 @@ class DepthOfFieldView(
     private var touchTarget = TouchTarget.NONE
     private var touchStartX = 0f
     private var touchStartY = 0f
-    private var apertureStartIndex = 0
-    private var distanceStartIndex = 0
+    private var lastTouchX = 0f
+    private var lastTouchY = 0f
+    private var dialStepAccumulator = 0f
+    private var apertureVisualOffset = 0f
+    private var focalVisualOffset = 0f
     private var moved = false
 
     init {
@@ -110,9 +119,6 @@ class DepthOfFieldView(
             openWithMeterDefaults(state.lockedApertureStop)
             return
         }
-        session.updateFullFrameEquivalent(
-            state.equivalent35mm()?.toDouble() ?: session.fullFrameEquivalentMm,
-        )
         updateMarkers(animate = true)
     }
 
@@ -175,7 +181,7 @@ class DepthOfFieldView(
 
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 2f * density
-        paint.color = red
+        paint.color = foreground
         canvas.drawLine(lineLeft, rulerY, lineRight, rulerY, paint)
         val tickDistances = listOf(0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 50.0, null)
         tickDistances.forEach { distance ->
@@ -238,90 +244,59 @@ class DepthOfFieldView(
     private fun drawControls(canvas: Canvas) {
         drawDial(
             canvas = canvas,
-            left = true,
-            shortLabel = "f",
-            value = formatAperture(session.selectedAperture),
-            index = apertureIndex(),
-            count = apertureValues().size,
+            bounds = geometry.apertureDial,
+            caption = localized("光圈", "Aperture"),
+            value = "f/${formatAperture(session.selectedAperture)}",
+            visualOffset = apertureVisualOffset,
         )
         drawDial(
             canvas = canvas,
-            left = false,
-            shortLabel = "m",
-            value = formatDistance(focusDistanceM()).removeSuffix(" m"),
-            index = session.focusIndex,
-            count = DepthOfFieldMath.focusDistancesM.size,
+            bounds = geometry.focalDial,
+            caption = localized("焦距", "Focal length"),
+            value = formatMillimetres(focalLengthMm()),
+            visualOffset = focalVisualOffset,
         )
 
-        paint.style = Paint.Style.FILL
-        paint.color = panel
-        canvas.drawRoundRect(geometry.frameControl, 5f * density, 5f * density, paint)
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 1.3f * density
-        paint.color = foreground
-        canvas.drawRoundRect(geometry.frameControl, 5f * density, 5f * density, paint)
-        boldPaint.color = foreground
-        boldPaint.textAlign = Paint.Align.CENTER
-        boldPaint.textSize = 16f * scaledDensity
-        canvas.drawText("H", geometry.frameControl.centerX(), geometry.frameControl.top + 22f * density, boldPaint)
-        paint.color = foreground
-        paint.textAlign = Paint.Align.CENTER
-        paint.textSize = 8.5f * scaledDensity
         val frameLabel = if (session.selectedFormat.id == "custom") {
             session.selectedFormat.displayLabel(state.menuLanguage)
         } else {
             session.selectedFormat.displayLabel(state.menuLanguage).substringBefore(" ·")
         }
-        canvas.drawText(frameLabel, geometry.frameControl.centerX(), geometry.frameControl.bottom - 10f * density, paint)
-
-        paint.style = Paint.Style.FILL
-        paint.color = panel
-        canvas.drawRoundRect(geometry.cocControl, 5f * density, 5f * density, paint)
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 1.2f * density
-        paint.color = foreground
-        canvas.drawRoundRect(geometry.cocControl, 5f * density, 5f * density, paint)
-        boldPaint.color = foreground
-        boldPaint.textAlign = Paint.Align.CENTER
-        boldPaint.textSize = 10f * scaledDensity
-        drawTextCentered(
+        drawSelector(
             canvas,
-            "c  ${"%.3f".format(session.circleOfConfusionMm)} mm",
-            geometry.cocControl.centerX(),
-            geometry.cocControl.centerY(),
-            boldPaint,
+            geometry.frameControl,
+            localized("画幅", "Format"),
+            frameLabel,
         )
+        drawSelector(canvas, geometry.cocControl, "c", "${"%.3f".format(session.circleOfConfusionMm)} mm")
     }
 
     private fun drawDial(
         canvas: Canvas,
-        left: Boolean,
-        shortLabel: String,
+        bounds: RectF,
+        caption: String,
         value: String,
-        index: Int,
-        count: Int,
+        visualOffset: Float,
     ) {
-        val controlsTop = geometry.frameControl.top
-        val availableHeight = (height - controlsTop).coerceAtLeast(1f)
-        val radius = min(width * 0.48f, availableHeight * 1.10f).coerceAtLeast(70f * density)
-        val centerX = if (left) -radius * 0.12f else width + radius * 0.12f
-        val centerY = height + radius * 0.13f
-        val arc = RectF(centerX - radius, centerY - radius, centerX + radius, centerY + radius)
-        val start = if (left) 282f else 188f
-        val sweep = 70f
+        if (bounds.isEmpty) return
+        val centerX = bounds.centerX()
+        val centerY = bounds.centerY()
+        val radius = min(bounds.width(), bounds.height()) / 2f
+        paint.style = Paint.Style.FILL
+        paint.color = panel
+        canvas.drawCircle(centerX, centerY, radius, paint)
         paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 20f * density
+        paint.strokeWidth = 1.25f * density
         paint.color = foreground
-        canvas.drawArc(arc, start, sweep, false, paint)
+        canvas.drawCircle(centerX, centerY, radius - 0.8f * density, paint)
+        canvas.drawCircle(centerX, centerY, radius * 0.70f, paint)
 
-        val centerAngle = if (left) 316f else 224f
-        val fractional = if (count <= 1) 0f else index.toFloat() / (count - 1)
         for (offset in -3..3) {
-            val angle = centerAngle + offset * 9f + (fractional - 0.5f) * 4f
+            val angle = -90f + (offset - visualOffset.coerceIn(-1f, 1f)) * 12f
             val radians = Math.toRadians(angle.toDouble())
-            val inner = radius - 15f * density
-            val outer = radius + if (offset == 0) 13f * density else 7f * density
-            paint.strokeWidth = if (offset == 0) 3f * density else 1.2f * density
+            val inner = radius - if (offset == 0) 11f * density else 7f * density
+            val outer = radius - 2f * density
+            paint.strokeWidth = if (offset == 0) 2.2f * density else 0.9f * density
             paint.color = if (offset == 0) red else muted
             canvas.drawLine(
                 centerX + cos(radians).toFloat() * inner,
@@ -332,16 +307,37 @@ class DepthOfFieldView(
             )
         }
 
-        val textX = if (left) width * 0.17f else width * 0.83f
-        val textY = height - min(45f * density, availableHeight * 0.22f)
         boldPaint.color = foreground
         boldPaint.textAlign = Paint.Align.CENTER
-        boldPaint.textSize = 24f * scaledDensity
-        canvas.drawText(shortLabel, textX, textY, boldPaint)
+        boldPaint.textSize = (radius / density * 0.20f).coerceIn(12f, 17f) * scaledDensity
+        drawTextCentered(canvas, value, centerX, centerY + radius * 0.10f, boldPaint)
+
+        paint.style = Paint.Style.FILL
         paint.color = red
+        canvas.drawCircle(centerX, bounds.top + 2.5f * density, 2.4f * density, paint)
+        paint.color = muted
         paint.textAlign = Paint.Align.CENTER
-        paint.textSize = 10f * scaledDensity
-        canvas.drawText(value, textX, textY + 17f * density, paint)
+        paint.textSize = 7f * scaledDensity
+        canvas.drawText(caption, centerX, centerY + radius * 0.50f, paint)
+    }
+
+    private fun drawSelector(canvas: Canvas, bounds: RectF, title: String, value: String) {
+        paint.style = Paint.Style.FILL
+        paint.color = panel
+        canvas.drawRoundRect(bounds, 5f * density, 5f * density, paint)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 1.1f * density
+        paint.color = foreground
+        canvas.drawRoundRect(bounds, 5f * density, 5f * density, paint)
+        paint.style = Paint.Style.FILL
+        paint.color = muted
+        paint.textAlign = Paint.Align.CENTER
+        paint.textSize = 7f * scaledDensity
+        canvas.drawText(title, bounds.centerX(), bounds.top + bounds.height() * 0.34f, paint)
+        boldPaint.color = foreground
+        boldPaint.textAlign = Paint.Align.CENTER
+        boldPaint.textSize = 9f * scaledDensity
+        canvas.drawText(value, bounds.centerX(), bounds.bottom - bounds.height() * 0.20f, boldPaint)
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -350,18 +346,24 @@ class DepthOfFieldView(
                 parent?.requestDisallowInterceptTouchEvent(true)
                 touchStartX = event.x
                 touchStartY = event.y
+                lastTouchX = event.x
+                lastTouchY = event.y
                 moved = false
-                apertureStartIndex = apertureIndex()
-                distanceStartIndex = session.focusIndex
+                dialStepAccumulator = 0f
+                apertureVisualOffset = 0f
+                focalVisualOffset = 0f
                 touchTarget = when {
                     geometry.headerBack.contains(event.x, event.y) -> TouchTarget.BACK
                     geometry.headerClose.contains(event.x, event.y) -> TouchTarget.CLOSE
                     geometry.frameControl.contains(event.x, event.y) -> TouchTarget.FRAME
                     geometry.cocControl.contains(event.x, event.y) -> TouchTarget.COC
+                    geometry.focusValue.contains(event.x, event.y) -> TouchTarget.FOCUS_VALUE
+                    geometry.rulerTrack.contains(event.x, event.y) -> TouchTarget.FOCUS_RULER
                     geometry.apertureDial.contains(event.x, event.y) -> TouchTarget.APERTURE
-                    geometry.distanceDial.contains(event.x, event.y) -> TouchTarget.DISTANCE
+                    geometry.focalDial.contains(event.x, event.y) -> TouchTarget.FOCAL_LENGTH
                     else -> TouchTarget.NONE
                 }
+                if (touchTarget == TouchTarget.FOCUS_RULER) selectFocusForX(event.x)
                 return true
             }
 
@@ -369,15 +371,15 @@ class DepthOfFieldView(
                 val dx = event.x - touchStartX
                 val dy = event.y - touchStartY
                 if (!moved && (abs(dx) > touchSlop || abs(dy) > touchSlop)) moved = true
-                if (moved) {
-                    val dialMotion = -dy + if (touchTarget == TouchTarget.APERTURE) dx * 0.45f else -dx * 0.45f
-                    val steps = (dialMotion / (19f * density)).roundToInt()
-                    when (touchTarget) {
-                        TouchTarget.APERTURE -> selectApertureIndex(apertureStartIndex + steps)
-                        TouchTarget.DISTANCE -> selectFocusIndex(distanceStartIndex + steps)
-                        else -> Unit
+                when (touchTarget) {
+                    TouchTarget.FOCUS_RULER -> selectFocusForX(event.x)
+                    TouchTarget.APERTURE, TouchTarget.FOCAL_LENGTH -> if (moved) {
+                        updateDialDrag(event.x - lastTouchX, event.y - lastTouchY)
                     }
+                    else -> Unit
                 }
+                lastTouchX = event.x
+                lastTouchY = event.y
                 return true
             }
 
@@ -392,15 +394,22 @@ class DepthOfFieldView(
                             session.selectedFormat,
                             session.circleOfConfusionMm,
                         )
+                        TouchTarget.FOCUS_VALUE -> dialogs.showFocusDistance(focusDistanceM())
                         else -> Unit
                     }
                 }
+                apertureVisualOffset = 0f
+                focalVisualOffset = 0f
+                invalidate()
                 touchTarget = TouchTarget.NONE
                 parent?.requestDisallowInterceptTouchEvent(false)
                 return true
             }
 
             MotionEvent.ACTION_CANCEL -> {
+                apertureVisualOffset = 0f
+                focalVisualOffset = 0f
+                invalidate()
                 touchTarget = TouchTarget.NONE
                 parent?.requestDisallowInterceptTouchEvent(false)
                 return true
@@ -427,10 +436,40 @@ class DepthOfFieldView(
         animateCurrentResult()
     }
 
-    private fun selectFocusIndex(index: Int) {
-        if (!session.selectFocusIndex(index)) return
+    private fun selectFocalIndex(index: Int) {
+        if (!session.selectFocalIndex(index)) return
         performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
         animateCurrentResult()
+    }
+
+    private fun selectFocusForX(x: Float) {
+        val track = geometry.rulerTrack
+        if (track.width() <= 0f) return
+        val fraction = ((x - track.left) / track.width()).coerceIn(0f, 1f)
+        if (!session.selectFocusDistance(DepthOfFieldMath.distanceForFraction(fraction.toDouble()))) return
+        updateMarkers(animate = false)
+    }
+
+    private fun updateDialDrag(deltaX: Float, deltaY: Float) {
+        val motion = -deltaY + when (touchTarget) {
+            TouchTarget.APERTURE -> deltaX * 0.45f
+            TouchTarget.FOCAL_LENGTH -> -deltaX * 0.45f
+            else -> 0f
+        }
+        val stepDistance = 16f * density
+        dialStepAccumulator += motion
+        val steps = (dialStepAccumulator / stepDistance).toInt()
+        if (steps != 0) {
+            when (touchTarget) {
+                TouchTarget.APERTURE -> selectApertureIndex(apertureIndex() + steps)
+                TouchTarget.FOCAL_LENGTH -> selectFocalIndex(session.focalIndex() + steps)
+                else -> Unit
+            }
+            dialStepAccumulator -= steps * stepDistance
+        }
+        val visual = (dialStepAccumulator / stepDistance).coerceIn(-1f, 1f)
+        if (touchTarget == TouchTarget.APERTURE) apertureVisualOffset = visual else focalVisualOffset = visual
+        invalidate()
     }
 
     private fun animateCurrentResult() = updateMarkers(animate = true)

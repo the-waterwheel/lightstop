@@ -1,5 +1,6 @@
 package com.lightmeter.rawmeter
 
+import android.animation.ValueAnimator
 import android.annotation.SuppressLint
 import android.app.AlertDialog
 import android.content.Context
@@ -16,6 +17,8 @@ import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
+import android.view.VelocityTracker
+import android.view.animation.DecelerateInterpolator
 import android.widget.EditText
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -39,8 +42,9 @@ internal class ParameterRecordEditorView(
     private val density = resources.displayMetrics.density
     private val scaledDensity = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 1f, resources.displayMetrics)
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
-    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans", Typeface.NORMAL) }
-    private val boldPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans", Typeface.BOLD) }
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans-serif", Typeface.NORMAL) }
+    private val boldPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans-serif", Typeface.BOLD) }
+    private val notePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans-serif", Typeface.NORMAL) }
     private val background: Int get() = if (state.isDarkMode) Color.BLACK else Color.WHITE
     private val foreground: Int get() = if (state.isDarkMode) Color.rgb(224, 224, 220) else Color.rgb(20, 20, 20)
     private val muted: Int get() = if (state.isDarkMode) Color.rgb(105, 105, 101) else Color.rgb(178, 178, 174)
@@ -51,15 +55,19 @@ internal class ParameterRecordEditorView(
     private var target = Target.NONE
     private var touchStartY = 0f
     private var moved = false
-    private var startAperture = 0.0
-    private var startShutter = 0.0
-    private var startEiIndex = 0
+    private var aperturePosition = 0f
+    private var shutterPosition = 0f
+    private var eiPosition = 0f
+    private var selectorStartPosition = 0f
+    private var selectorAnimator: ValueAnimator? = null
+    private var velocityTracker: VelocityTracker? = null
     private var noteScroll = 0f
     private var noteScrollStart = 0f
     private var touchedNoteIndex: Int? = null
 
     fun open(value: ParameterCaptureDraft) {
         draft = value
+        syncSelectorPositions(value)
         noteScroll = 0f
         invalidate()
     }
@@ -81,13 +89,9 @@ internal class ParameterRecordEditorView(
         drawClose(canvas)
         drawFilm(canvas, value)
         drawNotes(canvas, value)
-        drawSelector(canvas, geometry.aperture, "f", ExposureMath.formatAperture(
-            ExposureMath.apertureValueForCoordinate(value.snapshot.apertureCoordinate, state.apertureStep),
-        ))
-        drawSelector(canvas, geometry.shutter, "s", ExposureMath.formatShutter(
-            ExposureMath.shutterValueForCoordinate(value.snapshot.shutterCoordinate, state.shutterStep),
-        ))
-        drawSelector(canvas, geometry.ei, "EI", value.snapshot.ei.toString())
+        drawSelector(canvas, geometry.aperture, localized("光圈", "Aperture"), apertureLabels(), aperturePosition)
+        drawSelector(canvas, geometry.shutter, localized("快门", "Shutter"), shutterLabels(), shutterPosition)
+        drawSelector(canvas, geometry.ei, "EI", state.isoValues.map(Int::toString), eiPosition)
         drawSave(canvas)
     }
 
@@ -149,42 +153,22 @@ internal class ParameterRecordEditorView(
                 )
                 if (!RectF.intersects(row, geometry.notes)) return@forEachIndexed
                 drawPanel(canvas, row)
-                paint.color = foreground
-                paint.textAlign = Paint.Align.LEFT
-                paint.textSize = 9f * scaledDensity
-                val text = TextUtils.ellipsize(note, TextPaint(paint), row.width() - 16f * density, TextUtils.TruncateAt.END)
-                centered(canvas, text.toString(), row.left + 8f * density, row.centerY(), paint)
+                notePaint.color = foreground
+                notePaint.textAlign = Paint.Align.LEFT
+                notePaint.textSize = 11f * scaledDensity
+                val text = TextUtils.ellipsize(note, notePaint, row.width() - 16f * density, TextUtils.TruncateAt.END)
+                centered(canvas, text.toString(), row.left + 8f * density, row.centerY(), notePaint)
             }
         }
         canvas.restore()
     }
 
-    private fun drawSelector(canvas: Canvas, rect: RectF, title: String, value: String) {
+    private fun drawSelector(canvas: Canvas, rect: RectF, title: String, labels: List<String>, position: Float) {
         drawPanel(canvas, rect)
-        boldPaint.textAlign = Paint.Align.CENTER
-        boldPaint.color = red
-        boldPaint.textSize = 10f * scaledDensity
-        canvas.drawText(title, rect.centerX(), rect.top + 17f * density, boldPaint)
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 1f * density
-        paint.color = muted
-        canvas.drawLine(rect.centerX(), rect.top + 25f * density, rect.centerX(), rect.bottom - 25f * density, paint)
-        for (i in -2..2) {
-            val y = rect.centerY() + i * 15f * density
-            val length = if (i == 0) 14f * density else 7f * density
-            canvas.drawLine(rect.centerX() - length, y, rect.centerX() + length, y, paint)
-        }
-        paint.style = Paint.Style.FILL
-        paint.color = background
-        canvas.drawRoundRect(
-            RectF(rect.left + 5f * density, rect.centerY() - 17f * density, rect.right - 5f * density, rect.centerY() + 17f * density),
-            4f * density,
-            4f * density,
-            paint,
+        VerticalDetentStripRenderer.draw(
+            canvas, rect, title, labels, position, density, scaledDensity,
+            background, foreground, muted, red, paint, boldPaint,
         )
-        boldPaint.color = foreground
-        boldPaint.textSize = 11f * scaledDensity
-        centered(canvas, value, rect.centerX(), rect.centerY(), boldPaint)
     }
 
     private fun drawSave(canvas: Canvas) {
@@ -213,11 +197,14 @@ internal class ParameterRecordEditorView(
             MotionEvent.ACTION_DOWN -> {
                 touchStartY = event.y
                 moved = false
-                startAperture = value.snapshot.apertureCoordinate
-                startShutter = value.snapshot.shutterCoordinate
-                startEiIndex = state.isoValues.indexOf(value.snapshot.ei).coerceAtLeast(0)
                 noteScrollStart = noteScroll
                 target = targetAt(event.x, event.y)
+                if (isSelector(target)) {
+                    selectorAnimator?.cancel()
+                    selectorStartPosition = selectorPosition(target)
+                    velocityTracker?.recycle()
+                    velocityTracker = VelocityTracker.obtain().also { it.addMovement(event) }
+                }
                 if (target == Target.NOTE) touchedNoteIndex = noteIndexAt(event.y, value)
                 parent?.requestDisallowInterceptTouchEvent(target in listOf(Target.APERTURE, Target.SHUTTER, Target.EI, Target.NOTE))
                 return target != Target.NONE
@@ -226,9 +213,10 @@ internal class ParameterRecordEditorView(
                 val dy = event.y - touchStartY
                 if (abs(dy) > touchSlop) moved = true
                 when (target) {
-                    Target.APERTURE -> updateAperture(value, dy)
-                    Target.SHUTTER -> updateShutter(value, dy)
-                    Target.EI -> updateEi(value, dy)
+                    Target.APERTURE, Target.SHUTTER, Target.EI -> {
+                        velocityTracker?.addMovement(event)
+                        updateSelector(target, selectorStartPosition - dy / (26f * density))
+                    }
                     Target.NOTE -> {
                         val maxScroll = (value.notes.size * 38f * density - geometry.notes.height()).coerceAtLeast(0f)
                         noteScroll = (noteScrollStart - dy).coerceIn(0f, maxScroll)
@@ -240,6 +228,12 @@ internal class ParameterRecordEditorView(
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 val cancelled = event.actionMasked == MotionEvent.ACTION_CANCEL
+                if (isSelector(target)) {
+                    if (!cancelled && moved) settleSelector(event) else {
+                        velocityTracker?.recycle()
+                        velocityTracker = null
+                    }
+                }
                 if (!cancelled && !moved) {
                     performClick()
                     handleTap(value)
@@ -276,29 +270,94 @@ internal class ParameterRecordEditorView(
         }
     }
 
-    private fun updateAperture(value: ParameterCaptureDraft, dy: Float) {
-        val step = exposureStepSize(state.apertureStep)
-        val coordinate = ExposureMath.nearestApertureStop(startAperture - dy / (34f * density) * step, state.apertureStep)
-        draft = value.copy(snapshot = value.snapshot.copy(apertureCoordinate = coordinate))
-        tick()
-        invalidate()
+    private fun updateSelector(selector: Target, requestedPosition: Float) {
+        val current = draft ?: return
+        val lastIndex = selectorLastIndex(selector)
+        if (lastIndex < 0) return
+        val position = requestedPosition.coerceIn(0f, lastIndex.toFloat())
+        val index = position.roundToInt().coerceIn(0, lastIndex)
+        val before = when (selector) {
+            Target.APERTURE -> aperturePosition.roundToInt()
+            Target.SHUTTER -> shutterPosition.roundToInt()
+            Target.EI -> eiPosition.roundToInt()
+            else -> index
+        }
+        when (selector) {
+            Target.APERTURE -> {
+                aperturePosition = position
+                val coordinate = ExposureMath.apertureTicks(state.apertureStep)[index].coordinate
+                draft = current.copy(snapshot = current.snapshot.copy(apertureCoordinate = coordinate))
+            }
+            Target.SHUTTER -> {
+                shutterPosition = position
+                val coordinate = ExposureMath.shutterTicks(state.shutterStep)[index].coordinate
+                draft = current.copy(snapshot = current.snapshot.copy(shutterCoordinate = coordinate))
+            }
+            Target.EI -> {
+                eiPosition = position
+                draft = current.copy(snapshot = current.snapshot.copy(ei = state.isoValues[index]))
+            }
+            else -> Unit
+        }
+        if (index != before) tick()
+        postInvalidateOnAnimation()
     }
 
-    private fun updateShutter(value: ParameterCaptureDraft, dy: Float) {
-        val step = exposureStepSize(state.shutterStep)
-        val coordinate = ExposureMath.nearestShutterLogSeconds(startShutter - dy / (34f * density) * step, state.shutterStep)
-        draft = value.copy(snapshot = value.snapshot.copy(shutterCoordinate = coordinate))
-        tick()
-        invalidate()
+    private fun settleSelector(event: MotionEvent) {
+        val selector = target
+        val tracker = velocityTracker
+        tracker?.addMovement(event)
+        tracker?.computeCurrentVelocity(1000)
+        val velocitySteps = -(tracker?.yVelocity ?: 0f) / (26f * density)
+        tracker?.recycle()
+        velocityTracker = null
+        val start = selectorPosition(selector)
+        val projected = (start + velocitySteps * 0.11f)
+            .coerceIn(0f, selectorLastIndex(selector).toFloat())
+        val destination = projected.roundToInt().toFloat()
+        selectorAnimator?.cancel()
+        selectorAnimator = ValueAnimator.ofFloat(start, destination).apply {
+            duration = (170L + kotlin.math.min(220f, abs(destination - start) * 42f)).toLong()
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { updateSelector(selector, it.animatedValue as Float) }
+            start()
+        }
     }
 
-    private fun updateEi(value: ParameterCaptureDraft, dy: Float) {
-        val delta = (dy / (28f * density)).roundToInt()
-        val index = (startEiIndex - delta).coerceIn(0, state.isoValues.lastIndex)
-        draft = value.copy(snapshot = value.snapshot.copy(ei = state.isoValues[index]))
-        tick()
-        invalidate()
+    private fun syncSelectorPositions(value: ParameterCaptureDraft) {
+        val apertureTicks = ExposureMath.apertureTicks(state.apertureStep)
+        aperturePosition = apertureTicks.indices.minByOrNull {
+            abs(apertureTicks[it].coordinate - value.snapshot.apertureCoordinate)
+        }?.toFloat() ?: 0f
+        val shutterTicks = ExposureMath.shutterTicks(state.shutterStep)
+        shutterPosition = shutterTicks.indices.minByOrNull {
+            abs(shutterTicks[it].coordinate - value.snapshot.shutterCoordinate)
+        }?.toFloat() ?: 0f
+        eiPosition = state.isoValues.indexOf(value.snapshot.ei).coerceAtLeast(0).toFloat()
     }
+
+    private fun apertureLabels(): List<String> = ExposureMath.apertureTicks(state.apertureStep)
+        .map { ExposureMath.formatAperture(it.nominalValue) }
+
+    private fun shutterLabels(): List<String> = ExposureMath.shutterTicks(state.shutterStep)
+        .map { ExposureMath.formatShutter(it.nominalValue) }
+
+    private fun selectorPosition(selector: Target): Float = when (selector) {
+        Target.APERTURE -> aperturePosition
+        Target.SHUTTER -> shutterPosition
+        Target.EI -> eiPosition
+        else -> 0f
+    }
+
+    private fun selectorLastIndex(selector: Target): Int = when (selector) {
+        Target.APERTURE -> ExposureMath.apertureTicks(state.apertureStep).lastIndex
+        Target.SHUTTER -> ExposureMath.shutterTicks(state.shutterStep).lastIndex
+        Target.EI -> state.isoValues.lastIndex
+        else -> -1
+    }
+
+    private fun isSelector(value: Target): Boolean =
+        value == Target.APERTURE || value == Target.SHUTTER || value == Target.EI
 
     private fun noteIndexAt(y: Float, value: ParameterCaptureDraft): Int? {
         val index = ((y - geometry.notes.top + noteScroll) / (38f * density)).toInt()
@@ -328,13 +387,14 @@ internal class ParameterRecordEditorView(
             .show()
     }
 
-    private fun exposureStepSize(step: ExposureStep): Double = when (step) {
-        ExposureStep.FULL -> 1.0
-        ExposureStep.HALF -> 0.5
-        ExposureStep.THIRD -> 1.0 / 3.0
-    }
-
     private fun tick() = performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+
+    override fun onDetachedFromWindow() {
+        selectorAnimator?.cancel()
+        velocityTracker?.recycle()
+        velocityTracker = null
+        super.onDetachedFromWindow()
+    }
 
     private fun centered(canvas: Canvas, text: String, x: Float, y: Float, textPaint: Paint) {
         val metrics = textPaint.fontMetrics

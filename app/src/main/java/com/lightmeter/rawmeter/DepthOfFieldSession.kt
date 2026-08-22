@@ -10,9 +10,8 @@ internal class DepthOfFieldSession {
         private set
     var selectedAperture: Double = 5.6
         private set
-    var focusIndex: Int = defaultFocusIndex()
-        private set
-    var fullFrameEquivalentMm: Double = 50.0
+    private var selectedFocusDistanceM: Double = 2.0
+    var selectedFocalLengthMm: Double = 50.0
         private set
     var result: DepthOfFieldResult? = null
         private set
@@ -27,14 +26,12 @@ internal class DepthOfFieldSession {
         selectedFormat = frameFormat
         circleOfConfusionMm = DepthOfFieldMath.recommendedCircleOfConfusionMm(frameFormat)
         selectedAperture = aperture
-        focusIndex = defaultFocusIndex()
-        this.fullFrameEquivalentMm = fullFrameEquivalentMm.coerceAtLeast(1.0)
+        selectedFocusDistanceM = 2.0
+        selectedFocalLengthMm = DepthOfFieldMath.focalLengthForFormat(
+            frameFormat,
+            fullFrameEquivalentMm.coerceAtLeast(1.0),
+        ).coerceAtLeast(1.0)
         initialized = true
-        recalculate()
-    }
-
-    fun updateFullFrameEquivalent(value: Double) {
-        fullFrameEquivalentMm = value.coerceAtLeast(1.0)
         recalculate()
     }
 
@@ -62,8 +59,30 @@ internal class DepthOfFieldSession {
 
     fun selectFocusIndex(index: Int): Boolean {
         val next = index.coerceIn(0, DepthOfFieldMath.focusDistancesM.lastIndex)
-        if (focusIndex == next) return false
-        focusIndex = next
+        return selectFocusDistance(DepthOfFieldMath.focusDistancesM[next])
+    }
+
+    fun selectFocusDistance(value: Double): Boolean {
+        val next = when {
+            value == Double.POSITIVE_INFINITY -> value
+            !value.isFinite() -> return false
+            else -> value.coerceIn(
+                DepthOfFieldMath.MIN_FOCUS_DISTANCE_M,
+                DepthOfFieldMath.MAX_FOCUS_DISTANCE_M,
+            )
+        }
+        if (sameDistance(selectedFocusDistanceM, next)) return false
+        selectedFocusDistanceM = next
+        recalculate()
+        return true
+    }
+
+    fun selectFocalIndex(index: Int): Boolean {
+        val values = DepthOfFieldMath.commonFocalLengthsMm
+        if (values.isEmpty()) return false
+        val next = values[index.coerceIn(0, values.lastIndex)]
+        if (abs(selectedFocalLengthMm - next) < 0.0001) return false
+        selectedFocalLengthMm = next
         recalculate()
         return true
     }
@@ -71,12 +90,13 @@ internal class DepthOfFieldSession {
     fun apertureIndex(values: DoubleArray): Int =
         values.indices.minByOrNull { abs(values[it] - selectedAperture) } ?: 0
 
-    fun focusDistanceM(): Double = DepthOfFieldMath.focusDistancesM[focusIndex]
+    fun focalIndex(): Int = DepthOfFieldMath.commonFocalLengthsMm.indices.minByOrNull {
+        abs(DepthOfFieldMath.commonFocalLengthsMm[it] - selectedFocalLengthMm)
+    } ?: 0
 
-    fun focalLengthMm(): Double = DepthOfFieldMath.focalLengthForFormat(
-        selectedFormat,
-        fullFrameEquivalentMm,
-    ).coerceAtLeast(1.0)
+    fun focusDistanceM(): Double = selectedFocusDistanceM
+
+    fun focalLengthMm(): Double = selectedFocalLengthMm
 
     private fun recalculate() {
         result = DepthOfFieldMath.calculate(
@@ -87,8 +107,6 @@ internal class DepthOfFieldSession {
         )
     }
 
-    private companion object {
-        fun defaultFocusIndex(): Int =
-            DepthOfFieldMath.focusDistancesM.indexOfFirst { it == 2.0 }.coerceAtLeast(0)
-    }
+    private fun sameDistance(first: Double, second: Double): Boolean =
+        first == second || (first.isFinite() && second.isFinite() && abs(first - second) < 0.000001)
 }

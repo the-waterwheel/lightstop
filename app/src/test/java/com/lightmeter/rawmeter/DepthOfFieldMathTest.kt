@@ -46,6 +46,8 @@ class DepthOfFieldMathTest {
         assertEquals(0.0, DepthOfFieldMath.distanceFraction(0.1), 0.0001)
         assertEquals(0.5, DepthOfFieldMath.distanceFraction(sqrt(10.0)), 0.0001)
         assertEquals(1.0, DepthOfFieldMath.distanceFraction(null), 0.0001)
+        assertEquals(sqrt(10.0), DepthOfFieldMath.distanceForFraction(0.5), 0.0001)
+        assertTrue(DepthOfFieldMath.distanceForFraction(1.0).isInfinite())
     }
 
     @Test
@@ -63,10 +65,12 @@ class DepthOfFieldMathTest {
 
         session.selectCircleOfConfusion(0.02)
         session.selectFocusIndex(DepthOfFieldMath.focusDistancesM.indexOfFirst { it == 5.0 })
+        session.selectFocalIndex(DepthOfFieldMath.commonFocalLengthsMm.indexOfFirst { it == 85.0 })
         session.selectApertureIndex(ExposureMath.apertures.indexOfFirst { it == 8.0 }, ExposureMath.apertures)
 
         assertEquals(0.02, session.circleOfConfusionMm, 0.0001)
         assertEquals(5.0, session.focusDistanceM(), 0.0001)
+        assertEquals(85.0, session.focalLengthMm(), 0.0001)
         assertEquals(8.0, session.selectedAperture, 0.0001)
         assertTrue(requireNotNull(session.result).nearLimitM != originalNear)
     }

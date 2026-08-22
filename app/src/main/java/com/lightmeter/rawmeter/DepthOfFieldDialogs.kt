@@ -14,6 +14,7 @@ internal class DepthOfFieldDialogs(
     private val state: MeterState,
     private val onFrameSelected: (FrameFormat) -> Unit,
     private val onCircleOfConfusionSelected: (Double) -> Unit,
+    private val onFocusDistanceSelected: (Double) -> Unit,
 ) {
     private val density = context.resources.displayMetrics.density
 
@@ -48,6 +49,27 @@ internal class DepthOfFieldDialogs(
                     showCustomCircle(currentValue)
                 } else {
                     onCircleOfConfusionSelected(values[which])
+                }
+            }
+            .setNegativeButton(localized("取消", "Cancel"), null)
+            .show()
+    }
+
+    fun showFocusDistance(currentValue: Double) {
+        val finiteValue = if (currentValue.isFinite()) currentValue else DepthOfFieldMath.MAX_FOCUS_DISTANCE_M
+        val editor = decimalEditor(finiteValue).apply {
+            hint = localized("对焦距离（米）", "Focus distance (metres)")
+        }
+        AlertDialog.Builder(context)
+            .setTitle(localized("输入对焦距离", "Enter focus distance"))
+            .setMessage(localized("范围 0.1–100 米；无穷远请在刻度最右端选择", "Range 0.1–100 m; drag the ruler to its far-right end for infinity"))
+            .setView(editorContainer(editor))
+            .setPositiveButton(localized("确定", "OK")) { _, _ ->
+                val value = editor.text.toString().toDoubleOrNull()
+                if (value == null || value !in DepthOfFieldMath.MIN_FOCUS_DISTANCE_M..DepthOfFieldMath.MAX_FOCUS_DISTANCE_M) {
+                    showRangeError(localized("对焦距离必须在 0.1–100 米之间", "Focus distance must be between 0.1 and 100 metres"))
+                } else {
+                    onFocusDistanceSelected(value)
                 }
             }
             .setNegativeButton(localized("取消", "Cancel"), null)

@@ -49,8 +49,10 @@ internal class RecordCaptureSliderView(
     private fun calculateTrack() {
         if (width <= 0 || height <= 0 || anchor.isEmpty) return
         val margin = 10f * density
-        val desiredWidth = min(210f * density, width - margin * 2f)
-        val trackHeight = 42f * density
+        val desiredWidth = anchor.width()
+            .coerceAtLeast(104f * density)
+            .coerceAtMost(min(132f * density, width - margin * 2f))
+        val trackHeight = 38f * density
         val left = (anchor.centerX() - desiredWidth / 2f).coerceIn(margin, (width - margin - desiredWidth).coerceAtLeast(margin))
         var top = anchor.top - trackHeight - 10f * density
         if (top < margin) top = (anchor.bottom + 10f * density).coerceAtMost(height - margin - trackHeight)

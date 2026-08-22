@@ -9,13 +9,17 @@ internal data class DepthOfFieldGeometry(
     val headerBack: RectF,
     val headerClose: RectF,
     val ruler: RectF,
+    val rulerTrack: RectF,
+    val focusValue: RectF,
     val frameControl: RectF,
     val cocControl: RectF,
     val apertureDial: RectF,
-    val distanceDial: RectF,
+    val focalDial: RectF,
 ) {
     companion object {
         val EMPTY = DepthOfFieldGeometry(
+            RectF(),
+            RectF(),
             RectF(),
             RectF(),
             RectF(),
@@ -43,32 +47,51 @@ internal object DepthOfFieldGeometryCalculator {
         val rulerTop = headerHeight + max(6f * density, availableHeight * 0.018f)
         val rulerMinHeight = min(96f * density, availableHeight * 0.32f)
         val rulerMaxHeight = max(rulerMinHeight, availableHeight * 0.52f)
-        val rulerHeight = (availableHeight * 0.40f).coerceIn(rulerMinHeight, rulerMaxHeight)
+        val rulerHeight = (availableHeight * 0.43f).coerceIn(rulerMinHeight, rulerMaxHeight)
         val rulerInset = max(pad * 1.35f, w * 0.025f)
         val ruler = RectF(rulerInset, rulerTop, w - rulerInset, rulerTop + rulerHeight)
+        val trackY = ruler.top + 24f * density
+        val trackInset = 17f * density
+        val rulerTrack = RectF(
+            ruler.left + trackInset,
+            trackY - 20f * density,
+            ruler.right - trackInset,
+            trackY + 20f * density,
+        )
+        val focusValue = RectF(
+            ruler.centerX() - ruler.width() * 0.17f,
+            ruler.top + ruler.height() * 0.50f,
+            ruler.centerX() + ruler.width() * 0.17f,
+            ruler.top + ruler.height() * 0.78f,
+        )
 
         val controlsTop = ruler.bottom + max(4f * density, availableHeight * 0.012f)
         val controlsHeight = (h - controlsTop).coerceAtLeast(1f)
-        val centerWidth = (w * 0.29f)
-            .coerceAtLeast(min(88f * density, w * 0.36f))
-            .coerceAtMost(min(156f * density, w * 0.40f))
-        val centerLeft = w / 2f - centerWidth / 2f
-        val frameHeight = (controlsHeight * 0.43f)
-            .coerceIn(min(46f * density, controlsHeight), min(72f * density, controlsHeight))
-        val frame = RectF(centerLeft, controlsTop, centerLeft + centerWidth, controlsTop + frameHeight)
-        val controlGap = max(5f * density, controlsHeight * 0.025f)
-        val remainingForCoc = (h - frame.bottom - controlGap - pad).coerceAtLeast(1f)
-        val cocHeight = min(44f * density, remainingForCoc)
-        val coc = RectF(centerLeft, frame.bottom + controlGap, centerLeft + centerWidth, frame.bottom + controlGap + cocHeight)
+        val selectorGap = max(5f * density, w * 0.012f)
+        val selectorWidth = min(142f * density, (w - pad * 2f - selectorGap) / 2f)
+        val selectorHeight = min(42f * density, controlsHeight * 0.28f).coerceAtLeast(min(32f * density, controlsHeight))
+        val selectorsWidth = selectorWidth * 2f + selectorGap
+        val selectorLeft = (w - selectorsWidth) / 2f
+        val frame = RectF(selectorLeft, controlsTop, selectorLeft + selectorWidth, controlsTop + selectorHeight)
+        val coc = RectF(frame.right + selectorGap, controlsTop, frame.right + selectorGap + selectorWidth, controlsTop + selectorHeight)
+
+        val dialAvailableHeight = (h - frame.bottom - pad - 5f * density).coerceAtLeast(1f)
+        val dialSize = min(min(w * 0.275f, 112f * density), dialAvailableHeight)
+            .coerceAtLeast(min(64f * density, dialAvailableHeight))
+        val dialTop = h - pad - dialSize
+        val apertureDial = RectF(pad, dialTop, pad + dialSize, dialTop + dialSize)
+        val focalDial = RectF(w - pad - dialSize, dialTop, w - pad, dialTop + dialSize)
 
         return DepthOfFieldGeometry(
             headerBack = headerBack,
             headerClose = headerClose,
             ruler = ruler,
+            rulerTrack = rulerTrack,
+            focusValue = focusValue,
             frameControl = frame,
             cocControl = coc,
-            apertureDial = RectF(0f, controlsTop, w * 0.37f, h),
-            distanceDial = RectF(w * 0.63f, controlsTop, w, h),
+            apertureDial = apertureDial,
+            focalDial = focalDial,
         )
     }
 }

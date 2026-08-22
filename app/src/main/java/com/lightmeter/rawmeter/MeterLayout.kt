@@ -1533,6 +1533,10 @@ class MeterLayout @JvmOverloads constructor(
         val pending = pendingActionAfterZoneExit
         pendingActionAfterZoneExit = null
         pending?.invoke()
+        if (recordCaptureSliderView.visibility == View.VISIBLE && !isParameterEditorOpen) {
+            updateRecordSliderAnchor()
+            recordCaptureSliderView.bringToFront()
+        }
         requestLayout()
     }
 
