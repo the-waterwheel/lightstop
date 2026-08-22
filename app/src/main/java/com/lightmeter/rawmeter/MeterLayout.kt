@@ -51,6 +51,7 @@ class MeterLayout @JvmOverloads constructor(
         fun onZoneMeasureRequested(marker: ZoneMarker, target: ZoneMeteringTarget?)
         fun onZoneTrackingActiveChanged(active: Boolean)
         fun onParameterGpsEnableRequested()
+        fun onColorTemperatureEstimateRequested()
         fun onParameterCaptureRequested(
             draftId: String,
             snapshot: ParameterMeterSnapshot,
@@ -78,6 +79,8 @@ class MeterLayout @JvmOverloads constructor(
     private val parameterRecordToolView = ParameterRecordToolView(context, state, parameterRecordRepository)
     private val parameterRecordEditorView = ParameterRecordEditorView(context, state)
     private val parameterHistoryView = ParameterHistoryView(context, state, parameterRecordRepository)
+    private val colorTemperatureView = ColorTemperatureView(context, state)
+    private val grayCardGuideView = GrayCardGuideView(context, state)
     private val angleMeteringDialView = AngleMeteringDialView(context, state)
     private val recordCaptureSliderView = RecordCaptureSliderView(context, state)
     private val toolsHost = FrameLayout(context)
@@ -362,6 +365,7 @@ class MeterLayout @JvmOverloads constructor(
         addView(vignettingCalibrationView)
         zoneView.visibility = View.GONE
         addView(zoneView)
+        addView(grayCardGuideView)
         toolsHost.visibility = View.GONE
         toolsHost.addView(
             toolsView,
@@ -394,6 +398,14 @@ class MeterLayout @JvmOverloads constructor(
                 FrameLayout.LayoutParams.MATCH_PARENT,
             ),
         )
+        colorTemperatureView.visibility = View.GONE
+        toolsHost.addView(
+            colorTemperatureView,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
         addView(toolsHost)
         angleMeteringDialView.visibility = View.GONE
         addView(angleMeteringDialView)
@@ -420,6 +432,7 @@ class MeterLayout @JvmOverloads constructor(
                     ToolId.DEPTH_OF_FIELD -> showDepthOfField()
                     ToolId.LATITUDE -> showLatitude()
                     ToolId.PARAMETER_LOG -> showParameterRecord()
+                    ToolId.COLOR_TEMPERATURE -> showColorTemperature()
                     else -> Log.i("lightstop", "Tool requested: ${spec.id}")
                 }
             }
@@ -479,6 +492,30 @@ class MeterLayout @JvmOverloads constructor(
 
             override fun onGpsEnableRequested() {
                 listener?.onParameterGpsEnableRequested()
+            }
+        }
+        colorTemperatureView.listener = object : ColorTemperatureView.Listener {
+            override fun onBackToToolsRequested() {
+                activeToolId = null
+                colorTemperatureView.visibility = View.GONE
+                grayCardGuideView.setGuide(RectF(), false)
+                toolsView.visibility = View.VISIBLE
+                toolsView.bringToFront()
+            }
+
+            override fun onCloseRequested() {
+                closeTools()
+            }
+
+            override fun onEstimateRequested() {
+                listener?.onColorTemperatureEstimateRequested()
+                    ?: colorTemperatureView.showError(
+                        if (state.menuLanguage == MenuLanguage.ENGLISH) {
+                            "Camera is not ready"
+                        } else {
+                            "相机尚未就绪"
+                        },
+                    )
             }
         }
         parameterRecordEditorView.listener = object : ParameterRecordEditorView.Listener {
@@ -593,6 +630,10 @@ class MeterLayout @JvmOverloads constructor(
             MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
         )
         zoneView.measure(
+            MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
+        )
+        grayCardGuideView.measure(
             MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
             MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
         )
@@ -717,6 +758,11 @@ class MeterLayout @JvmOverloads constructor(
         calibrationView.layout(0, 0, width, height)
         vignettingCalibrationView.layout(0, 0, width, height)
         zoneView.layout(0, 0, width, height)
+        grayCardGuideView.layout(0, 0, width, height)
+        grayCardGuideView.setGuide(
+            cameraFrame,
+            isToolsOpen && activeToolId == ToolId.COLOR_TEMPERATURE,
+        )
         layoutToolsPanel()
         angleMeteringDialView.layout(0, 0, width, height)
         recordCaptureSliderView.layout(0, 0, width, height)
@@ -783,6 +829,7 @@ class MeterLayout @JvmOverloads constructor(
         depthOfFieldView.invalidate()
         latitudeView.invalidate()
         parameterRecordToolView.resumePage()
+        colorTemperatureView.updateRawSupport(state.cameraInfo.rawAvailable)
         parameterRecordEditorView.invalidate()
         parameterHistoryView.invalidate()
         recordCaptureSliderView.invalidate()
@@ -852,6 +899,7 @@ class MeterLayout @JvmOverloads constructor(
                 toolsView.visibility = View.GONE
                 latitudeView.visibility = View.GONE
                 parameterRecordToolView.visibility = View.GONE
+                colorTemperatureView.visibility = View.GONE
                 depthOfFieldView.visibility = View.VISIBLE
                 depthOfFieldView.resumePage()
                 depthOfFieldView.bringToFront()
@@ -860,6 +908,7 @@ class MeterLayout @JvmOverloads constructor(
                 toolsView.visibility = View.GONE
                 depthOfFieldView.visibility = View.GONE
                 parameterRecordToolView.visibility = View.GONE
+                colorTemperatureView.visibility = View.GONE
                 latitudeView.visibility = View.VISIBLE
                 latitudeView.resumePage()
                 latitudeView.bringToFront()
@@ -868,14 +917,25 @@ class MeterLayout @JvmOverloads constructor(
                 toolsView.visibility = View.GONE
                 depthOfFieldView.visibility = View.GONE
                 latitudeView.visibility = View.GONE
+                colorTemperatureView.visibility = View.GONE
                 parameterRecordToolView.visibility = View.VISIBLE
                 parameterRecordToolView.resumePage()
                 parameterRecordToolView.bringToFront()
+            }
+            ToolId.COLOR_TEMPERATURE -> {
+                toolsView.visibility = View.GONE
+                depthOfFieldView.visibility = View.GONE
+                latitudeView.visibility = View.GONE
+                parameterRecordToolView.visibility = View.GONE
+                colorTemperatureView.visibility = View.VISIBLE
+                colorTemperatureView.updateRawSupport(state.cameraInfo.rawAvailable)
+                colorTemperatureView.bringToFront()
             }
             else -> {
                 depthOfFieldView.visibility = View.GONE
                 latitudeView.visibility = View.GONE
                 parameterRecordToolView.visibility = View.GONE
+                colorTemperatureView.visibility = View.GONE
                 toolsView.visibility = View.VISIBLE
                 toolsView.bringToFront()
             }
@@ -900,6 +960,7 @@ class MeterLayout @JvmOverloads constructor(
             .setDuration(300L)
             .setInterpolator(DecelerateInterpolator())
             .start()
+        requestLayout()
     }
 
     fun toggleTools() {
@@ -914,6 +975,7 @@ class MeterLayout @JvmOverloads constructor(
         if (!isToolsOpen) return false
         if (isFilmSelectorOpen) closeFilmSelector(animate = false)
         isToolsOpen = false
+        grayCardGuideView.setGuide(RectF(), false)
         val rect = toolsPanelRect(width, height)
         val landscape = width > height
         toolsHost.animate().cancel()
@@ -980,6 +1042,7 @@ class MeterLayout @JvmOverloads constructor(
         toolsView.visibility = View.GONE
         latitudeView.visibility = View.GONE
         parameterRecordToolView.visibility = View.GONE
+        colorTemperatureView.visibility = View.GONE
         depthOfFieldView.visibility = View.VISIBLE
         depthOfFieldView.bringToFront()
         Log.i("lightstop", "Depth-of-field tool opened")
@@ -991,6 +1054,7 @@ class MeterLayout @JvmOverloads constructor(
         toolsView.visibility = View.GONE
         depthOfFieldView.visibility = View.GONE
         parameterRecordToolView.visibility = View.GONE
+        colorTemperatureView.visibility = View.GONE
         latitudeView.visibility = View.VISIBLE
         latitudeView.bringToFront()
         Log.i("lightstop", "Latitude tool opened")
@@ -1002,9 +1066,31 @@ class MeterLayout @JvmOverloads constructor(
         toolsView.visibility = View.GONE
         depthOfFieldView.visibility = View.GONE
         latitudeView.visibility = View.GONE
+        colorTemperatureView.visibility = View.GONE
         parameterRecordToolView.visibility = View.VISIBLE
         parameterRecordToolView.bringToFront()
         Log.i("lightstop", "Parameter-record tool opened")
+    }
+
+    private fun showColorTemperature() {
+        activeToolId = ToolId.COLOR_TEMPERATURE
+        colorTemperatureView.openPage(state.cameraInfo.rawAvailable)
+        toolsView.visibility = View.GONE
+        depthOfFieldView.visibility = View.GONE
+        latitudeView.visibility = View.GONE
+        parameterRecordToolView.visibility = View.GONE
+        colorTemperatureView.visibility = View.VISIBLE
+        colorTemperatureView.bringToFront()
+        requestLayout()
+        Log.i("lightstop", "Color-temperature tool opened")
+    }
+
+    internal fun showColorTemperatureReading(reading: ColorTemperatureReading) {
+        colorTemperatureView.showReading(reading)
+    }
+
+    fun showColorTemperatureError(message: String) {
+        colorTemperatureView.showError(message)
     }
 
     private fun showFilmSelector(target: FilmSelectionTarget) {

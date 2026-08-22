@@ -259,6 +259,25 @@ class MainActivity : Activity(), CameraControllerCallback {
                 enableParameterGps()
             }
 
+            override fun onColorTemperatureEstimateRequested() {
+                val screenAspect = if (state.frameLandscape) {
+                    state.frameFormat.landscapeAspect
+                } else {
+                    1f / state.frameFormat.landscapeAspect
+                }
+                cameraController.estimateColorTemperature(
+                    screenAspect = screenAspect,
+                    zoom = state.zoom,
+                ) { result ->
+                    result.onSuccess(meterLayout::showColorTemperatureReading)
+                        .onFailure { error ->
+                            meterLayout.showColorTemperatureError(
+                                error.message ?: localized("色温估算失败，请重试", "Unable to estimate color temperature"),
+                            )
+                        }
+                }
+            }
+
             override fun onParameterCaptureRequested(
                 draftId: String,
                 snapshot: ParameterMeterSnapshot,

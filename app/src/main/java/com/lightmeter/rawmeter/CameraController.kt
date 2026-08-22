@@ -195,6 +195,24 @@ class CameraController(
             }
         },
     )
+    private val colorTemperatureEstimator = RawColorTemperatureEstimator(
+        localized = ::localized,
+        listener = object : RawColorTemperatureEstimatorListener {
+            override fun onColorTemperatureCaptureResult(result: CaptureResult) {
+                latestResult = result
+                updateDynamicLensInfo(result)
+            }
+
+            override fun onColorTemperatureFinished(
+                callback: (Result<ColorTemperatureReading>) -> Unit,
+                result: Result<ColorTemperatureReading>,
+            ) {
+                resumePreviewAfterRawCapture()
+                meteringOperationActive = false
+                mainHandler.post { callback(result) }
+            }
+        },
+    )
 
     private var cameraThread: HandlerThread? = null
     private var cameraHandler: Handler? = null
@@ -575,6 +593,72 @@ class CameraController(
                 context.session.capture(rawMeter.buildCaptureRequest(context), rawRecordCaptureCallback, handler)
             } catch (error: Exception) {
                 finishRawRecord(Result.failure(error))
+            }
+        }
+    }
+
+    /** Captures one RAW frame and estimates the illuminant from a centered gray-card patch. */
+    internal fun estimateColorTemperature(
+        screenAspect: Float,
+        zoom: Float,
+        completion: (Result<ColorTemperatureReading>) -> Unit,
+    ) {
+        val handler = cameraHandler
+        if (handler == null) {
+            completion(Result.failure(IllegalStateException(localized("相机尚未就绪", "Camera is not ready"))))
+            return
+        }
+        handler.post {
+            if (meteringOperationActive || rawMeter.isMeasuring || compatibleMeter.isMeasuring ||
+                activeVignettingCapture != null || activeRawRecordCapture != null ||
+                colorTemperatureEstimator.isEstimating
+            ) {
+                mainHandler.post {
+                    completion(Result.failure(IllegalStateException(localized("请等待当前操作完成", "Wait for the current operation"))))
+                }
+                return@post
+            }
+            val context = rawMeteringContext()
+            if (!cameraInfo.rawAvailable || context == null) {
+                mainHandler.post {
+                    completion(Result.failure(UnsupportedOperationException(localized("当前摄像头不支持 RAW，无法估算色温", "RAW is unavailable on this camera"))))
+                }
+                return@post
+            }
+            if (!RawColorTemperatureAnalysis.supportsCalibration(context.characteristics)) {
+                mainHandler.post {
+                    completion(Result.failure(UnsupportedOperationException(localized("当前摄像头缺少 RAW 色彩校准矩阵", "RAW color calibration matrices are unavailable"))))
+                }
+                return@post
+            }
+            val sensorOrientation = context.characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION)
+                ?: cameraInfo.sensorOrientationDegrees
+            val sensorAspect = CameraPreviewTransform.screenAspectInSensorCoordinates(
+                screenAspect,
+                sensorOrientation,
+                lastDisplayRotation,
+            )
+            meteringOperationActive = true
+            try {
+                pausePreviewForRawCapture()
+                val accepted = colorTemperatureEstimator.start(
+                    context = context,
+                    request = rawMeter.buildCaptureRequest(context),
+                    frameAspect = sensorAspect,
+                    zoom = zoom.coerceAtLeast(1f),
+                    completion = completion,
+                )
+                if (!accepted) {
+                    meteringOperationActive = false
+                    resumePreviewAfterRawCapture()
+                    mainHandler.post {
+                        completion(Result.failure(IllegalStateException(localized("请等待当前操作完成", "Wait for the current operation"))))
+                    }
+                }
+            } catch (error: Exception) {
+                meteringOperationActive = false
+                resumePreviewAfterRawCapture()
+                mainHandler.post { completion(Result.failure(error)) }
             }
         }
     }
@@ -1522,6 +1606,7 @@ class CameraController(
             }
             return
         }
+        if (colorTemperatureEstimator.onImageAvailable(reader)) return
         rawMeter.onImageAvailable(reader)
     }
 
@@ -1694,6 +1779,11 @@ class CameraController(
         cameraGeneration += 1
         cameraFailureStage = CameraFailureStage.OPENING
         cancelVignettingMeasurementTimeout()
+        colorTemperatureEstimator.cancel(cameraHandler)?.let { completion ->
+            mainHandler.post {
+                completion(Result.failure(IllegalStateException(localized("色温估算已中止", "Color-temperature estimation was interrupted"))))
+            }
+        }
         activeRawRecordCapture?.let { capture ->
             activeRawRecordCapture = null
             cancelRawRecordTimeout()

@@ -24,6 +24,14 @@ internal data class MeteringFrameStat(
     val aperture: Float,
 )
 
+internal data class RawColorSample(
+    val red: Double,
+    val green: Double,
+    val blue: Double,
+    val clippedFraction: Double,
+    val sampleCount: Int,
+)
+
 /** CPU-only metering math kept outside CameraController's session lifecycle. */
 internal object MeteringAnalysis {
     private data class PreviewRegionStat(val luma: Double, val clipped: Double)
@@ -278,6 +286,51 @@ internal object MeteringAnalysis {
             captureIso = sensitivity,
             exposureTimeNs = exposureTime,
             aperture = aperture,
+        )
+    }
+
+    /** Reads a centered, black-level-corrected RAW patch without applying AWB gains. */
+    fun analyzeRawColorSample(
+        image: Image,
+        result: CaptureResult,
+        characteristics: CameraCharacteristics,
+        activeArray: Rect?,
+        frameAspect: Float,
+        zoom: Float,
+        roiFraction: Float = 0.24f,
+    ): RawColorSample? {
+        val plane = image.planes.firstOrNull() ?: return null
+        val black = result.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)
+            ?: fixedBlackLevels(characteristics)
+        val white = result.get(CaptureResult.SENSOR_DYNAMIC_WHITE_LEVEL)
+            ?: characteristics.get(CameraCharacteristics.SENSOR_INFO_WHITE_LEVEL)
+            ?: return null
+        val cfa = characteristics.get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT)
+            ?: CameraMetadata.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_RGGB
+        if (cfa == CameraMetadata.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_MONO ||
+            cfa == CameraMetadata.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_NIR
+        ) return null
+        val values = analyzeRawRegion(
+            image = image,
+            bufferOffset = plane.buffer.position(),
+            cfa = cfa,
+            black = black,
+            white = white,
+            activeArray = activeArray,
+            frameAspect = frameAspect,
+            zoom = zoom,
+            roiFraction = roiFraction.coerceIn(0.08f, 0.5f),
+            rawMeterPoint = null,
+        )
+        if (values.size < 6 || values[5] < 64.0) return null
+        val green = (values[1] + values[2]) * 0.5
+        if (!values[0].isFinite() || !green.isFinite() || !values[3].isFinite()) return null
+        return RawColorSample(
+            red = values[0],
+            green = green,
+            blue = values[3],
+            clippedFraction = values[4].coerceIn(0.0, 1.0),
+            sampleCount = values[5].roundToInt(),
         )
     }
 
