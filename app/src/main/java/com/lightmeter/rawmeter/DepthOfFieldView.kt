@@ -295,7 +295,9 @@ class DepthOfFieldView(
 
         for (baseAngle in floatArrayOf(-90f, 90f)) {
             for (offset in -3..3) {
-                val angle = baseAngle + (offset - visualOffset.coerceIn(-1f, 1f)) * 12f
+                // Android's polar angle grows clockwise. Adding the accumulated gesture angle
+                // makes both dial faces rotate with the finger instead of against it.
+                val angle = baseAngle + (offset + visualOffset.coerceIn(-1f, 1f)) * 12f
                 val radians = Math.toRadians(angle.toDouble())
                 val inner = radius - if (offset == 0) 11f * density else 7f * density
                 val outer = radius - 2f * density
