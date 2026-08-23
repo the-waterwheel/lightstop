@@ -131,6 +131,7 @@ class MainActivity : Activity(), CameraControllerCallback {
                         meterLayout.textureView.height,
                     )
                 }
+                updateExposurePreviewFromMeter()
             }
 
             override fun onSettingRejected(key: SettingKey, value: String) {
@@ -453,6 +454,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             refreshCalibrationCorrections()
         }
         meterLayout.refresh(frameChanged = meterLayout.isVignettingCalibrationOpen)
+        updateExposurePreviewFromMeter()
     }
 
     override fun onRawUnavailable() {
@@ -508,10 +510,12 @@ class MainActivity : Activity(), CameraControllerCallback {
             state.lastReading = reading
             meterLayout.completeZoneMeasurement(reading)
             meterLayout.refresh()
+            updateExposurePreviewFromMeter()
             return
         }
         state.measuring = false
         state.lastReading = reading
+        state.lastNormalReading = reading
         state.sceneEv100 = reading.sceneEv100
         state.transientMessage = when {
             reading.source != MeteringSource.RAW ->
@@ -536,6 +540,7 @@ class MainActivity : Activity(), CameraControllerCallback {
                 )
         }
         meterLayout.refresh()
+        updateExposurePreviewFromMeter()
         clearTransientMessageLater()
     }
 
@@ -556,13 +561,40 @@ class MainActivity : Activity(), CameraControllerCallback {
             meterLayout.failZoneMeasurement()
             state.transientMessage = message
             meterLayout.refresh()
+            updateExposurePreviewFromMeter()
             clearTransientMessageLater()
             return
         }
         state.measuring = false
         state.transientMessage = message
         meterLayout.refresh()
+        updateExposurePreviewFromMeter()
         clearTransientMessageLater()
+    }
+
+    override fun onExposurePreviewUnavailable() {
+        if (!activityResumed || state.exposurePreviewMode != ExposurePreviewMode.ON) return
+        Toast.makeText(
+            this,
+            localized(
+                "当前摄像头不支持曝光补偿，无法生成曝光预览",
+                "This camera does not support exposure compensation, so exposure preview is unavailable",
+            ),
+            Toast.LENGTH_LONG,
+        ).show()
+    }
+
+    private fun updateExposurePreviewFromMeter() {
+        val requestedEv = if (state.exposurePreviewMode == ExposurePreviewMode.ON &&
+            !state.measuring && !calibrationMeasurementPending && !vignettingCalibrationPending
+        ) {
+            meterLayout.currentExposurePreviewSelection()?.let(
+                ExposurePreviewMath::requestedCompensationEv,
+            )
+        } else {
+            null
+        }
+        cameraController.updateExposurePreview(requestedEv)
     }
 
     override fun onVignettingCalibrationStarted() {

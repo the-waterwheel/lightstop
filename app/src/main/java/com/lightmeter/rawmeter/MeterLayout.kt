@@ -310,10 +310,12 @@ class MeterLayout @JvmOverloads constructor(
 
                 override fun onMarkerRemoved(markerId: Int) {
                     zoneMarkerTracker.removeMarker(markerId)
+                    value?.onControlsChanged(false)
                 }
 
                 override fun onMarkersCleared(markerIds: List<Int>) {
                     zoneMarkerTracker.clearMarkers()
+                    value?.onControlsChanged(false)
                 }
 
                 override fun onOrientationToggle() {
@@ -1581,6 +1583,29 @@ class MeterLayout @JvmOverloads constructor(
     fun completeZoneMeasurement(reading: MeterReading): ZoneMarker? {
         zoneMarkerTracker.onMeteringStateChanged(false)
         return zoneView.completeMeasurement(reading)
+    }
+
+    fun currentExposurePreviewSelection(): ExposurePreviewSelection? {
+        val sceneEv100: Double
+        val selectedExposureEv100: Double
+        if (isZoneMode) {
+            sceneEv100 = zoneView.currentPreviewCalibratedMeanEv100() ?: return null
+            selectedExposureEv100 = zoneView.session.selectedExposureEv100(zoneView.session.iso)
+        } else {
+            val reading = state.lastNormalReading ?: return null
+            sceneEv100 = state.previewCalibratedSceneEv100(
+                reading.sceneEv100,
+                reading.source,
+            )
+            selectedExposureEv100 = state.effectiveEv100 ?: return null
+        }
+        if (!sceneEv100.isFinite() || !selectedExposureEv100.isFinite()) {
+            return null
+        }
+        return ExposurePreviewSelection(
+            previewCalibratedSceneEv100 = sceneEv100,
+            selectedExposureEv100 = selectedExposureEv100,
+        )
     }
 
     fun failZoneMeasurement(): ZoneMarker? {

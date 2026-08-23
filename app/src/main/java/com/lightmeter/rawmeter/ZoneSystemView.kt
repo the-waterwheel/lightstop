@@ -1482,6 +1482,15 @@ class ZoneSystemView(
         state.effectiveEv100
     }
 
+    fun currentPreviewCalibratedMeanEv100(): Double? {
+        val measured = session.markers.filter { it.ev100 != null && it.weight > 0.0 }
+        val totalWeight = measured.sumOf(ZoneMarker::weight)
+        if (totalWeight <= 0.0) return null
+        return measured.sumOf { marker ->
+            state.previewCalibratedSceneEv100(marker.ev100!!, marker.source) * marker.weight
+        } / totalWeight
+    }
+
     fun recordedZonePoints(): List<RecordedZonePoint> = session.markers.map { marker ->
         RecordedZonePoint(
             id = marker.id,

@@ -310,6 +310,11 @@ class MeterState(context: Context) {
         preferences.getString("metering_pipeline_mode", null),
     )
 
+    var exposurePreviewMode: ExposurePreviewMode = preferences.enumValue(
+        "exposure_preview_mode",
+        ExposurePreviewMode.OFF,
+    )
+
     var zoneMarkingMethod: ZoneMarkingMethod = preferences.enumValue(
         "zone_marking_method",
         ZoneMarkingMethod.BUTTON,
@@ -336,6 +341,7 @@ class MeterState(context: Context) {
 
     var sceneEv100: Double? = null
     var lastReading: MeterReading? = null
+    var lastNormalReading: MeterReading? = null
     var measuring: Boolean = false
     var cameraInfo: CameraUiInfo = CameraUiInfo(
         status = if (menuLanguage == MenuLanguage.ENGLISH) {
@@ -473,6 +479,8 @@ class MeterState(context: Context) {
                     meteringPipelineMode,
                 )
             }
+            SettingKey.EXPOSURE_PREVIEW ->
+                exposurePreviewMode = enumValue(value, exposurePreviewMode)
             SettingKey.ZONE_MARKING_METHOD ->
                 zoneMarkingMethod = enumValue(value, zoneMarkingMethod)
             SettingKey.LANGUAGE -> menuLanguage = enumValue(value, menuLanguage)
@@ -533,6 +541,7 @@ class MeterState(context: Context) {
         )
         sceneEv100 = null
         lastReading = null
+        lastNormalReading = null
         return true
     }
 
@@ -546,6 +555,18 @@ class MeterState(context: Context) {
 
     fun cameraCalibrationRecord(cameraId: String): CameraCalibrationRecord? =
         cameraCalibrationStore.record(cameraId)
+
+    fun previewCalibratedSceneEv100(sceneEv100: Double, source: MeteringSource): Double {
+        val cameraId = cameraInfo.cameraId.ifBlank { selectedCameraId }.ifBlank { "0" }
+        return ExposurePreviewMath.previewCalibratedSceneEv100(
+            measuredSceneEv100 = sceneEv100,
+            sourceCorrectionEv = cameraCalibrationStore.totalCorrection(cameraId, source),
+            previewCorrectionEv = cameraCalibrationStore.totalCorrection(
+                cameraId,
+                MeteringSource.YUV_PREVIEW,
+            ),
+        )
+    }
 
     fun cameraCalibrationHistory(cameraId: String): List<CameraCalibrationRecord> =
         cameraCalibrationStore.history(cameraId)
@@ -614,6 +635,7 @@ class MeterState(context: Context) {
         SettingKey.EXPOSURE_COMPENSATION_STEP -> exposureCompensationStep.name
         SettingKey.METERING_MODE -> meteringMode.name
         SettingKey.METERING_PIPELINE -> meteringPipelineMode.name
+        SettingKey.EXPOSURE_PREVIEW -> exposurePreviewMode.name
         SettingKey.ZONE_MARKING_METHOD -> zoneMarkingMethod.name
         SettingKey.LANGUAGE -> menuLanguage.name
         SettingKey.THEME -> appTheme.name
@@ -713,6 +735,7 @@ class MeterState(context: Context) {
             .putString("exposure_compensation_step", exposureCompensationStep.name)
             .putString("metering_mode", meteringMode.name)
             .putString("metering_pipeline_mode", meteringPipelineMode.name)
+            .putString("exposure_preview_mode", exposurePreviewMode.name)
             .putInt(angleMeteringKey(selectedCameraId), angleMeteringDegrees)
             .putString("zone_marking_method", zoneMarkingMethod.name)
             .putString("menu_language", menuLanguage.name)

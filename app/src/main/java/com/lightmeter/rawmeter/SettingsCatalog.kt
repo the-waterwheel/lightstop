@@ -12,6 +12,7 @@ enum class SettingKey {
     EXPOSURE_COMPENSATION_STEP,
     METERING_MODE,
     METERING_PIPELINE,
+    EXPOSURE_PREVIEW,
     ZONE_MARKING_METHOD,
     LANGUAGE,
     THEME,
@@ -111,6 +112,14 @@ object SettingsCatalog {
                             "兼容模式",
                             "Compatibility mode",
                         ),
+                    ),
+                ),
+                SettingItemSpec(
+                    key = SettingKey.EXPOSURE_PREVIEW,
+                    label = LocalizedLabel("曝光预览", "Exposure preview"),
+                    options = listOf(
+                        option(ExposurePreviewMode.OFF, "关闭", "Off"),
+                        option(ExposurePreviewMode.ON, "开启", "On"),
                     ),
                 ),
                 SettingItemSpec(

@@ -46,6 +46,19 @@ class SettingsCatalogTest {
     }
 
     @Test
+    fun meteringSectionOffersOptInExposurePreview() {
+        val metering = SettingsCatalog.sections.single { it.key == SettingsSectionKey.METERING }
+        val preview = metering.items.single { it.key == SettingKey.EXPOSURE_PREVIEW }
+
+        assertEquals("曝光预览", preview.label.resolve(MenuLanguage.CHINESE))
+        assertEquals("Exposure preview", preview.label.resolve(MenuLanguage.ENGLISH))
+        assertEquals(
+            listOf(ExposurePreviewMode.OFF.name, ExposurePreviewMode.ON.name),
+            preview.options.map { it.value },
+        )
+    }
+
+    @Test
     fun oldCompatiblePreferenceMigratesToFastMode() {
         assertEquals(
             MeteringPipelineMode.FAST,

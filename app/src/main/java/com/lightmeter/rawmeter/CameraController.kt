@@ -68,7 +68,21 @@ class CameraController(
             TimestampedResultPairer(
                 releaseImage = Image::close,
                 toleranceNs = RAW_RECORD_PAIRING_TOLERANCE_NS,
-            ),
+        ),
+    )
+
+    private data class MeteringPlan(
+        val frameFormat: FrameFormat,
+        val displayZoom: Float,
+        val meteringMode: MeteringMode,
+        val target: ZoneMeteringTarget?,
+        val meteringAngleDegrees: Int,
+        val requestedSource: MeteringSource?,
+        val screenAspect: Float,
+        val sensorOrientation: Int,
+        val sensorFrameAspect: Float,
+        val meteringRoiFraction: Float?,
+        val displayedPreviewReference: PreviewLumaReference?,
     )
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -255,6 +269,13 @@ class CameraController(
     private var compatibleYuvRequestActive = false
     private var previewPausedForRawCapture = false
     @Volatile
+    private var requestedExposurePreviewEv: Double? = null
+    private var previewExposureCompensationSteps = 0
+    private var previewBaselineStableFrames = 0
+    private var previewBaselineContinuation: (() -> Unit)? = null
+    private var previewBaselineTimeout: Runnable? = null
+    private var exposurePreviewUnsupportedReported = false
+    @Volatile
     private var activeVignettingCapture: VignettingCapture? = null
     private var vignettingMeasurementTimeout: Runnable? = null
     @Volatile
@@ -317,6 +338,12 @@ class CameraController(
             )
             openCamera(textureView?.surfaceTexture)
         }
+    }
+
+    /** Applies a calibrated relative brightness offset to the Camera2 preview AE target. */
+    fun updateExposurePreview(compensationEv: Double?) {
+        requestedExposurePreviewEv = compensationEv?.takeIf(Double::isFinite)
+        cameraHandler?.post(::applyRequestedExposurePreview)
     }
 
     fun availableCameras(): List<CameraDescriptor> = cameraCatalog.discover().also { cameras ->
@@ -451,102 +478,114 @@ class CameraController(
         } else {
             null
         }
-        if (requestedSource == MeteringSource.ISP_PREVIEW) {
-            measureProcessedPreview(meteringMode, target, meteringRoiFraction)
-            return true
-        }
-        if (requestedSource == MeteringSource.YUV_PREVIEW ||
-            requestedSource == null && !cameraInfo.rawAvailable
-        ) {
-            val handler = cameraHandler
-            if (handler == null) {
-                meteringOperationActive = false
-                callback.onMeteringError(localized("相机尚未就绪", "Camera is not ready"))
-            } else {
-                handler.post {
-                    measureCompatiblePreview(meteringMode, target, meteringRoiFraction)
-                }
-            }
-            return true
-        }
-        if (!cameraInfo.rawAvailable) {
-            meteringOperationActive = false
-            callback.onMeteringError(
-                localized(
-                    "当前摄像头无法读取 RAW 流",
-                    "The RAW stream is unavailable for this camera",
-                ),
-            )
-            return true
-        }
         val displayedPreviewReference = target?.let(::captureDisplayedPreviewReference)
+        val plan = MeteringPlan(
+            frameFormat = frameFormat,
+            displayZoom = displayZoom,
+            meteringMode = meteringMode,
+            target = target,
+            meteringAngleDegrees = meteringAngleDegrees,
+            requestedSource = requestedSource,
+            screenAspect = screenAspect,
+            sensorOrientation = sensorOrientation,
+            sensorFrameAspect = sensorFrameAspect,
+            meteringRoiFraction = meteringRoiFraction,
+            displayedPreviewReference = displayedPreviewReference,
+        )
         val handler = cameraHandler ?: run {
             meteringOperationActive = false
             callback.onMeteringError(localized("相机尚未就绪", "Camera is not ready"))
             return true
         }
         handler.post {
-            if (rawMeter.isMeasuring || activeVignettingCapture != null) {
-                meteringOperationActive = false
-                postMeterError(
-                    localized("请等待当前操作完成", "Wait for the current operation"),
-                )
-                return@post
-            }
-            val rawContext = rawMeteringContext()
-            if (rawContext == null || !cameraInfo.rawAvailable) {
-                meteringOperationActive = false
-                postMeterError(
-                    localized(
-                        "RAW 流尚未就绪",
-                        "The RAW stream is not ready",
-                    ),
-                )
-                return@post
-            }
-
-            val displayDegrees = when (lastDisplayRotation) {
-                Surface.ROTATION_90 -> 90
-                Surface.ROTATION_180 -> 180
-                Surface.ROTATION_270 -> 270
-                else -> 0
-            }
-            val screenToSensorRotation =
-                (sensorOrientation - displayDegrees + 360) % 360
-            val recentTrackingFrame = zoneCameraFrames.latestFrame(MAX_METERING_REFERENCE_AGE_NS)
-            val previewReference = if (target != null && recentTrackingFrame != null) {
-                MeteringAnalysis.createPreviewReference(
-                    frame = recentTrackingFrame,
-                    frameAspect = screenAspect,
-                    zoom = displayZoom,
-                    target = target,
-                ) ?: displayedPreviewReference
-            } else {
-                displayedPreviewReference
-            }
-            Log.i(
-                TAG,
-                "Starting RAW metering for frame format=${frameFormat.id} " +
-                    "mode=$meteringMode angle=$meteringAngleDegrees roi=$meteringRoiFraction",
-            )
-            pausePreviewForRawCapture()
-            val accepted = rawMeter.start(
-                context = rawContext,
-                frameAspect = sensorFrameAspect,
-                zoom = displayZoom.coerceAtLeast(1f),
-                meteringMode = meteringMode,
-                meteringRoiFraction = meteringRoiFraction,
-                target = target,
-                previewReference = previewReference,
-                screenToSensorRotationDegrees = screenToSensorRotation,
-            )
-            if (!accepted) {
-                resumePreviewAfterRawCapture()
-                meteringOperationActive = false
-                postMeterError(localized("请等待当前操作完成", "Wait for the current operation"))
+            prepareMeteringPreviewBaseline {
+                startMeasurement(plan)
             }
         }
         return true
+    }
+
+    private fun startMeasurement(plan: MeteringPlan) {
+        if (plan.requestedSource == MeteringSource.ISP_PREVIEW) {
+            measureProcessedPreview(plan.meteringMode, plan.target, plan.meteringRoiFraction)
+            return
+        }
+        if (plan.requestedSource == MeteringSource.YUV_PREVIEW ||
+            plan.requestedSource == null && !cameraInfo.rawAvailable
+        ) {
+            measureCompatiblePreview(plan.meteringMode, plan.target, plan.meteringRoiFraction)
+            return
+        }
+        if (!cameraInfo.rawAvailable) {
+            meteringOperationActive = false
+            postMeterError(
+                localized(
+                    "当前摄像头无法读取 RAW 流",
+                    "The RAW stream is unavailable for this camera",
+                ),
+            )
+            return
+        }
+        if (rawMeter.isMeasuring || activeVignettingCapture != null) {
+            meteringOperationActive = false
+            postMeterError(
+                localized("请等待当前操作完成", "Wait for the current operation"),
+            )
+            return
+        }
+        val rawContext = rawMeteringContext()
+        if (rawContext == null || !cameraInfo.rawAvailable) {
+            meteringOperationActive = false
+            postMeterError(
+                localized(
+                    "RAW 流尚未就绪",
+                    "The RAW stream is not ready",
+                ),
+            )
+            return
+        }
+
+        val displayDegrees = when (lastDisplayRotation) {
+            Surface.ROTATION_90 -> 90
+            Surface.ROTATION_180 -> 180
+            Surface.ROTATION_270 -> 270
+            else -> 0
+        }
+        val screenToSensorRotation =
+            (plan.sensorOrientation - displayDegrees + 360) % 360
+        val recentTrackingFrame = zoneCameraFrames.latestFrame(MAX_METERING_REFERENCE_AGE_NS)
+        val previewReference = if (plan.target != null && recentTrackingFrame != null) {
+            MeteringAnalysis.createPreviewReference(
+                frame = recentTrackingFrame,
+                frameAspect = plan.screenAspect,
+                zoom = plan.displayZoom,
+                target = plan.target,
+            ) ?: plan.displayedPreviewReference
+        } else {
+            plan.displayedPreviewReference
+        }
+        Log.i(
+            TAG,
+            "Starting RAW metering for frame format=${plan.frameFormat.id} " +
+                "mode=${plan.meteringMode} angle=${plan.meteringAngleDegrees} " +
+                "roi=${plan.meteringRoiFraction}",
+        )
+        pausePreviewForRawCapture()
+        val accepted = rawMeter.start(
+            context = rawContext,
+            frameAspect = plan.sensorFrameAspect,
+            zoom = plan.displayZoom.coerceAtLeast(1f),
+            meteringMode = plan.meteringMode,
+            meteringRoiFraction = plan.meteringRoiFraction,
+            target = plan.target,
+            previewReference = previewReference,
+            screenToSensorRotationDegrees = screenToSensorRotation,
+        )
+        if (!accepted) {
+            resumePreviewAfterRawCapture()
+            meteringOperationActive = false
+            postMeterError(localized("请等待当前操作完成", "Wait for the current operation"))
+        }
     }
 
     /** Captures one full-resolution DNG and a compact RAW sample map for history point metering. */
@@ -1402,14 +1441,119 @@ class CameraController(
         if (includeYuv) trackingReader?.surface?.let(builder::addTarget)
         builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
         builder.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
+        builder.set(
+            CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION,
+            previewExposureCompensationSteps,
+        )
         previewFpsRange?.let { builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
         setSupportedAutoFocus(builder)
         session.setRepeatingRequest(builder.build(), previewCaptureCallback, cameraHandler)
         Log.i(
             TAG,
             "Preview request submitted: fps=$previewFpsRange yuv=$includeYuv " +
+                "exposureCompensationSteps=$previewExposureCompensationSteps " +
                 "profile=$sessionProfile",
         )
+    }
+
+    private fun applyRequestedExposurePreview() {
+        if (previewBaselineContinuation != null) return
+        val chars = characteristics
+        val range = chars?.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
+        val step = chars?.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)?.toDouble()
+        val requested = requestedExposurePreviewEv
+        if (requested != null && chars == null) return
+        val result = if (requested == null || range == null || step == null) {
+            ExposurePreviewCompensation(
+                requestedEv = requested ?: 0.0,
+                appliedEv = 0.0,
+                steps = 0,
+                supported = requested == null,
+                clamped = false,
+            )
+        } else {
+            ExposurePreviewMath.quantizeCompensation(
+                requestedEv = requested,
+                minimumSteps = range.lower,
+                maximumSteps = range.upper,
+                stepEv = step,
+            )
+        }
+        if (requested == null) {
+            exposurePreviewUnsupportedReported = false
+        } else if (!result.supported && !exposurePreviewUnsupportedReported) {
+            exposurePreviewUnsupportedReported = true
+            mainHandler.post(callback::onExposurePreviewUnavailable)
+        }
+        if (previewExposureCompensationSteps == result.steps) return
+        previewExposureCompensationSteps = result.steps
+        updatePreviewRepeatingRequest()
+        Log.i(
+            TAG,
+            "Exposure preview: requested=${result.requestedEv}EV " +
+                "applied=${result.appliedEv}EV steps=${result.steps} " +
+                "supported=${result.supported} clamped=${result.clamped}",
+        )
+    }
+
+    /** Restores neutral AE and waits for synchronized result frames before sampling the scene. */
+    private fun prepareMeteringPreviewBaseline(continuation: () -> Unit) {
+        requestedExposurePreviewEv = null
+        if (previewExposureCompensationSteps == 0) {
+            continuation()
+            return
+        }
+        previewBaselineStableFrames = 0
+        previewBaselineContinuation = continuation
+        previewExposureCompensationSteps = 0
+        updatePreviewRepeatingRequest()
+        val handler = cameraHandler ?: run {
+            finishMeteringPreviewBaseline()
+            return
+        }
+        val timeout = Runnable {
+            if (previewBaselineContinuation != null) {
+                Log.w(TAG, "Timed out waiting for neutral preview AE; continuing measurement")
+                finishMeteringPreviewBaseline()
+            }
+        }
+        previewBaselineTimeout = timeout
+        handler.postDelayed(timeout, PREVIEW_BASELINE_TIMEOUT_MS)
+    }
+
+    private fun onPreviewBaselineResult(result: CaptureResult) {
+        if (previewBaselineContinuation == null) return
+        val appliedSteps = result.get(CaptureResult.CONTROL_AE_EXPOSURE_COMPENSATION)
+        val aeState = result.get(CaptureResult.CONTROL_AE_STATE)
+        val neutralRequestReached = appliedSteps == null || appliedSteps == 0
+        val aeStable = aeState == null ||
+            aeState == CaptureResult.CONTROL_AE_STATE_CONVERGED ||
+            aeState == CaptureResult.CONTROL_AE_STATE_FLASH_REQUIRED ||
+            aeState == CaptureResult.CONTROL_AE_STATE_LOCKED
+        previewBaselineStableFrames = if (neutralRequestReached && aeStable) {
+            previewBaselineStableFrames + 1
+        } else {
+            0
+        }
+        if (previewBaselineStableFrames >= PREVIEW_BASELINE_STABLE_FRAME_COUNT) {
+            finishMeteringPreviewBaseline()
+        }
+    }
+
+    private fun finishMeteringPreviewBaseline() {
+        previewBaselineTimeout?.let { cameraHandler?.removeCallbacks(it) }
+        previewBaselineTimeout = null
+        previewBaselineStableFrames = 0
+        val continuation = previewBaselineContinuation ?: return
+        previewBaselineContinuation = null
+        continuation()
+    }
+
+    private fun cancelMeteringPreviewBaseline() {
+        previewBaselineTimeout?.let { cameraHandler?.removeCallbacks(it) }
+        previewBaselineTimeout = null
+        previewBaselineStableFrames = 0
+        previewBaselineContinuation = null
     }
 
     private fun updatePreviewRepeatingRequest() {
@@ -1500,6 +1644,7 @@ class CameraController(
             val effectiveResult = effectiveCaptureResult(result)
             latestResult = effectiveResult
             updateDynamicLensInfo(effectiveResult)
+            onPreviewBaselineResult(effectiveResult)
             // A few physical-camera HALs omit SENSOR_TIMESTAMP from the physical result even
             // though the logical TotalCaptureResult carries the timestamp for the same frame.
             compatibleMeter.onCaptureResult(
@@ -1778,6 +1923,10 @@ class CameraController(
     private fun closeCamera() {
         cameraGeneration += 1
         cameraFailureStage = CameraFailureStage.OPENING
+        cancelMeteringPreviewBaseline()
+        requestedExposurePreviewEv = null
+        previewExposureCompensationSteps = 0
+        exposurePreviewUnsupportedReported = false
         cancelVignettingMeasurementTimeout()
         colorTemperatureEstimator.cancel(cameraHandler)?.let { completion ->
             mainHandler.post {
@@ -1838,6 +1987,8 @@ class CameraController(
         private const val RAW_RECORD_PAIRING_TOLERANCE_NS = 40_000_000L
         private const val SESSION_RECOVERY_DELAY_MS = 300L
         private const val STABLE_PREVIEW_RESET_DELAY_MS = 10_000L
+        private const val PREVIEW_BASELINE_TIMEOUT_MS = 1_200L
+        private const val PREVIEW_BASELINE_STABLE_FRAME_COUNT = 3
         private const val MAX_TOTAL_RECOVERY_ATTEMPTS = 6
         private const val RAW_FAILURES_BEFORE_DOWNGRADE = 2
         private const val DEFAULT_PREVIEW_FPS_CEILING = 30
