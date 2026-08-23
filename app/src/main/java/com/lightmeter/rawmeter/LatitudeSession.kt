@@ -17,8 +17,9 @@ internal class LatitudeSession {
 
     fun open(repository: FilmLatitudeRepository) {
         val active = repository.loadApplied()
-        selectedFilmId = active?.filmId
-        range = active?.range ?: FilmLatitudeRange.FULL_SCALE
+        val rememberedFilm = repository.find(active?.filmId ?: repository.lastSelectedFilmId())
+        selectedFilmId = rememberedFilm?.id
+        range = active?.range ?: rememberedFilm?.let(repository::effectiveRange) ?: FilmLatitudeRange.FULL_SCALE
         applied = active != null
         initialized = true
     }

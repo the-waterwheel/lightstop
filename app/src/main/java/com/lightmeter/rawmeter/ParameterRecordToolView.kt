@@ -43,6 +43,7 @@ internal class ParameterRecordToolView(
     private val foreground: Int get() = if (state.isDarkMode) Color.rgb(224, 224, 220) else Color.rgb(20, 20, 20)
     private val muted: Int get() = if (state.isDarkMode) Color.rgb(100, 100, 96) else Color.rgb(178, 178, 174)
     private val panel: Int get() = if (state.isDarkMode) Color.rgb(45, 45, 43) else Color.rgb(235, 235, 232)
+    private val actionSurface: Int get() = if (state.isDarkMode) Color.rgb(24, 24, 22) else Color.WHITE
     private val red = Color.rgb(201, 39, 46)
     private var geometry = ParameterRecordToolGeometry.EMPTY
     private var target = Target.NONE
@@ -189,7 +190,7 @@ internal class ParameterRecordToolView(
         val rect = geometry.startStop
         val radius = minOf(rect.width(), rect.height()) / 2f
         paint.style = Paint.Style.FILL
-        paint.color = if (recording) panel else Color.WHITE
+        paint.color = if (recording) panel else actionSurface
         canvas.drawCircle(rect.centerX(), rect.centerY(), radius, paint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 2f * density

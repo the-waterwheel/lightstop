@@ -29,7 +29,7 @@ class MeterLayout @JvmOverloads constructor(
 ) : ViewGroup(context, attributeSet) {
 
     private enum class CameraManagementOrigin { SETTINGS, CALIBRATION, VIGNETTING }
-    private enum class FilmSelectionTarget { LATITUDE, PARAMETER_RECORD }
+    private enum class FilmSelectionTarget { LATITUDE, RECIPROCITY, PARAMETER_RECORD }
 
     interface Listener {
         fun onMeasureRequested()
@@ -72,8 +72,15 @@ class MeterLayout @JvmOverloads constructor(
     val zoneView = ZoneSystemView(context, state)
     val toolsView = ToolsView(context, state)
     private val filmLatitudeRepository = FilmLatitudeRepository(context)
+    private val filmReciprocityRepository = FilmReciprocityRepository(context)
     val depthOfFieldView = DepthOfFieldView(context, state)
     private val latitudeView = LatitudeView(context, state, filmLatitudeRepository)
+    private val reciprocityView = ReciprocityView(
+        context,
+        state,
+        filmLatitudeRepository,
+        filmReciprocityRepository,
+    )
     private val filmSelectorView = FilmSelectorView(context, state, filmLatitudeRepository)
     private val parameterRecordRepository = ParameterRecordRepository(context)
     private val parameterRecordToolView = ParameterRecordToolView(context, state, parameterRecordRepository)
@@ -392,6 +399,14 @@ class MeterLayout @JvmOverloads constructor(
                 FrameLayout.LayoutParams.MATCH_PARENT,
             ),
         )
+        reciprocityView.visibility = View.GONE
+        toolsHost.addView(
+            reciprocityView,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
         parameterRecordToolView.visibility = View.GONE
         toolsHost.addView(
             parameterRecordToolView,
@@ -420,6 +435,8 @@ class MeterLayout @JvmOverloads constructor(
         parameterHistoryView.visibility = View.GONE
         addView(parameterHistoryView)
         zoneView.setAppliedLatitude(filmLatitudeRepository.loadApplied()?.range)
+        instrumentView.setAppliedReciprocity(filmReciprocityRepository.appliedMethod())
+        zoneView.setAppliedReciprocity(filmReciprocityRepository.appliedMethod())
         angleMeteringDialView.onAngleChanged = {
             instrumentView.invalidate()
             zoneView.invalidate()
@@ -433,6 +450,7 @@ class MeterLayout @JvmOverloads constructor(
                 when (spec.id) {
                     ToolId.DEPTH_OF_FIELD -> showDepthOfField()
                     ToolId.LATITUDE -> showLatitude()
+                    ToolId.RECIPROCITY -> showReciprocity()
                     ToolId.PARAMETER_LOG -> showParameterRecord()
                     ToolId.COLOR_TEMPERATURE -> showColorTemperature()
                     else -> Log.i("lightstop", "Tool requested: ${spec.id}")
@@ -469,6 +487,27 @@ class MeterLayout @JvmOverloads constructor(
 
             override fun onAppliedLatitudeChanged(value: AppliedFilmLatitude?) {
                 zoneView.setAppliedLatitude(value?.range)
+            }
+        }
+        reciprocityView.listener = object : ReciprocityView.Listener {
+            override fun onBackToToolsRequested() {
+                activeToolId = null
+                reciprocityView.visibility = View.GONE
+                toolsView.visibility = View.VISIBLE
+                toolsView.bringToFront()
+            }
+
+            override fun onCloseRequested() {
+                closeTools()
+            }
+
+            override fun onFilmSelectionRequested() {
+                showFilmSelector(FilmSelectionTarget.RECIPROCITY)
+            }
+
+            override fun onAppliedReciprocityChanged(method: ReciprocityMethod?) {
+                instrumentView.setAppliedReciprocity(method)
+                zoneView.setAppliedReciprocity(method)
             }
         }
         parameterRecordToolView.listener = object : ParameterRecordToolView.Listener {
@@ -590,6 +629,7 @@ class MeterLayout @JvmOverloads constructor(
             override fun onFilmSelected(profile: FilmLatitudeProfile) {
                 when (filmSelectionTarget) {
                     FilmSelectionTarget.LATITUDE -> latitudeView.selectFilm(profile)
+                    FilmSelectionTarget.RECIPROCITY -> reciprocityView.selectFilm(profile)
                     FilmSelectionTarget.PARAMETER_RECORD -> parameterRecordEditorView.selectFilm(profile)
                 }
                 closeFilmSelector()
@@ -830,6 +870,7 @@ class MeterLayout @JvmOverloads constructor(
         toolsView.invalidate()
         depthOfFieldView.invalidate()
         latitudeView.invalidate()
+        reciprocityView.invalidate()
         parameterRecordToolView.resumePage()
         colorTemperatureView.updateRawSupport(state.cameraInfo.rawAvailable)
         parameterRecordEditorView.invalidate()
@@ -900,6 +941,7 @@ class MeterLayout @JvmOverloads constructor(
             ToolId.DEPTH_OF_FIELD -> {
                 toolsView.visibility = View.GONE
                 latitudeView.visibility = View.GONE
+                reciprocityView.visibility = View.GONE
                 parameterRecordToolView.visibility = View.GONE
                 colorTemperatureView.visibility = View.GONE
                 depthOfFieldView.visibility = View.VISIBLE
@@ -909,16 +951,28 @@ class MeterLayout @JvmOverloads constructor(
             ToolId.LATITUDE -> {
                 toolsView.visibility = View.GONE
                 depthOfFieldView.visibility = View.GONE
+                reciprocityView.visibility = View.GONE
                 parameterRecordToolView.visibility = View.GONE
                 colorTemperatureView.visibility = View.GONE
                 latitudeView.visibility = View.VISIBLE
                 latitudeView.resumePage()
                 latitudeView.bringToFront()
             }
+            ToolId.RECIPROCITY -> {
+                toolsView.visibility = View.GONE
+                depthOfFieldView.visibility = View.GONE
+                latitudeView.visibility = View.GONE
+                parameterRecordToolView.visibility = View.GONE
+                colorTemperatureView.visibility = View.GONE
+                reciprocityView.visibility = View.VISIBLE
+                reciprocityView.resumePage()
+                reciprocityView.bringToFront()
+            }
             ToolId.PARAMETER_LOG -> {
                 toolsView.visibility = View.GONE
                 depthOfFieldView.visibility = View.GONE
                 latitudeView.visibility = View.GONE
+                reciprocityView.visibility = View.GONE
                 colorTemperatureView.visibility = View.GONE
                 parameterRecordToolView.visibility = View.VISIBLE
                 parameterRecordToolView.resumePage()
@@ -928,6 +982,7 @@ class MeterLayout @JvmOverloads constructor(
                 toolsView.visibility = View.GONE
                 depthOfFieldView.visibility = View.GONE
                 latitudeView.visibility = View.GONE
+                reciprocityView.visibility = View.GONE
                 parameterRecordToolView.visibility = View.GONE
                 colorTemperatureView.visibility = View.VISIBLE
                 colorTemperatureView.updateRawSupport(state.cameraInfo.rawAvailable)
@@ -936,6 +991,7 @@ class MeterLayout @JvmOverloads constructor(
             else -> {
                 depthOfFieldView.visibility = View.GONE
                 latitudeView.visibility = View.GONE
+                reciprocityView.visibility = View.GONE
                 parameterRecordToolView.visibility = View.GONE
                 colorTemperatureView.visibility = View.GONE
                 toolsView.visibility = View.VISIBLE
@@ -1043,6 +1099,7 @@ class MeterLayout @JvmOverloads constructor(
         depthOfFieldView.openWithMeterDefaults(apertureStop)
         toolsView.visibility = View.GONE
         latitudeView.visibility = View.GONE
+        reciprocityView.visibility = View.GONE
         parameterRecordToolView.visibility = View.GONE
         colorTemperatureView.visibility = View.GONE
         depthOfFieldView.visibility = View.VISIBLE
@@ -1055,11 +1112,30 @@ class MeterLayout @JvmOverloads constructor(
         latitudeView.openPage()
         toolsView.visibility = View.GONE
         depthOfFieldView.visibility = View.GONE
+        reciprocityView.visibility = View.GONE
         parameterRecordToolView.visibility = View.GONE
         colorTemperatureView.visibility = View.GONE
         latitudeView.visibility = View.VISIBLE
         latitudeView.bringToFront()
         Log.i("lightstop", "Latitude tool opened")
+    }
+
+    private fun showReciprocity() {
+        activeToolId = ToolId.RECIPROCITY
+        val shutterCoordinate = if (isZoneMode) {
+            zoneView.currentShutterCoordinate()
+        } else {
+            instrumentView.currentShutterCoordinate()
+        }
+        reciprocityView.openPage(shutterCoordinate)
+        toolsView.visibility = View.GONE
+        depthOfFieldView.visibility = View.GONE
+        latitudeView.visibility = View.GONE
+        parameterRecordToolView.visibility = View.GONE
+        colorTemperatureView.visibility = View.GONE
+        reciprocityView.visibility = View.VISIBLE
+        reciprocityView.bringToFront()
+        Log.i("lightstop", "Reciprocity tool opened")
     }
 
     private fun showParameterRecord() {
@@ -1068,6 +1144,7 @@ class MeterLayout @JvmOverloads constructor(
         toolsView.visibility = View.GONE
         depthOfFieldView.visibility = View.GONE
         latitudeView.visibility = View.GONE
+        reciprocityView.visibility = View.GONE
         colorTemperatureView.visibility = View.GONE
         parameterRecordToolView.visibility = View.VISIBLE
         parameterRecordToolView.bringToFront()
@@ -1080,6 +1157,7 @@ class MeterLayout @JvmOverloads constructor(
         toolsView.visibility = View.GONE
         depthOfFieldView.visibility = View.GONE
         latitudeView.visibility = View.GONE
+        reciprocityView.visibility = View.GONE
         parameterRecordToolView.visibility = View.GONE
         colorTemperatureView.visibility = View.VISIBLE
         colorTemperatureView.bringToFront()
@@ -1098,6 +1176,7 @@ class MeterLayout @JvmOverloads constructor(
     private fun showFilmSelector(target: FilmSelectionTarget) {
         val allowed = when (target) {
             FilmSelectionTarget.LATITUDE -> isToolsOpen && activeToolId == ToolId.LATITUDE
+            FilmSelectionTarget.RECIPROCITY -> isToolsOpen && activeToolId == ToolId.RECIPROCITY
             FilmSelectionTarget.PARAMETER_RECORD -> isParameterEditorOpen
         }
         if (isFilmSelectorOpen || !allowed) return

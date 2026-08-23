@@ -19,6 +19,16 @@ internal class FilmLatitudeRepository(context: Context) {
     fun effectiveRange(profile: FilmLatitudeProfile): FilmLatitudeRange =
         overrides()[profile.id] ?: profile.originalRange
 
+    fun lastSelectedFilmId(): String? = preferences.getString(KEY_LAST_SELECTED_FILM_ID, null)
+
+    fun saveLastSelectedFilmId(id: String) {
+        preferences.edit().putString(KEY_LAST_SELECTED_FILM_ID, id).apply()
+    }
+
+    fun clearLastSelectedFilmId() {
+        preferences.edit().remove(KEY_LAST_SELECTED_FILM_ID).apply()
+    }
+
     fun isFavorite(id: String): Boolean = preferences.getStringSet(KEY_FAVORITES, emptySet())
         ?.contains(id) == true
 
@@ -183,5 +193,6 @@ internal class FilmLatitudeRepository(context: Context) {
         const val KEY_APPLIED_HIGHLIGHT = "applied_highlight"
         const val KEY_APPLIED_FILM_ID = "applied_film_id"
         const val KEY_APPLIED_FILM_NAME = "applied_film_name"
+        const val KEY_LAST_SELECTED_FILM_ID = "last_selected_film_id"
     }
 }

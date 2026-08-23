@@ -98,6 +98,11 @@ class InstrumentView(
         ZONE_ENTRY,
     }
 
+    internal fun setAppliedReciprocity(method: ReciprocityMethod?) {
+        exposureRenderer.setAppliedReciprocity(method)
+        invalidate()
+    }
+
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val g = LayoutGeometry.calculate(

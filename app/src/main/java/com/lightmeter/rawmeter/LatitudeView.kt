@@ -56,6 +56,9 @@ internal class LatitudeView(
     private val muted: Int get() = if (state.isDarkMode) Color.rgb(112, 112, 108) else Color.rgb(168, 168, 164)
     private val panel: Int get() = if (state.isDarkMode) Color.rgb(44, 44, 42) else Color.rgb(235, 235, 232)
     private val inversePanel: Int get() = if (state.isDarkMode) Color.rgb(218, 218, 214) else Color.rgb(48, 48, 46)
+    private val actionSurface: Int get() = if (state.isDarkMode) Color.rgb(24, 24, 22) else Color.WHITE
+    private val actionActiveSurface: Int get() = if (state.isDarkMode) Color.rgb(72, 72, 68) else Color.rgb(218, 218, 214)
+    private val actionText: Int get() = if (state.isDarkMode) foreground else Color.rgb(22, 22, 22)
     private val red = Color.rgb(205, 38, 45)
     private var geometry = LatitudeGeometry.EMPTY
     private val session = LatitudeSession()
@@ -84,6 +87,7 @@ internal class LatitudeView(
     }
 
     fun selectFilm(profile: FilmLatitudeProfile) {
+        repository.saveLastSelectedFilmId(profile.id)
         session.select(profile, repository.effectiveRange(profile))
         animateToSessionRange()
         syncAppliedIfNeeded()
@@ -250,14 +254,14 @@ internal class LatitudeView(
 
     private fun drawApplyButton(canvas: Canvas, rect: RectF, label: String, active: Boolean) {
         paint.style = Paint.Style.FILL
-        paint.color = if (active) Color.rgb(218, 218, 214) else Color.WHITE
+        paint.color = if (active) actionActiveSurface else actionSurface
         canvas.drawRoundRect(rect, 7f * density, 7f * density, paint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1.8f * density
         paint.color = red
         canvas.drawRoundRect(rect, 7f * density, 7f * density, paint)
         boldPaint.textAlign = Paint.Align.CENTER
-        boldPaint.color = Color.rgb(22, 22, 22)
+        boldPaint.color = actionText
         boldPaint.textSize = min(11.5f * scaledDensity, rect.height() * 0.25f)
         val fitted = TextUtils.ellipsize(
             label,
@@ -430,6 +434,7 @@ internal class LatitudeView(
     }
 
     private fun reset() {
+        repository.clearLastSelectedFilmId()
         session.reset()
         animateToSessionRange()
         syncAppliedIfNeeded()

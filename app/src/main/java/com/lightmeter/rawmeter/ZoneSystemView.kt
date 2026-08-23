@@ -106,6 +106,7 @@ class ZoneSystemView(
 
     private var geometry: Geometry? = null
     private var appliedLatitudeRange: FilmLatitudeRange? = null
+    private var appliedReciprocityMethod: ReciprocityMethod? = null
     private var touchTarget = TouchTarget.NONE
     private var touchStartX = 0f
     private var touchStartY = 0f
@@ -224,6 +225,11 @@ class ZoneSystemView(
 
     fun setAppliedLatitude(range: FilmLatitudeRange?) {
         appliedLatitudeRange = range
+        invalidate()
+    }
+
+    internal fun setAppliedReciprocity(method: ReciprocityMethod?) {
+        appliedReciprocityMethod = method
         invalidate()
     }
 
@@ -548,11 +554,14 @@ class ZoneSystemView(
         paint.color = red
         canvas.drawRect(centerX - 1.1f * density, rect.top + 5f * density, centerX + 1.1f * density, rect.bottom - 5f * density, paint)
 
+        val shutterSeconds = if (aperture) null else {
+            ExposureMath.shutterValueForCoordinate(centerCoordinate, state.shutterStep)
+        }
         val value = if (aperture) {
             val number = ExposureMath.apertureValueForCoordinate(centerCoordinate, state.apertureStep)
             if (number >= 10.0 || abs(number - number.toInt()) < 0.02) number.toInt().toString() else "%.1f".format(number)
         } else {
-            ExposureMath.formatShutter(ExposureMath.shutterValueForCoordinate(centerCoordinate, state.shutterStep))
+            ExposureMath.formatShutter(shutterSeconds!!)
         }
         paint.color = scaleForeground
         paint.textSize = 7.5f * density
@@ -561,6 +570,21 @@ class ZoneSystemView(
         // Keep the current value more prominent than the neighboring scale labels.
         paint.textSize = 7.5f * density
         canvas.drawText(value, content.left + 18f * density, rect.centerY() + 3f * density, paint)
+        val reciprocity = shutterSeconds?.let { ReciprocityMath.calculate(appliedReciprocityMethod, it) }
+        if (reciprocity?.needsCorrection == true) {
+            val readoutX = content.left + 25f * density
+            drawReciprocityBadge(canvas, readoutX, rect.centerY() - 11f * density)
+            paint.color = red
+            paint.typeface = Typeface.DEFAULT
+            paint.textSize = 8.4f * density
+            drawCenteredText(
+                canvas,
+                ReciprocityTimeFormatter.resultReadout(reciprocity.correctedSeconds!!),
+                readoutX,
+                rect.centerY() + 12f * density,
+                paint,
+            )
+        }
     }
 
     private fun drawLock(canvas: Canvas, track: RectF) {
@@ -610,6 +634,26 @@ class ZoneSystemView(
         paint.style = Paint.Style.FILL
         paint.color = red
         canvas.drawCircle(x, y + knobSize * 0.10f, 1.7f * density, paint)
+    }
+
+    private fun drawReciprocityBadge(canvas: Canvas, centerX: Float, centerY: Float) {
+        val label = "Reciprocity"
+        paint.typeface = Typeface.DEFAULT_BOLD
+        paint.textSize = 4.4f * density
+        val halfWidth = paint.measureText(label) / 2f + 2f * density
+        val halfHeight = 3.8f * density
+        val badge = RectF(
+            centerX - halfWidth,
+            centerY - halfHeight,
+            centerX + halfWidth,
+            centerY + halfHeight,
+        )
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 0.8f * density
+        paint.color = red
+        canvas.drawRoundRect(badge, 1.8f * density, 1.8f * density, paint)
+        paint.style = Paint.Style.FILL
+        drawCenteredText(canvas, label, centerX, centerY, paint)
     }
 
     private fun drawZoneScale(canvas: Canvas, g: Geometry) {
