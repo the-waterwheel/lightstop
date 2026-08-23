@@ -207,6 +207,11 @@ class CameraCatalog(private val cameraManager: CameraManager) {
         characteristics: CameraCharacteristics,
         lensRole: CameraLensRole,
     ): CameraDescriptor? {
+        // A few vendor camera providers publish depth, monochrome or NIR auxiliaries as regular
+        // camera ids. They may advertise a SurfaceTexture output even though it is not a usable
+        // visible-light viewfinder (typically appearing monochrome, striped or strongly tinted).
+        // Apply the same filter to public/logical entries as to hidden physical candidates.
+        if (!isVisibleLightCamera(characteristics)) return null
         val streamMap = characteristics.get(
             CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP,
         ) ?: return null
@@ -258,16 +263,28 @@ class CameraCatalog(private val cameraManager: CameraManager) {
         val capabilities = characteristics.get(
             CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES,
         ) ?: intArrayOf()
-        if (capabilities.contains(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MONOCHROME)) {
-            return false
-        }
         val colorFilter = characteristics.get(
             CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT,
         )
-        // MONO=5 and NIR=6 were named in API 29. Camera metadata uses the same stable integer
-        // values on API 28, so comparing values avoids referencing newer inline constants.
-        return colorFilter != COLOR_FILTER_ARRANGEMENT_MONO &&
-            colorFilter != COLOR_FILTER_ARRANGEMENT_NIR
+        return CameraCapabilityFilter.isVisibleLightCamera(capabilities, colorFilter)
+    }
+
+    internal object CameraCapabilityFilter {
+        fun isVisibleLightCamera(capabilities: IntArray, colorFilter: Int?): Boolean {
+            if (capabilities.contains(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MONOCHROME)) {
+                return false
+            }
+            val depthOnly = capabilities.contains(
+                CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_DEPTH_OUTPUT,
+            ) && !capabilities.contains(
+                CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_BACKWARD_COMPATIBLE,
+            )
+            if (depthOnly) return false
+            // MONO=5 and NIR=6 were named in API 29. Camera metadata uses the same stable integer
+            // values on API 28, so comparing values avoids referencing newer inline constants.
+            return colorFilter != COLOR_FILTER_ARRANGEMENT_MONO &&
+                colorFilter != COLOR_FILTER_ARRANGEMENT_NIR
+        }
     }
 
     private fun firstFocalLength(characteristics: CameraCharacteristics): Float =
