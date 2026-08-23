@@ -108,7 +108,8 @@ internal class InstrumentExposureRenderer(
         paint.typeface = Typeface.DEFAULT_BOLD
         paint.textSize = 12f * density
         drawCenteredText(canvas, title, titleLeft + titleWidth * 0.24f, rect.centerY())
-        paint.textSize = 8f * density
+        // The exact current value is a primary control readout, not a scale annotation.
+        paint.textSize = 9f * density
         paint.typeface = Typeface.DEFAULT
         val exactValue = if (apertureRow) {
             formatExactAperture(

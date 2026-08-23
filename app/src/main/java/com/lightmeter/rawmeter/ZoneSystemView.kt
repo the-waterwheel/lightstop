@@ -558,7 +558,8 @@ class ZoneSystemView(
         paint.textSize = 7.5f * density
         paint.typeface = Typeface.DEFAULT_BOLD
         canvas.drawText(title, content.left + 7f * density, rect.centerY() + 3f * density, paint)
-        paint.textSize = 6.5f * density
+        // Keep the current value more prominent than the neighboring scale labels.
+        paint.textSize = 7.5f * density
         canvas.drawText(value, content.left + 18f * density, rect.centerY() + 3f * density, paint)
     }
 

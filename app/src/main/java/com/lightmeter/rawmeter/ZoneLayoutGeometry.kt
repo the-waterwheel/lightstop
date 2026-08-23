@@ -157,10 +157,11 @@ internal object ZoneLayoutCalculator {
                 72f * density,
                 min(recordPanel.width() * 0.20f, recordPanel.height() * 0.34f),
             )
+            val markLeft = centeredActionLeft(recordPanel, recordContentRight, markSize, gap)
             markButton = RectF(
-                recordContentRight + gap,
+                markLeft,
                 recordPanel.centerY() - markSize / 2f,
-                recordContentRight + gap + markSize,
+                markLeft + markSize,
                 recordPanel.centerY() + markSize / 2f,
             )
             clearTrack = RectF(
@@ -322,10 +323,11 @@ internal object ZoneLayoutCalculator {
                 68f * density,
                 min(recordPanel.width() * 0.18f, recordPanel.height() * 0.42f),
             )
+            val markLeft = centeredActionLeft(recordPanel, recordContentRight, markSize, gap)
             markButton = RectF(
-                recordContentRight + gap,
+                markLeft,
                 recordPanel.centerY() - markSize / 2f,
-                recordContentRight + gap + markSize,
+                markLeft + markSize,
                 recordPanel.centerY() + markSize / 2f,
             )
             clearTrack = RectF(
@@ -390,6 +392,19 @@ internal object ZoneLayoutCalculator {
                 bounds.centerY() + fittedHeight / 2f,
             )
         }
+    }
+
+    /** Centers the mark action in the space beside the details list on every screen width. */
+    private fun centeredActionLeft(
+        panel: RectF,
+        contentRight: Float,
+        actionSize: Float,
+        gap: Float,
+    ): Float {
+        val availableLeft = contentRight + gap
+        val availableRight = panel.right - gap
+        val centered = (availableLeft + availableRight - actionSize) / 2f
+        return centered.coerceIn(availableLeft, (availableRight - actionSize).coerceAtLeast(availableLeft))
     }
 
     private const val RECORD_CONTENT_FRACTION = 0.5f
