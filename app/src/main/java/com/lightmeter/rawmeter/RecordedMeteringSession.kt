@@ -34,7 +34,46 @@ internal data class RecordedMeteringSession(
         )
     }
 
+    /** Moves point placement through exposure EV while keeping the selected parameter locked. */
+    fun exposureShifted(
+        stops: Double,
+        lockMode: ExposureLockMode,
+        apertureStep: ExposureStep,
+        shutterStep: ExposureStep,
+    ): RecordedMeteringSession {
+        if (!stops.isFinite() || kotlin.math.abs(stops) < 0.000_001) return this
+        return if (lockMode == ExposureLockMode.APERTURE) {
+            val shutterTicks = ExposureMath.shutterTicks(shutterStep)
+            val minimum = shutterTicks.minOfOrNull { it.coordinate } ?: shutterCoordinate
+            val maximum = max(
+                shutterTicks.maxOfOrNull { it.coordinate } ?: shutterCoordinate,
+                ExposureMath.maxShutterLogSeconds,
+            )
+            copy(shutterCoordinate = (shutterCoordinate - stops).coerceIn(minimum, maximum))
+        } else {
+            val apertureTicks = ExposureMath.apertureTicks(apertureStep)
+            val minimum = apertureTicks.minOfOrNull { it.coordinate } ?: apertureCoordinate
+            val maximum = apertureTicks.maxOfOrNull { it.coordinate } ?: apertureCoordinate
+            copy(apertureCoordinate = (apertureCoordinate + stops).coerceIn(minimum, maximum))
+        }
+    }
+
+    fun exposureShifted(stops: Double, state: MeterState): RecordedMeteringSession =
+        exposureShifted(stops, state.exposureLockMode, state.apertureStep, state.shutterStep)
+
     fun snapped(anchor: RecordedMeteringTarget, state: MeterState): RecordedMeteringSession {
+        if (anchor == RecordedMeteringTarget.ZONE_RAIL) {
+            val exposureShift = if (state.exposureLockMode == ExposureLockMode.APERTURE) {
+                shutterCoordinate - ExposureMath.nearestShutterLogSeconds(
+                    shutterCoordinate,
+                    state.shutterStep,
+                )
+            } else {
+                ExposureMath.nearestApertureStop(apertureCoordinate, state.apertureStep) -
+                    apertureCoordinate
+            }
+            return exposureShifted(exposureShift, state)
+        }
         val delta = when (anchor) {
             RecordedMeteringTarget.SHUTTER ->
                 ExposureMath.nearestShutterLogSeconds(shutterCoordinate, state.shutterStep) - shutterCoordinate

@@ -114,7 +114,19 @@ data class ParameterRecordEntry(
     val location: RecordedLocation?,
     val zonePoints: List<RecordedZonePoint>,
     val rawGrid: RecordedRawGrid?,
-)
+) {
+    fun selectedExposureEv100(): Double =
+        apertureCoordinate - shutterCoordinate - ExposureMath.log2(ei / 100.0)
+
+    /** Resolves old Normal RAW records that did not store an independent scene EV. */
+    fun rawEv100At(normalizedX: Float, normalizedY: Float): Double? {
+        val relative = rawGrid?.relativeEvAt(normalizedX, normalizedY) ?: return null
+        return (ev100 ?: selectedExposureEv100()) + relative
+    }
+
+    fun resolvedZonePointEv100(point: RecordedZonePoint): Double? =
+        point.ev100 ?: rawEv100At(point.normalizedX, point.normalizedY)
+}
 
 data class ParameterRecordCategory(
     val id: String,

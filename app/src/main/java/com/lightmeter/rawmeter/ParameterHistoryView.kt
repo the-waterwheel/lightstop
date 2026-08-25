@@ -310,10 +310,16 @@ internal class ParameterHistoryView(
         }
         if (record.rawPath != null) {
             y += lineHeight
+            val previousTypeface = paint.typeface
+            val previousTextSize = paint.textSize
+            paint.typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
+            paint.textSize = 8f * scaledDensity
             line(
                 localized("RAW 已保存 · 点击图片增减标点", "RAW saved · tap image to add/remove points"),
-                red,
+                muted,
             )
+            paint.typeface = previousTypeface
+            paint.textSize = previousTextSize
         }
         canvas.restore()
     }
@@ -421,10 +427,12 @@ internal class ParameterHistoryView(
                     invalidate()
                 } else if (target == Target.METERING && page == Page.DETAIL) {
                     if (meteringTarget.isDraggable()) detailStartPlayback?.let { start ->
-                        detailPlayback = start.shifted(
-                            -dx / meteringRenderer.pixelsPerStop(geometry.metering),
-                            state,
-                        )
+                        val stops = -dx / meteringRenderer.pixelsPerStop(geometry.metering)
+                        detailPlayback = if (meteringTarget == RecordedMeteringTarget.ZONE_RAIL) {
+                            start.exposureShifted(stops, state)
+                        } else {
+                            start.shifted(stops, state)
+                        }
                         invalidate()
                     }
                 }
@@ -516,7 +524,7 @@ internal class ParameterHistoryView(
 
     private fun editRawPoint(x: Float, y: Float) {
         val record = detailWorkingRecord ?: return
-        val grid = record.rawGrid ?: return
+        if (record.rawGrid == null) return
         if (record.rawPath == null || !imageDrawRect.contains(x, y)) return
         val normalizedX = ((x - imageDrawRect.left) / imageDrawRect.width()).coerceIn(0f, 1f)
         val normalizedY = ((y - imageDrawRect.top) / imageDrawRect.height()).coerceIn(0f, 1f)
@@ -527,13 +535,11 @@ internal class ParameterHistoryView(
         val points = if (existing != null) {
             record.zonePoints.filterNot { it.id == existing.id }
         } else {
-            val relative = grid.relativeEvAt(normalizedX, normalizedY)
-            val base = record.ev100
             record.zonePoints + RecordedZonePoint(
                 id = (record.zonePoints.maxOfOrNull(RecordedZonePoint::id) ?: 0) + 1,
                 normalizedX = normalizedX,
                 normalizedY = normalizedY,
-                ev100 = if (base != null && relative != null) base + relative else null,
+                ev100 = record.rawEv100At(normalizedX, normalizedY),
                 source = MeteringSource.RAW,
             )
         }

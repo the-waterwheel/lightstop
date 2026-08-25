@@ -31,6 +31,45 @@ class RecordedMeteringSessionTest {
         assertEquals(ParameterRecordMode.ZONE, RecordedMeteringSession.from(record).mode)
     }
 
+    @Test
+    fun `RAW point EV falls back to captured parameter exposure`() {
+        val record = record().copy(
+            ev100 = null,
+            rawGrid = RecordedRawGrid(
+                width = 2,
+                height = 1,
+                values = floatArrayOf(1f, 2f),
+                referenceLuma = 1f,
+            ),
+        )
+
+        // Captured EV is 3 - (-7) - log2(400/100) = 8; the bright cell is +1 EV.
+        assertEquals(9.0, record.rawEv100At(1f, 0.5f)!!, 0.0001)
+    }
+
+    @Test
+    fun `Zone rail changes exposure while respecting the locked parameter`() {
+        val session = RecordedMeteringSession.from(record())
+
+        val apertureLocked = session.exposureShifted(
+            stops = -1.0,
+            lockMode = ExposureLockMode.APERTURE,
+            apertureStep = ExposureStep.THIRD,
+            shutterStep = ExposureStep.THIRD,
+        )
+        assertEquals(3.0, apertureLocked.apertureCoordinate, 0.0)
+        assertEquals(-6.0, apertureLocked.shutterCoordinate, 0.0)
+
+        val shutterLocked = session.exposureShifted(
+            stops = 1.0,
+            lockMode = ExposureLockMode.SHUTTER,
+            apertureStep = ExposureStep.THIRD,
+            shutterStep = ExposureStep.THIRD,
+        )
+        assertEquals(4.0, shutterLocked.apertureCoordinate, 0.0)
+        assertEquals(-7.0, shutterLocked.shutterCoordinate, 0.0)
+    }
+
     private fun record() = ParameterRecordEntry(
         id = "record",
         categoryId = "category",

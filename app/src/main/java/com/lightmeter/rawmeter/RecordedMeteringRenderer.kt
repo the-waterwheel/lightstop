@@ -168,7 +168,8 @@ internal class RecordedMeteringRenderer(
         val selectedEv100 = session.apertureCoordinate - session.shutterCoordinate -
             ExposureMath.log2(record.ei / 100.0)
         record.zonePoints.forEachIndexed { index, point ->
-            val zone = point.ev100?.let { 5.0 + it - selectedEv100 } ?: return@forEachIndexed
+            val pointEv100 = record.resolvedZonePointEv100(point) ?: return@forEachIndexed
+            val zone = 5.0 + pointEv100 - selectedEv100
             val x = rect.left + (zone.coerceIn(0.0, 10.0) / 10.0 * rect.width()).toFloat()
             val y = rect.centerY() + ((index % 3) - 1) * 5f * density
             paint.style = Paint.Style.FILL
