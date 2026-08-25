@@ -129,6 +129,27 @@ class ReciprocityMathTest {
     }
 
     @Test
+    fun `no-filter descriptions are not shown as required filters`() {
+        val noFilter = method(
+            type = ReciprocityMethodType.TABLE,
+            start = 1.0,
+            points = listOf(
+                ReciprocityPoint(10.0, 20.0, "10s无厂家CC滤镜要求，+1/2EV"),
+            ),
+        )
+        val colorCorrection = method(
+            type = ReciprocityMethodType.TABLE,
+            start = 1.0,
+            points = listOf(
+                ReciprocityPoint(10.0, 20.0, "10s：CC05R，+1/3EV"),
+            ),
+        )
+
+        assertNull(ReciprocityMath.calculate(noFilter, 10.0).filter)
+        assertEquals("10s：CC05R，+1/3EV", ReciprocityMath.calculate(colorCorrection, 10.0).filter)
+    }
+
+    @Test
     fun `final time readout contains total minutes and seconds only`() {
         assertEquals("00:05", ReciprocityTimeFormatter.minutesAndSeconds(5.4))
         assertEquals("02:06", ReciprocityTimeFormatter.minutesAndSeconds(125.6))
@@ -165,7 +186,8 @@ class ReciprocityShutterScaleTest {
 
         assertTrue(ticks.any { it.nominalSeconds > 30.0 && it.nominalSeconds < 60.0 })
         assertTrue(ticks.any { it.nominalSeconds >= 60.0 })
-        assertTrue(ticks.last().nominalSeconds >= ReciprocityShutterScale.MAX_SECONDS)
+        assertEquals(ReciprocityShutterScale.MAX_SECONDS, ticks.last().nominalSeconds, 0.0)
+        assertTrue(ticks.all { it.nominalSeconds <= ReciprocityShutterScale.MAX_SECONDS })
     }
 
     @Test

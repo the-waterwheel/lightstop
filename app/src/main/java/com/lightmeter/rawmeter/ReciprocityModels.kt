@@ -1,7 +1,6 @@
 package com.lightmeter.rawmeter
 
 import kotlin.math.abs
-import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.ln
 import kotlin.math.pow
@@ -139,7 +138,7 @@ internal object ReciprocityMath {
 
     private fun normalizedFilter(value: String?): String? = value
         ?.trim()
-        ?.takeIf { it.isNotEmpty() && it !in NO_FILTER_VALUES }
+        ?.takeIf { FILTER_CODE.containsMatchIn(it) }
 
     private fun unavailable(input: Double) = ReciprocityResult(
         input,
@@ -148,7 +147,10 @@ internal object ReciprocityMath {
         ReciprocityStatus.UNAVAILABLE,
     )
 
-    private val NO_FILTER_VALUES = setOf("无", "无滤镜", "不适用", "—", "-")
+    private val FILTER_CODE = Regex(
+        pattern = "(?:CC\\d+(?:\\.\\d+)?[RGBMYC]|\\d+(?:\\.\\d+)?\\s*[RGBMYC])",
+        option = RegexOption.IGNORE_CASE,
+    )
     private const val EPSILON = 1e-9
     private const val MIN_SECONDS = 1.0 / 8000.0
 }
@@ -207,7 +209,7 @@ internal object ReciprocityShutterScale {
             )
         }
         val firstLongCoordinate = ExposureMath.maxMarkedShutterLogSeconds + 1.0 / step.denominator
-        val maximumCoordinate = ceil(ExposureMath.log2(MAX_SECONDS) * step.denominator) / step.denominator
+        val maximumCoordinate = ExposureMath.log2(MAX_SECONDS)
         val extended = buildList {
             var coordinate = firstLongCoordinate
             while (coordinate <= maximumCoordinate + 1e-9) {
@@ -220,6 +222,15 @@ internal object ReciprocityShutterScale {
                     ),
                 )
                 coordinate += 1.0 / step.denominator
+            }
+            if (none { abs(it.nominalSeconds - MAX_SECONDS) < 1e-6 }) {
+                add(
+                    ReciprocityShutterTick(
+                        coordinate = maximumCoordinate,
+                        nominalSeconds = MAX_SECONDS,
+                        major = true,
+                    ),
+                )
             }
         }
         return (base + extended).sortedBy(ReciprocityShutterTick::coordinate)

@@ -5,7 +5,7 @@ import org.json.JSONObject
 
 internal class FilmReciprocityCatalog(context: Context) {
     private val root = context.assets
-        .open("film_reciprocity_2026_08_23.json")
+        .open("film_reciprocity_2026_08_24.json")
         .bufferedReader()
         .use { JSONObject(it.readText()) }
 
