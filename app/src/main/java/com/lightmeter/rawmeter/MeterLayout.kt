@@ -1754,11 +1754,9 @@ class MeterLayout @JvmOverloads constructor(
                 reading.sceneEv100,
                 reading.source,
             )
-            selectedExposureEv100 = ExposurePreviewMath.exposureEv100(
-                apertureCoordinate = instrumentView.currentApertureCoordinate(),
-                shutterCoordinate = instrumentView.currentShutterCoordinate(),
-                iso = state.iso,
-            )
+            // This is the final combined EV driving both parameter rows. Reading their animated
+            // centers here can capture the previous frame immediately after a new measurement.
+            selectedExposureEv100 = state.effectiveEv100 ?: return null
         }
         if (!sceneEv100.isFinite() || !selectedExposureEv100.isFinite()) {
             return null
