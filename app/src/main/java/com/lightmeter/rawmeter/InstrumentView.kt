@@ -84,6 +84,7 @@ class InstrumentView(
     private var exposureLockDragMoved = false
     private var zoneTransitionFraction = 0f
     private var modeTransitionEnabled = true
+    private var parameterDialInteractionEnabled = true
     private var zoneDragStartX = 0f
     private var zoneDragStartY = 0f
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
@@ -268,6 +269,15 @@ class InstrumentView(
             zoneTransitionFraction = 0f
         }
         invalidate()
+    }
+
+    /** Keeps the exposed Normal dial from receiving touches beneath a Tools overlay. */
+    fun setParameterDialInteractionEnabled(enabled: Boolean) {
+        parameterDialInteractionEnabled = enabled
+        if (!enabled && touchTarget == TouchTarget.DIAL) {
+            touchTarget = TouchTarget.NONE
+            dialStepAccumulator = 0f
+        }
     }
 
     private fun drawZoneEntryHandle(canvas: Canvas, g: LayoutGeometry) {
@@ -936,7 +946,16 @@ class InstrumentView(
                         invalidate()
                         return true
                     }
-                    g.isoModeButton.containsAccessibleTarget(event.x, event.y, density) -> {
+                    !parameterDialInteractionEnabled &&
+                        (g.isoModeButton.containsAccessibleTarget(event.x, event.y, density) ||
+                            g.dial.contains(event.x, event.y)) -> {
+                        // Tools can be smaller than Normal's parameter panel on some devices.
+                        // Consume the covered dial touch instead of letting it leak through.
+                        formatMenuOpen = false
+                        return true
+                    }
+                    parameterDialInteractionEnabled &&
+                        g.isoModeButton.containsAccessibleTarget(event.x, event.y, density) -> {
                         formatMenuOpen = false
                         state.isoAdjustMode = !state.isoAdjustMode
                         haptic()
@@ -974,7 +993,7 @@ class InstrumentView(
                             beginLockedScaleDrag(TouchTarget.SHUTTER, event.x)
                         }
                     }
-                    g.dial.contains(event.x, event.y) -> {
+                    parameterDialInteractionEnabled && g.dial.contains(event.x, event.y) -> {
                         formatMenuOpen = false
                         touchTarget = TouchTarget.DIAL
                         lastDialAngle = angleFor(event.x, event.y, g.dial)

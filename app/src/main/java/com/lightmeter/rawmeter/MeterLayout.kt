@@ -935,6 +935,7 @@ class MeterLayout @JvmOverloads constructor(
             isCameraManagementOpen || isInformationOpen
         ) return
         instrumentView.setModeTransitionEnabled(false)
+        instrumentView.setParameterDialInteractionEnabled(false)
         zoneView.setModeTransitionEnabled(false)
         angleMeteringDialView.collapse()
         isToolsOpen = true
@@ -1053,6 +1054,7 @@ class MeterLayout @JvmOverloads constructor(
                 if (!isToolsOpen) {
                     toolsHost.visibility = View.GONE
                     instrumentView.setModeTransitionEnabled(true)
+                    instrumentView.setParameterDialInteractionEnabled(true)
                     zoneView.setModeTransitionEnabled(true)
                     updateAngleMeteringControl()
                 }
