@@ -1,6 +1,8 @@
 package com.lightmeter.rawmeter
 
 import android.annotation.SuppressLint
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
 import android.app.AlertDialog
 import android.content.Context
@@ -82,27 +84,33 @@ internal class ParameterHistoryView(
     private var detailStartPlayback: RecordedMeteringSession? = null
     private var meteringTarget = RecordedMeteringTarget.NONE
     private var snapAnimator: ValueAnimator? = null
+    private var imageSlideAnimator: ValueAnimator? = null
+    private var detailImageOffset = 0f
     private var detailScroll = 0f
     private var detailScrollStart = 0f
     private var detailMaxScroll = 0f
     private var imageDrawRect = RectF()
 
     fun open() {
+        imageSlideAnimator?.cancel()
         page = Page.CATEGORIES
         categoryId = null
         detailIndex = 0
         scroll = 0f
         detailWorkingRecord = null
         detailPlayback = null
+        detailImageOffset = 0f
         detailScroll = 0f
         invalidate()
     }
 
     fun navigateBack(): Boolean = when (page) {
         Page.DETAIL -> {
+            imageSlideAnimator?.cancel()
             page = Page.CATEGORY
             detailWorkingRecord = null
             detailPlayback = null
+            detailImageOffset = 0f
             detailScroll = 0f
             scroll = 0f
             invalidate()
@@ -157,6 +165,16 @@ internal class ParameterHistoryView(
             bold.textSize = 11f * scaledDensity
             bold.color = red
             centered(canvas, localized("删除", "Delete"), geometry.delete.centerX(), geometry.delete.centerY(), bold)
+        } else if (page == Page.DETAIL) {
+            val total = repository.category(categoryId)?.records?.size ?: 0
+            if (total > 0) {
+                paint.style = Paint.Style.FILL
+                paint.color = muted
+                paint.textAlign = Paint.Align.CENTER
+                paint.typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+                paint.textSize = 9f * scaledDensity
+                centered(canvas, "${detailIndex + 1}/$total", geometry.delete.centerX(), geometry.delete.centerY(), paint)
+            }
         }
     }
 
@@ -240,12 +258,45 @@ internal class ParameterHistoryView(
         val category = repository.category(categoryId) ?: return
         val record = detailWorkingRecord ?: category.records.getOrNull(detailIndex)?.also(::showDetailRecord) ?: return
         val playback = detailPlayback ?: RecordedMeteringSession.from(record).also { detailPlayback = it }
-        drawImage(canvas, geometry.image, record.previewPath)
-        if (playback.mode == ParameterRecordMode.ZONE) {
-            drawRecordedPoints(canvas, imageDrawRect, record.zonePoints)
-        }
+        drawDetailImages(canvas, category, record, playback.mode)
         drawDetailText(canvas, geometry.data, record)
         meteringRenderer.draw(canvas, geometry.metering, record, playback)
+    }
+
+    private fun drawDetailImages(
+        canvas: Canvas,
+        category: ParameterRecordCategory,
+        record: ParameterRecordEntry,
+        mode: ParameterRecordMode,
+    ) {
+        val pageWidth = geometry.image.width()
+        canvas.save()
+        canvas.clipRect(geometry.image)
+        val currentTarget = RectF(geometry.image).apply { offset(detailImageOffset, 0f) }
+        drawDetailImage(canvas, currentTarget, record, mode, updateInteractionBounds = detailImageOffset == 0f)
+        if (detailImageOffset < 0f) {
+            category.records.getOrNull(detailIndex + 1)?.let { adjacent ->
+                val target = RectF(currentTarget).apply { offset(pageWidth, 0f) }
+                drawDetailImage(canvas, target, adjacent, mode, updateInteractionBounds = false)
+            }
+        } else if (detailImageOffset > 0f) {
+            category.records.getOrNull(detailIndex - 1)?.let { adjacent ->
+                val target = RectF(currentTarget).apply { offset(-pageWidth, 0f) }
+                drawDetailImage(canvas, target, adjacent, mode, updateInteractionBounds = false)
+            }
+        }
+        canvas.restore()
+    }
+
+    private fun drawDetailImage(
+        canvas: Canvas,
+        target: RectF,
+        record: ParameterRecordEntry,
+        mode: ParameterRecordMode,
+        updateInteractionBounds: Boolean,
+    ) {
+        val drawnRect = drawImage(canvas, target, record.previewPath, updateInteractionBounds) ?: return
+        if (mode == ParameterRecordMode.ZONE) drawRecordedPoints(canvas, drawnRect, record.zonePoints)
     }
 
     private fun drawDetailText(canvas: Canvas, rect: RectF, record: ParameterRecordEntry) {
@@ -351,11 +402,19 @@ internal class ParameterHistoryView(
         }
     }
 
-    private fun drawImage(canvas: Canvas, target: RectF, path: String?) {
+    private fun drawImage(
+        canvas: Canvas,
+        target: RectF,
+        path: String?,
+        updateInteractionBounds: Boolean = false,
+    ): RectF? {
         paint.style = Paint.Style.FILL
         paint.color = panel
         canvas.drawRect(target, paint)
-        val bitmap = path?.let(::bitmap) ?: return
+        val bitmap = path?.let(::bitmap) ?: run {
+            if (updateInteractionBounds) imageDrawRect.setEmpty()
+            return null
+        }
         val scale = min(target.width() / bitmap.width, target.height() / bitmap.height)
         val width = bitmap.width * scale
         val height = bitmap.height * scale
@@ -366,7 +425,8 @@ internal class ParameterHistoryView(
             target.centerY() + height / 2f,
         )
         canvas.drawBitmap(bitmap, null, destination, paint)
-        if (page == Page.DETAIL && target == geometry.image) imageDrawRect = destination
+        if (updateInteractionBounds) imageDrawRect.set(destination)
+        return destination
     }
 
     private fun bitmap(path: String): Bitmap? {
@@ -398,6 +458,7 @@ internal class ParameterHistoryView(
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                if (page == Page.DETAIL && imageSlideAnimator?.isRunning == true) return false
                 touchStartX = event.x
                 touchStartY = event.y
                 scrollStart = scroll
@@ -425,6 +486,8 @@ internal class ParameterHistoryView(
                 } else if (target == Target.DATA && page == Page.DETAIL) {
                     detailScroll = (detailScrollStart - dy).coerceIn(0f, detailMaxScroll)
                     invalidate()
+                } else if (target == Target.IMAGE && page == Page.DETAIL && abs(dx) >= abs(dy)) {
+                    updateDetailImageDrag(dx)
                 } else if (target == Target.METERING && page == Page.DETAIL) {
                     if (meteringTarget.isDraggable()) detailStartPlayback?.let { start ->
                         val stops = -dx / meteringRenderer.pixelsPerStop(geometry.metering)
@@ -446,6 +509,11 @@ internal class ParameterHistoryView(
                         performClick()
                         handleTap(event.x, event.y)
                     } else handleSwipe(event.x - touchStartX)
+                } else if (cancelled && target == Target.IMAGE && detailImageOffset != 0f) {
+                    animateDetailImageOffset(0f) {
+                        detailImageOffset = 0f
+                        invalidate()
+                    }
                 }
                 if (!cancelled && target == Target.METERING && moved && meteringTarget.isDraggable()) {
                     animatePlaybackSnap(meteringTarget)
@@ -511,15 +579,67 @@ internal class ParameterHistoryView(
         }
     }
 
-    private fun handleSwipe(dx: Float) {
-        if (page != Page.DETAIL || target != Target.IMAGE || abs(dx) < width * 0.12f) return
+    private fun updateDetailImageDrag(dx: Float) {
         val records = repository.category(categoryId)?.records.orEmpty()
         if (records.isEmpty()) return
-        detailIndex = if (dx < 0f) (detailIndex + 1).coerceAtMost(records.lastIndex)
-        else (detailIndex - 1).coerceAtLeast(0)
-        showDetailRecord(records[detailIndex])
-        detailScroll = 0f
+        val hasAdjacent = if (dx < 0f) detailIndex < records.lastIndex else detailIndex > 0
+        detailImageOffset = if (hasAdjacent) dx else dx * 0.22f
         invalidate()
+    }
+
+    private fun handleSwipe(dx: Float) {
+        if (page != Page.DETAIL || target != Target.IMAGE) return
+        val records = repository.category(categoryId)?.records.orEmpty()
+        if (records.isEmpty()) return
+        val nextIndex = when {
+            dx < 0f && detailIndex < records.lastIndex -> detailIndex + 1
+            dx > 0f && detailIndex > 0 -> detailIndex - 1
+            else -> detailIndex
+        }
+        val shouldChange = nextIndex != detailIndex && abs(detailImageOffset) >= geometry.image.width() * 0.12f
+        val targetOffset = if (shouldChange) {
+            if (nextIndex > detailIndex) -geometry.image.width() else geometry.image.width()
+        } else {
+            0f
+        }
+        animateDetailImageOffset(targetOffset) {
+            if (shouldChange) {
+                detailIndex = nextIndex
+                showDetailRecord(records[detailIndex])
+                detailScroll = 0f
+            }
+            detailImageOffset = 0f
+            invalidate()
+        }
+    }
+
+    private fun animateDetailImageOffset(targetOffset: Float, onFinished: () -> Unit) {
+        imageSlideAnimator?.cancel()
+        val startOffset = detailImageOffset
+        if (abs(targetOffset - startOffset) < 0.5f) {
+            onFinished()
+            return
+        }
+        imageSlideAnimator = ValueAnimator.ofFloat(startOffset, targetOffset).apply {
+            duration = 170L
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { animation ->
+                detailImageOffset = animation.animatedValue as Float
+                invalidate()
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                private var cancelled = false
+
+                override fun onAnimationCancel(animation: Animator) {
+                    cancelled = true
+                }
+
+                override fun onAnimationEnd(animation: Animator) {
+                    if (!cancelled) onFinished()
+                }
+            })
+            start()
+        }
     }
 
     private fun editRawPoint(x: Float, y: Float) {
@@ -552,8 +672,23 @@ internal class ParameterHistoryView(
 
     private fun showDetailRecord(record: ParameterRecordEntry) {
         snapAnimator?.cancel()
+        detailImageOffset = 0f
         detailWorkingRecord = record
         detailPlayback = RecordedMeteringSession.from(record)
+        preloadDetailNeighbors()
+    }
+
+    private fun preloadDetailNeighbors() {
+        val records = repository.category(categoryId)?.records.orEmpty()
+        val paths = listOfNotNull(
+            records.getOrNull(detailIndex - 1)?.previewPath,
+            records.getOrNull(detailIndex + 1)?.previewPath,
+        ).distinct()
+        if (paths.isEmpty()) return
+        Thread({
+            paths.forEach(::bitmap)
+            post { if (page == Page.DETAIL) invalidate() }
+        }, "parameter-history-preload").start()
     }
 
     private fun setPlaybackMode(mode: ParameterRecordMode) {
@@ -698,6 +833,7 @@ internal class ParameterHistoryView(
     override fun onDetachedFromWindow() {
         cancelPendingLongPress()
         snapAnimator?.cancel()
+        imageSlideAnimator?.cancel()
         bitmapCache.evictAll()
         super.onDetachedFromWindow()
     }
