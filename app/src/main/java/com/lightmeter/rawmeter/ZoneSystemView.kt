@@ -223,6 +223,12 @@ class ZoneSystemView(
         markerDisplayMotions.clear()
     }
 
+    /** Rebuilds cached rectangles when a layout-affecting setting changes at the same View size. */
+    fun refreshGeometry() {
+        geometry = if (width > 0 && height > 0) calculateGeometry(width, height) else null
+        invalidate()
+    }
+
     fun setAppliedLatitude(range: FilmLatitudeRange?) {
         appliedLatitudeRange = range
         invalidate()

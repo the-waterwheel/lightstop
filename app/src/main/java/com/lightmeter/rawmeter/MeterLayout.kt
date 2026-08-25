@@ -858,7 +858,10 @@ class MeterLayout @JvmOverloads constructor(
     fun currentSurfaceTexture(): SurfaceTexture? = textureView.surfaceTexture
 
     fun refresh(frameChanged: Boolean = false) {
-        if (frameChanged) requestLayout()
+        if (frameChanged) {
+            zoneView.refreshGeometry()
+            requestLayout()
+        }
         updateBackground()
         instrumentView.invalidate()
         settingsView.invalidate()
