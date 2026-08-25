@@ -458,6 +458,7 @@ class MainActivity : Activity(), CameraControllerCallback {
     }
 
     override fun onRawUnavailable() {
+        if (!activityResumed) return
         showRawUnavailableDialog(force = false)
     }
 

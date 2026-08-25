@@ -1053,11 +1053,10 @@ class CameraController(
                 return
             }
             val (descriptor, effectivePhysicalId, chars) = selection
-            val activeCameraId = if (effectivePhysicalId != null) {
-                descriptor.cameraId
-            } else {
-                descriptor.logicalCameraId
-            }
+            // Keep the catalog selection stable even when a vendor camera must temporarily use
+            // its logical route. The logical/physical fields below describe the hardware route;
+            // cameraId remains the user-facing lens identity used by preferences and the picker.
+            val activeCameraId = descriptor.cameraId
             requestedCameraId = activeCameraId
             selectedPhysicalCameraId = effectivePhysicalId
             characteristics = chars
@@ -1406,7 +1405,13 @@ class CameraController(
             cameraInfo = readyInfo
             postInfo(readyInfo)
             if (!readyInfo.rawAvailable && meteringPipelineMode == MeteringPipelineMode.AUTO) {
-                mainHandler.post { callback.onRawUnavailable() }
+                mainHandler.post {
+                    // A preview-ready callback can already be queued when the activity pauses or
+                    // another lens starts opening. Never surface that stale RAW warning.
+                    if (started && generation == cameraGeneration) {
+                        callback.onRawUnavailable()
+                    }
+                }
             }
             updatePreviewTransform(
                 lastViewWidth,
