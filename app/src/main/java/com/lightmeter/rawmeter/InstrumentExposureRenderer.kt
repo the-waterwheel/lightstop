@@ -114,7 +114,7 @@ internal class InstrumentExposureRenderer(
         paint.textSize = 12f * density
         drawCenteredText(canvas, title, titleLeft + titleWidth * 0.24f, rect.centerY())
         // The exact current value is a primary control readout, not a scale annotation.
-        paint.textSize = 9f * density
+        paint.textSize = 11f * density
         paint.typeface = Typeface.DEFAULT
         val shutterSeconds = if (apertureRow) null else {
             ExposureMath.shutterValueForCoordinate(centerCoordinate, state.shutterStep)
@@ -133,7 +133,7 @@ internal class InstrumentExposureRenderer(
             drawReciprocityBadge(canvas, readoutX, rect.centerY() - 13f * density)
             paint.color = red
             paint.typeface = Typeface.DEFAULT
-            paint.textSize = 9.4f * density
+            paint.textSize = 10f * density
             drawCenteredText(
                 canvas,
                 ReciprocityTimeFormatter.resultReadout(reciprocity.correctedSeconds!!),

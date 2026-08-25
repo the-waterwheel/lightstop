@@ -570,11 +570,11 @@ class ZoneSystemView(
             ExposureMath.formatShutter(shutterSeconds!!)
         }
         paint.color = scaleForeground
-        paint.textSize = 7.5f * density
+        paint.textSize = 9.8f * density
         paint.typeface = Typeface.DEFAULT_BOLD
         canvas.drawText(title, content.left + 7f * density, rect.centerY() + 3f * density, paint)
         // Keep the current value more prominent than the neighboring scale labels.
-        paint.textSize = 7.5f * density
+        paint.textSize = 9.8f * density
         canvas.drawText(value, content.left + 18f * density, rect.centerY() + 3f * density, paint)
         val reciprocity = shutterSeconds?.let { ReciprocityMath.calculate(appliedReciprocityMethod, it) }
         if (reciprocity?.needsCorrection == true) {

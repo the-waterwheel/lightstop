@@ -152,7 +152,7 @@ internal class ColorTemperatureView(
         drawButton(
             canvas,
             geometry.reference,
-            localized("对照表", "Reference"),
+            localized("常见对照表", "Common reference"),
             enabled = true,
             emphasized = false,
         )
