@@ -578,24 +578,23 @@ class MainActivity : Activity(), CameraControllerCallback {
         Toast.makeText(
             this,
             localized(
-                "当前摄像头不支持曝光补偿，无法生成曝光预览",
-                "This camera does not support exposure compensation, so exposure preview is unavailable",
+                "当前摄像头不支持手动曝光或曝光补偿，无法生成曝光预览",
+                "This camera supports neither manual exposure nor exposure compensation, " +
+                    "so exposure preview is unavailable",
             ),
             Toast.LENGTH_LONG,
         ).show()
     }
 
     private fun updateExposurePreviewFromMeter() {
-        val requestedEv = if (state.exposurePreviewMode == ExposurePreviewMode.ON &&
+        val selection = if (state.exposurePreviewMode == ExposurePreviewMode.ON &&
             !state.measuring && !calibrationMeasurementPending && !vignettingCalibrationPending
         ) {
-            meterLayout.currentExposurePreviewSelection()?.let(
-                ExposurePreviewMath::requestedCompensationEv,
-            )
+            meterLayout.currentExposurePreviewSelection()
         } else {
             null
         }
-        cameraController.updateExposurePreview(requestedEv)
+        cameraController.updateExposurePreview(selection)
     }
 
     override fun onVignettingCalibrationStarted() {

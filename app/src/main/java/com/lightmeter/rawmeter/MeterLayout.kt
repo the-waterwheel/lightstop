@@ -1672,14 +1672,22 @@ class MeterLayout @JvmOverloads constructor(
         val selectedExposureEv100: Double
         if (isZoneMode) {
             sceneEv100 = zoneView.currentPreviewCalibratedMeanEv100() ?: return null
-            selectedExposureEv100 = zoneView.session.selectedExposureEv100(zoneView.session.iso)
+            selectedExposureEv100 = ExposurePreviewMath.exposureEv100(
+                apertureCoordinate = zoneView.session.apertureCoordinate,
+                shutterCoordinate = zoneView.session.shutterCoordinate,
+                iso = zoneView.session.iso,
+            )
         } else {
             val reading = state.lastNormalReading ?: return null
             sceneEv100 = state.previewCalibratedSceneEv100(
                 reading.sceneEv100,
                 reading.source,
             )
-            selectedExposureEv100 = state.effectiveEv100 ?: return null
+            selectedExposureEv100 = ExposurePreviewMath.exposureEv100(
+                apertureCoordinate = instrumentView.currentApertureCoordinate(),
+                shutterCoordinate = instrumentView.currentShutterCoordinate(),
+                iso = state.iso,
+            )
         }
         if (!sceneEv100.isFinite() || !selectedExposureEv100.isFinite()) {
             return null
@@ -1687,6 +1695,7 @@ class MeterLayout @JvmOverloads constructor(
         return ExposurePreviewSelection(
             previewCalibratedSceneEv100 = sceneEv100,
             selectedExposureEv100 = selectedExposureEv100,
+            previewCorrectionEv = state.previewCameraCorrectionEv(),
         )
     }
 

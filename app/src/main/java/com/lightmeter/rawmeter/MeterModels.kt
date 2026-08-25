@@ -568,6 +568,11 @@ class MeterState(context: Context) {
         )
     }
 
+    fun previewCameraCorrectionEv(): Double {
+        val cameraId = cameraInfo.cameraId.ifBlank { selectedCameraId }.ifBlank { "0" }
+        return cameraCalibrationStore.totalCorrection(cameraId, MeteringSource.YUV_PREVIEW)
+    }
+
     fun cameraCalibrationHistory(cameraId: String): List<CameraCalibrationRecord> =
         cameraCalibrationStore.history(cameraId)
 

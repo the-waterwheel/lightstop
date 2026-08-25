@@ -269,7 +269,8 @@ class CameraController(
     private var compatibleYuvRequestActive = false
     private var previewPausedForRawCapture = false
     @Volatile
-    private var requestedExposurePreviewEv: Double? = null
+    private var requestedExposurePreview: ExposurePreviewSelection? = null
+    private var previewManualExposure: ExposurePreviewManualExposure? = null
     private var previewExposureCompensationSteps = 0
     private var previewBaselineStableFrames = 0
     private var previewBaselineContinuation: (() -> Unit)? = null
@@ -340,9 +341,13 @@ class CameraController(
         }
     }
 
-    /** Applies a calibrated relative brightness offset to the Camera2 preview AE target. */
-    fun updateExposurePreview(compensationEv: Double?) {
-        requestedExposurePreviewEv = compensationEv?.takeIf(Double::isFinite)
+    /** Applies the calibrated exposure represented by the currently displayed parameter rows. */
+    fun updateExposurePreview(selection: ExposurePreviewSelection?) {
+        requestedExposurePreview = selection?.takeIf {
+            it.previewCalibratedSceneEv100.isFinite() &&
+                it.selectedExposureEv100.isFinite() &&
+                it.previewCorrectionEv.isFinite()
+        }
         cameraHandler?.post(::applyRequestedExposurePreview)
     }
 
@@ -1445,17 +1450,35 @@ class CameraController(
             (trackingFramesEnabled || compatibleYuvRequestActive)
         if (includeYuv) trackingReader?.surface?.let(builder::addTarget)
         builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
-        builder.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
-        builder.set(
-            CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION,
-            previewExposureCompensationSteps,
-        )
-        previewFpsRange?.let { builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
+        val manualExposure = previewManualExposure
+        if (manualExposure != null) {
+            builder.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
+            builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, manualExposure.exposureTimeNs)
+            builder.set(CaptureRequest.SENSOR_SENSITIVITY, manualExposure.sensitivity)
+            val maximumFrameDuration = characteristics?.get(
+                CameraCharacteristics.SENSOR_INFO_MAX_FRAME_DURATION,
+            ) ?: manualExposure.exposureTimeNs
+            val baselineFrameDuration = latestResult?.get(CaptureResult.SENSOR_FRAME_DURATION)
+                ?: manualExposure.exposureTimeNs
+            builder.set(
+                CaptureRequest.SENSOR_FRAME_DURATION,
+                max(baselineFrameDuration, manualExposure.exposureTimeNs)
+                    .coerceAtMost(maximumFrameDuration),
+            )
+        } else {
+            builder.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
+            builder.set(
+                CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION,
+                previewExposureCompensationSteps,
+            )
+            previewFpsRange?.let { builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
+        }
         setSupportedAutoFocus(builder)
         session.setRepeatingRequest(builder.build(), previewCaptureCallback, cameraHandler)
         Log.i(
             TAG,
             "Preview request submitted: fps=$previewFpsRange yuv=$includeYuv " +
+                "manualExposure=$manualExposure " +
                 "exposureCompensationSteps=$previewExposureCompensationSteps " +
                 "profile=$sessionProfile",
         )
@@ -1466,50 +1489,87 @@ class CameraController(
         val chars = characteristics
         val range = chars?.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
         val step = chars?.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)?.toDouble()
-        val requested = requestedExposurePreviewEv
-        if (requested != null && chars == null) return
-        val result = if (requested == null || range == null || step == null) {
+        val selection = requestedExposurePreview
+        if (selection != null && chars == null) return
+        val requestedCompensation = selection?.let(ExposurePreviewMath::requestedCompensationEv)
+        val manualExposure = selection?.let { requested ->
+            val exposureRange = chars?.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE)
+            val sensitivityRange = chars?.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)
+            val maximumFrameDuration = chars?.get(
+                CameraCharacteristics.SENSOR_INFO_MAX_FRAME_DURATION,
+            )
+            val maximumExposureTime = if (exposureRange != null) {
+                minOf(exposureRange.upper, maximumFrameDuration ?: exposureRange.upper)
+            } else {
+                null
+            }
+            if (!cameraInfo.manualSensorAvailable || exposureRange == null ||
+                sensitivityRange == null || maximumExposureTime == null
+            ) {
+                null
+            } else {
+                ExposurePreviewMath.manualExposure(
+                    targetCameraEv100 = ExposurePreviewMath.targetCameraEv100(requested),
+                    cameraAperture = cameraInfo.aperture.toDouble(),
+                    preferredSensitivity = latestResult
+                        ?.get(CaptureResult.SENSOR_SENSITIVITY) ?: sensitivityRange.lower,
+                    minimumExposureTimeNs = exposureRange.lower,
+                    maximumExposureTimeNs = maximumExposureTime,
+                    minimumSensitivity = sensitivityRange.lower,
+                    maximumSensitivity = sensitivityRange.upper,
+                )
+            }
+        }
+        val result = if (requestedCompensation == null || range == null || step == null) {
             ExposurePreviewCompensation(
-                requestedEv = requested ?: 0.0,
+                requestedEv = requestedCompensation ?: 0.0,
                 appliedEv = 0.0,
                 steps = 0,
-                supported = requested == null,
+                supported = requestedCompensation == null,
                 clamped = false,
             )
         } else {
             ExposurePreviewMath.quantizeCompensation(
-                requestedEv = requested,
+                requestedEv = requestedCompensation,
                 minimumSteps = range.lower,
                 maximumSteps = range.upper,
                 stepEv = step,
             )
         }
-        if (requested == null) {
+        val supported = selection == null || manualExposure != null || result.supported
+        if (selection == null) {
             exposurePreviewUnsupportedReported = false
-        } else if (!result.supported && !exposurePreviewUnsupportedReported) {
+        } else if (!supported && !exposurePreviewUnsupportedReported) {
             exposurePreviewUnsupportedReported = true
             mainHandler.post(callback::onExposurePreviewUnavailable)
         }
-        if (previewExposureCompensationSteps == result.steps) return
-        previewExposureCompensationSteps = result.steps
+        val compensationSteps = if (manualExposure == null) result.steps else 0
+        if (previewManualExposure == manualExposure &&
+            previewExposureCompensationSteps == compensationSteps
+        ) return
+        previewManualExposure = manualExposure
+        previewExposureCompensationSteps = compensationSteps
         updatePreviewRepeatingRequest()
         Log.i(
             TAG,
-            "Exposure preview: requested=${result.requestedEv}EV " +
+            "Exposure preview: selected=${selection?.selectedExposureEv100}EV100 " +
+                "targetCamera=${selection?.let(ExposurePreviewMath::targetCameraEv100)}EV100 " +
+                "manual=$manualExposure requested=${result.requestedEv}EV " +
                 "applied=${result.appliedEv}EV steps=${result.steps} " +
-                "supported=${result.supported} clamped=${result.clamped}",
+                "supported=$supported clamped=${manualExposure?.clamped ?: result.clamped}",
         )
     }
 
     /** Restores neutral AE and waits for synchronized result frames before sampling the scene. */
     private fun prepareMeteringPreviewBaseline(continuation: () -> Unit) {
-        requestedExposurePreviewEv = null
-        if (previewExposureCompensationSteps == 0) {
+        requestedExposurePreview = null
+        if (previewManualExposure == null && previewExposureCompensationSteps == 0) {
             continuation()
             return
         }
         previewBaselineStableFrames = 0
         previewBaselineContinuation = continuation
+        previewManualExposure = null
         previewExposureCompensationSteps = 0
         updatePreviewRepeatingRequest()
         val handler = cameraHandler ?: run {
@@ -1529,8 +1589,10 @@ class CameraController(
     private fun onPreviewBaselineResult(result: CaptureResult) {
         if (previewBaselineContinuation == null) return
         val appliedSteps = result.get(CaptureResult.CONTROL_AE_EXPOSURE_COMPENSATION)
+        val aeMode = result.get(CaptureResult.CONTROL_AE_MODE)
         val aeState = result.get(CaptureResult.CONTROL_AE_STATE)
-        val neutralRequestReached = appliedSteps == null || appliedSteps == 0
+        val neutralRequestReached = (appliedSteps == null || appliedSteps == 0) &&
+            aeMode != CaptureResult.CONTROL_AE_MODE_OFF
         val aeStable = aeState == null ||
             aeState == CaptureResult.CONTROL_AE_STATE_CONVERGED ||
             aeState == CaptureResult.CONTROL_AE_STATE_FLASH_REQUIRED ||
@@ -1929,7 +1991,8 @@ class CameraController(
         cameraGeneration += 1
         cameraFailureStage = CameraFailureStage.OPENING
         cancelMeteringPreviewBaseline()
-        requestedExposurePreviewEv = null
+        requestedExposurePreview = null
+        previewManualExposure = null
         previewExposureCompensationSteps = 0
         exposurePreviewUnsupportedReported = false
         cancelVignettingMeasurementTimeout()

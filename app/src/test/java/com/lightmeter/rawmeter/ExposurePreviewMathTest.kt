@@ -34,10 +34,59 @@ class ExposurePreviewMathTest {
             ExposurePreviewSelection(
                 previewCalibratedSceneEv100 = 12.0,
                 selectedExposureEv100 = 11.0,
+                previewCorrectionEv = 0.0,
             ),
         )
 
         assertEquals(1.0, requested, 0.0001)
+    }
+
+    @Test
+    fun selectedEvIsConvertedToPreviewCameraCalibrationDomain() {
+        val target = ExposurePreviewMath.targetCameraEv100(
+            ExposurePreviewSelection(
+                previewCalibratedSceneEv100 = 12.0,
+                selectedExposureEv100 = 11.0,
+                previewCorrectionEv = 0.4,
+            ),
+        )
+
+        assertEquals(10.6, target, 0.0001)
+    }
+
+    @Test
+    fun manualPreviewExposureUsesTargetEvAndRespectsSensorRanges() {
+        val exposure = ExposurePreviewMath.manualExposure(
+            targetCameraEv100 = 10.0,
+            cameraAperture = 2.0,
+            preferredSensitivity = 100,
+            minimumExposureTimeNs = 100_000L,
+            maximumExposureTimeNs = 1_000_000_000L,
+            minimumSensitivity = 50,
+            maximumSensitivity = 3_200,
+        )!!
+
+        assertEquals(3_906_250L, exposure.exposureTimeNs)
+        assertEquals(100, exposure.sensitivity)
+        assertEquals(10.0, exposure.appliedCameraEv100, 0.0001)
+        assertFalse(exposure.clamped)
+    }
+
+    @Test
+    fun manualPreviewExposureMovesIsoBeforeClamping() {
+        val exposure = ExposurePreviewMath.manualExposure(
+            targetCameraEv100 = -2.0,
+            cameraAperture = 2.0,
+            preferredSensitivity = 100,
+            minimumExposureTimeNs = 100_000L,
+            maximumExposureTimeNs = 1_000_000_000L,
+            minimumSensitivity = 50,
+            maximumSensitivity = 800,
+        )!!
+
+        assertEquals(800, exposure.sensitivity)
+        assertEquals(1_000_000_000L, exposure.exposureTimeNs)
+        assertTrue(exposure.clamped)
     }
 
     @Test
