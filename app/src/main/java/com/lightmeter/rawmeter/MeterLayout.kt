@@ -21,6 +21,8 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 
+private const val ANGLE_CONTROL_MODE_SWITCH_DELAY_MS = 300L
+
 class MeterLayout @JvmOverloads constructor(
     context: Context,
     val state: MeterState,
@@ -121,6 +123,9 @@ class MeterLayout @JvmOverloads constructor(
     private var zoneTransitionFraction = 0f
     private var zoneAnimator: ValueAnimator? = null
     private var zoneTransitionPrepared = false
+    private var angleControlSuppressedForModeTransition = false
+    private var angleControlFadeInAnimating = false
+    private var angleControlFadeInRunnable: Runnable? = null
     private var lastLayoutLandscape: Boolean? = null
     private var zoneOrientationRestartPending = false
     private var cameraManagementOrigin = CameraManagementOrigin.SETTINGS
@@ -1430,7 +1435,8 @@ class MeterLayout @JvmOverloads constructor(
         )
     }
 
-    private fun updateAngleMeteringControl() {
+    private fun updateAngleMeteringControl(fadeIn: Boolean = false) {
+        if (angleControlSuppressedForModeTransition) return
         val transitionSettled = zoneTransitionFraction <= 0f || zoneTransitionFraction >= 1f
         val visible = state.meteringMode == MeteringMode.ANGLE &&
             state.meteringPipelineMode != MeteringPipelineMode.FAST &&
@@ -1439,8 +1445,11 @@ class MeterLayout @JvmOverloads constructor(
             !isCameraManagementOpen && !isInformationOpen &&
             !isSettingsOpen && !isToolsOpen && !isFilmSelectorOpen &&
             !isParameterEditorOpen && !isParameterHistoryOpen
-        angleMeteringDialView.visibility = if (visible) View.VISIBLE else View.GONE
         if (!visible) {
+            angleMeteringDialView.animate().cancel()
+            angleControlFadeInAnimating = false
+            angleMeteringDialView.alpha = 1f
+            angleMeteringDialView.visibility = View.GONE
             angleMeteringDialView.collapse()
             return
         }
@@ -1448,10 +1457,70 @@ class MeterLayout @JvmOverloads constructor(
             if (isZoneMode) zoneView.recordButtonRect() else instrumentView.recordButtonRect(),
         )
         angleMeteringDialView.refreshSupport()
+        if (fadeIn) {
+            angleMeteringDialView.animate().cancel()
+            angleControlFadeInAnimating = true
+            angleMeteringDialView.alpha = 0f
+            angleMeteringDialView.visibility = View.VISIBLE
+            angleMeteringDialView.animate()
+                .alpha(1f)
+                .setDuration(160L)
+                .setInterpolator(DecelerateInterpolator())
+                .withEndAction {
+                    angleControlFadeInAnimating = false
+                    angleMeteringDialView.alpha = 1f
+                }
+                .start()
+        } else if (!angleControlFadeInAnimating) {
+            angleMeteringDialView.alpha = 1f
+            angleMeteringDialView.visibility = View.VISIBLE
+        }
         angleMeteringDialView.bringToFront()
         if (recordCaptureSliderView.visibility == View.VISIBLE) {
             recordCaptureSliderView.bringToFront()
         }
+    }
+
+    private fun suppressAngleControlForModeTransition() {
+        angleControlFadeInRunnable?.let(::removeCallbacks)
+        angleControlFadeInRunnable = null
+        if (angleControlSuppressedForModeTransition) return
+        angleControlSuppressedForModeTransition = true
+        angleControlFadeInAnimating = false
+        angleMeteringDialView.animate().cancel()
+        if (angleMeteringDialView.visibility == View.VISIBLE && angleMeteringDialView.alpha > 0f) {
+            angleMeteringDialView.animate()
+                .alpha(0f)
+                .setDuration(110L)
+                .setInterpolator(DecelerateInterpolator())
+                .withEndAction {
+                    if (angleControlSuppressedForModeTransition) {
+                        angleMeteringDialView.visibility = View.GONE
+                        angleMeteringDialView.collapse()
+                    }
+                }
+                .start()
+        } else {
+            angleMeteringDialView.alpha = 0f
+            angleMeteringDialView.visibility = View.GONE
+            angleMeteringDialView.collapse()
+        }
+    }
+
+    private fun scheduleAngleControlAfterModeTransition() {
+        if (!angleControlSuppressedForModeTransition) return
+        angleControlFadeInRunnable?.let(::removeCallbacks)
+        angleMeteringDialView.animate().cancel()
+        angleMeteringDialView.alpha = 0f
+        angleMeteringDialView.visibility = View.GONE
+        angleMeteringDialView.collapse()
+        val runnable = Runnable {
+            angleControlFadeInRunnable = null
+            angleControlSuppressedForModeTransition = false
+            updateAngleMeteringControl(fadeIn = true)
+        }
+        angleControlFadeInRunnable = runnable
+        postDelayed(runnable, ANGLE_CONTROL_MODE_SWITCH_DELAY_MS)
     }
 
     fun closeSettings(): Boolean {
@@ -1721,6 +1790,7 @@ class MeterLayout @JvmOverloads constructor(
 
     private fun applyZoneTransition(fraction: Float) {
         val value = fraction.coerceIn(0f, 1f)
+        if (value > 0f && value < 1f) suppressAngleControlForModeTransition()
         if (value > 0f) prepareZoneTransition()
         zoneTransitionFraction = value
         if (value < 1f) instrumentView.visibility = View.VISIBLE
@@ -1798,6 +1868,7 @@ class MeterLayout @JvmOverloads constructor(
             updateRecordSliderAnchor()
             recordCaptureSliderView.bringToFront()
         }
+        scheduleAngleControlAfterModeTransition()
         requestLayout()
     }
 
@@ -1872,6 +1943,9 @@ class MeterLayout @JvmOverloads constructor(
 
     override fun onDetachedFromWindow() {
         zoneAnimator?.cancel()
+        angleControlFadeInRunnable?.let(::removeCallbacks)
+        angleControlFadeInRunnable = null
+        angleMeteringDialView.animate().cancel()
         zoneMarkerTracker.release()
         super.onDetachedFromWindow()
     }
