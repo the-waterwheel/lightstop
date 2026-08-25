@@ -296,6 +296,8 @@ class CameraController(
     private var lastDisplayRotation = Surface.ROTATION_0
     private var lastDisplayZoom = 1f
     private val previewTransformRevision = AtomicInteger(0)
+    @Volatile
+    private var confirmPreviewTransformOnNextFrame = false
 
     fun attach(texture: TextureView) {
         textureView = texture
@@ -431,7 +433,8 @@ class CameraController(
         texture.post {
             if (revision != previewTransformRevision.get() ||
                 texture.width != viewWidth ||
-                texture.height != viewHeight
+                texture.height != viewHeight ||
+                previewSize != size
             ) {
                 return@post
             }
@@ -1007,7 +1010,16 @@ class CameraController(
         return true
     }
 
-    override fun onSurfaceTextureUpdated(surface: SurfaceTexture) = Unit
+    override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {
+        if (!confirmPreviewTransformOnNextFrame) return
+        confirmPreviewTransformOnNextFrame = false
+        updatePreviewTransform(
+            lastViewWidth,
+            lastViewHeight,
+            lastDisplayRotation,
+            lastDisplayZoom,
+        )
+    }
 
     @SuppressLint("MissingPermission")
     private fun openCamera(surfaceTexture: SurfaceTexture?) {
@@ -1086,6 +1098,9 @@ class CameraController(
                 ?: throw IllegalStateException(
                     localized("没有合适的预览尺寸", "No suitable preview size is available"),
                 )
+            // Invalidate a queued matrix from the previous route before this SurfaceTexture is
+            // rebound with a potentially different vendor stream size.
+            previewTransformRevision.incrementAndGet()
             previewSize = chosenPreview
             val trackingSize = CameraStreamSelector.chooseTrackingSize(map, chosenPreview)
             trackingHardwareAvailable = trackingSize != null
@@ -1404,6 +1419,7 @@ class CameraController(
     ) {
         try {
             submitPreviewRepeatingRequest(device, session, preview)
+            confirmPreviewTransformOnNextFrame = true
             val readyInfo = cameraInfo.copy(
                 status = readyCameraStatus(),
             )
@@ -1989,6 +2005,8 @@ class CameraController(
 
     private fun closeCamera() {
         cameraGeneration += 1
+        previewTransformRevision.incrementAndGet()
+        confirmPreviewTransformOnNextFrame = false
         cameraFailureStage = CameraFailureStage.OPENING
         cancelMeteringPreviewBaseline()
         requestedExposurePreview = null
