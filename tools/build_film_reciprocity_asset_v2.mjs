@@ -221,6 +221,64 @@ if (films.length !== filmCatalog.length) {
 const filmIds = new Set(films.map((film) => film.filmId));
 if (filmIds.size !== films.length) throw new Error("Duplicate film IDs");
 
+/** Mirrors the app's runtime calculation so every generated curve can be reconciled to the CSV. */
+function calculateCorrectedSeconds(method, meteredSeconds) {
+  const input = Number(meteredSeconds);
+  if (input <= method.noCompensationSeconds + 1e-9) return input;
+  if (method.type === "POWER") return input ** method.parameter;
+  if (method.type === "FIXED_EV") return input * (2 ** method.parameter);
+  if (method.type !== "TABLE") return null;
+
+  const exact = method.points.find((point) => Math.abs(point.meteredSeconds - input) <= 1e-9);
+  if (exact) return exact.correctedSeconds;
+  const upperIndex = method.points.findIndex((point) => point.meteredSeconds > input);
+  const boundary = {
+    meteredSeconds: method.noCompensationSeconds,
+    correctedSeconds: method.noCompensationSeconds,
+  };
+  const upper = upperIndex < 0 ? method.points.at(-1) : method.points[upperIndex];
+  const lower = upperIndex < 0
+    ? (method.points.at(-2) ?? boundary)
+    : (upperIndex === 0 ? boundary : method.points[upperIndex - 1]);
+  if (!upper || lower.meteredSeconds >= upper.meteredSeconds) return null;
+  const exponent = Math.log(upper.correctedSeconds / lower.correctedSeconds) /
+    Math.log(upper.meteredSeconds / lower.meteredSeconds);
+  return lower.correctedSeconds * ((input / lower.meteredSeconds) ** exponent);
+}
+
+const methodById = new Map(methods.map((method) => [method.id, method]));
+let auditedRows = 0;
+let maximumCsvEvError = 0;
+let transitionBoundaryRows = 0;
+for (const source of pointRows) {
+  const method = methodById.get(text(source.MethodID));
+  const meteredSeconds = optionalNumber(source["Tm(s)"], `Tm row ${source.__row}`);
+  const expectedSeconds = optionalNumber(source["Tc(s)"], `Tc row ${source.__row}`);
+  if (!method || meteredSeconds == null || expectedSeconds == null) continue;
+  // ACROS encodes the first corrected 120 s sample as 119.999 s so the preceding interval
+  // can remain strictly "<120 s". The app exposes a nominal 120 s tick, not 119.999 s.
+  if (
+    Math.abs(meteredSeconds - method.noCompensationSeconds) <= 1e-9 &&
+    expectedSeconds > meteredSeconds * (1 + 1e-9)
+  ) {
+    transitionBoundaryRows += 1;
+    continue;
+  }
+  const calculatedSeconds = calculateCorrectedSeconds(method, meteredSeconds);
+  // RANGE rows intentionally become unavailable after their published no-compensation limit.
+  if (calculatedSeconds == null) continue;
+  const evError = Math.abs(Math.log2(calculatedSeconds / expectedSeconds));
+  maximumCsvEvError = Math.max(maximumCsvEvError, evError);
+  auditedRows += 1;
+  if (evError > 0.0002) {
+    throw new Error(
+      `Runtime curve mismatch for ${method.id} at CSV row ${source.__row}: ` +
+        `Tm=${meteredSeconds}, expected Tc=${expectedSeconds}, calculated Tc=${calculatedSeconds}, ` +
+        `error=${evError} EV`,
+    );
+  }
+}
+
 const result = {
   schemaVersion: 2,
   sourceFiles: [path.basename(pointsInput), path.basename(databaseInput)],
@@ -238,5 +296,13 @@ const typeCounts = Object.fromEntries(
 );
 const pointCount = methods.reduce((sum, method) => sum + method.points.length, 0);
 process.stdout.write(
-  `${JSON.stringify({ methods: methods.length, films: films.length, points: pointCount, typeCounts })}\n`,
+  `${JSON.stringify({
+    methods: methods.length,
+    films: films.length,
+    points: pointCount,
+    auditedRows,
+    transitionBoundaryRows,
+    maximumCsvEvError,
+    typeCounts,
+  })}\n`,
 );
