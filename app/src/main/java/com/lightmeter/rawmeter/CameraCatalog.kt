@@ -219,6 +219,10 @@ class CameraCatalog(private val cameraManager: CameraManager) {
         val capabilities = characteristics.get(
             CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES,
         ) ?: intArrayOf()
+        val hardwareLevel = characteristics.get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL)
+        val rawCapability = capabilities.contains(
+            CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_RAW,
+        )
         val physicalSize = characteristics.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
         return CameraDescriptor(
             cameraId = selectionId,
@@ -227,9 +231,15 @@ class CameraCatalog(private val cameraManager: CameraManager) {
             lensRole = lensRole,
             lensFacing = characteristics.get(CameraCharacteristics.LENS_FACING)
                 ?: CameraCharacteristics.LENS_FACING_EXTERNAL,
-            rawAvailable = capabilities.contains(
-                CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_RAW,
-            ) && !streamMap.getOutputSizes(ImageFormat.RAW_SENSOR).isNullOrEmpty(),
+            rawAvailable = RawSensorFormatPolicy.supportsBayerMetering(
+                rawCapabilityAdvertised = rawCapability,
+                hasRawSensorOutput = !streamMap.getOutputSizes(ImageFormat.RAW_SENSOR).isNullOrEmpty(),
+                isLegacyHardware =
+                    hardwareLevel == CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_LEGACY,
+                colorFilterArrangement = characteristics.get(
+                    CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT,
+                ),
+            ),
             manualSensorAvailable = capabilities.contains(
                 CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR,
             ),

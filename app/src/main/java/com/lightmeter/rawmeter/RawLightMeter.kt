@@ -119,12 +119,6 @@ internal class RawLightMeter(
         val count = RawMeteringPolicy.frameCount(
             context.latestResult?.get(CaptureResult.SENSOR_SENSITIVITY),
         )
-        val frameDuration =
-            context.latestResult?.get(CaptureResult.SENSOR_FRAME_DURATION)
-                ?: DEFAULT_FRAME_DURATION_NS
-        // Half a frame period keeps a RAW image from pairing with a neighboring frame's
-        // metadata while tolerating the small buffer/metadata offsets a few vendor HALs report.
-        val pairingToleranceNs = max(RAW_PAIRING_MIN_TOLERANCE_NS, frameDuration / 2)
         val accumulator = MeasurementAccumulator(
             id = ++nextMeasurementId,
             expectedFrames = count,
@@ -136,7 +130,7 @@ internal class RawLightMeter(
             target = target,
             previewReference = previewReference,
             screenToSensorRotationDegrees = screenToSensorRotationDegrees,
-            pairingToleranceNs = pairingToleranceNs,
+            pairingToleranceNs = 0L,
         )
         activeMeasurement = accumulator
         activeContext = context
@@ -558,6 +552,5 @@ internal class RawLightMeter(
         private const val PIPELINE_DEPTH = 1
         private const val METERING_TIMEOUT_MS = 8_000L
         private const val DEFAULT_FRAME_DURATION_NS = 33_333_333L
-        private const val RAW_PAIRING_MIN_TOLERANCE_NS = 8_000_000L
     }
 }

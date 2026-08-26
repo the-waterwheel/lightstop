@@ -3,6 +3,7 @@ package com.lightmeter.rawmeter
 import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
+import android.app.AlertDialog
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Color
@@ -604,26 +605,10 @@ class MeterLayout @JvmOverloads constructor(
             }
         }
         recordCaptureSliderView.onCaptureRequested = {
-            val id = UUID.randomUUID().toString()
-            val preview = captureParameterPreview(id)
-            if (preview == null) {
-                recordCaptureSliderView.setCapturePending(false)
-                Toast.makeText(
-                    context,
-                    if (state.menuLanguage == MenuLanguage.ENGLISH) {
-                        "Unable to capture the current preview. Try again."
-                    } else {
-                        "无法截取当前画面，请重试"
-                    },
-                    Toast.LENGTH_LONG,
-                ).show()
+            if (parameterRecordRepository.needsPrivacyNotice) {
+                showParameterCapturePrivacyNotice()
             } else {
-                listener?.onParameterCaptureRequested(
-                    id,
-                    currentParameterSnapshot(),
-                    parameterRecordRepository.options,
-                    preview,
-                ) ?: recordCaptureSliderView.setCapturePending(false)
+                startParameterCapture()
             }
         }
         filmSelectorView.listener = object : FilmSelectorView.Listener {
@@ -1257,6 +1242,67 @@ class MeterLayout @JvmOverloads constructor(
             ev100 = state.effectiveEv100,
             zonePoints = emptyList(),
         )
+    }
+
+    private fun showParameterCapturePrivacyNotice() {
+        AlertDialog.Builder(context)
+            .setTitle(localized("参数记录与系统备份", "Parameter records and system backup"))
+            .setMessage(
+                localized(
+                    "保存记录会把取景照片、曝光参数、备注，以及你选择记录的位置写入应用私有存储；启用 RAW 时还会保存 DNG。Android 或设备厂商启用的云备份/换机功能可能复制这些内容。备份由系统或厂商执行，开发者无法访问。你可以在系统设置关闭本应用备份，也可以随时删除记录。",
+                    "Saving a record stores a viewfinder photo, exposure parameters, notes, and any location you choose to record in app-private storage. Enabling RAW also saves a DNG. Android or your device manufacturer may copy this data through cloud backup or device transfer. Those backups are operated by the system or vendor, not accessible to the developer. You can disable this app's backup in system settings or delete records at any time.",
+                ),
+            )
+            .setNegativeButton(localized("取消保存", "Cancel save")) { _, _ ->
+                recordCaptureSliderView.setCapturePending(false)
+            }
+            .setNeutralButton(localized("查看隐私说明", "View privacy notice")) { _, _ ->
+                recordCaptureSliderView.setCapturePending(false)
+                showParameterCapturePrivacyDetails()
+            }
+            .setPositiveButton(localized("我已了解并继续", "I understand and continue")) { _, _ ->
+                parameterRecordRepository.acknowledgePrivacyNotice()
+                startParameterCapture()
+            }
+            .setOnCancelListener { recordCaptureSliderView.setCapturePending(false) }
+            .show()
+    }
+
+    private fun showParameterCapturePrivacyDetails() {
+        AlertDialog.Builder(context)
+            .setTitle(localized("隐私说明", "Privacy notice"))
+            .setMessage(
+                localized(
+                    "光档不会通过网络向开发者上传照片、测光数据、位置或备注。位置仅在你启用参数记录的位置选项并授权后使用，不会在后台持续跟踪。系统或设备厂商的备份服务可能按你的系统设置复制应用私有数据；是否备份、加密、保留或成功恢复取决于设备、账号、系统版本、厂商政策和备份配额。较大的 DNG 不保证会被备份。",
+                    "lightstop does not upload photos, meter readings, locations, or notes to the developer. Location is used only after you enable it for parameter records and grant permission; it is not tracked in the background. System or device-vendor backup services may copy app-private data according to your settings. Backup, encryption, retention, and restore depend on the device, account, OS version, vendor policy, and quota. Large DNG files are not guaranteed to be backed up.",
+                ),
+            )
+            .setPositiveButton(localized("确定", "OK"), null)
+            .show()
+    }
+
+    private fun startParameterCapture() {
+        val id = UUID.randomUUID().toString()
+        val preview = captureParameterPreview(id)
+        if (preview == null) {
+            recordCaptureSliderView.setCapturePending(false)
+            Toast.makeText(
+                context,
+                if (state.menuLanguage == MenuLanguage.ENGLISH) {
+                    "Unable to capture the current preview. Try again."
+                } else {
+                    "无法截取当前画面，请重试"
+                },
+                Toast.LENGTH_LONG,
+            ).show()
+        } else {
+            listener?.onParameterCaptureRequested(
+                id,
+                currentParameterSnapshot(),
+                parameterRecordRepository.options,
+                preview,
+            ) ?: recordCaptureSliderView.setCapturePending(false)
+        }
     }
 
     private fun captureParameterPreview(id: String): String? {
@@ -1938,6 +1984,9 @@ class MeterLayout @JvmOverloads constructor(
             if (state.isDarkMode) Color.BLACK else Color.WHITE,
         )
     }
+
+    private fun localized(chinese: String, english: String): String =
+        if (state.menuLanguage == MenuLanguage.ENGLISH) english else chinese
 
     override fun onDetachedFromWindow() {
         zoneAnimator?.cancel()

@@ -169,7 +169,8 @@ internal object MeteringAnalysis {
             ?: characteristics.get(CameraCharacteristics.SENSOR_INFO_WHITE_LEVEL)
             ?: return null
         val cfa = characteristics.get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT)
-            ?: CameraMetadata.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_RGGB
+            ?.takeIf(RawSensorFormatPolicy::isBayerCfa)
+            ?: return null
         val bufferOffset = plane.buffer.position()
         val spotValues = analyzeRawRegion(
             image = image,
@@ -231,7 +232,7 @@ internal object MeteringAnalysis {
         }
         val vignettingGain = if (applyVignettingCalibration && rawMeterPoint != null) {
             vignettingStore?.gainAt(
-                cameraId = cameraInfo.cameraId,
+                cameraId = cameraInfo.calibrationCameraId,
                 sensorX = rawMeterPoint.sensorX,
                 sensorY = rawMeterPoint.sensorY,
                 imageWidth = image.width,
@@ -252,11 +253,11 @@ internal object MeteringAnalysis {
         val seconds = exposureTime / 1_000_000_000.0
         val cameraEv = log2(aperture * aperture / seconds * 100.0 / sensitivity)
         val userCalibrationEv = calibrationStore.userCorrection(
-            cameraInfo.cameraId,
+            cameraInfo.calibrationCameraId,
             MeteringSource.RAW,
         )
         val calibrationEv = calibrationStore.totalCorrection(
-            cameraInfo.cameraId,
+            cameraInfo.calibrationCameraId,
             MeteringSource.RAW,
         )
         val baselineCalibrationEv = calibrationEv - userCalibrationEv

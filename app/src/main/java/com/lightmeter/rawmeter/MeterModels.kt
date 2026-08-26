@@ -55,6 +55,7 @@ data class CameraUiInfo(
     val cameraId: String = "",
     val logicalCameraId: String = cameraId,
     val physicalCameraId: String? = null,
+    val activePhysicalCameraId: String? = physicalCameraId,
     val rawAvailable: Boolean = false,
     val manualSensorAvailable: Boolean = false,
     val focalLengthMm: Float = 0f,
@@ -67,7 +68,15 @@ data class CameraUiInfo(
     val previewFps: Int = 0,
     val activeArray: Rect? = null,
     val status: String = "",
-)
+) {
+    /**
+     * Storage identity for calibration and metering. Automatic logical routes keep their logical
+     * identity until API 29+ has reported a concrete active physical id; fixed routes already
+     * have that id from session configuration.
+     */
+    val calibrationCameraId: String
+        get() = activePhysicalCameraId?.let { "$logicalCameraId@$it" } ?: cameraId
+}
 
 data class MeterReading(
     val sceneEv100: Double,
@@ -557,7 +566,7 @@ class MeterState(context: Context) {
         cameraCalibrationStore.record(cameraId)
 
     fun previewCalibratedSceneEv100(sceneEv100: Double, source: MeteringSource): Double {
-        val cameraId = cameraInfo.cameraId.ifBlank { selectedCameraId }.ifBlank { "0" }
+        val cameraId = cameraInfo.calibrationCameraId.ifBlank { selectedCameraId }.ifBlank { "0" }
         return ExposurePreviewMath.previewCalibratedSceneEv100(
             measuredSceneEv100 = sceneEv100,
             sourceCorrectionEv = cameraCalibrationStore.totalCorrection(cameraId, source),
@@ -569,7 +578,7 @@ class MeterState(context: Context) {
     }
 
     fun previewCameraCorrectionEv(): Double {
-        val cameraId = cameraInfo.cameraId.ifBlank { selectedCameraId }.ifBlank { "0" }
+        val cameraId = cameraInfo.calibrationCameraId.ifBlank { selectedCameraId }.ifBlank { "0" }
         return cameraCalibrationStore.totalCorrection(cameraId, MeteringSource.YUV_PREVIEW)
     }
 

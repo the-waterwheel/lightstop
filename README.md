@@ -8,9 +8,12 @@ measures Bayer samples in C++, and calculates EV100, aperture/shutter
 relationships, and Zone System placement in Kotlin. When RAW is unavailable,
 it automatically falls back to metering the ISP-processed preview.
 
-The app does not take or save photographs and does not request network,
-location, or shared-storage access. Metering, settings, and calibration data
-remain on the device.
+The app does not request Internet or shared-storage access and does not include
+analytics or advertising SDKs. It can save a user-requested parameter record in
+app-private storage, including a viewfinder JPEG, optional DNG, exposure data,
+notes, and an optional authorized location. Android or device-manufacturer
+backup and transfer services can copy that private data according to the user's
+system settings; the app and its developer do not upload or access those copies.
 
 ## Development approach
 
@@ -277,11 +280,14 @@ reproducible application builds.
 
 ## Privacy and permissions
 
-- Camera permission only.
-- No Internet, location, or shared-storage permission.
+- Camera permission; location is optional and used only for user-enabled
+  parameter records.
+- No Internet or shared-storage permission.
 - No analytics or advertising SDK.
-- No photo capture or persistence.
-- Preferences and calibration data stay in app-private storage.
+- User-requested parameter records can retain a viewfinder JPEG, optional DNG,
+  exposure data, notes, and an optional authorized location in app-private storage.
+- System backup or device-transfer services may copy final records and calibration
+  data according to the user's settings; large DNG files are not guaranteed to fit.
 - Zone points are session-only and are not persisted.
 
 See [PRIVACY.md](PRIVACY.md) for the bilingual privacy statement.

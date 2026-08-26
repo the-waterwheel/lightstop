@@ -86,6 +86,8 @@ data class ParameterCaptureDraft(
     val id: String,
     val snapshot: ParameterMeterSnapshot,
     val previewTempPath: String,
+    /** Calibration identity of the active physical camera, when the platform reports one. */
+    val cameraId: String? = null,
     val rawTempPath: String? = null,
     val rawGrid: RecordedRawGrid? = null,
     val location: RecordedLocation? = null,
@@ -102,6 +104,8 @@ data class ParameterRecordEntry(
     val capturedAtEpochMs: Long?,
     val previewPath: String,
     val rawPath: String?,
+    /** Null only for records created before camera identity was persisted. */
+    val cameraId: String? = null,
     val mode: ParameterRecordMode,
     val apertureCoordinate: Double,
     val shutterCoordinate: Double,

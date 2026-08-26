@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- Final, user-owned records. Cache and incomplete capture files are excluded by domain. -->
+    <include domain="file" path="parameter_records/" />
+    <include domain="file" path="vignetting-calibration/" />
+
+    <!-- Keep only the explicitly enumerated settings and calibration stores. -->
+    <include domain="sharedpref" path="raw_light_meter_state.xml" />
+    <include domain="sharedpref" path="raw_meter_calibration.xml" />
+    <include domain="sharedpref" path="calibration_environment.xml" />
+    <include domain="sharedpref" path="raw_light_meter_cameras.xml" />
+    <include domain="sharedpref" path="film_latitude_state.xml" />
+    <include domain="sharedpref" path="film_reciprocity_state.xml" />
+    <include domain="sharedpref" path="parameter_record_settings.xml" />
+</full-backup-content>

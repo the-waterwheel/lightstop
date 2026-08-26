@@ -217,7 +217,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             override fun onVignettingHistoryRestoreRequested(createdAtEpochMs: Long) {
                 val restored = cameraController.restoreVignettingCalibration(createdAtEpochMs)
                     ?: return
-                val cameraId = state.cameraInfo.cameraId.ifBlank { state.selectedCameraId }
+                val cameraId = state.cameraInfo.calibrationCameraId.ifBlank { state.selectedCameraId }
                 state.refreshVignettingCalibration(cameraId)
                 meterLayout.vignettingCalibrationView.showHistoryRestored(restored)
                 meterLayout.refresh()
@@ -604,7 +604,7 @@ class MainActivity : Activity(), CameraControllerCallback {
 
     override fun onVignettingCalibrationCompleted(info: VignettingCalibrationInfo) {
         vignettingCalibrationPending = false
-        val cameraId = state.cameraInfo.cameraId.ifBlank { state.selectedCameraId }
+        val cameraId = state.cameraInfo.calibrationCameraId.ifBlank { state.selectedCameraId }
         state.refreshVignettingCalibration(cameraId)
         meterLayout.vignettingCalibrationView.showResult(info)
         meterLayout.refresh()
@@ -1003,7 +1003,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             .setNegativeButton(localized("取消", "Cancel"), null)
             .setPositiveButton(localized("重置", "Reset")) { _, _ ->
                 cameraController.resetVignettingCalibration()
-                val cameraId = state.cameraInfo.cameraId.ifBlank { state.selectedCameraId }
+                val cameraId = state.cameraInfo.calibrationCameraId.ifBlank { state.selectedCameraId }
                 state.refreshVignettingCalibration(cameraId)
                 meterLayout.vignettingCalibrationView.showReset()
                 meterLayout.refresh()
@@ -1185,6 +1185,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             id = draftId,
             snapshot = snapshot,
             previewTempPath = previewPath,
+            cameraId = state.cameraInfo.calibrationCameraId.ifBlank { state.selectedCameraId },
             location = parameterLocation.takeIf { options.recordGps },
             capturedAtEpochMs = System.currentTimeMillis().takeIf { options.recordTime },
         )

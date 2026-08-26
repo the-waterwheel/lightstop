@@ -35,6 +35,13 @@ internal class ParameterRecordRepository(context: Context) {
         get() = preferences.getBoolean(KEY_RAW_WARNING, false)
         set(value) { preferences.edit().putBoolean(KEY_RAW_WARNING, value).apply() }
 
+    val needsPrivacyNotice: Boolean
+        get() = preferences.getInt(KEY_PRIVACY_NOTICE_VERSION, 0) < PRIVACY_NOTICE_VERSION
+
+    fun acknowledgePrivacyNotice() {
+        preferences.edit().putInt(KEY_PRIVACY_NOTICE_VERSION, PRIVACY_NOTICE_VERSION).apply()
+    }
+
     init {
         cleanupQuarantinedDeletes()
     }
@@ -120,6 +127,7 @@ internal class ParameterRecordRepository(context: Context) {
             capturedAtEpochMs = draft.capturedAtEpochMs,
             previewPath = preview.absolutePath,
             rawPath = raw?.absolutePath,
+            cameraId = draft.cameraId,
             mode = draft.snapshot.mode,
             apertureCoordinate = draft.snapshot.apertureCoordinate,
             shutterCoordinate = draft.snapshot.shutterCoordinate,
@@ -269,7 +277,7 @@ internal class ParameterRecordRepository(context: Context) {
             val writer = output.bufferedWriter()
             val array = JSONArray()
             categories.forEach { array.put(it.toJson()) }
-            writer.write(JSONObject().put("version", 1).put("categories", array).toString())
+            writer.write(JSONObject().put("version", 2).put("categories", array).toString())
             writer.flush()
             index.finishWrite(output)
         } catch (error: Exception) {
@@ -290,6 +298,7 @@ internal class ParameterRecordRepository(context: Context) {
         .put("capturedAt", capturedAtEpochMs)
         .put("previewPath", previewPath)
         .put("rawPath", rawPath)
+        .put("cameraId", cameraId)
         .put("mode", mode.name)
         .put("aperture", apertureCoordinate)
         .put("shutter", shutterCoordinate)
@@ -351,6 +360,7 @@ internal class ParameterRecordRepository(context: Context) {
             capturedAtEpochMs = nullableLong("capturedAt"),
             previewPath = preview,
             rawPath = nullableString("rawPath"),
+            cameraId = nullableString("cameraId"),
             mode = runCatching { ParameterRecordMode.valueOf(optString("mode")) }.getOrDefault(ParameterRecordMode.NORMAL),
             apertureCoordinate = optDouble("aperture"),
             shutterCoordinate = optDouble("shutter"),
@@ -425,9 +435,11 @@ internal class ParameterRecordRepository(context: Context) {
         const val MAX_NOTES = 10
         const val MAX_RAW_POINTS = 100
         const val KEY_ACTIVE_CATEGORY = "active_category"
+        const val KEY_PRIVACY_NOTICE_VERSION = "parameter_record_privacy_notice_version"
         const val KEY_GPS = "record_gps"
         const val KEY_TIME = "record_time"
         const val KEY_RAW = "record_raw"
         const val KEY_RAW_WARNING = "suppress_raw_warning"
+        const val PRIVACY_NOTICE_VERSION = 1
     }
 }

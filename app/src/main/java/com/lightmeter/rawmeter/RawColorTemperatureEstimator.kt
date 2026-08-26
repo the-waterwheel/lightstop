@@ -32,7 +32,6 @@ internal class RawColorTemperatureEstimator(
         val framePairer: TimestampedResultPairer<Image, CaptureResult> =
             TimestampedResultPairer(
                 releaseImage = Image::close,
-                toleranceNs = PAIRING_TOLERANCE_NS,
             ),
     )
 
@@ -210,6 +209,5 @@ internal class RawColorTemperatureEstimator(
     companion object {
         private const val TAG = "lightstop"
         private const val TIMEOUT_MS = 8_000L
-        private const val PAIRING_TOLERANCE_NS = 40_000_000L
     }
 }

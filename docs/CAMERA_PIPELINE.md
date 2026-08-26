@@ -50,9 +50,15 @@ On logical multi-camera devices, the catalog exposes the logical route as an
 automatic camera and gives every fixed physical lens a separate ID. Default
 selection ranks back cameras with a usable advertised RAW stream first
 (automatic, then main, then any RAW lens); non-RAW automatic/main routes follow.
-Physical routing is preferred only when the logical camera reports CALIBRATED
-physical synchronization; APPROXIMATE-sync logical cameras keep the logical
-route so RAW buffers and physical results stay in the same timestamp domain.
+When the user selects a fixed physical lens, the app first attempts that single physical output
+regardless of whether the logical camera reports CALIBRATED, APPROXIMATE, or no physical
+synchronization type. Synchronization describes the relationship between simultaneous sensors;
+it is not a capability gate for one physical stream. A failed physical route is recovered through
+the existing logical-camera fallback. On API 29+, automatic logical routes track the reported
+active physical id; API 28 keeps the logical identity because it cannot report one reliably.
+
+校准、兼容测光、RAW 测光、暗角校准和新建参数记录都使用该实际 identity（形式为
+`logicalId@physicalId`）；历史参数记录没有该字段时保留为 null，不猜测或篡改旧记录。
 Preview selection prefers an advertised 4:3 stream for both routes, even when
 the logical active-array metadata is 16:9, so an automatic route and its fixed
 main-lens route keep the same undistorted viewport. Cameras without 4:3 output
@@ -223,7 +229,7 @@ FULL -> RAW_ONLY -> COMPATIBLE -> PREVIEW_ONLY
 
 Android 10（API 29）及以上会先询问 Camera HAL 是否支持完整输出组合；明确拒绝时立即进入同一降级链。Android 9 以及无法实现该查询的定制 HAL 会直接尝试实际创建会话，以真实结果作为最终判据。
 
-运行错误会先分类，再决定重试或降级；物理镜头最终还能退回逻辑相机。多摄设备会列出自动逻辑相机和各固定物理镜头；默认选择先按“自动 RAW、主摄 RAW、其他 RAW”排序，再考虑不支持 RAW 的自动/主摄，因此厂商声明且实际提供 `RAW_SENSOR` 尺寸时优先 RAW。物理路由只在逻辑相机声明 CALIBRATED 物理同步时优先；APPROXIMATE 同步的逻辑相机保持逻辑路由，避免 RAW 缓冲与物理结果处于不同时间戳域。单色和红外物理传感器不会加入普通镜头列表。逻辑与物理路由优先使用两者都常见的 4:3 预览，即使逻辑相机元数据声明为 16:9，也不会在自动主摄与固定主摄之间切换时改变比例或看起来被拉伸；没有 4:3 输出时才退回最接近传感器元数据的比例。权限被拒、系统隐私策略、其他应用长期占用相机，或厂商连基础预览都实现异常时，仍可能无法打开任何档位。
+运行错误会先分类，再决定重试或降级；固定物理镜头最终还能退回逻辑相机。多摄设备会列出自动逻辑相机和各固定物理镜头；默认选择先按“自动 RAW、主摄 RAW、其他 RAW”排序，再考虑不支持 RAW 的自动/主摄，因此厂商声明且实际提供 `RAW_SENSOR` 尺寸时优先 RAW。固定物理路由会在 CALIBRATED、APPROXIMATE 和未声明同步类型的设备上都实际尝试；同步类型只影响多个传感器同时工作的时间关系，不能用来阻止单个物理输出。API 29+ 的自动逻辑路由会记录每帧报告的 active physical ID；API 28 保持逻辑复合相机身份，绝不猜测物理镜头。单色和红外物理传感器不会加入普通镜头列表。逻辑与物理路由优先使用两者都常见的 4:3 预览，即使逻辑相机元数据声明为 16:9，也不会在自动主摄与固定主摄之间切换时改变比例或看起来被拉伸；没有 4:3 输出时才退回最接近传感器元数据的比例。权限被拒、系统隐私策略、其他应用长期占用相机，或厂商连基础预览都实现异常时，仍可能无法打开任何档位。
 
 ### 预览请求与帧率
 
@@ -289,5 +295,18 @@ Camera2 统一了 API，但没有统一所有 HAL 的稳定性和性能。不同
 3. **预览流测光器**：拥有 YUV 尝试、亮度缓冲、预览保底、单帧结果和会话级 YUV 健康状态。
 4. **结果配对器**：拥有按时间戳索引的图像/结果，取消时统一关闭未配对图像。
 5. **恢复状态机**：拥有会话档位、失败计数、重试上限、物理/逻辑路线和确定性降级决策。
+
+RAW Bayer 测光只接受 RGGB、GRBG、GBRG、BGGR 四种单样本 CFA。`CFA_RGB`、MONO、NIR、
+未知 CFA 或 LEGACY HAL 即使声明 RAW 输出，也只能进入预览/YUV 兼容路径；不得把它们传给
+Bayer/native 统计器，更不得以 RGGB 作为默认猜测。
+
+所有正式测光、RAW/DNG 记录、色温和暗角帧配对都要求完全相同的传感器时间戳。YUV 和
+`TextureView` 兼容测光也不再把任意 `latestResult` 与显示截图组合：显示截图会在读取前后
+核验同一 `SurfaceTexture` 时间戳，并仅消费精确匹配的 capture result；三次竞争或无匹配后
+明确报错。这样可能在不规范 HAL 上减少可用读数，但不会把相邻帧的曝光、ISO 用于当前画面。
+
+`CameraController.stop()` 不在主线程等待 Camera2 close。它把关闭操作交给现有相机线程，并在
+该线程释放 session、device、readers 后回到主线程完成 thread 交接；如果在此期间重新进入前台，
+启动请求会延后到旧线程彻底结束，从而避免旧 generation 关闭新会话。
 
 每个组件都注明调用线程、取消行为及其拥有的资源。`CameraController` 负责把这些所有者与应用生命周期、校准存储、会话档位选择和用户回调连接起来。

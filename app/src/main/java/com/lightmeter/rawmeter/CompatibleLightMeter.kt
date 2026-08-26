@@ -14,7 +14,7 @@ internal data class CompatibleMeteringContext(
     val cameraHandler: Handler?,
     val trackingReaderAvailable: Boolean,
     val cameraReady: () -> Boolean,
-    val latestResult: () -> CaptureResult?,
+    val takeResultForTimestamp: (Long) -> CaptureResult?,
     val characteristics: () -> CameraCharacteristics?,
     val cameraId: () -> String,
 )
@@ -65,7 +65,6 @@ internal class CompatibleLightMeter(
     private var activeYuvMeasurement: YuvMeasurement? = null
     private val yuvFramePairer = TimestampedResultPairer<Image, CaptureResult>(
         releaseImage = Image::close,
-        toleranceNs = YUV_PAIRING_TOLERANCE_NS,
     )
     private var lumaBuffer = ByteArray(0)
     private var yuvTimeout: Runnable? = null
@@ -254,13 +253,6 @@ internal class CompatibleLightMeter(
             finishWithError(id, localized("相机预览尚未就绪", "Camera preview is not ready"))
             return
         }
-        if (context.latestResult() == null) {
-            finishWithError(
-                id,
-                localized("正在等待相机曝光参数", "Waiting for camera exposure data"),
-            )
-            return
-        }
         Log.i(TAG, "Displayed-preview compatible metering started: mode=$meteringMode")
         listener.onCompatibleMeteringStarted(
             MeteringSource.ISP_PREVIEW,
@@ -275,15 +267,16 @@ internal class CompatibleLightMeter(
         target: ZoneMeteringTarget?,
         meteringRoiFraction: Float?,
         context: CompatibleMeteringContext,
+        attempt: Int = 0,
     ) {
         if (!isCurrent(id)) return
         val texture = context.textureView
-        val result = context.latestResult()
         val handler = context.cameraHandler
-        if (texture?.isAvailable != true || result == null || handler == null) {
+        if (texture?.isAvailable != true || handler == null) {
             finishWithError(id, localized("无法读取当前预览画面", "Unable to read the current preview"))
             return
         }
+        val startTimestamp = texture.surfaceTexture?.timestamp ?: 0L
         val bitmap = try {
             texture.getBitmap(FALLBACK_BITMAP_SIZE, FALLBACK_BITMAP_SIZE)
         } catch (_: Exception) {
@@ -293,7 +286,28 @@ internal class CompatibleLightMeter(
             finishWithError(id, localized("无法读取当前预览画面", "Unable to read the current preview"))
             return
         }
+        val endTimestamp = texture.surfaceTexture?.timestamp ?: 0L
+        if (startTimestamp <= 0L || startTimestamp != endTimestamp) {
+            bitmap.recycle()
+            retryProcessedPreviewCapture(id, meteringMode, target, meteringRoiFraction, context, attempt)
+            return
+        }
         val accepted = handler.post {
+            val result = context.takeResultForTimestamp(endTimestamp)
+            if (result == null) {
+                bitmap.recycle()
+                mainHandler.post {
+                    retryProcessedPreviewCapture(
+                        id,
+                        meteringMode,
+                        target,
+                        meteringRoiFraction,
+                        context,
+                        attempt,
+                    )
+                }
+                return@post
+            }
             val stat = try {
                 context.characteristics()?.let { characteristics ->
                     MeteringAnalysis.analyzePreview(
@@ -332,6 +346,37 @@ internal class CompatibleLightMeter(
             bitmap.recycle()
             finishWithError(id, localized("相机预览已关闭", "The camera preview has closed"))
         }
+    }
+
+    private fun retryProcessedPreviewCapture(
+        id: Int,
+        meteringMode: MeteringMode,
+        target: ZoneMeteringTarget?,
+        meteringRoiFraction: Float?,
+        context: CompatibleMeteringContext,
+        attempt: Int,
+    ) {
+        if (!isCurrent(id)) return
+        if (attempt + 1 >= DISPLAY_CAPTURE_ATTEMPTS) {
+            finishWithError(
+                id,
+                localized(
+                    "无法取得同步预览帧，请稍后重试",
+                    "Could not obtain a synchronized preview frame. Please try again",
+                ),
+            )
+            return
+        }
+        mainHandler.postDelayed({
+            captureProcessedPreview(
+                id,
+                meteringMode,
+                target,
+                meteringRoiFraction,
+                context,
+                attempt + 1,
+            )
+        }, DISPLAY_CAPTURE_RETRY_DELAY_MS)
     }
 
     private fun finishWithReading(id: Int, reading: MeterReading) {
@@ -387,8 +432,7 @@ internal class CompatibleLightMeter(
     private companion object {
         private const val TAG = "CompatibleLightMeter"
         private const val FALLBACK_BITMAP_SIZE = 96
-        // Half the app's 30 fps preview ceiling: tolerates small buffer/metadata timestamp
-        // offsets without pairing a frame with its neighbor's exposure metadata.
-        private const val YUV_PAIRING_TOLERANCE_NS = 16_000_000L
+        private const val DISPLAY_CAPTURE_ATTEMPTS = 3
+        private const val DISPLAY_CAPTURE_RETRY_DELAY_MS = 16L
     }
 }

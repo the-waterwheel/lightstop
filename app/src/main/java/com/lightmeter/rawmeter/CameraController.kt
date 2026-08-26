@@ -27,8 +27,6 @@ import android.util.Range
 import android.util.Size
 import android.view.Surface
 import android.view.TextureView
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.io.File
 import java.io.FileOutputStream
@@ -54,7 +52,6 @@ class CameraController(
         val framePairer: TimestampedResultPairer<Image, CaptureResult> =
             TimestampedResultPairer(
                 releaseImage = Image::close,
-                toleranceNs = VIGNETTING_PAIRING_TOLERANCE_NS,
             ),
     )
 
@@ -67,8 +64,7 @@ class CameraController(
         val framePairer: TimestampedResultPairer<Image, CaptureResult> =
             TimestampedResultPairer(
                 releaseImage = Image::close,
-                toleranceNs = RAW_RECORD_PAIRING_TOLERANCE_NS,
-        ),
+            ),
     )
 
     private data class MeteringPlan(
@@ -83,6 +79,13 @@ class CameraController(
         val sensorFrameAspect: Float,
         val meteringRoiFraction: Float?,
         val displayedPreviewReference: PreviewLumaReference?,
+    )
+
+    private data class RouteSelection(
+        val descriptor: CameraDescriptor,
+        val route: CameraRouteCandidate,
+        val logicalCharacteristics: CameraCharacteristics,
+        val streamCharacteristics: CameraCharacteristics,
     )
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -231,6 +234,8 @@ class CameraController(
     private var cameraThread: HandlerThread? = null
     private var cameraHandler: Handler? = null
     private var started = false
+    private var stopInProgress = false
+    private var restartAfterStop = false
     private val opening: Boolean
         get() = sessionCoordinator.isOpening
     @Volatile
@@ -245,7 +250,9 @@ class CameraController(
     private val trackingReader: ImageReader?
         get() = sessionCoordinator.trackingReader
     private var characteristics: CameraCharacteristics? = null
+    private var logicalCharacteristics: CameraCharacteristics? = null
     private var selectedPhysicalCameraId: String? = null
+    private val activePhysicalCameraTracker = ActivePhysicalCameraTracker()
     private var meteringPipelineMode = MeteringPipelineMode.AUTO
     private var rawHardwareAvailable = false
     private var trackingHardwareAvailable = false
@@ -265,6 +272,7 @@ class CameraController(
     private var fpsRequestCeiling: Int? = DEFAULT_PREVIEW_FPS_CEILING
     @Volatile
     private var latestResult: CaptureResult? = null
+    private val previewResultStore = TimestampedCaptureResultStore<CaptureResult>()
     private var trackingFramesEnabled = false
     private var compatibleYuvRequestActive = false
     private var previewPausedForRawCapture = false
@@ -387,6 +395,10 @@ class CameraController(
 
     fun start() {
         if (started) return
+        if (stopInProgress) {
+            restartAfterStop = true
+            return
+        }
         started = true
         recoveryState.markPreviewStable()
         val thread = HandlerThread("raw-meter-camera").apply { start() }
@@ -397,23 +409,32 @@ class CameraController(
     }
 
     fun stop() {
+        restartAfterStop = false
+        if (stopInProgress) return
         started = false
         val handler = cameraHandler
         val thread = cameraThread
         if (handler != null && thread != null) {
-            val closed = CountDownLatch(1)
+            stopInProgress = true
             handler.post {
                 closeCamera()
-                closed.countDown()
+                thread.quitSafely()
+                mainHandler.post {
+                    if (cameraHandler !== handler) return@post
+                    cameraHandler = null
+                    cameraThread = null
+                    stopInProgress = false
+                    if (restartAfterStop) {
+                        restartAfterStop = false
+                        start()
+                    }
+                }
             }
-            closed.await(750L, TimeUnit.MILLISECONDS)
-            thread.quitSafely()
-            thread.join(750L)
         } else {
             closeCamera()
+            cameraThread = null
+            cameraHandler = null
         }
-        cameraThread = null
-        cameraHandler = null
     }
 
     fun updatePreviewTransform(
@@ -784,7 +805,7 @@ class CameraController(
             }
             val capture = VignettingCapture(
                 id = measurementId.incrementAndGet(),
-                cameraId = cameraInfo.cameraId,
+                cameraId = cameraInfo.calibrationCameraId,
             )
             activeVignettingCapture = capture
             mainHandler.post { callback.onVignettingCalibrationStarted() }
@@ -829,7 +850,7 @@ class CameraController(
 
     @Synchronized
     fun currentUserCalibrationRecord(): CameraCalibrationRecord? =
-        calibrationStore.record(cameraInfo.cameraId.ifBlank { requestedCameraId ?: "0" })
+        calibrationStore.record(calibrationCameraId())
 
     @Synchronized
     fun isRawMeteringAvailable(): Boolean = cameraInfo.rawAvailable && rawReader != null
@@ -848,7 +869,7 @@ class CameraController(
         rawMeasuredEv100: Double?,
         compatibleMeasuredEv100: Double?,
     ): CameraCalibrationRecord {
-        val cameraId = cameraInfo.cameraId.ifBlank { requestedCameraId ?: "0" }
+        val cameraId = calibrationCameraId()
         val updated = calibrationStore.updateUserCorrections(
             cameraId = cameraId,
             referenceEv100 = referenceEv100,
@@ -867,14 +888,14 @@ class CameraController(
 
     @Synchronized
     fun resetUserCalibration() {
-        val cameraId = cameraInfo.cameraId.ifBlank { requestedCameraId ?: "0" }
+        val cameraId = calibrationCameraId()
         calibrationStore.resetUserCorrection(cameraId)
         Log.e(TAG, "User calibration reset: camera=$cameraId")
     }
 
     @Synchronized
     fun restoreUserCalibration(updatedAtEpochMs: Long): CameraCalibrationRecord? {
-        val cameraId = cameraInfo.cameraId.ifBlank { requestedCameraId ?: "0" }
+        val cameraId = calibrationCameraId()
         val restored = calibrationStore.restore(cameraId, updatedAtEpochMs) ?: return null
         Log.i(
             TAG,
@@ -887,7 +908,7 @@ class CameraController(
 
     @Synchronized
     fun restoreVignettingCalibration(createdAtEpochMs: Long): VignettingCalibrationInfo? {
-        val cameraId = cameraInfo.cameraId.ifBlank { requestedCameraId ?: "0" }
+        val cameraId = calibrationCameraId()
         val restored = vignettingCalibrationStore.restore(cameraId, createdAtEpochMs) ?: return null
         Log.i(
             TAG,
@@ -898,7 +919,7 @@ class CameraController(
 
     @Synchronized
     fun resetVignettingCalibration() {
-        val cameraId = cameraInfo.cameraId.ifBlank { requestedCameraId ?: "0" }
+        val cameraId = calibrationCameraId()
         vignettingCalibrationStore.reset(cameraId)
         Log.i(TAG, "Vignetting calibration reset: camera=$cameraId")
     }
@@ -941,9 +962,9 @@ class CameraController(
         cameraHandler = cameraHandler,
         trackingReaderAvailable = trackingReader != null,
         cameraReady = { cameraDevice != null && captureSession != null },
-        latestResult = { latestResult },
+        takeResultForTimestamp = previewResultStore::takeExact,
         characteristics = { characteristics },
-        cameraId = { cameraInfo.cameraId },
+        cameraId = { cameraInfo.calibrationCameraId },
     )
 
     private fun measureProcessedPreview(
@@ -1041,25 +1062,15 @@ class CameraController(
                 ?: cameraCatalog.preferredCamera(discovered)
             val selection = selected?.let { descriptor ->
                 val logicalChars = cameraManager.getCameraCharacteristics(descriptor.logicalCameraId)
-                val syncType = logicalChars.get(
-                    CameraCharacteristics.LOGICAL_MULTI_CAMERA_SENSOR_SYNC_TYPE,
-                )
-                val approximateSync = syncType ==
-                    CameraMetadata.LOGICAL_MULTI_CAMERA_SENSOR_SYNC_TYPE_APPROXIMATE
-                val routePhysical = descriptor.physicalCameraId != null &&
-                    !useLogicalCameraFallback && !approximateSync
-                if (descriptor.physicalCameraId != null && approximateSync) {
-                    Log.i(
-                        TAG,
-                        "Logical camera ${descriptor.logicalCameraId} reports APPROXIMATE " +
-                            "physical sync; using the logical route",
-                    )
-                }
-                val effectivePhysicalId = if (routePhysical) descriptor.physicalCameraId else null
+                val route = CameraRouteResolver.candidates(
+                    descriptor = descriptor,
+                    forceLogicalFallback = useLogicalCameraFallback,
+                ).first()
+                val effectivePhysicalId = route.physicalCameraId
                 val streamChars = effectivePhysicalId?.let {
                     cameraManager.getCameraCharacteristics(it)
                 } ?: logicalChars
-                Triple(descriptor, effectivePhysicalId, streamChars)
+                RouteSelection(descriptor, route, logicalChars, streamChars)
             }
             if (selection == null) {
                 postInfo(
@@ -1069,14 +1080,21 @@ class CameraController(
                 )
                 return
             }
-            val (descriptor, effectivePhysicalId, chars) = selection
+            val descriptor = selection.descriptor
+            val effectivePhysicalId = selection.route.physicalCameraId
+            val chars = selection.streamCharacteristics
             // Keep the catalog selection stable even when a vendor camera must temporarily use
             // its logical route. The logical/physical fields below describe the hardware route;
             // cameraId remains the user-facing lens identity used by preferences and the picker.
             val activeCameraId = descriptor.cameraId
             requestedCameraId = activeCameraId
             selectedPhysicalCameraId = effectivePhysicalId
+            logicalCharacteristics = selection.logicalCharacteristics
             characteristics = chars
+            val activeContext = activePhysicalCameraTracker.reset(
+                logicalCameraId = descriptor.logicalCameraId,
+                requestedPhysicalCameraId = effectivePhysicalId,
+            )
             val capabilities =
                 chars.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: intArrayOf()
             val rawCapability =
@@ -1091,9 +1109,15 @@ class CameraController(
             // LEGACY devices guarantee neither RAW_SENSOR output nor per-frame control; treat a
             // stray RAW advertisement on a LEGACY HAL as unusable instead of letting the session
             // fail later.
-            rawHardwareAvailable = rawCapability &&
-                !map.getOutputSizes(ImageFormat.RAW_SENSOR).isNullOrEmpty() &&
-                hardwareLevel != CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_LEGACY
+            rawHardwareAvailable = RawSensorFormatPolicy.supportsBayerMetering(
+                rawCapabilityAdvertised = rawCapability,
+                hasRawSensorOutput = !map.getOutputSizes(ImageFormat.RAW_SENSOR).isNullOrEmpty(),
+                isLegacyHardware =
+                    hardwareLevel == CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_LEGACY,
+                colorFilterArrangement = chars.get(
+                    CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT,
+                ),
+            )
             val chosenPreview = CameraStreamSelector.choosePreviewSize(chars)
                 ?: throw IllegalStateException(
                     localized("没有合适的预览尺寸", "No suitable preview size is available"),
@@ -1148,6 +1172,7 @@ class CameraController(
                 cameraId = activeCameraId,
                 logicalCameraId = descriptor.logicalCameraId,
                 physicalCameraId = effectivePhysicalId,
+                activePhysicalCameraId = activeContext.activePhysicalCameraId,
                 rawAvailable = rawAvailable,
                 manualSensorAvailable = manualAvailable,
                 focalLengthMm = focal,
@@ -1724,8 +1749,12 @@ class CameraController(
             request: CaptureRequest,
             result: TotalCaptureResult,
         ) {
+            updateActivePhysicalCamera(result)
             val effectiveResult = effectiveCaptureResult(result)
             latestResult = effectiveResult
+            val timestamp = effectiveResult.get(CaptureResult.SENSOR_TIMESTAMP)
+                ?: result.get(CaptureResult.SENSOR_TIMESTAMP)
+            if (timestamp != null) previewResultStore.put(timestamp, effectiveResult)
             updateDynamicLensInfo(effectiveResult)
             onPreviewBaselineResult(effectiveResult)
             // A few physical-camera HALs omit SENSOR_TIMESTAMP from the physical result even
@@ -1743,6 +1772,7 @@ class CameraController(
             request: CaptureRequest,
             result: TotalCaptureResult,
         ) {
+            updateActivePhysicalCamera(result)
             val effectiveResult = effectiveCaptureResult(result)
             latestResult = effectiveResult
             val timestamp = effectiveResult.get(CaptureResult.SENSOR_TIMESTAMP)
@@ -1772,6 +1802,42 @@ class CameraController(
     private fun effectiveCaptureResult(result: TotalCaptureResult): CaptureResult {
         val physicalId = selectedPhysicalCameraId ?: return result
         return result.physicalCameraResults[physicalId] ?: result
+    }
+
+    private fun updateActivePhysicalCamera(result: TotalCaptureResult) {
+        val update = activePhysicalCameraTracker.update(result)
+        if (update.context.requestedPhysicalCameraId != null && !update.requestedPhysicalResultPresent) {
+            Log.w(
+                TAG,
+                "Physical result missing for requested camera=${update.context.requestedPhysicalCameraId}; " +
+                    "the frame will use only metadata present in its TotalCaptureResult",
+            )
+        }
+        if (!update.changed) return
+        val nextCharacteristics = update.context.activePhysicalCameraId?.let { physicalId ->
+            runCatching { cameraManager.getCameraCharacteristics(physicalId) }.getOrNull()
+        } ?: logicalCharacteristics
+        if (nextCharacteristics != null) characteristics = nextCharacteristics
+        val chars = characteristics ?: return
+        val physicalSize = chars.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
+        val focal = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+            ?.firstOrNull() ?: cameraInfo.focalLengthMm
+        val aperture = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_APERTURES)
+            ?.firstOrNull() ?: cameraInfo.aperture
+        val activeArray = chars.get(CameraCharacteristics.SENSOR_INFO_PRE_CORRECTION_ACTIVE_ARRAY_SIZE)
+            ?: chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+        postInfo(
+            cameraInfo.copy(
+                activePhysicalCameraId = update.context.activePhysicalCameraId,
+                focalLengthMm = focal,
+                aperture = aperture,
+                sensorWidthMm = physicalSize?.width ?: cameraInfo.sensorWidthMm,
+                sensorHeightMm = physicalSize?.height ?: cameraInfo.sensorHeightMm,
+                sensorOrientationDegrees = chars.get(CameraCharacteristics.SENSOR_ORIENTATION)
+                    ?: cameraInfo.sensorOrientationDegrees,
+                activeArray = activeArray ?: cameraInfo.activeArray,
+            ),
+        )
     }
 
     private fun updateDynamicLensInfo(result: CaptureResult) {
@@ -2041,8 +2107,11 @@ class CameraController(
         previewSize = null
         previewFpsRange = null
         characteristics = null
+        logicalCharacteristics = null
         selectedPhysicalCameraId = null
+        activePhysicalCameraTracker.reset("", null)
         latestResult = null
+        previewResultStore.clear()
     }
 
     private fun postInfo(info: CameraUiInfo) {
@@ -2051,6 +2120,7 @@ class CameraController(
             TAG,
             "Camera status: ${info.status}; id=${info.cameraId}; " +
                 "logical=${info.logicalCameraId}; physical=${info.physicalCameraId}; " +
+                "activePhysical=${info.activePhysicalCameraId}; " +
                 "focal=${info.focalLengthMm}; raw=${info.rawAvailable}; " +
                 "manual=${info.manualSensorAvailable}; preview=${info.previewSize}",
         )
@@ -2061,6 +2131,9 @@ class CameraController(
         mainHandler.post { callback.onMeteringError(message) }
     }
 
+    private fun calibrationCameraId(): String =
+        cameraInfo.calibrationCameraId.ifBlank { requestedCameraId ?: "0" }
+
     private fun localized(chinese: String, english: String): String =
         callback.localized(chinese, english)
 
@@ -2070,7 +2143,6 @@ class CameraController(
         private const val PREVIEW_REFERENCE_LONG_EDGE = 384
         private const val VIGNETTING_TIMEOUT_MS = 8_000L
         private const val RAW_RECORD_TIMEOUT_MS = 8_000L
-        private const val RAW_RECORD_PAIRING_TOLERANCE_NS = 40_000_000L
         private const val SESSION_RECOVERY_DELAY_MS = 300L
         private const val STABLE_PREVIEW_RESET_DELAY_MS = 10_000L
         private const val PREVIEW_BASELINE_TIMEOUT_MS = 1_200L
@@ -2079,6 +2151,5 @@ class CameraController(
         private const val RAW_FAILURES_BEFORE_DOWNGRADE = 2
         private const val DEFAULT_PREVIEW_FPS_CEILING = 30
         private const val CONSERVATIVE_PREVIEW_FPS_CEILING = 24
-        private const val VIGNETTING_PAIRING_TOLERANCE_NS = 16_000_000L
     }
 }
