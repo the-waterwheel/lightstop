@@ -1523,11 +1523,9 @@ class CameraController(
             val maximumFrameDuration = characteristics?.get(
                 CameraCharacteristics.SENSOR_INFO_MAX_FRAME_DURATION,
             ) ?: manualExposure.exposureTimeNs
-            val baselineFrameDuration = latestResult?.get(CaptureResult.SENSOR_FRAME_DURATION)
-                ?: manualExposure.exposureTimeNs
             builder.set(
                 CaptureRequest.SENSOR_FRAME_DURATION,
-                max(baselineFrameDuration, manualExposure.exposureTimeNs)
+                max(MANUAL_PREVIEW_TARGET_FRAME_DURATION_NS, manualExposure.exposureTimeNs)
                     .coerceAtMost(maximumFrameDuration),
             )
         } else {
@@ -2249,7 +2247,10 @@ class CameraController(
         private const val SESSION_RECOVERY_DELAY_MS = 300L
         private const val STABLE_PREVIEW_RESET_DELAY_MS = 10_000L
         private const val PREVIEW_BASELINE_TIMEOUT_MS = 1_200L
-        private const val PREVIEW_BASELINE_STABLE_FRAME_COUNT = 3
+        // Two neutral AE results remove the extra visible pause while retaining one confirmation
+        // frame after the request transition.
+        private const val PREVIEW_BASELINE_STABLE_FRAME_COUNT = 2
+        private const val MANUAL_PREVIEW_TARGET_FRAME_DURATION_NS = 33_333_333L
         private const val MAX_TOTAL_RECOVERY_ATTEMPTS = 6
         private const val RAW_FAILURES_BEFORE_DOWNGRADE = 2
         private const val DEFAULT_PREVIEW_FPS_CEILING = 30

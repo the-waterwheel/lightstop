@@ -85,9 +85,11 @@ internal data class RecordedMeteringSession(
 
     companion object {
         fun from(record: ParameterRecordEntry): RecordedMeteringSession = RecordedMeteringSession(
-            // A Normal capture remains immutable, but once RAW review points exist the useful
-            // default presentation is Zone so those points and its gray placement rail are visible.
-            mode = if (record.mode == ParameterRecordMode.ZONE || record.zonePoints.isNotEmpty()) {
+            // Replaying Zone placement requires the compact RAW grid. Old records can retain
+            // saved point evidence without offering an interaction that cannot recalculate it.
+            mode = if (RecordedHistoryCapability.canRecalculateZone(record) &&
+                (record.mode == ParameterRecordMode.ZONE || record.zonePoints.isNotEmpty())
+            ) {
                 ParameterRecordMode.ZONE
             } else {
                 ParameterRecordMode.NORMAL

@@ -34,9 +34,9 @@ internal object LatitudeGeometryCalculator {
         val close = RectF(w - pad - headerTarget, 0f, w - pad, headerHeight)
 
         val remaining = (h - headerHeight - pad).coerceAtLeast(1f)
-        val railHeight = (remaining * 0.29f).coerceIn(
-            min(82f * density, remaining * 0.45f),
-            min(142f * density, remaining * 0.48f),
+        val railHeight = (remaining * 0.33f).coerceIn(
+            min(96f * density, remaining * 0.48f),
+            min(156f * density, remaining * 0.52f),
         )
         val rail = RectF(pad * 1.4f, headerHeight + gap, w - pad * 1.4f, headerHeight + gap + railHeight)
         val contentTop = rail.bottom + gap

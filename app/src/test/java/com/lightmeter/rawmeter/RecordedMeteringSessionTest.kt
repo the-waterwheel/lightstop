@@ -25,10 +25,24 @@ class RecordedMeteringSessionTest {
     @Test
     fun `normal RAW record reopens in Zone after review points were added`() {
         val point = RecordedZonePoint(1, 0.5f, 0.5f, 10.0, MeteringSource.RAW)
-        val record = record().copy(zonePoints = listOf(point))
+        val record = record().copy(
+            zonePoints = listOf(point),
+            rawGrid = RecordedRawGrid(2, 1, floatArrayOf(1f, 2f), 1f),
+        )
 
         assertEquals(ParameterRecordMode.NORMAL, record.mode)
         assertEquals(ParameterRecordMode.ZONE, RecordedMeteringSession.from(record).mode)
+    }
+
+    @Test
+    fun `zone history stays normal without a recorded raw grid`() {
+        val record = record().copy(
+            mode = ParameterRecordMode.ZONE,
+            zonePoints = listOf(RecordedZonePoint(1, 0.5f, 0.5f, 10.0, MeteringSource.RAW)),
+        )
+
+        assertEquals(false, RecordedHistoryCapability.canRecalculateZone(record))
+        assertEquals(ParameterRecordMode.NORMAL, RecordedMeteringSession.from(record).mode)
     }
 
     @Test

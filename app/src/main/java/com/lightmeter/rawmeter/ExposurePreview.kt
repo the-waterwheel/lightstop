@@ -2,7 +2,6 @@ package com.lightmeter.rawmeter
 
 import kotlin.math.roundToInt
 import kotlin.math.ceil
-import kotlin.math.floor
 import kotlin.math.pow
 
 enum class ExposurePreviewMode {
@@ -60,9 +59,9 @@ object ExposurePreviewMath {
         selection.selectedExposureEv100 - selection.previewCorrectionEv
 
     /**
-     * Converts the selected photographic EV into a realizable Camera2 sensor exposure. The phone
-     * aperture is fixed, so sensitivity is kept near the current preview value while shutter time
-     * absorbs the change; sensitivity is moved only when the advertised shutter range requires it.
+     * Converts the selected photographic EV into a responsive Camera2 preview exposure. Preview
+     * prioritizes shutter time and raises ISO before allowing a slow frame, so the viewfinder
+     * remains usable in low light instead of following the previous ISO-preferred behaviour.
      */
     fun manualExposure(
         targetCameraEv100: Double,
@@ -84,16 +83,19 @@ object ExposurePreviewMath {
         if (!exposureIsoProduct.isFinite() || exposureIsoProduct <= 0.0) return null
         val minimumSeconds = minimumExposureTimeNs / NANOSECONDS_PER_SECOND
         val maximumSeconds = maximumExposureTimeNs / NANOSECONDS_PER_SECOND
-        var sensitivity = preferredSensitivity.coerceIn(minimumSensitivity, maximumSensitivity)
+        val responsiveSeconds = minOf(maximumSeconds, PREFERRED_PREVIEW_SECONDS)
+        val hardSeconds = minOf(maximumSeconds, HARD_PREVIEW_SECONDS)
+        // `preferredSensitivity` remains part of the API for callers and diagnostics, but must
+        // not pull the preview toward a long shutter. In bright scenes ISO bottoms out; in dark
+        // scenes it rises before the shutter is allowed past the responsive target.
+        var sensitivity = ceil(exposureIsoProduct / responsiveSeconds).toInt()
+            .coerceIn(minimumSensitivity, maximumSensitivity)
         var seconds = exposureIsoProduct / sensitivity
-        if (seconds > maximumSeconds) {
-            sensitivity = ceil(exposureIsoProduct / maximumSeconds).toInt()
+        if (seconds > hardSeconds) seconds = hardSeconds
+        if (seconds < minimumSeconds) {
+            seconds = minimumSeconds
+            sensitivity = ceil(exposureIsoProduct / seconds).toInt()
                 .coerceIn(minimumSensitivity, maximumSensitivity)
-            seconds = exposureIsoProduct / sensitivity
-        } else if (seconds < minimumSeconds) {
-            sensitivity = floor(exposureIsoProduct / minimumSeconds).toInt()
-                .coerceIn(minimumSensitivity, maximumSensitivity)
-            seconds = exposureIsoProduct / sensitivity
         }
         val exposureTimeNs = (seconds * NANOSECONDS_PER_SECOND).toLong()
             .coerceIn(minimumExposureTimeNs, maximumExposureTimeNs)
@@ -138,4 +140,6 @@ object ExposurePreviewMath {
     }
 
     private const val NANOSECONDS_PER_SECOND = 1_000_000_000.0
+    private const val PREFERRED_PREVIEW_SECONDS = 1.0 / 30.0
+    private const val HARD_PREVIEW_SECONDS = 1.0 / 15.0
 }

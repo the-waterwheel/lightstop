@@ -197,14 +197,14 @@ internal class FilmSelectorView(
 
         val range = repository.effectiveRange(profile)
         paint.style = Paint.Style.FILL
-        paint.color = muted
-        paint.textSize = 11f * scaledDensity
+        paint.color = if (state.isDarkMode) Color.rgb(168, 168, 164) else Color.rgb(96, 96, 92)
+        paint.textSize = 13f * scaledDensity
         paint.textAlign = Paint.Align.LEFT
         val iso = profile.iso?.let { "  ISO $it" }.orEmpty()
         canvas.drawText(
             "${signed(range.shadowEv)} / ${signed(range.highlightEv)} EV$iso",
             row.left + 10f * density,
-            row.bottom - 14f * density,
+            row.bottom - 13f * density,
             paint,
         )
 

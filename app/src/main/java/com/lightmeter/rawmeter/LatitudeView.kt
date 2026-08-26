@@ -145,7 +145,7 @@ internal class LatitudeView(
             paint.color = Color.rgb(luma, luma, luma)
             canvas.drawRect(cell, paint)
             boldPaint.textAlign = Paint.Align.CENTER
-            boldPaint.textSize = 8.5f * scaledDensity
+            boldPaint.textSize = 10f * scaledDensity
             boldPaint.color = if (luma < 120) Color.rgb(225, 225, 222) else Color.rgb(20, 20, 20)
             centeredText(canvas, ZoneMeterSession.ZONE_LABELS[zone], cell.centerX(), cell.centerY(), boldPaint)
         }
@@ -161,8 +161,8 @@ internal class LatitudeView(
     }
 
     private fun drawFilmMarker(canvas: Canvas, x: Float, scale: RectF, ev: Double, isShadow: Boolean) {
-        val tabWidth = 40f * density
-        val tabHeight = 24f * density
+        val tabWidth = 48f * density
+        val tabHeight = 30f * density
         val tabTop = scale.bottom + 16f * density
         val preferredLeft = if (isShadow) x - tabWidth * 0.82f else x - tabWidth * 0.18f
         val tabLeft = preferredLeft.coerceIn(geometry.rail.left, geometry.rail.right - tabWidth)
@@ -187,7 +187,7 @@ internal class LatitudeView(
         paint.color = Color.rgb(22, 22, 22)
         canvas.drawRoundRect(tab, 3f * density, 3f * density, paint)
         boldPaint.textAlign = Paint.Align.CENTER
-        boldPaint.textSize = 9f * scaledDensity
+        boldPaint.textSize = 10.5f * scaledDensity
         boldPaint.color = Color.rgb(22, 22, 22)
         centeredText(
             canvas,
@@ -199,7 +199,7 @@ internal class LatitudeView(
     }
 
     private fun latitudeScaleRect(): RectF {
-        val height = (geometry.rail.height() * 0.38f).coerceIn(28f * density, 42f * density)
+        val height = (geometry.rail.height() * 0.42f).coerceIn(36f * density, 52f * density)
         return RectF(
             geometry.rail.left,
             geometry.rail.top + 5f * density,
@@ -262,7 +262,7 @@ internal class LatitudeView(
         canvas.drawRoundRect(rect, 7f * density, 7f * density, paint)
         boldPaint.textAlign = Paint.Align.CENTER
         boldPaint.color = actionText
-        boldPaint.textSize = min(11.5f * scaledDensity, rect.height() * 0.25f)
+        boldPaint.textSize = min(13f * scaledDensity, rect.height() * 0.27f)
         val fitted = TextUtils.ellipsize(
             label,
             boldPaint,
@@ -305,7 +305,7 @@ internal class LatitudeView(
 
         boldPaint.textAlign = Paint.Align.CENTER
         boldPaint.color = foreground
-        boldPaint.textSize = 9.5f * scaledDensity
+        boldPaint.textSize = 10.5f * scaledDensity
         canvas.drawText(
             localized("重置宽容度", "Reset"),
             rect.centerX(),
@@ -324,12 +324,12 @@ internal class LatitudeView(
         canvas.drawRoundRect(rect, 6f * density, 6f * density, paint)
         boldPaint.textAlign = Paint.Align.CENTER
         boldPaint.color = if (active) background else foreground
-        boldPaint.textSize = min(11f * scaledDensity, rect.height() * 0.30f)
+        boldPaint.textSize = min(12.5f * scaledDensity, rect.height() * 0.32f)
         val availableWidth = (rect.width() - 10f * density).coerceAtLeast(1f)
         if (boldPaint.measureText(label) <= availableWidth) {
             centeredText(canvas, label, rect.centerX(), rect.centerY(), boldPaint)
         } else {
-            boldPaint.textSize = min(10f * scaledDensity, rect.height() * 0.22f)
+            boldPaint.textSize = min(11f * scaledDensity, rect.height() * 0.24f)
             val lines = splitButtonLabel(label)
             val lineHeight = boldPaint.textSize * 1.15f
             lines.forEachIndexed { index, line ->

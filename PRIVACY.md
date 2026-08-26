@@ -16,7 +16,8 @@ continuously track location in the background.
 
 When the user saves a parameter record, the app stores a viewfinder JPEG,
 exposure parameters, time, notes, and an optional authorized location in
-app-private storage. If RAW recording is enabled, a DNG may also be stored.
+app-private storage. If RAW recording is enabled, a DNG and a compact RAW
+metering grid may also be stored so the saved Zone placement can be reviewed.
 Ordinary live-preview frames and unsaved meter readings are not retained as
 parameter photographs.
 
@@ -50,7 +51,8 @@ SDK，也不会由应用或开发者把相机画面、测光数据、位置、�
 并把获得的位置写入用户主动保存的参数记录；应用不在后台持续跟踪位置。
 
 当用户主动保存参数记录时，应用会在应用私有存储中保存取景 JPEG、曝光参数、
-时间、备注和用户选择记录的位置；启用 RAW 记录时还可能保存 DNG。普通取景
+时间、备注和用户选择记录的位置；启用 RAW 记录时还可能保存 DNG 与紧凑 RAW
+测光网格，以便日后复查已保存的 Zone 放置。普通取景
 和未保存的测光画面不会作为参数照片长期保留。
 
 Android 或设备厂商提供的系统备份、云备份和换机服务可能按照用户的系统设置，

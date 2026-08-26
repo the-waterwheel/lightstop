@@ -23,6 +23,7 @@ internal data class ZoneLayoutGeometry(
     val recordViewport: RectF,
     val clearTrack: RectF,
     val clearHandle: RectF,
+    val ev100Badge: RectF,
     val markButton: RectF,
 )
 
@@ -63,6 +64,7 @@ internal object ZoneLayoutCalculator {
         val recordViewport: RectF
         val clearTrack: RectF
         val clearHandle: RectF
+        val ev100Badge: RectF
         val markButton: RectF
         val aspect = if (state.frameLandscape) {
             state.frameFormat.landscapeAspect
@@ -157,7 +159,16 @@ internal object ZoneLayoutCalculator {
                 72f * density,
                 min(recordPanel.width() * 0.20f, recordPanel.height() * 0.34f),
             )
-            val markLeft = centeredActionLeft(recordPanel, recordContentRight, markSize, gap)
+            val badgeGap = 5f * density
+            val badgeSize = min(markSize, 52f * density)
+            val actionGroupSize = badgeSize + badgeGap + markSize
+            val markLeft = centeredActionLeft(recordPanel, recordContentRight, actionGroupSize, gap) + badgeSize + badgeGap
+            ev100Badge = RectF(
+                markLeft - badgeGap - badgeSize,
+                recordPanel.centerY() - badgeSize / 2f,
+                markLeft - badgeGap,
+                recordPanel.centerY() + badgeSize / 2f,
+            )
             markButton = RectF(
                 markLeft,
                 recordPanel.centerY() - markSize / 2f,
@@ -323,7 +334,16 @@ internal object ZoneLayoutCalculator {
                 68f * density,
                 min(recordPanel.width() * 0.18f, recordPanel.height() * 0.42f),
             )
-            val markLeft = centeredActionLeft(recordPanel, recordContentRight, markSize, gap)
+            val badgeGap = 5f * density
+            val badgeSize = min(markSize, 52f * density)
+            val actionGroupSize = badgeSize + badgeGap + markSize
+            val markLeft = centeredActionLeft(recordPanel, recordContentRight, actionGroupSize, gap) + badgeSize + badgeGap
+            ev100Badge = RectF(
+                markLeft - badgeGap - badgeSize,
+                recordPanel.centerY() - badgeSize / 2f,
+                markLeft - badgeGap,
+                recordPanel.centerY() + badgeSize / 2f,
+            )
             markButton = RectF(
                 markLeft,
                 recordPanel.centerY() - markSize / 2f,
@@ -367,6 +387,7 @@ internal object ZoneLayoutCalculator {
             recordViewport = recordViewport,
             clearTrack = clearTrack,
             clearHandle = clearHandle,
+            ev100Badge = ev100Badge,
             markButton = markButton,
             settingsButton = settingsButton,
             toolsButton = toolsButton,

@@ -296,14 +296,18 @@ internal class ParameterHistoryView(
         updateInteractionBounds: Boolean,
     ) {
         val drawnRect = drawImage(canvas, target, record.previewPath, updateInteractionBounds) ?: return
-        if (mode == ParameterRecordMode.ZONE) drawRecordedPoints(canvas, drawnRect, record.zonePoints)
+        if (mode == ParameterRecordMode.ZONE ||
+            (!RecordedHistoryCapability.canRecalculateZone(record) && record.zonePoints.isNotEmpty())
+        ) {
+            drawRecordedPoints(canvas, drawnRect, record.zonePoints)
+        }
     }
 
     private fun drawDetailText(canvas: Canvas, rect: RectF, record: ParameterRecordEntry) {
         val viewportBottom = geometry.metering.top - 5f * density
         val viewportHeight = (viewportBottom - rect.top).coerceAtLeast(0f)
-        val lineHeight = 18f * density
-        val noteRowHeight = 25f * density
+        val lineHeight = 22f * density
+        val noteRowHeight = 30f * density
         val parameterLines = buildList {
             record.capturedAtEpochMs?.let { add(dateFormat.format(Date(it))) }
             add(
@@ -328,20 +332,40 @@ internal class ParameterHistoryView(
         canvas.clipRect(rect.left, rect.top, rect.right, viewportBottom)
         paint.color = foreground
         paint.textAlign = Paint.Align.LEFT
-        paint.textSize = 10f * scaledDensity
-        var y = rect.top + 14f * density - detailScroll
+        paint.textSize = 11.5f * scaledDensity
+        var y = rect.top + 16f * density - detailScroll
         val textLeft = rect.left + 5f * density
         val textRight = rect.right - 5f * density
-        fun line(text: String, color: Int = foreground) {
+        fun line(
+            text: String,
+            color: Int = foreground,
+            textSize: Float = 11.5f,
+            typeface: Typeface = Typeface.create("sans-serif", Typeface.NORMAL),
+        ) {
             paint.color = color
+            paint.textSize = textSize * scaledDensity
+            paint.typeface = typeface
             val fitted = TextUtils.ellipsize(text, TextPaint(paint), textRight - textLeft, TextUtils.TruncateAt.END)
             canvas.drawText(fitted.toString(), textLeft, y, paint)
             y += lineHeight
         }
-        parameterLines.forEach(::line)
+        parameterLines.forEachIndexed { index, text ->
+            val emphasized = text.startsWith("EV100") ||
+                text.startsWith("胶片") || text.startsWith("Film") ||
+                text.startsWith("拍摄参数") || text.startsWith("Captured")
+            line(
+                text = text,
+                textSize = if (emphasized) 13f else 11.5f,
+                typeface = if (emphasized) Typeface.create("sans-serif-medium", Typeface.NORMAL) else Typeface.create("sans-serif", Typeface.NORMAL),
+            )
+        }
         if (record.notes.isNotEmpty()) {
             y += lineHeight
-            line(localized("备注", "Notes"))
+            line(
+                localized("备注", "Notes"),
+                textSize = 12f,
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL),
+            )
             paint.style = Paint.Style.STROKE
             paint.strokeWidth = 1f * density
             paint.color = muted
@@ -349,7 +373,8 @@ internal class ParameterHistoryView(
             record.notes.forEach { note ->
                 paint.style = Paint.Style.FILL
                 paint.color = foreground
-                paint.textSize = 10f * scaledDensity
+                paint.textSize = 13f * scaledDensity
+                paint.typeface = Typeface.create("sans-serif", Typeface.NORMAL)
                 val fitted = TextUtils.ellipsize(note, TextPaint(paint), textRight - textLeft, TextUtils.TruncateAt.END)
                 centered(canvas, fitted.toString(), textLeft, y - lineHeight * 0.48f + noteRowHeight / 2f, paint)
                 y += noteRowHeight
@@ -364,10 +389,12 @@ internal class ParameterHistoryView(
             val previousTypeface = paint.typeface
             val previousTextSize = paint.textSize
             paint.typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
-            paint.textSize = 8f * scaledDensity
+            paint.textSize = 9.5f * scaledDensity
             line(
                 localized("RAW 已保存 · 点击图片增减标点", "RAW saved · tap image to add/remove points"),
                 muted,
+                textSize = 9.5f,
+                typeface = Typeface.create("sans-serif-light", Typeface.NORMAL),
             )
             paint.typeface = previousTypeface
             paint.textSize = previousTextSize
@@ -536,7 +563,7 @@ internal class ParameterHistoryView(
             if (geometry.image.contains(x, y)) return Target.IMAGE
             if (geometry.metering.contains(x, y)) {
                 meteringTarget = detailPlayback?.let { playback ->
-                    meteringRenderer.targetAt(geometry.metering, playback.mode, x, y)
+                    meteringRenderer.targetAt(geometry.metering, detailWorkingRecord ?: return@let RecordedMeteringTarget.NONE, playback.mode, x, y)
                 } ?: RecordedMeteringTarget.NONE
                 return if (meteringTarget == RecordedMeteringTarget.NONE) Target.NONE else Target.METERING
             }
@@ -693,6 +720,9 @@ internal class ParameterHistoryView(
 
     private fun setPlaybackMode(mode: ParameterRecordMode) {
         val playback = detailPlayback ?: return
+        if (mode == ParameterRecordMode.ZONE &&
+            !RecordedHistoryCapability.canRecalculateZone(detailWorkingRecord ?: return)
+        ) return
         if (playback.mode == mode) return
         detailPlayback = playback.copy(mode = mode)
         invalidate()

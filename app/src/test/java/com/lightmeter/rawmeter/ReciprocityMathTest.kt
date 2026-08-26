@@ -86,7 +86,7 @@ class ReciprocityMathTest {
     }
 
     @Test
-    fun `calculation refuses inputs beyond the twenty four hour tool limit`() {
+    fun `calculation itself can evaluate beyond the ui limit`() {
         val power = method(
             type = ReciprocityMethodType.POWER,
             parameter = 1.3,
@@ -94,7 +94,7 @@ class ReciprocityMathTest {
         )
 
         assertEquals(
-            ReciprocityStatus.OUT_OF_RANGE,
+            ReciprocityStatus.CORRECTED,
             ReciprocityMath.calculate(power, ReciprocityShutterScale.MAX_SECONDS + 1.0).status,
         )
     }
@@ -150,12 +150,49 @@ class ReciprocityMathTest {
     }
 
     @Test
-    fun `final time readout contains total minutes and seconds only`() {
+    fun `final time readout keeps hours separate`() {
         assertEquals("00:05", ReciprocityTimeFormatter.minutesAndSeconds(5.4))
         assertEquals("02:06", ReciprocityTimeFormatter.minutesAndSeconds(125.6))
         assertEquals("120:00", ReciprocityTimeFormatter.minutesAndSeconds(7200.0))
+        assertEquals("02:00:00", ReciprocityTimeFormatter.resultReadout(7200.0))
         assertEquals("1/2", ReciprocityTimeFormatter.resultReadout(0.5))
         assertEquals("1/1.3", ReciprocityTimeFormatter.resultReadout(0.8))
+    }
+
+    @Test
+    fun `time readout provides aligned unit fields`() {
+        assertEquals(listOf("min", "s"), ReciprocityTimeReadout.from(61.0).units)
+        assertEquals(listOf("h", "min", "s"), ReciprocityTimeReadout.from(3661.0).units)
+        assertEquals("01:01", ReciprocityTimeReadout.from(61.0).text)
+        assertEquals("01:01:01", ReciprocityTimeReadout.from(3661.0).text)
+    }
+
+    @Test
+    fun `limit follows corrected result unless exact table data extends beyond one day`() {
+        val estimated = method(
+            type = ReciprocityMethodType.POWER,
+            parameter = 1.4,
+            start = 1.0,
+        )
+        assertTrue(
+            ReciprocityLimitPolicy.maximumInputSeconds(estimated, ExposureStep.FULL) <
+                ReciprocityShutterScale.MAX_SECONDS,
+        )
+
+        val exactLongTable = method(
+            type = ReciprocityMethodType.TABLE,
+            start = 1.0,
+            maximum = 100_000.0,
+            points = listOf(
+                ReciprocityPoint(10.0, 20.0, null),
+                ReciprocityPoint(100_000.0, 120_000.0, null),
+            ),
+        )
+        assertEquals(
+            100_000.0,
+            ReciprocityLimitPolicy.maximumInputSeconds(exactLongTable, ExposureStep.FULL),
+            0.0,
+        )
     }
 
     private fun method(

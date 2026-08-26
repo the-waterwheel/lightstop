@@ -47,8 +47,9 @@ internal class RecordedMeteringRenderer(
         paint.color = panel
         canvas.drawRoundRect(rect, 6f * density, 6f * density, paint)
         val geometry = geometry(rect, session.mode)
-        drawModeButton(canvas, geometry.normalMode, "NORMAL", session.mode == ParameterRecordMode.NORMAL)
-        drawModeButton(canvas, geometry.zoneMode, "ZONE", session.mode == ParameterRecordMode.ZONE)
+        val zoneEnabled = RecordedHistoryCapability.canRecalculateZone(record)
+        drawModeButton(canvas, geometry.normalMode, "NORMAL", session.mode == ParameterRecordMode.NORMAL, true)
+        drawModeButton(canvas, geometry.zoneMode, "ZONE", session.mode == ParameterRecordMode.ZONE, zoneEnabled)
         if (session.mode == ParameterRecordMode.ZONE) {
             drawZoneScale(canvas, geometry.zoneScale)
             drawMarkerRail(canvas, geometry.markerRail, record, session)
@@ -59,11 +60,18 @@ internal class RecordedMeteringRenderer(
         drawExposureScale(canvas, geometry.shutter, session.shutterCoordinate, false)
     }
 
-    fun targetAt(rect: RectF, mode: ParameterRecordMode, x: Float, y: Float): RecordedMeteringTarget {
+    fun targetAt(
+        rect: RectF,
+        record: ParameterRecordEntry,
+        mode: ParameterRecordMode,
+        x: Float,
+        y: Float,
+    ): RecordedMeteringTarget {
         val geometry = geometry(rect, mode)
         return when {
             geometry.normalMode.contains(x, y) -> RecordedMeteringTarget.NORMAL_MODE
-            geometry.zoneMode.contains(x, y) -> RecordedMeteringTarget.ZONE_MODE
+            RecordedHistoryCapability.canRecalculateZone(record) && geometry.zoneMode.contains(x, y) ->
+                RecordedMeteringTarget.ZONE_MODE
             geometry.aperture.contains(x, y) -> RecordedMeteringTarget.APERTURE
             geometry.shutter.contains(x, y) -> RecordedMeteringTarget.SHUTTER
             mode == ParameterRecordMode.ZONE &&
@@ -97,15 +105,30 @@ internal class RecordedMeteringRenderer(
         return Geometry(normal, zone, zoneScale, markerRail, aperture, shutter)
     }
 
-    private fun drawModeButton(canvas: Canvas, rect: RectF, label: String, selected: Boolean) {
+    private fun drawModeButton(
+        canvas: Canvas,
+        rect: RectF,
+        label: String,
+        selected: Boolean,
+        enabled: Boolean,
+    ) {
         paint.style = Paint.Style.FILL
-        paint.color = if (selected) red else surface
+        paint.color = when {
+            selected -> red
+            enabled -> surface
+            state.isDarkMode -> Color.rgb(55, 55, 53)
+            else -> Color.rgb(218, 218, 215)
+        }
         canvas.drawRoundRect(rect, 3f * density, 3f * density, paint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1f * density
-        paint.color = if (selected) red else foreground
+        paint.color = when {
+            selected -> red
+            enabled -> foreground
+            else -> muted
+        }
         canvas.drawRoundRect(rect, 3f * density, 3f * density, paint)
-        bold.color = if (selected) Color.WHITE else foreground
+        bold.color = if (selected) Color.WHITE else if (enabled) foreground else muted
         bold.textAlign = Paint.Align.CENTER
         bold.textSize = 10f * density
         centered(canvas, label, rect.centerX(), rect.centerY(), bold)
@@ -125,7 +148,12 @@ internal class RecordedMeteringRenderer(
         bold.textSize = 10f * density
         centered(
             canvas,
-            localized("场景复现 · EI ${record.ei}", "Scene reproduction · EI ${record.ei}"),
+            localized(
+                "场景复现 · EI ${record.ei}" +
+                    record.zonePoints.takeIf { it.isNotEmpty() }?.let { " · 已记录 ${it.size} 点" }.orEmpty(),
+                "Scene reproduction · EI ${record.ei}" +
+                    record.zonePoints.takeIf { it.isNotEmpty() }?.let { " · ${it.size} recorded" }.orEmpty(),
+            ),
             area.centerX(),
             area.centerY(),
             bold,

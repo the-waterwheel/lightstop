@@ -102,6 +102,10 @@ class ZoneSystemView(
     private val boldPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         typeface = Typeface.create("sans", Typeface.BOLD)
     }
+    private val ev100BadgeRenderer = Ev100BadgeRenderer(
+        density = density,
+        scaledDensity = resources.displayMetrics.scaledDensity,
+    )
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
 
     private var geometry: Geometry? = null
@@ -743,6 +747,7 @@ class ZoneSystemView(
         canvas.drawRect(g.recordPanel, paint)
 
         drawClearSlider(canvas, g)
+        ev100BadgeRenderer.draw(canvas, g.ev100Badge, Ev100Readouts.zone(session), state.isDarkMode, red)
         drawMarkButton(canvas, g.markButton)
 
         val rowHeight = 34f * density

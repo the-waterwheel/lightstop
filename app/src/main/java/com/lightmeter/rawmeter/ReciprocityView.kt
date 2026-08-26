@@ -60,9 +60,11 @@ internal class ReciprocityView(
     private val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
         typeface = Typeface.create("sans-serif", Typeface.NORMAL)
     }
+    private val timeRenderer = ReciprocityTimeRenderer(density, scaledDensity)
     private val background: Int get() = if (state.isDarkMode) Color.BLACK else Color.WHITE
     private val foreground: Int get() = if (state.isDarkMode) Color.rgb(218, 218, 214) else Color.rgb(20, 20, 20)
     private val muted: Int get() = if (state.isDarkMode) Color.rgb(70, 70, 68) else Color.rgb(166, 166, 162)
+    private val secondaryStrong: Int get() = if (state.isDarkMode) Color.rgb(164, 164, 160) else Color.rgb(96, 96, 92)
     private val panel: Int get() = if (state.isDarkMode) Color.rgb(42, 42, 40) else Color.rgb(235, 235, 232)
     private val actionSurface: Int get() = if (state.isDarkMode) Color.rgb(24, 24, 22) else Color.WHITE
     private val actionActiveSurface: Int get() = if (state.isDarkMode) Color.rgb(72, 72, 68) else Color.rgb(218, 218, 214)
@@ -100,6 +102,7 @@ internal class ReciprocityView(
         displayedCoordinate = ReciprocityShutterScale.nearestCoordinate(
             initialShutterCoordinate,
             state.shutterStep,
+            currentMaximumInputSeconds(),
         )
         initialized = true
         invalidate()
@@ -116,6 +119,7 @@ internal class ReciprocityView(
             repository.saveAppliedFilmId(profile.id)
             listener?.onAppliedReciprocityChanged(repository.methodForFilm(profile.id))
         }
+        clampDisplayedCoordinate()
         haptic()
         invalidate()
     }
@@ -127,6 +131,7 @@ internal class ReciprocityView(
     override fun onDraw(canvas: Canvas) {
         canvas.drawColor(background)
         if (!initialized) openPage(state.lockedShutterLogSeconds)
+        clampDisplayedCoordinate()
         drawHeader(canvas)
         drawShutterScale(canvas)
         drawFilmCard(canvas)
@@ -165,7 +170,7 @@ internal class ReciprocityView(
         paint.color = foreground
         canvas.drawRect(rect, paint)
 
-        val titleWidth = min(64f * density, rect.width() * 0.23f)
+        val titleWidth = titleWidth(rect)
         val content = if (state.isLeftHanded) {
             RectF(rect.left + 5f * density, rect.top, rect.right - titleWidth, rect.bottom)
         } else {
@@ -175,9 +180,9 @@ internal class ReciprocityView(
         val seconds = currentSeconds()
         boldPaint.textAlign = Paint.Align.CENTER
         boldPaint.color = foreground
-        boldPaint.textSize = 11f * scaledDensity
+        boldPaint.textSize = 13f * scaledDensity
         centeredText(canvas, "s", titleLeft + titleWidth * 0.20f, rect.centerY(), boldPaint)
-        boldPaint.textSize = 10f * scaledDensity
+        boldPaint.textSize = 12.5f * scaledDensity
         centeredText(
             canvas,
             ReciprocityTimeFormatter.scaleLabel(seconds),
@@ -199,9 +204,9 @@ internal class ReciprocityView(
         canvas.save()
         canvas.clipRect(content)
         paint.typeface = Typeface.create("sans-serif", Typeface.NORMAL)
-        paint.textSize = 7.5f * scaledDensity
+        paint.textSize = 8.5f * scaledDensity
         var lastLabelRight = content.left - 5f * density
-        ReciprocityShutterScale.ticks(state.shutterStep).forEach { tick ->
+        currentTicks().forEach { tick ->
             val x = content.centerX() + ((tick.coordinate - displayedCoordinate) * pixelsPerStop).toFloat()
             if (x !in content.left..content.right) return@forEach
             val color = if (tick.nominalSeconds + 1e-9 >= threshold) calculatedColor else preThresholdColor
@@ -231,7 +236,7 @@ internal class ReciprocityView(
         if (label != null) {
             paint.style = Paint.Style.FILL
             paint.typeface = Typeface.create("sans-serif", Typeface.NORMAL)
-            paint.textSize = 7.5f * scaledDensity
+            paint.textSize = 8.5f * scaledDensity
             paint.color = color
             centeredText(canvas, label, x, baselineY - 18f * density, paint)
         }
@@ -282,15 +287,16 @@ internal class ReciprocityView(
     private fun drawResult(canvas: Canvas) {
         val rect = geometry.result
         val result = currentResult()
-        val value = result.correctedSeconds?.let(ReciprocityTimeFormatter::resultReadout) ?: "--:--"
+        val readout = result.correctedSeconds?.let(ReciprocityTimeReadout::from)
         val valueY = rect.centerY() + 5f * density
-        boldPaint.textAlign = Paint.Align.CENTER
-        boldPaint.color = foreground
-        boldPaint.textSize = min(32f * scaledDensity, rect.height() * 0.48f)
-        while (boldPaint.textSize > 16f * scaledDensity && boldPaint.measureText(value) > rect.width() - 10f * density) {
-            boldPaint.textSize -= scaledDensity
+        if (readout == null) {
+            boldPaint.textAlign = Paint.Align.CENTER
+            boldPaint.color = foreground
+            boldPaint.textSize = min(32f * scaledDensity, rect.height() * 0.48f)
+            centeredText(canvas, "--:--", rect.centerX(), valueY, boldPaint)
+        } else {
+            timeRenderer.draw(canvas, rect, readout, foreground, secondaryStrong)
         }
-        centeredText(canvas, value, rect.centerX(), valueY, boldPaint)
 
         if (result.estimated) {
             textPaint.textAlign = Paint.Align.CENTER
@@ -343,7 +349,7 @@ internal class ReciprocityView(
         canvas.drawRoundRect(rect, 7f * density, 7f * density, paint)
         boldPaint.textAlign = Paint.Align.CENTER
         boldPaint.color = actionText
-        boldPaint.textSize = min(11f * scaledDensity, rect.height() * 0.19f)
+        boldPaint.textSize = min(13f * scaledDensity, rect.height() * 0.23f)
         val label = if (applied) {
             localized("取消应用到测光", "Cancel metering application")
         } else {
@@ -362,7 +368,7 @@ internal class ReciprocityView(
         canvas.drawRoundRect(rect, 6f * density, 6f * density, paint)
         boldPaint.textAlign = Paint.Align.CENTER
         boldPaint.color = foreground
-        boldPaint.textSize = min(10.5f * scaledDensity, rect.height() * 0.27f)
+        boldPaint.textSize = min(12f * scaledDensity, rect.height() * 0.30f)
         drawWrappedCenteredText(canvas, label, rect, boldPaint)
     }
 
@@ -385,7 +391,7 @@ internal class ReciprocityView(
                 if (abs(event.x - touchStartX) > touchSlop || abs(event.y - touchStartY) > touchSlop) moved = true
                 if (touchTarget == TouchTarget.SCALE) {
                     val content = scaleContent()
-                    val all = ReciprocityShutterScale.ticks(state.shutterStep)
+                    val all = currentTicks()
                     displayedCoordinate = (
                         touchStartCoordinate - (event.x - touchStartX) / pixelsPerStop(content)
                         ).coerceIn(all.first().coordinate, all.last().coordinate)
@@ -454,7 +460,11 @@ internal class ReciprocityView(
     }
 
     private fun snapToNearestTick() {
-        val target = ReciprocityShutterScale.nearestCoordinate(displayedCoordinate, state.shutterStep)
+        val target = ReciprocityShutterScale.nearestCoordinate(
+            displayedCoordinate,
+            state.shutterStep,
+            currentMaximumInputSeconds(),
+        )
         val start = displayedCoordinate
         coordinateAnimator?.cancel()
         coordinateAnimator = ValueAnimator.ofFloat(start.toFloat(), target.toFloat()).apply {
@@ -473,6 +483,7 @@ internal class ReciprocityView(
     private fun currentSeconds(): Double = ReciprocityShutterScale.valueForCoordinate(
         displayedCoordinate,
         state.shutterStep,
+        currentMaximumInputSeconds(),
     )
 
     private fun currentResult(): ReciprocityResult = ReciprocityMath.calculate(currentMethod(), currentSeconds())
@@ -484,7 +495,7 @@ internal class ReciprocityView(
 
     private fun scaleContent(): RectF {
         val rect = geometry.scale
-        val titleWidth = min(64f * density, rect.width() * 0.23f)
+        val titleWidth = titleWidth(rect)
         return if (state.isLeftHanded) {
             RectF(rect.left + 5f * density, rect.top, rect.right - titleWidth, rect.bottom)
         } else {
@@ -494,7 +505,7 @@ internal class ReciprocityView(
 
     private fun pixelsPerStop(content: RectF): Double = max(58f * density, content.width() / 4.8f).toDouble()
 
-    private fun nearestTickIndex(coordinate: Double): Int = ReciprocityShutterScale.ticks(state.shutterStep)
+    private fun nearestTickIndex(coordinate: Double): Int = currentTicks()
         .let { ticks ->
             ticks.indices.minByOrNull { abs(ticks[it].coordinate - coordinate) } ?: 0
         }
@@ -546,9 +557,27 @@ internal class ReciprocityView(
     private fun updateContentDescription() {
         val film = latitudeRepository.find(selectedFilmId)?.displayName
             ?: localized("未选择胶片", "No film selected")
-        val result = currentResult().correctedSeconds?.let(ReciprocityTimeFormatter::resultReadout) ?: "--:--"
+        val readout = currentResult().correctedSeconds?.let(ReciprocityTimeReadout::from)
+        val result = readout?.spoken(state.menuLanguage == MenuLanguage.CHINESE) ?: "--:--"
         contentDescription = "$film, $result"
     }
+
+    private fun currentMaximumInputSeconds(): Double = ReciprocityLimitPolicy.maximumInputSeconds(
+        currentMethod(),
+        state.shutterStep,
+    )
+
+    private fun currentTicks(): List<ReciprocityShutterTick> = ReciprocityShutterScale.ticks(
+        state.shutterStep,
+        currentMaximumInputSeconds(),
+    )
+
+    private fun clampDisplayedCoordinate() {
+        val ticks = currentTicks()
+        displayedCoordinate = displayedCoordinate.coerceIn(ticks.first().coordinate, ticks.last().coordinate)
+    }
+
+    private fun titleWidth(rect: RectF): Float = min(82f * density, rect.width() * 0.26f)
 
     private fun localized(chinese: String, english: String): String =
         if (state.menuLanguage == MenuLanguage.ENGLISH) english else chinese

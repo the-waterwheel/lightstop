@@ -63,6 +63,7 @@ class DepthOfFieldView(
     private val background: Int get() = if (state.isDarkMode) Color.BLACK else Color.WHITE
     private val foreground: Int get() = if (state.isDarkMode) Color.rgb(224, 224, 220) else Color.rgb(20, 20, 20)
     private val muted: Int get() = if (state.isDarkMode) Color.rgb(96, 96, 92) else Color.rgb(190, 190, 186)
+    private val secondaryStrong: Int get() = if (state.isDarkMode) Color.rgb(164, 164, 160) else Color.rgb(106, 106, 102)
     private val panel: Int get() = if (state.isDarkMode) Color.rgb(48, 48, 46) else Color.rgb(224, 224, 220)
     private val red = Color.rgb(211, 43, 43)
 
@@ -299,10 +300,10 @@ class DepthOfFieldView(
                 // makes both dial faces rotate with the finger instead of against it.
                 val angle = baseAngle + (offset + visualOffset.coerceIn(-1f, 1f)) * 12f
                 val radians = Math.toRadians(angle.toDouble())
-                val inner = radius - if (offset == 0) 11f * density else 7f * density
+                val inner = radius - if (offset == 0) 10f * density else 7f * density
                 val outer = radius - 2f * density
-                paint.strokeWidth = if (offset == 0) 2.2f * density else 0.9f * density
-                paint.color = if (offset == 0) red else muted
+                paint.strokeWidth = if (offset == 0) 1.35f * density else 0.9f * density
+                paint.color = muted
                 canvas.drawLine(
                     centerX + cos(radians).toFloat() * inner,
                     centerY + sin(radians).toFloat() * inner,
@@ -315,15 +316,24 @@ class DepthOfFieldView(
 
         boldPaint.color = foreground
         boldPaint.textAlign = Paint.Align.CENTER
-        boldPaint.textSize = (radius / density * 0.20f).coerceIn(12f, 17f) * scaledDensity
+        boldPaint.textSize = (radius / density * 0.23f).coerceIn(15f, 20f) * scaledDensity
         drawTextCentered(canvas, value, centerX, centerY + radius * 0.10f, boldPaint)
 
-        paint.style = Paint.Style.FILL
+        // The top red mark belongs to the dial housing; only gray tick marks rotate.
+        paint.style = Paint.Style.STROKE
         paint.color = red
-        canvas.drawCircle(centerX, bounds.top + 2.5f * density, 2.4f * density, paint)
-        paint.color = muted
+        paint.strokeWidth = 2.4f * density
+        canvas.drawLine(centerX, bounds.top + 2f * density, centerX, bounds.top + 12f * density, paint)
+        paint.style = Paint.Style.FILL
+        path.reset()
+        path.moveTo(centerX - 4f * density, bounds.top + 3f * density)
+        path.lineTo(centerX + 4f * density, bounds.top + 3f * density)
+        path.lineTo(centerX, bounds.top + 8f * density)
+        path.close()
+        canvas.drawPath(path, paint)
+        paint.color = secondaryStrong
         paint.textAlign = Paint.Align.CENTER
-        paint.textSize = 8.5f * scaledDensity
+        paint.textSize = 10.5f * scaledDensity
         canvas.drawText(caption, centerX, centerY + radius * 0.50f, paint)
     }
 
@@ -336,13 +346,13 @@ class DepthOfFieldView(
         paint.color = foreground
         canvas.drawRoundRect(bounds, 5f * density, 5f * density, paint)
         paint.style = Paint.Style.FILL
-        paint.color = muted
+        paint.color = secondaryStrong
         paint.textAlign = Paint.Align.CENTER
-        paint.textSize = 8.5f * scaledDensity
+        paint.textSize = 10.5f * scaledDensity
         canvas.drawText(title, bounds.centerX(), bounds.top + bounds.height() * 0.34f, paint)
         boldPaint.color = foreground
         boldPaint.textAlign = Paint.Align.CENTER
-        boldPaint.textSize = 10.5f * scaledDensity
+        boldPaint.textSize = 12.5f * scaledDensity
         canvas.drawText(value, bounds.centerX(), bounds.bottom - bounds.height() * 0.20f, boldPaint)
     }
 
@@ -558,12 +568,12 @@ class DepthOfFieldView(
         paint.style = Paint.Style.FILL
         paint.textAlign = Paint.Align.CENTER
         paint.color = color
-        paint.textSize = 9.5f * scaledDensity
+        paint.textSize = 11.5f * scaledDensity
         canvas.drawText(title, x, y, paint)
         boldPaint.textAlign = Paint.Align.CENTER
         boldPaint.color = foreground
-        boldPaint.textSize = 12.5f * scaledDensity
-        canvas.drawText(value, x, y + 17f * density, boldPaint)
+        boldPaint.textSize = 15.5f * scaledDensity
+        canvas.drawText(value, x, y + 20f * density, boldPaint)
     }
 
     private fun drawFlower(canvas: Canvas, x: Float, y: Float) {

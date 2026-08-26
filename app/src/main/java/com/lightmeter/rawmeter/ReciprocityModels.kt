@@ -45,14 +45,11 @@ internal data class ReciprocityResult(
     val estimated: Boolean get() = status == ReciprocityStatus.ESTIMATED
 }
 
-/** Uses exact manufacturer data in-range and explicitly marked curve estimates up to 24 hours. */
+/** Uses exact manufacturer data in-range and explicitly marks curve estimates outside it. */
 internal object ReciprocityMath {
     fun calculate(method: ReciprocityMethod?, inputSeconds: Double): ReciprocityResult {
         val input = inputSeconds.coerceAtLeast(MIN_SECONDS)
         if (method == null) return unavailable(input)
-        if (input > ReciprocityShutterScale.MAX_SECONDS + EPSILON) {
-            return ReciprocityResult(input, null, null, ReciprocityStatus.OUT_OF_RANGE)
-        }
         if (input <= method.noCompensationSeconds + EPSILON) {
             return ReciprocityResult(input, input, null, ReciprocityStatus.UNCHANGED)
         }
@@ -162,17 +159,7 @@ internal object ReciprocityTimeFormatter {
         return String.format(Locale.US, "%02d:%02d", rounded / 60, rounded % 60)
     }
 
-    fun resultReadout(seconds: Double): String = if (seconds > 0.0 && seconds < 1.0) {
-        val inverse = 1.0 / seconds.coerceAtLeast(1e-9)
-        val denominator = if (inverse < 10.0 && abs(inverse - inverse.roundToInt()) > 0.04) {
-            String.format(Locale.US, "%.1f", inverse)
-        } else {
-            inverse.roundToInt().toString()
-        }
-        "1/$denominator"
-    } else {
-        minutesAndSeconds(seconds)
-    }
+    fun resultReadout(seconds: Double): String = ReciprocityTimeReadout.from(seconds).text
 
     fun scaleLabel(seconds: Double): String = when {
         seconds >= 3600.0 -> {
@@ -200,16 +187,20 @@ internal data class ReciprocityShutterTick(
 internal object ReciprocityShutterScale {
     const val MAX_SECONDS = 24.0 * 60.0 * 60.0
 
-    fun ticks(step: ExposureStep): List<ReciprocityShutterTick> {
+    fun ticks(
+        step: ExposureStep,
+        maximumSeconds: Double = MAX_SECONDS,
+    ): List<ReciprocityShutterTick> {
+        val cappedMaximum = maximumSeconds.coerceIn(MIN_SECONDS, MAX_SAFE_SECONDS)
         val base = ExposureMath.shutterTicks(step).mapIndexed { index, tick ->
             ReciprocityShutterTick(
                 coordinate = tick.coordinate,
                 nominalSeconds = tick.nominalValue,
                 major = index % step.denominator == 0,
             )
-        }
+        }.filter { it.nominalSeconds <= cappedMaximum + 1e-9 }
         val firstLongCoordinate = ExposureMath.maxMarkedShutterLogSeconds + 1.0 / step.denominator
-        val maximumCoordinate = ExposureMath.log2(MAX_SECONDS)
+        val maximumCoordinate = ExposureMath.log2(cappedMaximum)
         val extended = buildList {
             var coordinate = firstLongCoordinate
             while (coordinate <= maximumCoordinate + 1e-9) {
@@ -223,35 +214,55 @@ internal object ReciprocityShutterScale {
                 )
                 coordinate += 1.0 / step.denominator
             }
-            if (none { abs(it.nominalSeconds - MAX_SECONDS) < 1e-6 }) {
+            if (none { abs(it.nominalSeconds - cappedMaximum) < 1e-6 }) {
                 add(
                     ReciprocityShutterTick(
                         coordinate = maximumCoordinate,
-                        nominalSeconds = MAX_SECONDS,
+                        nominalSeconds = cappedMaximum,
                         major = true,
                     ),
                 )
             }
         }
-        return (base + extended).sortedBy(ReciprocityShutterTick::coordinate)
+        return (base + extended).ifEmpty {
+            listOf(
+                ReciprocityShutterTick(
+                    coordinate = ExposureMath.log2(cappedMaximum),
+                    nominalSeconds = cappedMaximum,
+                    major = true,
+                ),
+            )
+        }.sortedBy(ReciprocityShutterTick::coordinate)
     }
 
-    fun nearestCoordinate(target: Double, step: ExposureStep): Double = ticks(step)
+    fun nearestCoordinate(
+        target: Double,
+        step: ExposureStep,
+        maximumSeconds: Double = MAX_SECONDS,
+    ): Double = ticks(step, maximumSeconds)
         .minByOrNull { abs(it.coordinate - target) }
         ?.coordinate
         ?: target
 
-    fun valueForCoordinate(coordinate: Double, step: ExposureStep): Double {
-        val all = ticks(step)
+    fun valueForCoordinate(
+        coordinate: Double,
+        step: ExposureStep,
+        maximumSeconds: Double = MAX_SECONDS,
+    ): Double {
+        val all = ticks(step, maximumSeconds)
         all.firstOrNull { abs(it.coordinate - coordinate) < 1e-4 }?.let {
             return it.nominalSeconds
         }
         return 2.0.pow(coordinate.coerceIn(all.first().coordinate, all.last().coordinate))
     }
 
-    fun coordinateForSeconds(seconds: Double, step: ExposureStep): Double {
-        val coordinate = ExposureMath.log2(seconds.coerceIn(1.0 / 8000.0, MAX_SECONDS))
-        return nearestCoordinate(coordinate, step)
+    fun coordinateForSeconds(
+        seconds: Double,
+        step: ExposureStep,
+        maximumSeconds: Double = MAX_SECONDS,
+    ): Double {
+        val coordinate = ExposureMath.log2(seconds.coerceIn(MIN_SECONDS, maximumSeconds))
+        return nearestCoordinate(coordinate, step, maximumSeconds)
     }
 
     private fun roundedLongSeconds(seconds: Double): Double = when {
@@ -260,4 +271,7 @@ internal object ReciprocityShutterScale {
         seconds < 3600.0 -> (seconds / 30.0).roundToInt() * 30.0
         else -> (seconds / 60.0).roundToInt() * 60.0
     }
+
+    private const val MIN_SECONDS = 1.0 / 8000.0
+    private const val MAX_SAFE_SECONDS = 365.0 * 24.0 * 60.0 * 60.0
 }

@@ -10,8 +10,8 @@ it automatically falls back to metering the ISP-processed preview.
 
 The app does not request Internet or shared-storage access and does not include
 analytics or advertising SDKs. It can save a user-requested parameter record in
-app-private storage, including a viewfinder JPEG, optional DNG, exposure data,
-notes, and an optional authorized location. Android or device-manufacturer
+app-private storage, including a viewfinder JPEG, optional DNG and compact RAW
+metering grid, exposure data, notes, and an optional authorized location. Android or device-manufacturer
 backup and transfer services can copy that private data according to the user's
 system settings; the app and its developer do not upload or access those copies.
 
@@ -55,6 +55,10 @@ code.
   at most 250 ms, then try a strictly timestamp-paired displayed-preview sample.
 - Preview requests never force 60 fps. They select an advertised range at or
   below 30 fps and can retry at 24 fps or without an explicit frame-rate range.
+- Manual exposure preview prioritizes a responsive shutter (normally at least
+  1/30 s, no slower than 1/15 s in low light) and raises ISO first. Metering
+  restores neutral AE before sampling so an exposure-preview frame is never
+  mistaken for a formal reading.
 - YUV is targeted only while Zone tracking or a compatible sample needs it;
   repeating preview requests pause during RAW capture and resume afterwards.
 - Camera-session recovery from full RAW + tracking to RAW-only, compatible
@@ -82,6 +86,9 @@ code.
 - Aperture and shutter scales in full, half, or third stops.
 - Aperture or shutter locking while preserving the continuous exposure
   relationship of the dependent scale.
+- The reciprocity calculator caps ordinary corrected results at 24 hours,
+  retains a manufacturer-defined exact-data cutoff when that data explicitly
+  extends further, and labels multi-part results with `h`, `min`, and `s`.
 - Chinese and English menus, light and dark themes, and complete right- or
   left-handed layouts.
 - A bilingual About screen with the application version, AI-assisted
@@ -115,6 +122,8 @@ code.
   returns to the scene.
 - Deferred OpenCV initialization: native tracking resources are created only
   when Zone mode is first entered.
+- Saved-record Zone replay is enabled only when its compact RAW metering grid
+  was recorded; historical point evidence remains visible but read-only without it.
 - Camera-thread backpressure and a reusable three-slot Y-plane buffer pool to
   avoid allocating a full frame-sized `ByteArray` for every incoming frame.
 

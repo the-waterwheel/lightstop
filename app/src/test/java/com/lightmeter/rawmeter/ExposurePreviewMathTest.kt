@@ -66,8 +66,8 @@ class ExposurePreviewMathTest {
             maximumSensitivity = 3_200,
         )!!
 
-        assertEquals(3_906_250L, exposure.exposureTimeNs)
-        assertEquals(100, exposure.sensitivity)
+        assertEquals(7_812_500L, exposure.exposureTimeNs)
+        assertEquals(50, exposure.sensitivity)
         assertEquals(10.0, exposure.appliedCameraEv100, 0.0001)
         assertFalse(exposure.clamped)
     }
@@ -85,7 +85,7 @@ class ExposurePreviewMathTest {
         )!!
 
         assertEquals(800, exposure.sensitivity)
-        assertEquals(1_000_000_000L, exposure.exposureTimeNs)
+        assertEquals(66_666_666L, exposure.exposureTimeNs)
         assertTrue(exposure.clamped)
     }
 

@@ -60,6 +60,10 @@ class InstrumentView(
         typeface = Typeface.create("sans", Typeface.BOLD)
     }
     private val exposureRenderer = InstrumentExposureRenderer(state, density)
+    private val ev100BadgeRenderer = Ev100BadgeRenderer(
+        density = density,
+        scaledDensity = resources.displayMetrics.scaledDensity,
+    )
     private var geometry: LayoutGeometry? = null
     private var touchTarget = TouchTarget.NONE
     private var lastDialAngle = 0f
@@ -120,6 +124,7 @@ class InstrumentView(
         drawCameraOverlay(canvas, g)
         drawExposureRows(canvas, g)
         drawDial(canvas, g)
+        ev100BadgeRenderer.draw(canvas, g.ev100Badge, Ev100Readouts.normal(state), state.isDarkMode, red)
         drawMeterButton(canvas, g)
         drawStatus(canvas, g)
     }
