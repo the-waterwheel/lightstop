@@ -9,6 +9,9 @@ import kotlin.math.max
 
 /** Builds an aspect-preserving TextureView transform for every frame shape and orientation. */
 internal object CameraPreviewTransform {
+    fun shouldMirrorPreview(lensFacing: Int): Boolean =
+        lensFacing == CameraCharacteristics.LENS_FACING_FRONT
+
     /** Mirrors Android's documented Camera2 sensor-to-display relative rotation formula. */
     fun relativeRotationDegrees(
         sensorOrientationDegrees: Int,
@@ -49,6 +52,7 @@ internal object CameraPreviewTransform {
         displayRotation: Int,
         displayZoom: Float,
         bufferSize: Size,
+        lensFacing: Int = CameraCharacteristics.LENS_FACING_BACK,
     ): Matrix {
         val matrix = Matrix()
         val viewRect = RectF(0f, 0f, viewWidth.toFloat(), viewHeight.toFloat())
@@ -92,6 +96,9 @@ internal object CameraPreviewTransform {
             }
         }
         matrix.postScale(displayZoom, displayZoom, centerX, centerY)
+        if (shouldMirrorPreview(lensFacing)) {
+            matrix.postScale(-1f, 1f, centerX, centerY)
+        }
         return matrix
     }
 }

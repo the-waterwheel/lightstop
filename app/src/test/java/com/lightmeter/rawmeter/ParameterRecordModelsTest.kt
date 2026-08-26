@@ -25,6 +25,20 @@ class ParameterRecordModelsTest {
     }
 
     @Test
+    fun `raw point lookup preserves front preview mirroring`() {
+        val grid = RecordedRawGrid(
+            width = 2,
+            height = 1,
+            values = floatArrayOf(1f, 2f),
+            referenceLuma = 1f,
+            screenToSensorMirrored = true,
+        )
+
+        assertEquals(1.0, requireNotNull(grid.relativeEvAt(0f, 0.5f)), 0.0001)
+        assertEquals(0.0, requireNotNull(grid.relativeEvAt(1f, 0.5f)), 0.0001)
+    }
+
+    @Test
     fun `category summarizes one or several film stocks`() {
         val first = record("1", "Portra 400")
         val same = record("2", "Portra 400")

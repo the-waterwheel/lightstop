@@ -352,6 +352,7 @@ internal class ParameterRecordRepository(context: Context) {
         .put("height", height)
         .put("reference", referenceLuma.toDouble())
         .put("screenToSensorRotation", screenToSensorRotationDegrees)
+        .put("screenToSensorMirrored", screenToSensorMirrored)
         .put("cropLeft", cropLeft.toDouble())
         .put("cropTop", cropTop.toDouble())
         .put("cropRight", cropRight.toDouble())
@@ -415,7 +416,8 @@ internal class ParameterRecordRepository(context: Context) {
             height,
             FloatArray(values.length()) { values.optDouble(it).toFloat() },
             optDouble("reference").toFloat(),
-            optInt("screenToSensorRotation", 0),
+            screenToSensorRotationDegrees = optInt("screenToSensorRotation", 0),
+            screenToSensorMirrored = optBoolean("screenToSensorMirrored", false),
             optDouble("cropLeft", 0.0).toFloat(),
             optDouble("cropTop", 0.0).toFloat(),
             optDouble("cropRight", 1.0).toFloat(),

@@ -34,28 +34,34 @@ code.
   automatic/main non-RAW routes retained as fallbacks.
 - A common advertised 4:3 preview is preferred for logical and physical routes,
   avoiding viewport aspect changes when Automatic camera and Main camera use the same lens.
-- RAW-first metering with a capability-driven ISP-preview fallback. LEGACY
-  hardware-level devices are treated as non-RAW, and APPROXIMATE-sync logical
-  cameras prefer the logical route over physical routing.
+- RAW-first metering with a capability-driven ISP-preview fallback. LEGACY and
+  unsupported RAW CFA devices are treated as non-RAW. A fixed physical lens is
+  attempted independently of a logical camera's `APPROXIMATE` sync declaration;
+  API 29+ logical routes also track the active physical lens reported per frame.
 - Three bilingual metering modes: **High accuracy (recommended)**, **Stable**
   (RAW retained with processed-stream requests isolated), and **Compatibility
   mode** (one ISP-processed sample and no RAW resources).
-- Timestamp pairing between `Image` and `CaptureResult`, exact-first with a
-  bounded half-frame-period tolerance for vendor buffer/metadata offsets.
+- Formal RAW, YUV, DNG, colour-temperature, and vignetting operations accept
+  only exact `Image`/`CaptureResult` sensor-timestamp pairs. Displayed-preview
+  fallback verifies a matching `SurfaceTexture` timestamp before and after its
+  bitmap capture, otherwise it rejects the sample rather than using stale metadata.
 - Bayer black-level subtraction, white-level normalization, per-channel median
   statistics, clipping detection, white-balance/color-matrix conversion, and
   EV100 calculation.
 - RAW uses one frame below ISO 500, two frames from ISO 500 through 1199, and
   three frames at ISO 1200 or above. Only one full-size RAW image is in flight
   at a time, reducing delay and motion error.
-- Single-frame preview metering: try up to three ISP-processed YUV frames
-  for at most 250 ms, then immediately use one displayed-preview sample.
+- Single-frame preview metering: try up to three ISP-processed YUV frames for
+  at most 250 ms, then try a strictly timestamp-paired displayed-preview sample.
 - Preview requests never force 60 fps. They select an advertised range at or
   below 30 fps and can retry at 24 fps or without an explicit frame-rate range.
 - YUV is targeted only while Zone tracking or a compatible sample needs it;
   repeating preview requests pause during RAW capture and resume afterwards.
 - Camera-session recovery from full RAW + tracking to RAW-only, compatible
   YUV, preview-only, and finally a logical-camera route when appropriate.
+- Bounded preview-health detection for repeated periodic green/black-white
+  stripe failures. A recovered safe preview must pass three further samples;
+  this does not classify real green or dark scenes as camera failures.
 - Spot and center-weighted metering.
 - Per-camera calibration displays separate **RAW stream** and **Preview stream**
   corrections. High accuracy and Stable calibrate RAW first and preview second;
@@ -65,7 +71,8 @@ code.
 - Two-dimensional vignetting calibration for RAW-capable cameras, with an
   uncropped full-stream preview and persistent access to its action/history UI.
 - Electronic preview crop and matching metering ROI without requesting Camera2
-  digital zoom or silently switching lenses.
+  digital zoom or silently switching lenses. Front-camera preview mirroring is
+  inverted again before RAW touch metering or saved RAW-grid lookup.
 
 ### Exposure instrument
 
@@ -152,6 +159,10 @@ app/src/main/java/com/lightmeter/rawmeter
 ├─ CameraCatalog.kt                  logical/physical camera discovery
 ├─ CameraStreamSelector.kt           preview, tracking stream, and FPS choice
 ├─ CameraPreviewTransform.kt         preview orientation and crop transform
+├─ ScreenToSensorCoordinateTransform.kt  shared front-mirror/rotation mapping
+├─ PreviewHealthAnalyzer.kt          bounded green/stripe/frozen-frame analysis
+├─ PreviewHealthSampler.kt           UI-thread preview health sampling
+├─ ParameterRecordTransaction.kt     crash-recovery journal for record commits
 ├─ MeterModels.kt                    state, exposure scales, persistence
 ├─ MeteringAnalysis.kt               RAW/ISP analysis, ROI, EV conversion
 ├─ MeteringFusion.kt                 robust multi-frame fusion
@@ -295,9 +306,10 @@ See [PRIVACY.md](PRIVACY.md) for the bilingual privacy statement.
 ## Testing and device compatibility
 
 Pure logic is covered by unit tests for handedness-sensitive mode transitions,
-camera recovery, compatible-metering limits, deferred tracker creation, buffer
-reuse and ownership, stride-aware Y-plane copying, layout coordinate stability,
-and exposure-compensation behavior.
+camera recovery, strict result pairing, RAW-CFA eligibility, preview-health
+analysis, parameter-record recovery, front/back rotation and mirroring,
+deferred tracker creation, buffer reuse and ownership, stride-aware Y-plane
+copying, layout coordinate stability, and exposure-compensation behavior.
 
 Camera2, RAW streams, logical/physical camera combinations, vendor-specific
 sensor metadata, tracking quality, and layout changes must also be verified on

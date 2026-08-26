@@ -25,6 +25,8 @@ data class RecordedRawGrid(
     val values: FloatArray,
     val referenceLuma: Float,
     val screenToSensorRotationDegrees: Int = 0,
+    /** Whether the user-facing preview was mirrored when this grid was recorded. */
+    val screenToSensorMirrored: Boolean = false,
     val cropLeft: Float = 0f,
     val cropTop: Float = 0f,
     val cropRight: Float = 1f,
@@ -50,14 +52,10 @@ data class RecordedRawGrid(
 
     private fun sampledValueAt(x: Float, y: Float): Float? {
         if (width <= 0 || height <= 0 || values.size != width * height) return null
-        val screenX = x.coerceIn(0f, 1f)
-        val screenY = y.coerceIn(0f, 1f)
-        val (sensorX, sensorY) = when (((screenToSensorRotationDegrees % 360) + 360) % 360) {
-            90 -> screenY to (1f - screenX)
-            180 -> (1f - screenX) to (1f - screenY)
-            270 -> (1f - screenY) to screenX
-            else -> screenX to screenY
-        }
+        val (sensorX, sensorY) = ScreenToSensorCoordinateTransform(
+            screenToSensorRotationDegrees,
+            screenToSensorMirrored,
+        ).map(x, y)
         val mappedX = cropLeft + sensorX * (cropRight - cropLeft)
         val mappedY = cropTop + sensorY * (cropBottom - cropTop)
         val column = (mappedX.coerceIn(0f, 1f) * (width - 1)).toInt()

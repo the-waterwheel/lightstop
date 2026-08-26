@@ -18,7 +18,7 @@ internal object RecordedRawGridSampler {
         characteristics: CameraCharacteristics,
         sensorFrameAspect: Float,
         zoom: Float,
-        screenToSensorRotationDegrees: Int,
+        screenToSensorTransform: ScreenToSensorCoordinateTransform,
     ): RecordedRawGrid? {
         val plane = image.planes.firstOrNull() ?: return null
         if (image.width <= 0 || image.height <= 0 || plane.pixelStride < 2) return null
@@ -82,7 +82,8 @@ internal object RecordedRawGridSampler {
             GRID_HEIGHT,
             values,
             reference,
-            screenToSensorRotationDegrees,
+            screenToSensorRotationDegrees = screenToSensorTransform.rotationDegrees,
+            screenToSensorMirrored = screenToSensorTransform.mirrored,
             normalizedCrop.left,
             normalizedCrop.top,
             normalizedCrop.right,

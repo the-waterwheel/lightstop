@@ -306,10 +306,15 @@ class CameraController(
     private val previewTransformRevision = AtomicInteger(0)
     @Volatile
     private var confirmPreviewTransformOnNextFrame = false
-    private val previewHealthSampler = PreviewHealthSampler(::requestPreviewHealthRecovery)
+    private val previewHealthSampler = PreviewHealthSampler(
+        onFailure = ::requestPreviewHealthRecovery,
+        onHealthyPreviewConfirmed = ::confirmPreviewHealthRecovery,
+    )
     @Volatile
     private var previewHealthRecoveryPending = false
     private var previewHealthRecoveryAttempts = 0
+    private var previewHealthConfirmationPending = false
+    private var previewHealthConfirmationGeneration = -1
 
     fun attach(texture: TextureView) {
         textureView = texture
@@ -470,6 +475,7 @@ class CameraController(
                     displayRotation = displayRotation,
                     displayZoom = displayZoom,
                     bufferSize = size,
+                    lensFacing = cameraInfo.lensFacing,
                 ),
             )
         }
@@ -579,14 +585,14 @@ class CameraController(
             return
         }
 
-        val displayDegrees = when (lastDisplayRotation) {
-            Surface.ROTATION_90 -> 90
-            Surface.ROTATION_180 -> 180
-            Surface.ROTATION_270 -> 270
-            else -> 0
-        }
-        val screenToSensorRotation =
-            (plan.sensorOrientation - displayDegrees + 360) % 360
+        val screenToSensorTransform = ScreenToSensorCoordinateTransform(
+            rotationDegrees = CameraPreviewTransform.relativeRotationDegrees(
+                plan.sensorOrientation,
+                lastDisplayRotation,
+                cameraInfo.lensFacing,
+            ),
+            mirrored = CameraPreviewTransform.shouldMirrorPreview(cameraInfo.lensFacing),
+        )
         val recentTrackingFrame = zoneCameraFrames.latestFrame(MAX_METERING_REFERENCE_AGE_NS)
         val previewReference = if (plan.target != null && recentTrackingFrame != null) {
             MeteringAnalysis.createPreviewReference(
@@ -613,7 +619,7 @@ class CameraController(
             meteringRoiFraction = plan.meteringRoiFraction,
             target = plan.target,
             previewReference = previewReference,
-            screenToSensorRotationDegrees = screenToSensorRotation,
+            screenToSensorTransform = screenToSensorTransform,
         )
         if (!accepted) {
             resumePreviewAfterRawCapture()
@@ -1353,6 +1359,8 @@ class CameraController(
 
     private fun finishCameraFailure(message: String) {
         notifyInterruptedOperations()
+        previewHealthConfirmationPending = false
+        previewHealthConfirmationGeneration = -1
         closeCamera()
         postInfo(cameraInfo.copy(rawAvailable = false, status = message))
     }
@@ -1444,6 +1452,8 @@ class CameraController(
         downgradeAfterCompatibleMeasurement = false
         fpsRequestCeiling = DEFAULT_PREVIEW_FPS_CEILING
         previewHealthRecoveryAttempts = 0
+        previewHealthConfirmationPending = false
+        previewHealthConfirmationGeneration = -1
     }
 
     private fun startPreview(
@@ -1453,6 +1463,9 @@ class CameraController(
         generation: Int,
     ) {
         try {
+            if (previewHealthConfirmationPending) {
+                previewHealthConfirmationGeneration = generation
+            }
             submitPreviewRepeatingRequest(device, session, preview)
             confirmPreviewTransformOnNextFrame = true
             val readyInfo = cameraInfo.copy(
@@ -1868,6 +1881,22 @@ class CameraController(
         cameraHandler?.post {
             if (!started || generation != cameraGeneration) return@post
             previewHealthRecoveryPending = false
+            if (previewHealthConfirmationPending &&
+                previewHealthConfirmationGeneration == generation
+            ) {
+                Log.w(TAG, "Safe preview failed health confirmation reason=$reason")
+                if (!tryLogicalCameraFallback()) {
+                    previewHealthConfirmationPending = false
+                    previewHealthConfirmationGeneration = -1
+                    finishCameraFailure(
+                        localized(
+                            "安全预览仍持续异常，请选择其他镜头或重启手机",
+                            "Safe preview remains invalid. Choose another lens or restart the phone",
+                        ),
+                    )
+                }
+                return@post
+            }
             if (previewHealthRecoveryAttempts >= MAX_PREVIEW_HEALTH_RECOVERY_ATTEMPTS) {
                 if (!tryLogicalCameraFallback()) {
                     finishCameraFailure(
@@ -1880,6 +1909,8 @@ class CameraController(
                 return@post
             }
             previewHealthRecoveryAttempts += 1
+            previewHealthConfirmationPending = true
+            previewHealthConfirmationGeneration = -1
             scheduleRecovery(
                 CameraSessionProfile.PREVIEW_ONLY,
                 localized(
@@ -1889,6 +1920,23 @@ class CameraController(
                 delayMs = 0L,
             )
             Log.w(TAG, "Recovering from preview health failure reason=$reason")
+        }
+    }
+
+    /** Accept a recovered route only after three independently sampled healthy preview frames. */
+    private fun confirmPreviewHealthRecovery() {
+        val generation = cameraGeneration
+        cameraHandler?.post {
+            if (!started || generation != cameraGeneration || !previewHealthConfirmationPending ||
+                previewHealthConfirmationGeneration != generation
+            ) {
+                return@post
+            }
+            previewHealthConfirmationPending = false
+            previewHealthConfirmationGeneration = -1
+            previewHealthRecoveryAttempts = 0
+            recoveryState.markPreviewStable()
+            Log.i(TAG, "Safe preview health confirmation succeeded generation=$generation")
         }
     }
 
@@ -1958,10 +2006,13 @@ class CameraController(
             }
             val sensorOrientation = chars.get(CameraCharacteristics.SENSOR_ORIENTATION)
                 ?: cameraInfo.sensorOrientationDegrees
-            val screenToSensorRotation = CameraPreviewTransform.relativeRotationDegrees(
-                sensorOrientation,
-                lastDisplayRotation,
-                cameraInfo.lensFacing,
+            val screenToSensorTransform = ScreenToSensorCoordinateTransform(
+                rotationDegrees = CameraPreviewTransform.relativeRotationDegrees(
+                    sensorOrientation,
+                    lastDisplayRotation,
+                    cameraInfo.lensFacing,
+                ),
+                mirrored = CameraPreviewTransform.shouldMirrorPreview(cameraInfo.lensFacing),
             )
             val sensorAspect = CameraPreviewTransform.screenAspectInSensorCoordinates(
                 active.screenAspect,
@@ -1975,7 +2026,7 @@ class CameraController(
                 chars,
                 sensorAspect,
                 active.zoom,
-                screenToSensorRotation,
+                screenToSensorTransform,
             )
                 ?: throw IllegalStateException(localized("RAW 数据无效", "RAW data is invalid"))
             FileOutputStream(active.outputFile).use { stream ->
@@ -2177,6 +2228,10 @@ class CameraController(
     private fun resetPreviewHealthMonitoring() {
         previewHealthSampler.reset()
         previewHealthRecoveryPending = false
+        if (!started) {
+            previewHealthConfirmationPending = false
+            previewHealthConfirmationGeneration = -1
+        }
     }
 
     private fun calibrationCameraId(): String =

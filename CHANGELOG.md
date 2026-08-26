@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Corrected public camera/backup disclosures to match optional GPS records,
+  JPEG/DNG storage, and Android or vendor backup/device-transfer behavior.
+- Made formal metering and recording use exact sensor-timestamp pairs; stale
+  displayed-preview metadata is rejected.
+- Allowed fixed physical-lens routes independent of logical-camera
+  `APPROXIMATE` sync, tracked active physical lenses where Android reports them,
+  and rejected unsupported RAW CFA layouts from Bayer processing.
+- Added bounded preview stripe recovery with safe-preview confirmation, plus
+  front-camera mirror-aware RAW coordinate mapping and crash-recoverable
+  parameter-record commits.
+
 All notable user-facing changes are recorded here. The project follows
 [Semantic Versioning](https://semver.org/) for public releases.
 

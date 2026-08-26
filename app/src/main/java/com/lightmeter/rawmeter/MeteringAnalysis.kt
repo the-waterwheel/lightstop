@@ -423,7 +423,7 @@ internal object MeteringAnalysis {
         zoom: Float,
         target: ZoneMeteringTarget,
         reference: PreviewLumaReference?,
-        screenToSensorRotationDegrees: Int,
+        screenToSensorTransform: ScreenToSensorCoordinateTransform,
     ): RawMeterPoint {
         val plane = image.planes.firstOrNull()
         val crop = rawMeterCrop(
@@ -437,7 +437,7 @@ internal object MeteringAnalysis {
             target.frameX,
             target.frameY,
             crop,
-            screenToSensorRotationDegrees,
+            screenToSensorTransform,
         )
         if (plane == null || reference == null ||
             reference.gridSize <= 1 ||
@@ -473,7 +473,7 @@ internal object MeteringAnalysis {
                 candidateX,
                 candidateY,
                 reference,
-                screenToSensorRotationDegrees,
+                screenToSensorTransform,
             ) ?: return
             val correlation = normalizedCorrelation(reference.samples, rawSamples)
             if (!correlation.isFinite()) return
@@ -514,7 +514,7 @@ internal object MeteringAnalysis {
             bestX,
             bestY,
             crop,
-            screenToSensorRotationDegrees,
+            screenToSensorTransform,
         )
         return resolved.copy(matchScore = bestCorrelation)
     }
@@ -872,16 +872,11 @@ internal object MeteringAnalysis {
         screenX: Float,
         screenY: Float,
         crop: RectF,
-        rotationDegrees: Int,
+        transform: ScreenToSensorCoordinateTransform,
     ): RawMeterPoint {
         val x = screenX.coerceIn(0f, 1f)
         val y = screenY.coerceIn(0f, 1f)
-        val (sensorX, sensorY) = when (normalizedRotation(rotationDegrees)) {
-            90 -> y to (1f - x)
-            180 -> (1f - x) to (1f - y)
-            270 -> (1f - y) to x
-            else -> x to y
-        }
+        val (sensorX, sensorY) = transform.map(x, y)
         return RawMeterPoint(
             sensorX = crop.left + sensorX * crop.width(),
             sensorY = crop.top + sensorY * crop.height(),
@@ -895,7 +890,7 @@ internal object MeteringAnalysis {
         centerX: Float,
         centerY: Float,
         reference: PreviewLumaReference,
-        rotationDegrees: Int,
+        transform: ScreenToSensorCoordinateTransform,
     ): FloatArray? {
         val samples = FloatArray(reference.samples.size)
         for (row in 0 until reference.gridSize) {
@@ -908,7 +903,7 @@ internal object MeteringAnalysis {
                     screenX,
                     screenY,
                     crop,
-                    rotationDegrees,
+                    transform,
                 )
                 samples[row * reference.gridSize + column] =
                     sampler.sample(point.sensorX, point.sensorY) ?: return null

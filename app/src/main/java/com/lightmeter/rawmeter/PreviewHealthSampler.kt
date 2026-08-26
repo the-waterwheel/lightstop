@@ -7,10 +7,13 @@ import android.view.TextureView
 /** Main-thread sampler that keeps camera preview-health state out of [CameraController]. */
 internal class PreviewHealthSampler(
     private val onFailure: (PreviewHealthReason) -> Unit,
+    private val onHealthyPreviewConfirmed: () -> Unit = {},
 ) {
     private val monitor = PreviewHealthMonitor()
     private var sampledFrames = 0
     private var lastDecision: PreviewHealthDecision? = null
+    private var healthyStreak = 0
+    private var healthyPreviewReported = false
 
     fun onTextureUpdated(
         texture: TextureView?,
@@ -34,6 +37,7 @@ internal class PreviewHealthSampler(
         }
         val metrics = PreviewHealthAnalyzer.analyzeArgb(SAMPLE_EDGE, SAMPLE_EDGE, pixels) ?: return
         val decision = monitor.observe(metrics, surface.timestamp)
+        healthyStreak = if (decision.state == PreviewHealthState.HEALTHY) healthyStreak + 1 else 0
         if (decision != lastDecision) {
             lastDecision = decision
             Log.i(
@@ -45,6 +49,9 @@ internal class PreviewHealthSampler(
         }
         if (decision.state == PreviewHealthState.FAILED) {
             onFailure(decision.reason ?: return)
+        } else if (!healthyPreviewReported && healthyStreak >= HEALTHY_CONFIRMATION_FRAMES) {
+            healthyPreviewReported = true
+            onHealthyPreviewConfirmed()
         }
     }
 
@@ -52,11 +59,14 @@ internal class PreviewHealthSampler(
         monitor.reset()
         sampledFrames = 0
         lastDecision = null
+        healthyStreak = 0
+        healthyPreviewReported = false
     }
 
     private companion object {
         private const val TAG = "PreviewHealth"
         private const val SAMPLE_EDGE = 64
         private const val SAMPLE_INTERVAL = 4
+        private const val HEALTHY_CONFIRMATION_FRAMES = 3
     }
 }

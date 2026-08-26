@@ -68,7 +68,8 @@ private data class MeasurementAccumulator(
     val meteringRoiFraction: Float? = null,
     val target: ZoneMeteringTarget? = null,
     val previewReference: PreviewLumaReference? = null,
-    val screenToSensorRotationDegrees: Int = 0,
+    val screenToSensorTransform: ScreenToSensorCoordinateTransform =
+        ScreenToSensorCoordinateTransform(0, mirrored = false),
     val startedAtNs: Long = System.nanoTime(),
     val pairingToleranceNs: Long,
     val framePairer: TimestampedResultPairer<Image, CaptureResult> =
@@ -113,7 +114,7 @@ internal class RawLightMeter(
         meteringRoiFraction: Float?,
         target: ZoneMeteringTarget?,
         previewReference: PreviewLumaReference?,
-        screenToSensorRotationDegrees: Int,
+        screenToSensorTransform: ScreenToSensorCoordinateTransform,
     ): Boolean {
         if (isMeasuring) return false
         val count = RawMeteringPolicy.frameCount(
@@ -129,7 +130,7 @@ internal class RawLightMeter(
             meteringRoiFraction = meteringRoiFraction,
             target = target,
             previewReference = previewReference,
-            screenToSensorRotationDegrees = screenToSensorRotationDegrees,
+            screenToSensorTransform = screenToSensorTransform,
             pairingToleranceNs = 0L,
         )
         activeMeasurement = accumulator
@@ -335,7 +336,7 @@ internal class RawLightMeter(
                         active.zoom,
                         active.target,
                         active.previewReference,
-                        active.screenToSensorRotationDegrees,
+                        active.screenToSensorTransform,
                     ).also { point ->
                         Log.i(
                             TAG,
@@ -397,7 +398,7 @@ internal class RawLightMeter(
             meteringRoiFraction = active.meteringRoiFraction,
             target = active.target,
             previewReference = active.previewReference,
-            screenToSensorRotationDegrees = active.screenToSensorRotationDegrees,
+            screenToSensorTransform = active.screenToSensorTransform,
             startedAtNs = active.startedAtNs,
             pairingToleranceNs = active.pairingToleranceNs,
             rawMeterPoint = active.rawMeterPoint,

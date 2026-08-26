@@ -93,10 +93,10 @@ sensors are filtered out even if they expose a `SurfaceTexture` output.
   HALs reject or clamp the preview value.
 - Only one full-size RAW request is in flight. The next request is submitted
   after the current `Image` has been analyzed and closed.
-- `Image` and `CaptureResult` are paired by sensor timestamp, exact-first,
-  with a bounded tolerance of at most half a frame period so the small
-  buffer/metadata offsets some vendor HALs report do not stall metering.
-  Unmatched images
+- Formal RAW, YUV, DNG, colour-temperature, and vignetting operations require
+  exactly equal `Image` and `CaptureResult` sensor timestamps. The reusable
+  pairer still supports a caller-supplied tolerance for non-formal future work,
+  but production metering supplies zero. Unmatched images
   remain owned by the active operation and are closed on success, failure,
   timeout, camera recovery, activity pause, or controller shutdown.
 - Bayer layout, dynamic/fixed black level, white level, color gains, color
@@ -243,7 +243,7 @@ Android 10（API 29）及以上会先询问 Camera HAL 是否支持完整输出�
 - ISO 低于 500 使用 1 张，ISO 500–1199 使用 2 张，ISO 1200 及以上使用 3 张；优先减少捕获等待和手持晃动误差。
 - RAW 捕获请求使用最小 `RAW_SENSOR` 尺寸的 `getOutputMinFrameDuration` 声明值，而不是预览帧时长：全尺寸 RAW 传感器模式可能比预览模式更慢，部分 HAL 会拒绝或静默钳制预览值。
 - 同一时刻只允许 1 张全尺寸 RAW 在途；分析并关闭当前 `Image` 后才提交下一帧。
-- `Image` 与 `CaptureResult` 按传感器时间戳配对：精确匹配优先，并允许最多半帧周期的容差，兼容部分厂商 HAL 报告的缓冲/元数据小偏移。成功、失败、超时、相机恢复、切后台或控制器关闭时，所有未配对图像都必须释放。
+- 正式 RAW、YUV、DNG、色温和暗角操作要求 `Image` 与 `CaptureResult` 的传感器时间戳完全相同。通用 pairer 仍支持由调用方传入容差，供未来的非正式用途使用；生产测光统一传入零容差。成功、失败、超时、相机恢复、切后台或控制器关闭时，所有未配对图像都必须释放。
 - Bayer 排列、黑白电平、曝光、ISO、光圈、白平衡增益和颜色矩阵均读取镜头元数据，不按厂商假设。
 
 ### 预览流测光
@@ -254,7 +254,7 @@ Android 10（API 29）及以上会先询问 Camera HAL 是否支持完整输出�
 2. 仅把 `Image.timestamp` 与相同 `CaptureResult.SENSOR_TIMESTAMP` 的曝光元数据配对，不再套用无关的“最近一帧”结果。
 3. 复用同一块亮度缓冲，避免每个回调都分配整帧数组。
 4. 最多尝试 3 个 YUV 帧，总等待不超过 250 ms。
-5. YUV 缺失或无效时，立即分析 1 个 96 x 96 的显示预览样本。
+5. YUV 缺失或无效时，最多尝试 3 次严格时间戳配对的 96 x 96 显示预览样本；截图前后 `SurfaceTexture` 时间戳不一致或没有对应元数据时明确报错。
 6. 当前会话会记住 YUV 失败。处于内部 YUV 会话时，在返回本次结果后重开为 `PREVIEW_ONLY`，后续测光不再重复等待，也不再保留无用 YUV 流。
 
 因此 YUV 是快速路径而不是必要条件。实际兼容边界是：设备能够向普通第三方应用提供基础 Camera2 预览。
@@ -311,16 +311,18 @@ Bayer/native 统计器，更不得以 RGGB 作为默认猜测。
 
 预览健康检测在 UI 线程每四个显示帧取一次 64×64 临时样本，立即分析后回收 bitmap。纯分析器对
 绿色、近黑和冻结画面只给出 suspect，避免把真实场景误判为故障；持续六帧的高对比周期性横/竖
-黑白条纹才会触发一次 `PREVIEW_ONLY` 安全会话恢复。恢复后仍失败时，固定物理镜头会退回逻辑
-相机；自动逻辑路线则显示最终故障。后续将补充第二次安全预览确认与按 profile/尺寸的兼容性缓存。
+黑白条纹才会触发一次 `PREVIEW_ONLY` 安全会话恢复。恢复的安全会话必须再连续通过三次独立健康
+采样才被接受；确认期间再次出现条纹时，固定物理镜头退回逻辑相机作对照，逻辑路线则显示最终故障。
+profile/尺寸级的持久兼容性缓存仍是后续工作，尚未因一次故障永久拉黑设备。
 
 参数记录在移动 pending JPEG/DNG 前写入只包含 category/record UUID 的事务标记；索引原子提交后
 才清除标记。应用启动时，已存在于索引的记录保留其文件并清除残留标记；未提交标记只会清理它
 精确对应的 JPEG/DNG。正常异常路径同时回滚内存索引和已移动文件，避免产生无索引记录。
 
 预览变换读取 `TextureView` 所在 Display 的 rotation，而非默认屏幕；Activity 注册 DisplayListener，
-因而 180° 旋转即使没有 configuration change 也会重新计算矩阵。用于 ROI/RAW 网格的传感器相对
-旋转遵循 Camera2 的 front/back facing 公式。前摄镜像与 UI/RAW 坐标的统一变换仍将在下一步作为
-一个单独的 `PreviewTransformCalculator` 落地，避免只翻转显示却让测光坐标反向。
+因而 180° 旋转即使没有 configuration change 也会重新计算矩阵。前摄预览作水平镜像；独立的
+`ScreenToSensorCoordinateTransform` 在触点、RAW 特征匹配和已保存 RAW 网格中统一先撤销镜像、
+再按 Camera2 front/back facing 相对旋转映射到传感器坐标。记录 JSON 同时保存该镜像标志，旧记录
+缺省为 `false`，保持历史数据兼容。
 
 每个组件都注明调用线程、取消行为及其拥有的资源。`CameraController` 负责把这些所有者与应用生命周期、校准存储、会话档位选择和用户回调连接起来。
