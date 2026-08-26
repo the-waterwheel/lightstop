@@ -12,6 +12,7 @@ internal class ParameterRecordRepository(context: Context) {
     private val root = File(context.filesDir, "parameter_records").apply { mkdirs() }
     private val pending = File(context.cacheDir, "parameter_record_pending").apply { mkdirs() }
     private val index = AtomicFile(File(root, "index.json"))
+    private val transactions = ParameterRecordTransaction(root)
     private val preferences = context.getSharedPreferences("parameter_record_settings", Context.MODE_PRIVATE)
     private var categories = loadCategories().toMutableList()
     var activeCategoryId: String? = preferences.getString(KEY_ACTIVE_CATEGORY, null)
@@ -43,6 +44,11 @@ internal class ParameterRecordRepository(context: Context) {
     }
 
     init {
+        transactions.recover { categoryId, recordId ->
+            categories.any { category ->
+                category.id == categoryId && category.records.any { record -> record.id == recordId }
+            }
+        }
         cleanupQuarantinedDeletes()
     }
 
@@ -115,36 +121,53 @@ internal class ParameterRecordRepository(context: Context) {
             .apply { mkdirs() }
         val expectedPreview = requireNotNull(ParameterRecordPathPolicy.pendingFile(pending, draft.id, "jpg"))
         require(File(draft.previewTempPath).canonicalFile == expectedPreview) { "Preview is outside the pending record directory" }
-        val preview = moveInto(File(draft.previewTempPath), File(directory, "${draft.id}.jpg"))
-        val raw = draft.rawTempPath?.let { source ->
-            val expectedRaw = requireNotNull(ParameterRecordPathPolicy.pendingFile(pending, draft.id, "dng"))
-            require(File(source).canonicalFile == expectedRaw) { "RAW file is outside the pending record directory" }
-            File(source).takeIf(File::exists)?.let { moveInto(it, File(directory, "${draft.id}.dng")) }
+        val marker = transactions.begin(category.id, draft.id)
+        val previousCategories = categories.toMutableList()
+        val movedFiles = mutableListOf<ParameterRecordTransaction.MovedFile>()
+        try {
+            val previewTarget = File(directory, "${draft.id}.jpg")
+            val preview = moveInto(File(draft.previewTempPath), previewTarget)
+            movedFiles += ParameterRecordTransaction.MovedFile(preview, expectedPreview)
+            val raw = draft.rawTempPath?.let { source ->
+                val expectedRaw = requireNotNull(ParameterRecordPathPolicy.pendingFile(pending, draft.id, "dng"))
+                require(File(source).canonicalFile == expectedRaw) { "RAW is outside the pending record directory" }
+                File(source).takeIf(File::exists)?.let { rawFile ->
+                    val target = File(directory, "${draft.id}.dng")
+                    moveInto(rawFile, target).also { moved ->
+                        movedFiles += ParameterRecordTransaction.MovedFile(moved, expectedRaw)
+                    }
+                }
+            }
+            val entry = ParameterRecordEntry(
+                id = draft.id,
+                categoryId = category.id,
+                capturedAtEpochMs = draft.capturedAtEpochMs,
+                previewPath = preview.absolutePath,
+                rawPath = raw?.absolutePath,
+                cameraId = draft.cameraId,
+                mode = draft.snapshot.mode,
+                apertureCoordinate = draft.snapshot.apertureCoordinate,
+                shutterCoordinate = draft.snapshot.shutterCoordinate,
+                ei = draft.snapshot.ei,
+                ev100 = draft.snapshot.ev100,
+                filmId = draft.filmId,
+                filmName = draft.filmName,
+                filmIso = draft.filmIso,
+                notes = draft.notes.take(MAX_NOTES),
+                location = draft.location,
+                zonePoints = draft.snapshot.zonePoints,
+                rawGrid = draft.rawGrid,
+            )
+            val latestCategory = category(category.id) ?: category
+            replaceCategory(latestCategory.copy(records = latestCategory.records + entry))
+            saveIndex()
+            transactions.complete(marker)
+            return entry
+        } catch (error: Exception) {
+            categories = previousCategories
+            if (transactions.rollback(movedFiles)) transactions.complete(marker)
+            throw error
         }
-        val entry = ParameterRecordEntry(
-            id = draft.id,
-            categoryId = category.id,
-            capturedAtEpochMs = draft.capturedAtEpochMs,
-            previewPath = preview.absolutePath,
-            rawPath = raw?.absolutePath,
-            cameraId = draft.cameraId,
-            mode = draft.snapshot.mode,
-            apertureCoordinate = draft.snapshot.apertureCoordinate,
-            shutterCoordinate = draft.snapshot.shutterCoordinate,
-            ei = draft.snapshot.ei,
-            ev100 = draft.snapshot.ev100,
-            filmId = draft.filmId,
-            filmName = draft.filmName,
-            filmIso = draft.filmIso,
-            notes = draft.notes.take(MAX_NOTES),
-            location = draft.location,
-            zonePoints = draft.snapshot.zonePoints,
-            rawGrid = draft.rawGrid,
-        )
-        val latestCategory = category(category.id) ?: category
-        replaceCategory(latestCategory.copy(records = latestCategory.records + entry))
-        saveIndex()
-        return entry
     }
 
     fun discard(draft: ParameterCaptureDraft) {

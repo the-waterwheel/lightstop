@@ -2,24 +2,40 @@ package com.lightmeter.rawmeter
 
 import android.graphics.Matrix
 import android.graphics.RectF
+import android.hardware.camera2.CameraCharacteristics
 import android.util.Size
 import android.view.Surface
 import kotlin.math.max
 
 /** Builds an aspect-preserving TextureView transform for every frame shape and orientation. */
 internal object CameraPreviewTransform {
-    fun screenAspectInSensorCoordinates(
-        screenAspect: Float,
+    /** Mirrors Android's documented Camera2 sensor-to-display relative rotation formula. */
+    fun relativeRotationDegrees(
         sensorOrientationDegrees: Int,
         displayRotation: Int,
-    ): Float {
+        lensFacing: Int,
+    ): Int {
         val displayDegrees = when (displayRotation) {
             Surface.ROTATION_90 -> 90
             Surface.ROTATION_180 -> 180
             Surface.ROTATION_270 -> 270
             else -> 0
         }
-        val relativeRotation = (sensorOrientationDegrees - displayDegrees + 360) % 360
+        val sign = if (lensFacing == CameraCharacteristics.LENS_FACING_FRONT) 1 else -1
+        return (sensorOrientationDegrees - displayDegrees * sign + 360) % 360
+    }
+
+    fun screenAspectInSensorCoordinates(
+        screenAspect: Float,
+        sensorOrientationDegrees: Int,
+        displayRotation: Int,
+        lensFacing: Int = CameraCharacteristics.LENS_FACING_BACK,
+    ): Float {
+        val relativeRotation = relativeRotationDegrees(
+            sensorOrientationDegrees,
+            displayRotation,
+            lensFacing,
+        )
         return if (relativeRotation == 90 || relativeRotation == 270) {
             1f / screenAspect
         } else {

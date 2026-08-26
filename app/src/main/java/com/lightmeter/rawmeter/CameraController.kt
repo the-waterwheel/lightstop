@@ -306,6 +306,10 @@ class CameraController(
     private val previewTransformRevision = AtomicInteger(0)
     @Volatile
     private var confirmPreviewTransformOnNextFrame = false
+    private val previewHealthSampler = PreviewHealthSampler(::requestPreviewHealthRecovery)
+    @Volatile
+    private var previewHealthRecoveryPending = false
+    private var previewHealthRecoveryAttempts = 0
 
     fun attach(texture: TextureView) {
         textureView = texture
@@ -494,6 +498,7 @@ class CameraController(
             screenAspect = screenAspect,
             sensorOrientationDegrees = sensorOrientation,
             displayRotation = lastDisplayRotation,
+            lensFacing = cameraInfo.lensFacing,
         )
         val meteringRoiFraction = if (meteringMode == MeteringMode.ANGLE) {
             AngleMeteringMath.roiFraction(
@@ -705,6 +710,7 @@ class CameraController(
                 screenAspect,
                 sensorOrientation,
                 lastDisplayRotation,
+                cameraInfo.lensFacing,
             )
             meteringOperationActive = true
             try {
@@ -1032,14 +1038,16 @@ class CameraController(
     }
 
     override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {
-        if (!confirmPreviewTransformOnNextFrame) return
-        confirmPreviewTransformOnNextFrame = false
-        updatePreviewTransform(
-            lastViewWidth,
-            lastViewHeight,
-            lastDisplayRotation,
-            lastDisplayZoom,
-        )
+        if (confirmPreviewTransformOnNextFrame) {
+            confirmPreviewTransformOnNextFrame = false
+            updatePreviewTransform(
+                lastViewWidth,
+                lastViewHeight,
+                lastDisplayRotation,
+                lastDisplayZoom,
+            )
+        }
+        previewHealthSampler.onTextureUpdated(textureView, surface, started)
     }
 
     @SuppressLint("MissingPermission")
@@ -1173,6 +1181,7 @@ class CameraController(
                 logicalCameraId = descriptor.logicalCameraId,
                 physicalCameraId = effectivePhysicalId,
                 activePhysicalCameraId = activeContext.activePhysicalCameraId,
+                lensFacing = descriptor.lensFacing,
                 rawAvailable = rawAvailable,
                 manualSensorAvailable = manualAvailable,
                 focalLengthMm = focal,
@@ -1434,6 +1443,7 @@ class CameraController(
         recoveryState.reset()
         downgradeAfterCompatibleMeasurement = false
         fpsRequestCeiling = DEFAULT_PREVIEW_FPS_CEILING
+        previewHealthRecoveryAttempts = 0
     }
 
     private fun startPreview(
@@ -1469,6 +1479,7 @@ class CameraController(
                 {
                     if (generation == cameraGeneration && captureSession === session) {
                         recoveryState.markPreviewStable()
+                        previewHealthRecoveryAttempts = 0
                     }
                 },
                 STABLE_PREVIEW_RESET_DELAY_MS,
@@ -1850,6 +1861,37 @@ class CameraController(
         postInfo(cameraInfo.copy(focalLengthMm = focal, aperture = aperture))
     }
 
+    private fun requestPreviewHealthRecovery(reason: PreviewHealthReason) {
+        if (previewHealthRecoveryPending) return
+        previewHealthRecoveryPending = true
+        val generation = cameraGeneration
+        cameraHandler?.post {
+            if (!started || generation != cameraGeneration) return@post
+            previewHealthRecoveryPending = false
+            if (previewHealthRecoveryAttempts >= MAX_PREVIEW_HEALTH_RECOVERY_ATTEMPTS) {
+                if (!tryLogicalCameraFallback()) {
+                    finishCameraFailure(
+                        localized(
+                            "相机预览持续输出异常，请选择其他镜头或重启手机",
+                            "Camera preview output remains invalid. Choose another lens or restart the phone",
+                        ),
+                    )
+                }
+                return@post
+            }
+            previewHealthRecoveryAttempts += 1
+            scheduleRecovery(
+                CameraSessionProfile.PREVIEW_ONLY,
+                localized(
+                    "检测到相机输出异常，正在切换到安全预览…",
+                    "Camera output is invalid. Switching to a safe preview…",
+                ),
+                delayMs = 0L,
+            )
+            Log.w(TAG, "Recovering from preview health failure reason=$reason")
+        }
+    }
+
     private fun setSupportedAutoFocus(builder: CaptureRequest.Builder) {
         val modes =
             characteristics?.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES) ?: intArrayOf()
@@ -1916,17 +1958,16 @@ class CameraController(
             }
             val sensorOrientation = chars.get(CameraCharacteristics.SENSOR_ORIENTATION)
                 ?: cameraInfo.sensorOrientationDegrees
-            val displayDegrees = when (lastDisplayRotation) {
-                Surface.ROTATION_90 -> 90
-                Surface.ROTATION_180 -> 180
-                Surface.ROTATION_270 -> 270
-                else -> 0
-            }
-            val screenToSensorRotation = (sensorOrientation - displayDegrees + 360) % 360
+            val screenToSensorRotation = CameraPreviewTransform.relativeRotationDegrees(
+                sensorOrientation,
+                lastDisplayRotation,
+                cameraInfo.lensFacing,
+            )
             val sensorAspect = CameraPreviewTransform.screenAspectInSensorCoordinates(
                 active.screenAspect,
                 sensorOrientation,
                 lastDisplayRotation,
+                cameraInfo.lensFacing,
             )
             val grid = RecordedRawGridSampler.sample(
                 pair.image,
@@ -2112,6 +2153,7 @@ class CameraController(
         activePhysicalCameraTracker.reset("", null)
         latestResult = null
         previewResultStore.clear()
+        mainHandler.post(::resetPreviewHealthMonitoring)
     }
 
     private fun postInfo(info: CameraUiInfo) {
@@ -2129,6 +2171,12 @@ class CameraController(
 
     private fun postMeterError(message: String) {
         mainHandler.post { callback.onMeteringError(message) }
+    }
+
+    /** Preview bitmap sampling and its monitor state are confined to the main/UI thread. */
+    private fun resetPreviewHealthMonitoring() {
+        previewHealthSampler.reset()
+        previewHealthRecoveryPending = false
     }
 
     private fun calibrationCameraId(): String =
@@ -2151,5 +2199,6 @@ class CameraController(
         private const val RAW_FAILURES_BEFORE_DOWNGRADE = 2
         private const val DEFAULT_PREVIEW_FPS_CEILING = 30
         private const val CONSERVATIVE_PREVIEW_FPS_CEILING = 24
+        private const val MAX_PREVIEW_HEALTH_RECOVERY_ATTEMPTS = 1
     }
 }

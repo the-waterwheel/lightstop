@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.hardware.display.DisplayManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
@@ -54,6 +55,18 @@ class MainActivity : Activity(), CameraControllerCallback {
     private var backInvokedCallback: OnBackInvokedCallback? = null
     private var parameterLocation: RecordedLocation? = null
     private var parameterLocationListener: LocationListener? = null
+    private val displayListener = object : DisplayManager.DisplayListener {
+        override fun onDisplayAdded(displayId: Int) = Unit
+
+        override fun onDisplayRemoved(displayId: Int) = Unit
+
+        override fun onDisplayChanged(displayId: Int) {
+            val preview = meterLayout.textureView
+            if (preview.display?.displayId == displayId) {
+                updatePreviewTransform(preview.width, preview.height)
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -297,6 +310,8 @@ class MainActivity : Activity(), CameraControllerCallback {
     override fun onResume() {
         super.onResume()
         activityResumed = true
+        (getSystemService(DISPLAY_SERVICE) as DisplayManager)
+            .registerDisplayListener(displayListener, mainHandler)
         hideSystemBars()
         meterLayout.resumeZoneTracking()
         cameraController.setTrackingFramesEnabled(meterLayout.isZoneMode)
@@ -316,6 +331,8 @@ class MainActivity : Activity(), CameraControllerCallback {
 
     override fun onPause() {
         activityResumed = false
+        (getSystemService(DISPLAY_SERVICE) as DisplayManager)
+            .unregisterDisplayListener(displayListener)
         parameterLocationListener?.let { listener ->
             (getSystemService(LOCATION_SERVICE) as? LocationManager)?.removeUpdates(listener)
         }
@@ -1231,7 +1248,7 @@ class MainActivity : Activity(), CameraControllerCallback {
     private fun updatePreviewTransform(width: Int, height: Int) {
         if (width <= 0 || height <= 0) return
         @Suppress("DEPRECATION")
-        val rotation = windowManager.defaultDisplay?.rotation ?: Surface.ROTATION_0
+        val rotation = meterLayout.textureView.display?.rotation ?: Surface.ROTATION_0
         val zoom = if (meterLayout.isVignettingCalibrationOpen) 1f else state.zoom
         cameraController.updatePreviewTransform(width, height, rotation, zoom)
     }

@@ -2,6 +2,7 @@ package com.lightmeter.rawmeter
 
 import android.content.Context
 import android.graphics.Rect
+import android.hardware.camera2.CameraCharacteristics
 import android.util.Size
 import kotlin.math.abs
 import kotlin.math.ln
@@ -56,6 +57,7 @@ data class CameraUiInfo(
     val logicalCameraId: String = cameraId,
     val physicalCameraId: String? = null,
     val activePhysicalCameraId: String? = physicalCameraId,
+    val lensFacing: Int = CameraCharacteristics.LENS_FACING_EXTERNAL,
     val rawAvailable: Boolean = false,
     val manualSensorAvailable: Boolean = false,
     val focalLengthMm: Float = 0f,

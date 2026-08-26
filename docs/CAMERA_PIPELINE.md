@@ -309,4 +309,18 @@ Bayer/native 统计器，更不得以 RGGB 作为默认猜测。
 该线程释放 session、device、readers 后回到主线程完成 thread 交接；如果在此期间重新进入前台，
 启动请求会延后到旧线程彻底结束，从而避免旧 generation 关闭新会话。
 
+预览健康检测在 UI 线程每四个显示帧取一次 64×64 临时样本，立即分析后回收 bitmap。纯分析器对
+绿色、近黑和冻结画面只给出 suspect，避免把真实场景误判为故障；持续六帧的高对比周期性横/竖
+黑白条纹才会触发一次 `PREVIEW_ONLY` 安全会话恢复。恢复后仍失败时，固定物理镜头会退回逻辑
+相机；自动逻辑路线则显示最终故障。后续将补充第二次安全预览确认与按 profile/尺寸的兼容性缓存。
+
+参数记录在移动 pending JPEG/DNG 前写入只包含 category/record UUID 的事务标记；索引原子提交后
+才清除标记。应用启动时，已存在于索引的记录保留其文件并清除残留标记；未提交标记只会清理它
+精确对应的 JPEG/DNG。正常异常路径同时回滚内存索引和已移动文件，避免产生无索引记录。
+
+预览变换读取 `TextureView` 所在 Display 的 rotation，而非默认屏幕；Activity 注册 DisplayListener，
+因而 180° 旋转即使没有 configuration change 也会重新计算矩阵。用于 ROI/RAW 网格的传感器相对
+旋转遵循 Camera2 的 front/back facing 公式。前摄镜像与 UI/RAW 坐标的统一变换仍将在下一步作为
+一个单独的 `PreviewTransformCalculator` 落地，避免只翻转显示却让测光坐标反向。
+
 每个组件都注明调用线程、取消行为及其拥有的资源。`CameraController` 负责把这些所有者与应用生命周期、校准存储、会话档位选择和用户回调连接起来。
