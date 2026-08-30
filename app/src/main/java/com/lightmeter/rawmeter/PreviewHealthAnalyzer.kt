@@ -2,6 +2,7 @@ package com.lightmeter.rawmeter
 
 import kotlin.math.abs
 import kotlin.math.max
+import kotlin.math.sqrt
 
 internal enum class PreviewStripeDirection { HORIZONTAL, VERTICAL }
 
@@ -17,8 +18,10 @@ internal enum class PreviewHealthReason {
 
 internal data class PreviewHealthMetrics(
     val meanLuma: Double,
+    val lumaStandardDeviation: Double,
     val darkFraction: Double,
     val greenDominance: Double,
+    val saturatedGreenFraction: Double,
     val horizontalStripeScore: Double,
     val verticalStripeScore: Double,
     val perceptualHash: Long,
@@ -30,9 +33,9 @@ internal data class PreviewHealthDecision(
 )
 
 /**
- * Pure, bounded analysis for a downsampled ARGB preview frame. It intentionally flags green,
- * black and frozen output as suspects only: a real scene can have those properties. Repeated,
- * high-contrast periodic stripes are stronger evidence of a broken camera stream and may fail.
+ * Pure, bounded analysis for a downsampled ARGB preview frame. Green, black and frozen-looking
+ * images begin as suspects because real scenes can have those properties. Only an almost uniform,
+ * highly saturated green output or repeated high-contrast stripes can fail automatically.
  */
 internal object PreviewHealthAnalyzer {
     fun analyzeArgb(width: Int, height: Int, pixels: IntArray): PreviewHealthMetrics? {
@@ -40,10 +43,12 @@ internal object PreviewHealthAnalyzer {
         val rowMeans = DoubleArray(height)
         val columnMeans = DoubleArray(width)
         var lumaSum = 0.0
+        var squaredLumaSum = 0.0
         var redSum = 0.0
         var greenSum = 0.0
         var blueSum = 0.0
         var dark = 0
+        var saturatedGreen = 0
         for (y in 0 until height) {
             for (x in 0 until width) {
                 val color = pixels[y * width + x]
@@ -52,25 +57,35 @@ internal object PreviewHealthAnalyzer {
                 val blue = (color and 0xff) / 255.0
                 val luma = 0.2126 * red + 0.7152 * green + 0.0722 * blue
                 lumaSum += luma
+                squaredLumaSum += luma * luma
                 redSum += red
                 greenSum += green
                 blueSum += blue
                 rowMeans[y] += luma
                 columnMeans[x] += luma
                 if (luma <= DARK_LUMA) dark += 1
+                if (green >= SATURATED_GREEN_MINIMUM &&
+                    green - max(red, blue) >= SATURATED_GREEN_SEPARATION
+                ) {
+                    saturatedGreen += 1
+                }
             }
         }
         val count = (width * height).toDouble()
         rowMeans.indices.forEach { rowMeans[it] /= width }
         columnMeans.indices.forEach { columnMeans[it] /= height }
         val meanGreen = greenSum / count
+        val meanLuma = lumaSum / count
+        val lumaVariance = (squaredLumaSum / count - meanLuma * meanLuma).coerceAtLeast(0.0)
         return PreviewHealthMetrics(
-            meanLuma = lumaSum / count,
+            meanLuma = meanLuma,
+            lumaStandardDeviation = sqrt(lumaVariance),
             darkFraction = dark / count,
             greenDominance = meanGreen - (redSum + blueSum) / (2.0 * count),
+            saturatedGreenFraction = saturatedGreen / count,
             horizontalStripeScore = stripeScore(rowMeans),
             verticalStripeScore = stripeScore(columnMeans),
-            perceptualHash = perceptualHash(width, height, pixels, lumaSum / count),
+            perceptualHash = perceptualHash(width, height, pixels, meanLuma),
         )
     }
 
@@ -110,6 +125,8 @@ internal object PreviewHealthAnalyzer {
     }
 
     private const val DARK_LUMA = 0.025
+    private const val SATURATED_GREEN_MINIMUM = 0.55
+    private const val SATURATED_GREEN_SEPARATION = 0.45
     private const val HASH_EDGE = 8
     private val PERIODS = intArrayOf(2, 4, 8)
 }
@@ -121,6 +138,7 @@ internal class PreviewHealthMonitor {
     private var stripeStreak = 0
     private var previousHash: Long? = null
     private var frozenStreak = 0
+    private var flatGreenStreak = 0
 
     fun observe(metrics: PreviewHealthMetrics, timestampNs: Long): PreviewHealthDecision {
         observedFrames += 1
@@ -149,6 +167,17 @@ internal class PreviewHealthMonitor {
             )
         }
 
+        val flatGreenOutput = metrics.greenDominance >= GREEN_DOMINANCE &&
+            metrics.saturatedGreenFraction >= FLAT_GREEN_PIXEL_FRACTION &&
+            metrics.lumaStandardDeviation <= FLAT_GREEN_LUMA_DEVIATION
+        flatGreenStreak = if (flatGreenOutput) flatGreenStreak + 1 else 0
+        if (flatGreenStreak >= FLAT_GREEN_FAILURE_FRAMES) {
+            return PreviewHealthDecision(
+                PreviewHealthState.FAILED,
+                PreviewHealthReason.GREEN_DOMINANT,
+            )
+        }
+
         frozenStreak = if (timestampNs > 0L && previousHash == metrics.perceptualHash) {
             frozenStreak + 1
         } else {
@@ -174,6 +203,7 @@ internal class PreviewHealthMonitor {
         stripeStreak = 0
         previousHash = null
         frozenStreak = 0
+        flatGreenStreak = 0
     }
 
     private companion object {
@@ -181,6 +211,9 @@ internal class PreviewHealthMonitor {
         private const val STRIPE_SCORE = 1.3
         private const val STRIPE_FAILURE_FRAMES = 6
         private const val GREEN_DOMINANCE = 0.45
+        private const val FLAT_GREEN_PIXEL_FRACTION = 0.985
+        private const val FLAT_GREEN_LUMA_DEVIATION = 0.025
+        private const val FLAT_GREEN_FAILURE_FRAMES = 10
         private const val DARK_FRACTION = 0.985
         private const val FROZEN_SUSPECT_FRAMES = 6
     }

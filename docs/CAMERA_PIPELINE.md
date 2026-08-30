@@ -41,8 +41,9 @@ downgrade chain immediately. Android 9, and HALs that cannot implement the
 query, attempt real session creation, which remains the final compatibility
 test.
 
-Runtime camera errors are classified before retry or downgrade. A physical
-camera route can finally fall back to its logical camera. Permission denial,
+Runtime camera errors are classified before retry or downgrade. A fixed-lens
+selection advances through its available transport routes before finally
+falling back to the logical camera. Permission denial,
 camera privacy policy, another application holding the camera, or a broken
 vendor preview implementation can still prevent every profile from opening.
 
@@ -50,12 +51,18 @@ On logical multi-camera devices, the catalog exposes the logical route as an
 automatic camera and gives every fixed physical lens a separate ID. Default
 selection ranks back cameras with a usable advertised RAW stream first
 (automatic, then main, then any RAW lens); non-RAW automatic/main routes follow.
-When the user selects a fixed physical lens, the app first attempts that single physical output
-regardless of whether the logical camera reports CALIBRATED, APPROXIMATE, or no physical
-synchronization type. Synchronization describes the relationship between simultaneous sensors;
-it is not a capability gate for one physical stream. A failed physical route is recovered through
-the existing logical-camera fallback. On API 29+, automatic logical routes track the reported
+When a physical lens also has a public Camera2 ID, the same visible lens entry retains an internal
+route ladder: public direct open, logical-camera fixed physical output, then logical fallback. A
+hidden physical lens starts at the fixed physical output. This adds compatibility routes without
+duplicating the lens in the picker. Fixed physical output is attempted regardless of whether the
+logical camera reports CALIBRATED, APPROXIMATE, or no physical synchronization type, because that
+value describes simultaneous sensors rather than gating one physical stream. On API 29+, automatic logical routes track the reported
 active physical id; API 28 keeps the logical identity because it cannot report one reliably.
+
+Hardware RAW capability and current-session RAW availability are stored separately. A downgrade
+therefore disables RAW only for the current controller run. Reselecting a lens, changing metering
+mode, or returning from the background starts a fresh high-capability probe; a stable session is
+not upgraded in place, avoiding repeated green/striped-preview loops.
 
 校准、兼容测光、RAW 测光、暗角校准和新建参数记录都使用该实际 identity（形式为
 `logicalId@physicalId`）；历史参数记录没有该字段时保留为 null，不猜测或篡改旧记录。
@@ -101,12 +108,23 @@ sensors are filtered out even if they expose a `SurfaceTexture` output.
   timeout, camera recovery, activity pause, or controller shutdown.
 - Bayer layout, dynamic/fixed black level, white level, color gains, color
   transform, exposure, sensitivity, aperture, and post-RAW boost come from the
-  selected camera's metadata rather than from manufacturer assumptions.
+  selected camera's metadata rather than from manufacturer assumptions. A RAW
+  frame is rejected when its Bayer CFA, black level, or white level cannot be
+  resolved; it is never guessed as RGGB, zero black, or 16-bit full scale.
 
 ## Preview-stream metering
 
 Preview-stream metering consumes ISP-processed data and therefore does not perform
 multi-frame noise-reduction fusion.
+
+`READ_SENSOR_SETTINGS`/`MANUAL_SENSOR` and the advertised result keys provide an
+initial exposure-metadata confidence signal, but their absence never permanently
+removes YUV or displayed-preview calibration. Live preview results are observed
+continuously; the first complete exposure-time, sensitivity and dynamic/static
+aperture set confirms the route, and a later incomplete result cannot revoke it.
+During a measurement, incomplete results are skipped through a bounded automatic
+retry window. Only sustained absence fails that calibration stage; no user retry
+control is required.
 
 1. Prefer one valid `YUV_420_888` frame when the YUV output is active.
 2. Pair the YUV `Image.timestamp` with the `CaptureResult.SENSOR_TIMESTAMP` of
@@ -125,17 +143,30 @@ boundary is any device that can provide a basic third-party Camera2 preview.
 
 ## Calibration sequence
 
-For a RAW-capable camera, one calibration request uses the same fixed reference
-input for two sequential readings:
+One calibration request uses the same fixed reference input for a sequential, source-specific
+plan. It never performs RAW and YUV calibration captures concurrently:
 
 ```text
-RAW-stream reading -> close RAW images -> preview-stream reading -> save both corrections
+High accuracy: RAW sensor -> YUV compatible stream -> ISP display preview
+Stable:        RAW sensor -> ISP display preview
+Compatibility: YUV compatible stream -> ISP display preview
 ```
 
-There is no fixed delay between the stages. High accuracy and Stable run both
-stages; Compatibility mode skips RAW. A camera without RAW support also hides and
-skips the RAW stage. RAW and preview corrections remain separate per
-manufacturer, model, and camera ID.
+There is no fixed delay between stages. A source which is unavailable is omitted rather than
+shown as calibrated. RAW, YUV, and ISP corrections remain separate per manufacturer, model,
+and camera identity. The old shared `compatible_user_*` correction is a labelled fallback only:
+it is used only until that specific processed source has been recalibrated, and is never copied
+into a new YUV or ISP record as if it were a fresh measurement.
+
+Each stage opens its smallest safe profile (`RAW_ONLY`, `COMPATIBLE`, or `PREVIEW_ONLY`), then
+closes it before the next source. The normal user-selected profile is restored at the end. Before
+every formal measurement, a manual/compensated exposure preview is replaced by a tagged neutral
+AE request; only two stable results carrying that exact camera/request generation may start
+metering. Stale callbacks, lens changes, and session failures never save a mixed calibration.
+The selected logical route and correction-storage camera identity are pinned for the complete run.
+Some logical-camera HALs temporarily report no active physical-camera ID after each session reopen;
+that unknown-to-known transition is accepted. If both observations provide concrete physical IDs
+and the IDs differ, the run is still cancelled as a real lens change.
 
 An installation token excluded from Android backup is compared with the backed
 camera-environment record. After a device restore or a changed camera catalog,
@@ -229,7 +260,7 @@ FULL -> RAW_ONLY -> COMPATIBLE -> PREVIEW_ONLY
 
 Android 10（API 29）及以上会先询问 Camera HAL 是否支持完整输出组合；明确拒绝时立即进入同一降级链。Android 9 以及无法实现该查询的定制 HAL 会直接尝试实际创建会话，以真实结果作为最终判据。
 
-运行错误会先分类，再决定重试或降级；固定物理镜头最终还能退回逻辑相机。多摄设备会列出自动逻辑相机和各固定物理镜头；默认选择先按“自动 RAW、主摄 RAW、其他 RAW”排序，再考虑不支持 RAW 的自动/主摄，因此厂商声明且实际提供 `RAW_SENSOR` 尺寸时优先 RAW。固定物理路由会在 CALIBRATED、APPROXIMATE 和未声明同步类型的设备上都实际尝试；同步类型只影响多个传感器同时工作的时间关系，不能用来阻止单个物理输出。API 29+ 的自动逻辑路由会记录每帧报告的 active physical ID；API 28 保持逻辑复合相机身份，绝不猜测物理镜头。单色和红外物理传感器不会加入普通镜头列表。逻辑与物理路由优先使用两者都常见的 4:3 预览，即使逻辑相机元数据声明为 16:9，也不会在自动主摄与固定主摄之间切换时改变比例或看起来被拉伸；没有 4:3 输出时才退回最接近传感器元数据的比例。权限被拒、系统隐私策略、其他应用长期占用相机，或厂商连基础预览都实现异常时，仍可能无法打开任何档位。
+运行错误会先分类，再决定重试或降级；固定镜头最终还能退回逻辑相机。多摄设备会列出自动逻辑相机和各固定物理镜头；默认选择先按“自动 RAW、主摄 RAW、其他 RAW”排序，再考虑不支持 RAW 的自动/主摄，因此厂商声明且实际提供 `RAW_SENSOR` 尺寸时优先 RAW。同一物理镜头若也出现在公开 `cameraIdList` 中，界面仍只保留一个镜头条目，内部按“公开 ID 直连 → 逻辑相机固定物理输出 → 逻辑相机回退”依次验证；隐藏物理镜头则从固定物理输出开始。固定物理路由会在 CALIBRATED、APPROXIMATE 和未声明同步类型的设备上都实际尝试；同步类型只影响多个传感器同时工作的时间关系，不能用来阻止单个物理输出。硬件 RAW 能力与当前会话是否真的带 RAW 输出分开记录：降级只在本次控制器运行内保持，重新选择镜头、切换测光模式或从后台返回时重新探测高能力档位，同一次稳定运行中不自动升级，避免在绿屏/条纹设备上反复重开。API 29+ 的自动逻辑路由会记录每帧报告的 active physical ID；逻辑回退后的测光和校准采用实际运行 identity，不写入原副摄 key。API 28 保持逻辑复合相机身份，绝不猜测物理镜头。单色和红外物理传感器不会加入普通镜头列表。逻辑与物理路由优先使用两者都常见的 4:3 预览，即使逻辑相机元数据声明为 16:9，也不会在自动主摄与固定主摄之间切换时改变比例或看起来被拉伸；没有 4:3 输出时才退回最接近传感器元数据的比例。权限被拒、系统隐私策略、其他应用长期占用相机，或厂商连基础预览都实现异常时，仍可能无法打开任何档位。
 
 ### 预览请求与帧率
 
@@ -244,11 +275,13 @@ Android 10（API 29）及以上会先询问 Camera HAL 是否支持完整输出�
 - RAW 捕获请求使用最小 `RAW_SENSOR` 尺寸的 `getOutputMinFrameDuration` 声明值，而不是预览帧时长：全尺寸 RAW 传感器模式可能比预览模式更慢，部分 HAL 会拒绝或静默钳制预览值。
 - 同一时刻只允许 1 张全尺寸 RAW 在途；分析并关闭当前 `Image` 后才提交下一帧。
 - 正式 RAW、YUV、DNG、色温和暗角操作要求 `Image` 与 `CaptureResult` 的传感器时间戳完全相同。通用 pairer 仍支持由调用方传入容差，供未来的非正式用途使用；生产测光统一传入零容差。成功、失败、超时、相机恢复、切后台或控制器关闭时，所有未配对图像都必须释放。
-- Bayer 排列、黑白电平、曝光、ISO、光圈、白平衡增益和颜色矩阵均读取镜头元数据，不按厂商假设。
+- Bayer 排列、黑白电平、曝光、ISO、光圈、白平衡增益和颜色矩阵均读取镜头元数据，不按厂商假设；CFA、黑电平或白电平无法解析时拒绝该 RAW 帧，绝不猜测为 RGGB、零黑位或 16 位满量程。
 
 ### 预览流测光
 
 预览流测光使用 ISP 处理后的数据，不再进行多帧降噪融合：
+
+`READ_SENSOR_SETTINGS`/`MANUAL_SENSOR` 和结果键只作为曝光元数据的初始可信提示；缺少这些静态声明不会永久移除 YUV 或屏幕预览校准。应用持续观察实际预览结果，首次取得完整曝光时间、ISO 和动态/静态光圈后即确认该路线可用，后来某一帧缺字段也不会撤销。测量过程中会在有界时间窗内自动跳过不完整结果，只有连续多帧仍缺失才判当前阶段失败，不需要增加用户重试操作。
 
 1. YUV 输出存在时优先读取 1 个有效的 `YUV_420_888` 帧。
 2. 仅把 `Image.timestamp` 与相同 `CaptureResult.SENSOR_TIMESTAMP` 的曝光元数据配对，不再套用无关的“最近一帧”结果。
@@ -261,13 +294,19 @@ Android 10（API 29）及以上会先询问 Camera HAL 是否支持完整输出�
 
 ### 校准顺序
 
-支持 RAW 的镜头使用同一组固定参考输入，依次完成：
+一次校准使用同一组固定参考输入，按来源顺序完成，绝不并发执行 RAW 与 YUV 校准捕获：
 
 ```text
-RAW 流测量 -> 关闭 RAW 图像 -> 预览流测量 -> 同时保存两种修正
+高精度：RAW 传感器 -> YUV 兼容流 -> ISP 显示预览
+稳定模式：RAW 传感器 -> ISP 显示预览
+兼容模式：YUV 兼容流 -> ISP 显示预览
 ```
 
-阶段之间没有固定等待。高精度与稳定模式依次完成两个阶段；兼容模式跳过 RAW。不支持 RAW 的镜头也会隐藏并跳过 RAW，只保存预览流修正。两种修正继续按厂商、型号和 camera ID 分开保存。
+阶段之间没有固定等待。不支持的来源会被跳过，而不会显示为已校准。RAW、YUV 与 ISP 修正继续按厂商、型号和实际 camera identity 分开保存。旧版共享的 `compatible_user_*` 修正仅作为带标签的兼容回退：只在相应处理后来源尚未重新校准时应用，绝不复制为看似精确的新 YUV 或 ISP 校准记录。
+
+每一阶段都打开最小的安全会话（`RAW_ONLY`、`COMPATIBLE` 或 `PREVIEW_ONLY`），再关闭后切换下一个来源；完成后恢复用户原本选择的会话档位。每次正式测光前，手动/补偿曝光预览都会被带标签的中性 AE 请求替代；只有带有完全相同相机代次和请求代次的连续两帧稳定结果才能开始测光。过期回调、镜头切换或会话失败都不会保存混合来源的校准。
+
+一次校准会固定用户选择的逻辑相机路由和修正存储 camera identity。部分逻辑相机 HAL 在每次重开会话后会短暂不报告 active physical camera ID；这种“未知 → 已知”的过渡允许继续。只有前后两次都明确报告了物理镜头且 ID 不同时，才按真实镜头切换安全中止，避免 RAW 完成后误中止 YUV/ISP，同时也避免把不同镜头的数据写进同一份校准。
 
 应用把不参与 Android 备份的安装标识与可备份的相机环境记录比较。检测到换机恢复或相机目录变化后，会建立新的有效时间门槛；旧测光和暗角数据继续保留，但不能再应用或回退。中英文提示只出现一次，提供“稍后处理”和“立即校准”；后者只打开设置的“校准”栏目，不直接启动测光或暗角拍摄。
 
@@ -294,7 +333,7 @@ Camera2 统一了 API，但没有统一所有 HAL 的稳定性和性能。不同
 2. **RAW 测光器**：拥有 RAW 请求、单图像捕获窗口、超时、统计累积和最终结果。
 3. **预览流测光器**：拥有 YUV 尝试、亮度缓冲、预览保底、单帧结果和会话级 YUV 健康状态。
 4. **结果配对器**：拥有按时间戳索引的图像/结果，取消时统一关闭未配对图像。
-5. **恢复状态机**：拥有会话档位、失败计数、重试上限、物理/逻辑路线和确定性降级决策。
+5. **恢复状态机**：拥有会话档位、失败计数、重试上限、候选连接路线和确定性降级决策。
 
 RAW Bayer 测光只接受 RGGB、GRBG、GBRG、BGGR 四种单样本 CFA。`CFA_RGB`、MONO、NIR、
 未知 CFA 或 LEGACY HAL 即使声明 RAW 输出，也只能进入预览/YUV 兼容路径；不得把它们传给

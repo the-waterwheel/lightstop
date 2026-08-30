@@ -35,18 +35,19 @@ class CameraRecoveryStateMachineTest {
     }
 
     @Test
-    fun `logical fallback happens once and reset restores initial route`() {
+    fun `camera routes advance within bounds and reset restores the first candidate`() {
         val state = stateMachine()
 
-        assertFalse(state.enableLogicalCameraFallback(hasPhysicalSelection = false))
-        assertTrue(state.enableLogicalCameraFallback(hasPhysicalSelection = true))
-        assertFalse(state.enableLogicalCameraFallback(hasPhysicalSelection = true))
-        assertTrue(state.usesLogicalCameraFallback)
+        assertFalse(state.advanceCameraRoute(candidateCount = 1))
+        assertTrue(state.advanceCameraRoute(candidateCount = 3))
+        assertTrue(state.advanceCameraRoute(candidateCount = 3))
+        assertFalse(state.advanceCameraRoute(candidateCount = 3))
+        assertEquals(2, state.routeCandidateIndex)
         assertEquals(CameraSessionProfile.PREVIEW_ONLY, state.profile)
 
         state.reset()
 
-        assertFalse(state.usesLogicalCameraFallback)
+        assertEquals(0, state.routeCandidateIndex)
         assertNull(state.profile)
     }
 

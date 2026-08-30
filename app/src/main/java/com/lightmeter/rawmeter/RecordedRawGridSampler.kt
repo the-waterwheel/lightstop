@@ -25,11 +25,13 @@ internal object RecordedRawGridSampler {
         val buffer = plane.buffer.duplicate().order(ByteOrder.nativeOrder())
         val blackPattern = characteristics.get(CameraCharacteristics.SENSOR_BLACK_LEVEL_PATTERN)
         val dynamicBlack = result.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)
+        if (blackPattern == null && dynamicBlack == null) return null
         val white = result.get(CaptureResult.SENSOR_DYNAMIC_WHITE_LEVEL)?.toFloat()
             ?: characteristics.get(CameraCharacteristics.SENSOR_INFO_WHITE_LEVEL)?.toFloat()
-            ?: 65535f
+            ?: return null
         val cfa = characteristics.get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT)
-            ?: CameraMetadata.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_RGGB
+            ?.takeIf(RawSensorFormatPolicy::isBayerCfa)
+            ?: return null
         val bufferOffset = plane.buffer.position()
         val values = FloatArray(GRID_WIDTH * GRID_HEIGHT)
         for (row in 0 until GRID_HEIGHT) {
@@ -47,7 +49,7 @@ internal object RecordedRawGridSampler {
                     val raw = buffer.getShort(offset).toInt() and 0xffff
                     val black = dynamicBlack?.getOrNull((py and 1) * 2 + (px and 1))
                         ?: blackPattern?.getOffsetForIndex(px and 1, py and 1)?.toFloat()
-                        ?: 0f
+                        ?: continue
                     total += ((raw - black) / (white - black).coerceAtLeast(1f)).coerceIn(0f, 1f)
                     count += 1
                 }
@@ -98,7 +100,7 @@ internal object RecordedRawGridSampler {
         CameraMetadata.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_GRBG,
         CameraMetadata.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_GBRG,
         -> (x and 1) == (y and 1)
-        else -> true
+        else -> false
     }
 
     private fun centeredCrop(bounds: RectF, aspect: Float, zoom: Float): RectF {

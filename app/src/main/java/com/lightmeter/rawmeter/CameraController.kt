@@ -22,6 +22,7 @@ import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.util.Range
 import android.util.Size
@@ -167,7 +168,10 @@ class CameraController(
             }
 
             override fun onCompatibleMeteringCompleted(requiresPreviewOnlySession: Boolean) {
-                afterCompatibleMeasurement(requiresPreviewOnlySession)
+                afterCompatibleMeasurement(
+                    requiresPreviewOnlySession = requiresPreviewOnlySession,
+                    calibrationRunActive = calibrationStorageCameraId != null,
+                )
             }
         },
     )
@@ -202,7 +206,10 @@ class CameraController(
                 val canUsePreview = textureView?.isAvailable == true &&
                     cameraDevice != null && captureSession != null
                 if (canUsePreview) {
-                    downgradeAfterCompatibleMeasurement =
+                    // A calibration-only RAW failure must not downgrade the user's normal
+                    // session. The coordinator will record the failed source and continue with
+                    // the dedicated YUV/ISP stages.
+                    downgradeAfterCompatibleMeasurement = calibrationStorageCameraId == null &&
                         recoveryState.recordRawMeasurementFailed(meteringPipelineMode)
                     measureCompatiblePreview(meteringMode, target, meteringRoiFraction)
                 } else {
@@ -254,17 +261,23 @@ class CameraController(
     private var selectedPhysicalCameraId: String? = null
     private val activePhysicalCameraTracker = ActivePhysicalCameraTracker()
     private var meteringPipelineMode = MeteringPipelineMode.AUTO
+    @Volatile
     private var rawHardwareAvailable = false
+    @Volatile
     private var trackingHardwareAvailable = false
+    @Volatile
+    private var absoluteExposureMetadataAvailable = false
     private val recoveryState = CameraRecoveryStateMachine(
         maxRecoveryAttempts = MAX_TOTAL_RECOVERY_ATTEMPTS,
         rawFailuresBeforeDowngrade = RAW_FAILURES_BEFORE_DOWNGRADE,
     )
     private val sessionProfile: CameraSessionProfile?
-        get() = recoveryState.profile
-    private val useLogicalCameraFallback: Boolean
-        get() = recoveryState.usesLogicalCameraFallback
+        get() = calibrationSessionProfile ?: recoveryState.profile
     private var cameraGeneration = 0
+    private var calibrationSessionProfile: CameraSessionProfile? = null
+    private var pendingCalibrationMeteringPlan: MeteringPlan? = null
+    @Volatile
+    private var calibrationStorageCameraId: String? = null
     private var cameraFailureStage = CameraFailureStage.OPENING
     private var cameraInfo = CameraUiInfo()
     private var previewSize: Size? = null
@@ -281,7 +294,9 @@ class CameraController(
     private var previewManualExposure: ExposurePreviewManualExposure? = null
     private var previewExposureCompensationSteps = 0
     private var previewBaselineStableFrames = 0
-    private var previewBaselineContinuation: (() -> Unit)? = null
+    private var previewRequestSequence = 0L
+    private var previewBaselineGeneration = 0L
+    private var previewBaselineOperation: PreviewBaselineOperation? = null
     private var previewBaselineTimeout: Runnable? = null
     private var exposurePreviewUnsupportedReported = false
     @Volatile
@@ -409,7 +424,10 @@ class CameraController(
             return
         }
         started = true
-        recoveryState.markPreviewStable()
+        // A new foreground lifecycle is a fresh capability probe. Session downgrades remain
+        // sticky only for the current run, preventing a transient HAL failure from permanently
+        // hiding RAW or YUV until the user manually changes a setting.
+        resetRecoveryState()
         val thread = HandlerThread("raw-meter-camera").apply { start() }
         cameraThread = thread
         cameraHandler = Handler(thread.looper)
@@ -538,11 +556,71 @@ class CameraController(
             return true
         }
         handler.post {
-            prepareMeteringPreviewBaseline {
-                startMeasurement(plan)
-            }
+            startMeteringPlan(plan)
         }
         return true
+    }
+
+    /** Routes calibration captures through single-source sessions before restoring neutral AE. */
+    private fun startMeteringPlan(plan: MeteringPlan) {
+        val requestedSource = plan.requestedSource
+        if (requestedSource != null && calibrationStorageCameraId == null) {
+            calibrationStorageCameraId = calibrationCameraId()
+            Log.i(
+                TAG,
+                "Calibration run pinned route=${currentCalibrationIdentity()} " +
+                    "storage=$calibrationStorageCameraId",
+            )
+        }
+        val calibrationProfile = requestedSource?.let(CalibrationSessionProfilePolicy::profileFor)
+        if (calibrationProfile != null && (sessionProfile != calibrationProfile ||
+                cameraDevice == null || captureSession == null)
+        ) {
+            switchCalibrationSession(calibrationProfile, plan)
+            return
+        }
+        meteringOperationActive = true
+        prepareMeteringPreviewBaseline {
+            startMeasurement(plan)
+        }
+    }
+
+    private fun switchCalibrationSession(
+        profile: CameraSessionProfile,
+        plan: MeteringPlan,
+    ) {
+        val texture = textureView?.surfaceTexture
+        if (!started || texture == null) {
+            meteringOperationActive = false
+            postMeterError(localized("相机尚未就绪", "Camera is not ready"))
+            return
+        }
+        pendingCalibrationMeteringPlan = plan
+        calibrationSessionProfile = profile
+        Log.i(TAG, "Switching to isolated calibration session profile=$profile source=${plan.requestedSource}")
+        closeCamera(preserveExposurePreview = true)
+        openCamera(texture)
+    }
+
+    /** Restores the profile selected by the user's normal metering mode after a calibration run. */
+    fun finishCalibrationSession() {
+        cameraHandler?.post {
+            pendingCalibrationMeteringPlan = null
+            val storageCameraId = calibrationStorageCameraId
+            calibrationStorageCameraId = null
+            if (calibrationSessionProfile == null) {
+                if (storageCameraId != null) {
+                    Log.i(TAG, "Calibration run released storage=$storageCameraId without session restore")
+                }
+                return@post
+            }
+            calibrationSessionProfile = null
+            if (!started) return@post
+            val texture = textureView?.surfaceTexture ?: return@post
+            Log.i(TAG, "Restoring normal metering session after calibration")
+            closeCamera(preserveExposurePreview = true)
+            openCamera(texture)
+        }
     }
 
     private fun startMeasurement(plan: MeteringPlan) {
@@ -756,7 +834,16 @@ class CameraController(
             handler = handler,
             latestResult = latestResult,
             characteristics = chars,
-            cameraInfo = cameraInfo,
+            cameraInfo = calibrationStorageCameraId?.let { storageCameraId ->
+                // Logical-camera sessions briefly report no active physical id after every
+                // reopen. Keep all sources in one calibration run on the identity pinned when
+                // the user started it, while retaining the current session's geometry/metadata.
+                cameraInfo.copy(
+                    cameraId = storageCameraId,
+                    runtimeCameraId = storageCameraId,
+                    activePhysicalCameraId = null,
+                )
+            } ?: cameraInfo,
             selectedPhysicalCameraId = selectedPhysicalCameraId,
         )
     }
@@ -865,7 +952,31 @@ class CameraController(
         calibrationStore.record(calibrationCameraId())
 
     @Synchronized
+    internal fun currentCalibrationIdentity(): CalibrationCaptureIdentity = CalibrationCaptureIdentity(
+        routeId = CalibrationRouteIdentity.resolve(
+            selectedCameraId = cameraInfo.cameraId,
+            requestedCameraId = requestedCameraId,
+        ),
+        activePhysicalCameraId = cameraInfo.activePhysicalCameraId,
+    )
+
+    @Synchronized
     fun isRawMeteringAvailable(): Boolean = cameraInfo.rawAvailable && rawReader != null
+
+    @Synchronized
+    fun isYuvMeteringAvailable(): Boolean =
+        meteringPipelineMode != MeteringPipelineMode.ISOLATED &&
+            trackingReader != null && compatibleMeter.yuvAvailable
+
+    /** Hardware-level sources that calibration can open sequentially in isolated sessions. */
+    fun calibrationCapabilities(): MeteringCalibrationCapabilities =
+        MeteringCalibrationCapabilities(
+            rawAvailable = rawHardwareAvailable,
+            // Missing static declarations are not proof that a vendor never reports the values.
+            // Both processed paths validate and retry live CaptureResults during calibration.
+            yuvAvailable = trackingHardwareAvailable,
+            ispPreviewAvailable = true,
+        )
 
     @Synchronized
     fun preferredCompatibleMeteringSource(): MeteringSource =
@@ -878,22 +989,20 @@ class CameraController(
     @Synchronized
     fun updateUserCalibration(
         referenceEv100: Double,
-        rawMeasuredEv100: Double?,
-        compatibleMeasuredEv100: Double?,
+        measurements: Map<MeteringSource, Double>,
     ): CameraCalibrationRecord {
         val cameraId = calibrationCameraId()
         val updated = calibrationStore.updateUserCorrections(
             cameraId = cameraId,
             referenceEv100 = referenceEv100,
-            rawMeasuredEv100 = rawMeasuredEv100,
-            compatibleMeasuredEv100 = compatibleMeasuredEv100,
+            measurements = measurements,
         )
         Log.e(
             TAG,
-            "User calibration updated: camera=$cameraId reference=$referenceEv100 " +
-                "rawMeasured=$rawMeasuredEv100 compatibleMeasured=$compatibleMeasuredEv100 " +
+            "User calibration updated: camera=$cameraId reference=$referenceEv100 measurements=$measurements " +
                 "rawCorrection=${updated.rawCorrectionEv} " +
-                "compatibleCorrection=${updated.compatibleCorrectionEv}",
+                "yuvCorrection=${updated.yuvCorrectionEv} " +
+                "ispCorrection=${updated.ispPreviewCorrectionEv}",
         )
         return updated
     }
@@ -976,7 +1085,7 @@ class CameraController(
         cameraReady = { cameraDevice != null && captureSession != null },
         takeResultForTimestamp = previewResultStore::takeExact,
         characteristics = { characteristics },
-        cameraId = { cameraInfo.calibrationCameraId },
+        cameraId = ::calibrationCameraId,
     )
 
     private fun measureProcessedPreview(
@@ -992,9 +1101,18 @@ class CameraController(
         )
     }
 
-    private fun afterCompatibleMeasurement(requiresPreviewOnlySession: Boolean) {
+    private fun afterCompatibleMeasurement(
+        requiresPreviewOnlySession: Boolean,
+        calibrationRunActive: Boolean,
+    ) {
         cameraHandler?.post {
             finishCompatibleYuvRequest()
+            if (calibrationRunActive) {
+                // MainActivity may already have queued the next isolated source or the normal
+                // session restore. Do not race it with the ordinary YUV fallback downgrade.
+                downgradeAfterCompatibleMeasurement = false
+                return@post
+            }
             when {
                 requiresPreviewOnlySession &&
                     sessionProfile == CameraSessionProfile.COMPATIBLE -> {
@@ -1075,16 +1193,14 @@ class CameraController(
             val selected = discovered.firstOrNull { it.cameraId == requestedCameraId }
                 ?: cameraCatalog.preferredCamera(discovered)
             val selection = selected?.let { descriptor ->
-                val logicalChars = cameraManager.getCameraCharacteristics(descriptor.logicalCameraId)
-                val route = CameraRouteResolver.candidates(
-                    descriptor = descriptor,
-                    forceLogicalFallback = useLogicalCameraFallback,
-                ).first()
+                val routes = CameraRouteResolver.candidates(descriptor)
+                val route = routes.getOrElse(recoveryState.routeCandidateIndex) { routes.last() }
+                val openedCameraChars = cameraManager.getCameraCharacteristics(route.cameraIdToOpen)
                 val effectivePhysicalId = route.physicalCameraId
                 val streamChars = effectivePhysicalId?.let {
                     cameraManager.getCameraCharacteristics(it)
-                } ?: logicalChars
-                RouteSelection(descriptor, route, logicalChars, streamChars)
+                } ?: openedCameraChars
+                RouteSelection(descriptor, route, openedCameraChars, streamChars)
             }
             if (selection == null) {
                 postInfo(
@@ -1106,7 +1222,7 @@ class CameraController(
             logicalCharacteristics = selection.logicalCharacteristics
             characteristics = chars
             val activeContext = activePhysicalCameraTracker.reset(
-                logicalCameraId = descriptor.logicalCameraId,
+                logicalCameraId = selection.route.cameraIdToOpen,
                 requestedPhysicalCameraId = effectivePhysicalId,
             )
             val capabilities =
@@ -1115,6 +1231,7 @@ class CameraController(
                 capabilities.contains(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_RAW)
             val manualAvailable =
                 capabilities.contains(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR)
+            absoluteExposureMetadataAvailable = supportsAbsoluteExposureMetadata(chars)
             val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
                 ?: throw IllegalStateException(
                     localized("相机没有输出配置", "Camera has no output configuration"),
@@ -1142,7 +1259,7 @@ class CameraController(
             previewSize = chosenPreview
             val trackingSize = CameraStreamSelector.chooseTrackingSize(map, chosenPreview)
             trackingHardwareAvailable = trackingSize != null
-            val profile = recoveryState.resolveProfile(
+            val profile = calibrationSessionProfile ?: recoveryState.resolveProfile(
                 mode = meteringPipelineMode,
                 rawSupported = rawHardwareAvailable,
                 trackingSupported = trackingHardwareAvailable,
@@ -1185,11 +1302,18 @@ class CameraController(
             cameraInfo = CameraUiInfo(
                 cameraId = activeCameraId,
                 logicalCameraId = descriptor.logicalCameraId,
+                runtimeCameraId = if (selection.route.isLogicalFallback) {
+                    descriptor.logicalCameraId
+                } else {
+                    descriptor.cameraId
+                },
                 physicalCameraId = effectivePhysicalId,
                 activePhysicalCameraId = activeContext.activePhysicalCameraId,
                 lensFacing = descriptor.lensFacing,
+                rawHardwareAvailable = rawHardwareAvailable,
                 rawAvailable = rawAvailable,
                 manualSensorAvailable = manualAvailable,
+                absoluteExposureMetadataAvailable = absoluteExposureMetadataAvailable,
                 focalLengthMm = focal,
                 aperture = aperture,
                 sensorWidthMm = physicalSize?.width ?: 0f,
@@ -1214,11 +1338,12 @@ class CameraController(
             Log.i(
                 TAG,
                 "Opening selection=${descriptor.cameraId}, logical=${descriptor.logicalCameraId}, " +
+                    "openId=${selection.route.cameraIdToOpen}, route=${selection.route.kind}, " +
                     "physical=$effectivePhysicalId, profile=$profile, focal=$focal, " +
                     "raw=$rawAvailable, hardwareLevel=$hardwareLevel",
             )
             sessionCoordinator.open(
-                logicalCameraId = descriptor.logicalCameraId,
+                logicalCameraId = selection.route.cameraIdToOpen,
                 physicalCameraId = effectivePhysicalId,
                 generation = generation,
                 handler = handler,
@@ -1246,6 +1371,7 @@ class CameraController(
 
     private fun handleSessionFailure(generation: Int) {
         if (generation != cameraGeneration) return
+        if (abortIsolatedCalibrationSessionIfActive()) return
         val next = recoveryState.nextProfile(
             mode = meteringPipelineMode,
             rawSupported = rawHardwareAvailable,
@@ -1260,7 +1386,7 @@ class CameraController(
                 ),
                 SESSION_RECOVERY_DELAY_MS,
             )
-        } else if (!tryLogicalCameraFallback()) {
+        } else if (!tryNextCameraRoute()) {
             finishCameraFailure(
                 localized(
                     "相机无法正常启动，请尝试稳定模式或兼容模式，或重启手机",
@@ -1276,6 +1402,7 @@ class CameraController(
         generation: Int,
     ) {
         if (generation != cameraGeneration) return
+        if (abortIsolatedCalibrationSessionIfActive()) return
         val decision = recoveryState.decideFailure(
             failure = failure,
             stage = stage,
@@ -1297,24 +1424,55 @@ class CameraController(
                     failure == CameraFailureKind.SERVICE ||
                     failure == CameraFailureKind.DISCONNECTED ||
                     failure == CameraFailureKind.UNKNOWN
-                if (!canChangeCameraRoute || !tryLogicalCameraFallback()) {
+                if (!canChangeCameraRoute || !tryNextCameraRoute()) {
                     finishCameraFailure(finalFailureMessage(failure))
                 }
             }
         }
     }
 
-    private fun tryLogicalCameraFallback(): Boolean {
-        if (!recoveryState.enableLogicalCameraFallback(selectedPhysicalCameraId != null)) {
-            return false
-        }
-        scheduleRecovery(
-            CameraSessionProfile.PREVIEW_ONLY,
+    /** A failed calibration-only session advances the UI to the next source instead of recovery. */
+    private fun abortIsolatedCalibrationSessionIfActive(): Boolean {
+        if (calibrationSessionProfile == null && pendingCalibrationMeteringPlan == null) return false
+        pendingCalibrationMeteringPlan = null
+        calibrationSessionProfile = null
+        closeCamera()
+        postMeterError(
+            localized(
+                "当前校准流无法安全启动，已跳过该来源",
+                "This calibration stream could not start safely; the source was skipped",
+            ),
+        )
+        return true
+    }
+
+    private fun tryNextCameraRoute(): Boolean {
+        val descriptor = cameraCatalog.discover().firstOrNull { it.cameraId == requestedCameraId }
+            ?: return false
+        val candidates = CameraRouteResolver.candidates(descriptor)
+        if (!recoveryState.advanceCameraRoute(candidates.size)) return false
+        val next = candidates[recoveryState.routeCandidateIndex]
+        val message = if (next.isLogicalFallback) {
             localized(
                 "所选镜头暂时不可用，正在切换主摄",
                 "The selected lens is unavailable. Switching to the main camera",
-            ),
+            )
+        } else {
+            localized(
+                "正在尝试此镜头的兼容连接方式",
+                "Trying a compatible connection for this lens",
+            )
+        }
+        scheduleRecovery(
+            CameraSessionProfile.PREVIEW_ONLY,
+            message,
             SESSION_RECOVERY_DELAY_MS,
+        )
+        Log.i(
+            TAG,
+            "Advancing camera route selection=${descriptor.cameraId} " +
+                "index=${recoveryState.routeCandidateIndex} kind=${next.kind} " +
+                "openId=${next.cameraIdToOpen} physical=${next.physicalCameraId}",
         )
         return true
     }
@@ -1340,7 +1498,6 @@ class CameraController(
         postInfo(
             cameraInfo.copy(
                 rawAvailable = profile.usesRaw && rawHardwareAvailable,
-                physicalCameraId = if (useLogicalCameraFallback) null else cameraInfo.physicalCameraId,
                 status = message,
             ),
         )
@@ -1473,7 +1630,9 @@ class CameraController(
             )
             cameraInfo = readyInfo
             postInfo(readyInfo)
-            if (!readyInfo.rawAvailable && meteringPipelineMode == MeteringPipelineMode.AUTO) {
+            if (!readyInfo.rawAvailable && meteringPipelineMode == MeteringPipelineMode.AUTO &&
+                calibrationSessionProfile == null
+            ) {
                 mainHandler.post {
                     // A preview-ready callback can already be queued when the activity pauses or
                     // another lens starts opening. Never surface that stale RAW warning.
@@ -1488,6 +1647,7 @@ class CameraController(
                 lastDisplayRotation,
                 lastDisplayZoom,
             )
+            resumePendingCalibrationMetering(generation)
             cameraHandler?.postDelayed(
                 {
                     if (generation == cameraGeneration && captureSession === session) {
@@ -1503,6 +1663,20 @@ class CameraController(
         }
     }
 
+    private fun resumePendingCalibrationMetering(generation: Int) {
+        val plan = pendingCalibrationMeteringPlan ?: return
+        if (generation != cameraGeneration || !started) return
+        val expectedProfile = plan.requestedSource?.let(CalibrationSessionProfilePolicy::profileFor)
+        if (expectedProfile == null || sessionProfile != expectedProfile) return
+        pendingCalibrationMeteringPlan = null
+        Log.i(
+            TAG,
+            "Starting isolated calibration measurement source=${plan.requestedSource} " +
+                "profile=$expectedProfile generation=$generation",
+        )
+        startMeteringPlan(plan)
+    }
+
     /** Rebuilds the request so YUV is targeted only while tracking or one sample needs it. */
     private fun submitPreviewRepeatingRequest(
         device: CameraDevice,
@@ -1510,6 +1684,12 @@ class CameraController(
         preview: Surface,
     ) {
         val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+        val requestTag = PreviewRequestTag(
+            cameraGeneration = cameraGeneration,
+            requestSequence = ++previewRequestSequence,
+            neutralBaselineGeneration = previewBaselineOperation?.generation,
+        )
+        builder.setTag(requestTag)
         builder.addTarget(preview)
         val includeYuv = trackingReader != null &&
             (trackingFramesEnabled || compatibleYuvRequestActive)
@@ -1543,12 +1723,12 @@ class CameraController(
             "Preview request submitted: fps=$previewFpsRange yuv=$includeYuv " +
                 "manualExposure=$manualExposure " +
                 "exposureCompensationSteps=$previewExposureCompensationSteps " +
-                "profile=$sessionProfile",
+                "profile=$sessionProfile tag=$requestTag",
         )
     }
 
     private fun applyRequestedExposurePreview() {
-        if (previewBaselineContinuation != null) return
+        if (previewBaselineOperation != null) return
         val chars = characteristics
         val range = chars?.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
         val step = chars?.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)?.toDouble()
@@ -1631,26 +1811,35 @@ class CameraController(
             return
         }
         previewBaselineStableFrames = 0
-        previewBaselineContinuation = continuation
+        val operation = PreviewBaselineOperation(
+            cameraGeneration = cameraGeneration,
+            generation = ++previewBaselineGeneration,
+            startedAtElapsedMs = SystemClock.elapsedRealtime(),
+            continuation = continuation,
+        )
+        previewBaselineOperation = operation
         previewManualExposure = null
         previewExposureCompensationSteps = 0
+        mainHandler.post { callback.onMeteringBaselineRestoring() }
         updatePreviewRepeatingRequest()
         val handler = cameraHandler ?: run {
-            finishMeteringPreviewBaseline()
+            finishMeteringPreviewBaseline(operation, "no camera handler")
             return
         }
         val timeout = Runnable {
-            if (previewBaselineContinuation != null) {
+            if (previewBaselineOperation == operation) {
                 Log.w(TAG, "Timed out waiting for neutral preview AE; continuing measurement")
-                finishMeteringPreviewBaseline()
+                finishMeteringPreviewBaseline(operation, "timeout")
             }
         }
         previewBaselineTimeout = timeout
         handler.postDelayed(timeout, PREVIEW_BASELINE_TIMEOUT_MS)
     }
 
-    private fun onPreviewBaselineResult(result: CaptureResult) {
-        if (previewBaselineContinuation == null) return
+    private fun onPreviewBaselineResult(request: CaptureRequest, result: CaptureResult) {
+        val operation = previewBaselineOperation ?: return
+        val requestTag = request.tag as? PreviewRequestTag
+        if (!PreviewBaselinePolicy.acceptsResult(operation, requestTag)) return
         val appliedSteps = result.get(CaptureResult.CONTROL_AE_EXPOSURE_COMPENSATION)
         val aeMode = result.get(CaptureResult.CONTROL_AE_MODE)
         val aeState = result.get(CaptureResult.CONTROL_AE_STATE)
@@ -1665,25 +1854,33 @@ class CameraController(
         } else {
             0
         }
-        if (previewBaselineStableFrames >= PREVIEW_BASELINE_STABLE_FRAME_COUNT) {
-            finishMeteringPreviewBaseline()
+        if (PreviewBaselinePolicy.hasEnoughStableFrames(previewBaselineStableFrames)) {
+            finishMeteringPreviewBaseline(operation, "stable tagged AE")
         }
     }
 
-    private fun finishMeteringPreviewBaseline() {
+    private fun finishMeteringPreviewBaseline(
+        operation: PreviewBaselineOperation,
+        reason: String,
+    ) {
+        if (previewBaselineOperation != operation) return
         previewBaselineTimeout?.let { cameraHandler?.removeCallbacks(it) }
         previewBaselineTimeout = null
         previewBaselineStableFrames = 0
-        val continuation = previewBaselineContinuation ?: return
-        previewBaselineContinuation = null
-        continuation()
+        previewBaselineOperation = null
+        Log.i(
+            TAG,
+            "Neutral preview baseline finished: reason=$reason generation=${operation.generation} " +
+                "waitMs=${SystemClock.elapsedRealtime() - operation.startedAtElapsedMs}",
+        )
+        operation.continuation()
     }
 
     private fun cancelMeteringPreviewBaseline() {
         previewBaselineTimeout?.let { cameraHandler?.removeCallbacks(it) }
         previewBaselineTimeout = null
         previewBaselineStableFrames = 0
-        previewBaselineContinuation = null
+        previewBaselineOperation = null
     }
 
     private fun updatePreviewRepeatingRequest() {
@@ -1774,11 +1971,12 @@ class CameraController(
             updateActivePhysicalCamera(result)
             val effectiveResult = effectiveCaptureResult(result)
             latestResult = effectiveResult
+            observeAbsoluteExposureMetadata(effectiveResult)
             val timestamp = effectiveResult.get(CaptureResult.SENSOR_TIMESTAMP)
                 ?: result.get(CaptureResult.SENSOR_TIMESTAMP)
             if (timestamp != null) previewResultStore.put(timestamp, effectiveResult)
             updateDynamicLensInfo(effectiveResult)
-            onPreviewBaselineResult(effectiveResult)
+            onPreviewBaselineResult(request, effectiveResult)
             // A few physical-camera HALs omit SENSOR_TIMESTAMP from the physical result even
             // though the logical TotalCaptureResult carries the timestamp for the same frame.
             compatibleMeter.onCaptureResult(
@@ -1824,6 +2022,46 @@ class CameraController(
     private fun effectiveCaptureResult(result: TotalCaptureResult): CaptureResult {
         val physicalId = selectedPhysicalCameraId ?: return result
         return result.physicalCameraResults[physicalId] ?: result
+    }
+
+    private fun supportsAbsoluteExposureMetadata(chars: CameraCharacteristics): Boolean {
+        val capabilities = chars.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)
+            ?: intArrayOf()
+        val resultKeys = runCatching { chars.availableCaptureResultKeys }.getOrDefault(emptyList())
+        return ExposureMetadataPolicy.supportsAbsoluteMetering(
+            readSensorSettingsAvailable = capabilities.contains(
+                CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_READ_SENSOR_SETTINGS,
+            ),
+            manualSensorAvailable = capabilities.contains(
+                CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR,
+            ),
+            exposureTimeResultAvailable = resultKeys.contains(CaptureResult.SENSOR_EXPOSURE_TIME),
+            sensitivityResultAvailable = resultKeys.contains(CaptureResult.SENSOR_SENSITIVITY),
+            apertureResultAvailable = resultKeys.contains(CaptureResult.LENS_APERTURE),
+            staticApertureAvailable = chars.get(
+                CameraCharacteristics.LENS_INFO_AVAILABLE_APERTURES,
+            )?.isNotEmpty() == true,
+        )
+    }
+
+    /**
+     * Promotes an unconfirmed vendor route after any real preview result proves it usable.
+     * The flag is deliberately monotonic for one open route: one later incomplete result must
+     * never revoke a capability already demonstrated by an earlier valid frame.
+     */
+    private fun observeAbsoluteExposureMetadata(result: CaptureResult) {
+        if (absoluteExposureMetadataAvailable) return
+        val chars = characteristics ?: return
+        if (!ExposureMetadataPolicy.hasUsableFrameMetadata(
+                exposureTimeNs = result.get(CaptureResult.SENSOR_EXPOSURE_TIME),
+                sensitivity = result.get(CaptureResult.SENSOR_SENSITIVITY),
+                resultAperture = result.get(CaptureResult.LENS_APERTURE),
+                staticApertures = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_APERTURES),
+            )
+        ) return
+        absoluteExposureMetadataAvailable = true
+        Log.i(TAG, "Absolute exposure metadata confirmed by a live CaptureResult")
+        postInfo(cameraInfo.copy(absoluteExposureMetadataAvailable = true))
     }
 
     private fun updateActivePhysicalCamera(result: TotalCaptureResult) {
@@ -1883,7 +2121,7 @@ class CameraController(
                 previewHealthConfirmationGeneration == generation
             ) {
                 Log.w(TAG, "Safe preview failed health confirmation reason=$reason")
-                if (!tryLogicalCameraFallback()) {
+                if (!tryNextCameraRoute()) {
                     previewHealthConfirmationPending = false
                     previewHealthConfirmationGeneration = -1
                     finishCameraFailure(
@@ -1896,7 +2134,7 @@ class CameraController(
                 return@post
             }
             if (previewHealthRecoveryAttempts >= MAX_PREVIEW_HEALTH_RECOVERY_ATTEMPTS) {
-                if (!tryLogicalCameraFallback()) {
+                if (!tryNextCameraRoute()) {
                     finishCameraFailure(
                         localized(
                             "相机预览持续输出异常，请选择其他镜头或重启手机",
@@ -2159,15 +2397,20 @@ class CameraController(
         active.framePairer.clear()
     }
 
-    private fun closeCamera() {
+    private fun closeCamera(preserveExposurePreview: Boolean = false) {
         cameraGeneration += 1
         previewTransformRevision.incrementAndGet()
         confirmPreviewTransformOnNextFrame = false
         cameraFailureStage = CameraFailureStage.OPENING
         cancelMeteringPreviewBaseline()
-        requestedExposurePreview = null
-        previewManualExposure = null
-        previewExposureCompensationSteps = 0
+        if (!preserveExposurePreview) {
+            pendingCalibrationMeteringPlan = null
+            calibrationSessionProfile = null
+            calibrationStorageCameraId = null
+            requestedExposurePreview = null
+            previewManualExposure = null
+            previewExposureCompensationSteps = 0
+        }
         exposurePreviewUnsupportedReported = false
         cancelVignettingMeasurementTimeout()
         colorTemperatureEstimator.cancel(cameraHandler)?.let { completion ->
@@ -2209,11 +2452,15 @@ class CameraController(
         cameraInfo = info
         Log.e(
             TAG,
-            "Camera status: ${info.status}; id=${info.cameraId}; " +
-                "logical=${info.logicalCameraId}; physical=${info.physicalCameraId}; " +
+                "Camera status: ${info.status}; id=${info.cameraId}; " +
+                "logical=${info.logicalCameraId}; runtime=${info.runtimeCameraId}; " +
+                "physical=${info.physicalCameraId}; " +
                 "activePhysical=${info.activePhysicalCameraId}; " +
-                "focal=${info.focalLengthMm}; raw=${info.rawAvailable}; " +
-                "manual=${info.manualSensorAvailable}; preview=${info.previewSize}",
+                "focal=${info.focalLengthMm}; rawHardware=${info.rawHardwareAvailable}; " +
+                "rawSession=${info.rawAvailable}; " +
+                "manual=${info.manualSensorAvailable}; " +
+                "absoluteExposureMetadata=${info.absoluteExposureMetadataAvailable}; " +
+                "preview=${info.previewSize}",
         )
         mainHandler.post { callback.onCameraInfo(info) }
     }
@@ -2233,7 +2480,8 @@ class CameraController(
     }
 
     private fun calibrationCameraId(): String =
-        cameraInfo.calibrationCameraId.ifBlank { requestedCameraId ?: "0" }
+        calibrationStorageCameraId
+            ?: cameraInfo.calibrationCameraId.ifBlank { requestedCameraId ?: "0" }
 
     private fun localized(chinese: String, english: String): String =
         callback.localized(chinese, english)
@@ -2247,9 +2495,6 @@ class CameraController(
         private const val SESSION_RECOVERY_DELAY_MS = 300L
         private const val STABLE_PREVIEW_RESET_DELAY_MS = 10_000L
         private const val PREVIEW_BASELINE_TIMEOUT_MS = 1_200L
-        // Two neutral AE results remove the extra visible pause while retaining one confirmation
-        // frame after the request transition.
-        private const val PREVIEW_BASELINE_STABLE_FRAME_COUNT = 2
         private const val MANUAL_PREVIEW_TARGET_FRAME_DURATION_NS = 33_333_333L
         private const val MAX_TOTAL_RECOVERY_ATTEMPTS = 6
         private const val RAW_FAILURES_BEFORE_DOWNGRADE = 2

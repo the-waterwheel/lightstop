@@ -162,7 +162,7 @@ internal class ParameterHistoryView(
         centered(canvas, fitted.toString(), width / 2f, y, bold)
         if (page == Page.CATEGORY) {
             bold.textAlign = Paint.Align.CENTER
-            bold.textSize = 11f * scaledDensity
+            bold.textSize = 13f * scaledDensity
             bold.color = red
             centered(canvas, localized("删除", "Delete"), geometry.delete.centerX(), geometry.delete.centerY(), bold)
         } else if (page == Page.DETAIL) {

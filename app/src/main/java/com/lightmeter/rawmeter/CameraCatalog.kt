@@ -16,6 +16,8 @@ data class CameraDescriptor(
     val cameraId: String,
     val logicalCameraId: String = cameraId,
     val physicalCameraId: String? = null,
+    /** Public Camera2 id for this fixed lens, when the vendor exposes one directly. */
+    val directCameraId: String? = null,
     val lensRole: CameraLensRole = CameraLensRole.OTHER,
     val lensFacing: Int,
     val rawAvailable: Boolean,
@@ -97,7 +99,6 @@ class CameraCatalog(private val cameraManager: CameraManager) {
             )
         }
         val consumedPhysicalIds = mutableSetOf<String>()
-        val seenPhysicalIds = mutableSetOf<String>()
         val cameras = buildList {
             orderedCameraIds.forEach { logicalId ->
                 if (logicalId in consumedPhysicalIds) return@forEach
@@ -128,7 +129,7 @@ class CameraCatalog(private val cameraManager: CameraManager) {
                 val usablePhysical = physicalCandidates.filter { (_, chars) ->
                     hasPreviewOutput(chars) && isVisibleLightCamera(chars)
                 }
-                if (usablePhysical.size >= 2) {
+                if (usablePhysical.isNotEmpty()) {
                     // Keep the logical route as the default. Android guarantees more stream
                     // combinations for a logical camera than for an explicitly-routed physical
                     // camera, while the fixed physical entries remain available to the user.
@@ -151,8 +152,7 @@ class CameraCatalog(private val cameraManager: CameraManager) {
                         ?.second
                         ?.let(::equivalentFocalLength)
                         ?: logicalFocal
-                    usablePhysical.forEach physicalLoop@{ (physicalId, physicalChars) ->
-                        if (!seenPhysicalIds.add(physicalId)) return@physicalLoop
+                    usablePhysical.forEach { (physicalId, physicalChars) ->
                         val role = physicalLensRole(
                             physicalId = physicalId,
                             mainPhysicalId = mainPhysicalId,
@@ -163,11 +163,15 @@ class CameraCatalog(private val cameraManager: CameraManager) {
                             selectionId = "$logicalId@$physicalId",
                             logicalId = logicalId,
                             physicalId = physicalId,
+                            directCameraId = physicalId.takeIf(publicIds::contains),
                             characteristics = physicalChars,
                             lensRole = role,
                         )?.let(::add)
                     }
-                    consumedPhysicalIds += physicalIds.intersect(publicIds)
+                    consumedPhysicalIds += usablePhysical
+                        .map { (physicalId, _) -> physicalId }
+                        .toSet()
+                        .intersect(publicIds)
                 } else {
                     descriptor(
                         selectionId = logicalId,
@@ -204,6 +208,7 @@ class CameraCatalog(private val cameraManager: CameraManager) {
         selectionId: String,
         logicalId: String,
         physicalId: String?,
+        directCameraId: String? = null,
         characteristics: CameraCharacteristics,
         lensRole: CameraLensRole,
     ): CameraDescriptor? {
@@ -228,6 +233,7 @@ class CameraCatalog(private val cameraManager: CameraManager) {
             cameraId = selectionId,
             logicalCameraId = logicalId,
             physicalCameraId = physicalId,
+            directCameraId = directCameraId,
             lensRole = lensRole,
             lensFacing = characteristics.get(CameraCharacteristics.LENS_FACING)
                 ?: CameraCharacteristics.LENS_FACING_EXTERNAL,

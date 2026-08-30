@@ -55,11 +55,18 @@ data class FrameFormat(
 data class CameraUiInfo(
     val cameraId: String = "",
     val logicalCameraId: String = cameraId,
+    /** Actual route identity used for calibration when no physical id is confirmed yet. */
+    val runtimeCameraId: String = cameraId,
     val physicalCameraId: String? = null,
     val activePhysicalCameraId: String? = physicalCameraId,
     val lensFacing: Int = CameraCharacteristics.LENS_FACING_EXTERNAL,
+    /** Static RAW capability advertised by the active hardware route. */
+    val rawHardwareAvailable: Boolean = false,
+    /** Whether the current configured session actually includes a RAW output. */
     val rawAvailable: Boolean = false,
     val manualSensorAvailable: Boolean = false,
+    /** Whether static metadata guarantees, or a live result has confirmed, absolute exposure. */
+    val absoluteExposureMetadataAvailable: Boolean = false,
     val focalLengthMm: Float = 0f,
     val aperture: Float = 0f,
     val sensorWidthMm: Float = 0f,
@@ -77,7 +84,7 @@ data class CameraUiInfo(
      * have that id from session configuration.
      */
     val calibrationCameraId: String
-        get() = activePhysicalCameraId?.let { "$logicalCameraId@$it" } ?: cameraId
+        get() = activePhysicalCameraId?.let { "$logicalCameraId@$it" } ?: runtimeCameraId
 }
 
 data class MeterReading(
@@ -574,14 +581,14 @@ class MeterState(context: Context) {
             sourceCorrectionEv = cameraCalibrationStore.totalCorrection(cameraId, source),
             previewCorrectionEv = cameraCalibrationStore.totalCorrection(
                 cameraId,
-                MeteringSource.YUV_PREVIEW,
+                MeteringSource.ISP_PREVIEW,
             ),
         )
     }
 
     fun previewCameraCorrectionEv(): Double {
         val cameraId = cameraInfo.calibrationCameraId.ifBlank { selectedCameraId }.ifBlank { "0" }
-        return cameraCalibrationStore.totalCorrection(cameraId, MeteringSource.YUV_PREVIEW)
+        return cameraCalibrationStore.totalCorrection(cameraId, MeteringSource.ISP_PREVIEW)
     }
 
     fun cameraCalibrationHistory(cameraId: String): List<CameraCalibrationRecord> =

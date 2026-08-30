@@ -67,9 +67,14 @@ code.
   stripe failures. A recovered safe preview must pass three further samples;
   this does not classify real green or dark scenes as camera failures.
 - Spot and center-weighted metering.
-- Per-camera calibration displays separate **RAW stream** and **Preview stream**
-  corrections. High accuracy and Stable calibrate RAW first and preview second;
-  Compatibility mode skips RAW, and cameras without RAW never show a RAW correction.
+- Per-camera calibration separately displays **RAW sensor**, **YUV compatible stream**, and
+  **ISP display preview** corrections. High accuracy runs RAW → YUV → ISP; Stable runs
+  RAW → ISP; Compatibility runs YUV → ISP. Stages are sequential, never concurrent, and the
+  labelled legacy shared correction is only a fallback while a processed source awaits recalibration.
+  Each stage uses its smallest safe Camera2 session and restores the user's normal session after it.
+  The selected camera route and calibration storage identity are pinned for the whole run. A logical
+  camera may temporarily omit its active physical-camera ID while a new session opens; that transient
+  omission does not abort calibration, but two different concrete physical IDs still do.
 - Switching to Compatibility mode shows a bilingual accuracy notice, with a permanent
   “Don't show again” choice.
 - Two-dimensional vignetting calibration for RAW-capable cameras, with an
@@ -144,6 +149,10 @@ code.
 - Tap Tools and choose Depth of field to calculate animated near/focus/far
   limits from the current frame, field of view, and metering aperture; frame
   size and circle of confusion can also be selected or entered manually.
+- The current Tools grid contains depth of field, latitude, parameter log,
+  reciprocity, and color-temperature estimation. Flash-index and exposure-
+  correction identifiers remain reserved internally but are hidden until those
+  tools are complete.
 - Open `General` → `About` for the metering-result notice; the open-source
   license browser is available after the About text.
 
@@ -322,8 +331,10 @@ copying, layout coordinate stability, and exposure-compensation behavior.
 
 Camera2, RAW streams, logical/physical camera combinations, vendor-specific
 sensor metadata, tracking quality, and layout changes must also be verified on
-physical devices. Calibration is intentionally per camera because phone
-cameras and vendor pipelines differ.
+physical devices. Calibration is intentionally per physical camera identity because phone
+cameras and vendor pipelines differ. RAW, paired YUV, and displayed ISP-preview corrections
+are separate. A legacy shared preview correction remains only as a labelled fallback until the
+processed sources have been recalibrated.
 
 ## License
 

@@ -176,7 +176,7 @@ internal class ParameterRecordToolView(
             paint,
         )
         boldPaint.textAlign = Paint.Align.CENTER
-        boldPaint.textSize = 10f * scaledDensity
+        boldPaint.textSize = 12f * scaledDensity
         boldPaint.color = if (enabled) foreground else muted
         canvas.drawText(
             localized("结束该类记录", "Finish category"),
@@ -203,7 +203,7 @@ internal class ParameterRecordToolView(
             canvas.drawCircle(rect.centerX(), rect.centerY(), iconSize, paint)
         }
         boldPaint.textAlign = Paint.Align.CENTER
-        boldPaint.textSize = 11f * scaledDensity
+        boldPaint.textSize = 12.5f * scaledDensity
         boldPaint.color = foreground
         canvas.drawText(
             if (recording) localized("停止记录", "Stop recording") else localized("开始记录", "Start recording"),

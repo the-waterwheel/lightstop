@@ -160,14 +160,15 @@ internal object ZoneLayoutCalculator {
                 min(recordPanel.width() * 0.20f, recordPanel.height() * 0.34f),
             )
             val badgeGap = 5f * density
-            val badgeSize = min(markSize, 52f * density)
-            val actionGroupSize = badgeSize + badgeGap + markSize
-            val markLeft = centeredActionLeft(recordPanel, recordContentRight, actionGroupSize, gap) + badgeSize + badgeGap
+            val badgeHeight = min(markSize, 52f * density)
+            val badgeWidth = min(42f * density, badgeHeight * 0.82f)
+            val actionGroupSize = badgeWidth + badgeGap + markSize
+            val markLeft = centeredActionLeft(recordPanel, recordContentRight, actionGroupSize, gap) + badgeWidth + badgeGap
             ev100Badge = RectF(
-                markLeft - badgeGap - badgeSize,
-                recordPanel.centerY() - badgeSize / 2f,
+                markLeft - badgeGap - badgeWidth,
+                recordPanel.centerY() - badgeHeight / 2f,
                 markLeft - badgeGap,
-                recordPanel.centerY() + badgeSize / 2f,
+                recordPanel.centerY() + badgeHeight / 2f,
             )
             markButton = RectF(
                 markLeft,
@@ -335,14 +336,15 @@ internal object ZoneLayoutCalculator {
                 min(recordPanel.width() * 0.18f, recordPanel.height() * 0.42f),
             )
             val badgeGap = 5f * density
-            val badgeSize = min(markSize, 52f * density)
-            val actionGroupSize = badgeSize + badgeGap + markSize
-            val markLeft = centeredActionLeft(recordPanel, recordContentRight, actionGroupSize, gap) + badgeSize + badgeGap
+            val badgeHeight = min(markSize, 52f * density)
+            val badgeWidth = min(42f * density, badgeHeight * 0.82f)
+            val actionGroupSize = badgeWidth + badgeGap + markSize
+            val markLeft = centeredActionLeft(recordPanel, recordContentRight, actionGroupSize, gap) + badgeWidth + badgeGap
             ev100Badge = RectF(
-                markLeft - badgeGap - badgeSize,
-                recordPanel.centerY() - badgeSize / 2f,
+                markLeft - badgeGap - badgeWidth,
+                recordPanel.centerY() - badgeHeight / 2f,
                 markLeft - badgeGap,
-                recordPanel.centerY() + badgeSize / 2f,
+                recordPanel.centerY() + badgeHeight / 2f,
             )
             markButton = RectF(
                 markLeft,

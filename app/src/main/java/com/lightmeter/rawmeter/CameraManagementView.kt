@@ -237,16 +237,16 @@ class CameraManagementView(
         val calibrationSummary = if (calibration == null) {
             localized("未校准", "Not calibrated")
         } else {
-            val preview = "${localized("预览流", "Preview stream")} " +
-                "${signedEv(calibration.compatibleCorrectionEv ?: 0.0)} EV"
-            if (camera.rawAvailable) {
-                val raw = calibration.rawCorrectionEv?.let {
-                    "${localized("RAW 流", "RAW stream")} ${signedEv(it)} EV"
-                } ?: localized("RAW 流未校准", "RAW stream not calibrated")
-                "$raw · $preview · ${calibration.calibrationCount}"
-            } else {
-                "$preview · ${calibration.calibrationCount}"
-            }
+            buildList {
+                if (camera.rawAvailable) {
+                    add(calibration.rawCorrectionEv?.let { "RAW ${signedEv(it)} EV" } ?: "RAW —")
+                }
+                calibration.yuvCorrectionEv?.let { add("YUV ${signedEv(it)} EV") }
+                calibration.ispPreviewCorrectionEv?.let { add("ISP ${signedEv(it)} EV") }
+                calibration.legacyCompatibleCorrectionEv?.let {
+                    add("${localized("旧版", "Legacy")} ${signedEv(it)} EV")
+                }
+            }.joinToString(" · ") + " · ${calibration.calibrationCount}"
         }
         canvas.drawText(
             ellipsize(calibrationSummary, row.width() - 24f * density, paint),

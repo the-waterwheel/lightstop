@@ -9,28 +9,50 @@ package com.lightmeter.rawmeter
 internal object CameraRouteResolver {
     fun candidates(
         descriptor: CameraDescriptor,
-        forceLogicalFallback: Boolean,
     ): List<CameraRouteCandidate> {
         val logical = CameraRouteCandidate(
-            logicalCameraId = descriptor.logicalCameraId,
+            cameraIdToOpen = descriptor.logicalCameraId,
             physicalCameraId = null,
-            isLogicalFallback = descriptor.physicalCameraId != null,
+            kind = if (descriptor.physicalCameraId == null) {
+                CameraRouteKind.LOGICAL_AUTO
+            } else {
+                CameraRouteKind.LOGICAL_FALLBACK
+            },
         )
-        val requestedPhysical = descriptor.physicalCameraId ?: return listOf(logical.copy(
-            isLogicalFallback = false,
-        ))
+        val requestedPhysical = descriptor.physicalCameraId ?: return listOf(logical)
+        val direct = descriptor.directCameraId?.let { directCameraId ->
+            CameraRouteCandidate(
+                cameraIdToOpen = directCameraId,
+                physicalCameraId = null,
+                kind = CameraRouteKind.PUBLIC_DIRECT,
+            )
+        }
         val physical = CameraRouteCandidate(
-            logicalCameraId = descriptor.logicalCameraId,
+            cameraIdToOpen = descriptor.logicalCameraId,
             physicalCameraId = requestedPhysical,
-            isLogicalFallback = false,
+            kind = CameraRouteKind.FIXED_PHYSICAL,
         )
-        return if (forceLogicalFallback) listOf(logical) else listOf(physical, logical)
+        return buildList {
+            direct?.let(::add)
+            add(physical)
+            add(logical)
+        }
     }
 }
 
 /** A route candidate is intentionally independent from stream profile and output-size probing. */
 internal data class CameraRouteCandidate(
-    val logicalCameraId: String,
+    /** Camera id passed to CameraManager.openCamera. */
+    val cameraIdToOpen: String,
     val physicalCameraId: String?,
-    val isLogicalFallback: Boolean,
-)
+    val kind: CameraRouteKind,
+) {
+    val isLogicalFallback: Boolean get() = kind == CameraRouteKind.LOGICAL_FALLBACK
+}
+
+internal enum class CameraRouteKind {
+    LOGICAL_AUTO,
+    PUBLIC_DIRECT,
+    FIXED_PHYSICAL,
+    LOGICAL_FALLBACK,
+}

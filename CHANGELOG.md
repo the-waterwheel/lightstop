@@ -20,9 +20,10 @@ All notable user-facing changes are recorded here. The project follows
 
 - Added the Tools panel framework: a button beside Settings opens a
   scrollable three-column tools grid (depth of field, latitude, parameter
-  log, reciprocity, flash index, color temperature, exposure correction)
+  log, reciprocity, color temperature)
   that replaces the parameter area in Normal and Zone modes while the
-  viewfinder stays interactive.
+  viewfinder stays interactive. Flash-index and exposure-correction identifiers
+  remain reserved for later versions, without exposing unfinished entries.
 - Implemented the depth-of-field tool with format and circle-of-confusion
   presets/custom values, metering-step aperture and logarithmic focus dials,
   animated near/focus/far markers, hyperfocal distance, and matching

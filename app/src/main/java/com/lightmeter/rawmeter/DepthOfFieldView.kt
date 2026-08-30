@@ -316,8 +316,8 @@ class DepthOfFieldView(
 
         boldPaint.color = foreground
         boldPaint.textAlign = Paint.Align.CENTER
-        boldPaint.textSize = (radius / density * 0.23f).coerceIn(15f, 20f) * scaledDensity
-        drawTextCentered(canvas, value, centerX, centerY + radius * 0.10f, boldPaint)
+        boldPaint.textSize = (radius / density * 0.27f).coerceIn(18f, 24f) * scaledDensity
+        drawTextCentered(canvas, value, centerX, centerY, boldPaint)
 
         // The top red mark belongs to the dial housing; only gray tick marks rotate.
         paint.style = Paint.Style.STROKE

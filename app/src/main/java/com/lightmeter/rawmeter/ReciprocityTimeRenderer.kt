@@ -30,14 +30,22 @@ internal class ReciprocityTimeRenderer(
             return
         }
         val columns = readout.fields.size
-        val available = (rect.width() - 12f * density).coerceAtLeast(1f)
+        val fullAvailable = (rect.width() - 12f * density).coerceAtLeast(1f)
+        // A two-field mm:ss readout is easier to scan as one compact time value. Three-field
+        // hh:mm:ss keeps the wider layout because it needs the additional numeric column.
+        val available = if (columns == 2) {
+            min(fullAvailable, 160f * density)
+        } else {
+            fullAvailable
+        }
+        val contentLeft = rect.centerX() - available / 2f
         val cellWidth = available / columns
         numberPaint.textSize = min(if (columns == 3) 30f else 32f, rect.height() * 0.40f / scaledDensity) * scaledDensity
         while (numberPaint.textSize > 18f * scaledDensity &&
             readout.fields.any { numberPaint.measureText(it) > cellWidth * 0.88f }
         ) numberPaint.textSize -= scaledDensity
         readout.fields.forEachIndexed { index, value ->
-            val x = rect.left + 6f * density + cellWidth * (index + 0.5f)
+            val x = contentLeft + cellWidth * (index + 0.5f)
             centered(canvas, value, x, valueY, numberPaint)
             if (index < columns - 1) {
                 numberPaint.textSize *= 0.82f
@@ -49,7 +57,7 @@ internal class ReciprocityTimeRenderer(
         unitPaint.textSize = 10f * scaledDensity
         val unitY = valueY + numberPaint.textSize * 0.66f + 10f * density
         readout.units.forEachIndexed { index, unit ->
-            val x = rect.left + 6f * density + cellWidth * (index + 0.5f)
+            val x = contentLeft + cellWidth * (index + 0.5f)
             centered(canvas, unit, x, unitY, unitPaint)
         }
     }

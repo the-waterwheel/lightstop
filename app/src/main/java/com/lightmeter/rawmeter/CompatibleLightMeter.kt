@@ -330,11 +330,16 @@ internal class CompatibleLightMeter(
                     MeteringFusion.fuse(listOf(it), MeteringSource.ISP_PREVIEW)
                 }
                 if (reading == null) {
-                    finishWithError(
-                        id,
-                        localized(
-                            "预览亮度或曝光参数不可用",
-                            "Preview brightness or exposure data is unavailable",
+                    retryProcessedPreviewCapture(
+                        id = id,
+                        meteringMode = meteringMode,
+                        target = target,
+                        meteringRoiFraction = meteringRoiFraction,
+                        context = context,
+                        attempt = attempt,
+                        finalError = localized(
+                            "连续多帧无法取得预览亮度或曝光参数",
+                            "Preview brightness or exposure data remained unavailable across multiple frames",
                         ),
                     )
                 } else {
@@ -355,12 +360,13 @@ internal class CompatibleLightMeter(
         meteringRoiFraction: Float?,
         context: CompatibleMeteringContext,
         attempt: Int,
+        finalError: String? = null,
     ) {
         if (!isCurrent(id)) return
-        if (attempt + 1 >= DISPLAY_CAPTURE_ATTEMPTS) {
+        if (attempt + 1 >= CompatibleMeteringPolicy.DISPLAY_CAPTURE_ATTEMPTS) {
             finishWithError(
                 id,
-                localized(
+                finalError ?: localized(
                     "无法取得同步预览帧，请稍后重试",
                     "Could not obtain a synchronized preview frame. Please try again",
                 ),
@@ -376,7 +382,7 @@ internal class CompatibleLightMeter(
                 context,
                 attempt + 1,
             )
-        }, DISPLAY_CAPTURE_RETRY_DELAY_MS)
+        }, CompatibleMeteringPolicy.DISPLAY_CAPTURE_RETRY_DELAY_MS)
     }
 
     private fun finishWithReading(id: Int, reading: MeterReading) {
@@ -432,7 +438,5 @@ internal class CompatibleLightMeter(
     private companion object {
         private const val TAG = "CompatibleLightMeter"
         private const val FALLBACK_BITMAP_SIZE = 96
-        private const val DISPLAY_CAPTURE_ATTEMPTS = 3
-        private const val DISPLAY_CAPTURE_RETRY_DELAY_MS = 16L
     }
 }

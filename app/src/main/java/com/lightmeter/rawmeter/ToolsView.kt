@@ -7,6 +7,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
+import android.util.TypedValue
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
@@ -39,6 +40,11 @@ class ToolsView(
     private enum class TouchTarget { CLOSE, TOOL, NONE }
 
     private val density = resources.displayMetrics.density
+    private val scaledDensity = TypedValue.applyDimension(
+        TypedValue.COMPLEX_UNIT_SP,
+        1f,
+        resources.displayMetrics,
+    )
     private val lightBlack = Color.rgb(20, 20, 20)
     private val nightForeground = Color.rgb(210, 210, 206)
     private val background: Int get() = if (state.isDarkMode) Color.BLACK else Color.WHITE
@@ -144,7 +150,7 @@ class ToolsView(
             paint.color = cellColor
             canvas.drawRoundRect(cell, 6f * density, 6f * density, paint)
             boldPaint.color = foreground
-            boldPaint.textSize = 9f * density
+            boldPaint.textSize = 11f * scaledDensity
             val label = spec.label.resolve(state.menuLanguage)
             val labelWidth = boldPaint.measureText(label)
             val lines = if (labelWidth > cell.width() - 12f * density) 2 else 1
@@ -157,7 +163,7 @@ class ToolsView(
     }
 
     private fun drawCellLabel(canvas: Canvas, label: String, cell: RectF, lines: Int) {
-        val textSize = 9f * density
+        val textSize = 11f * scaledDensity
         val half = label.length / 2
         if (lines == 1) {
             val x = cell.centerX() - boldPaint.measureText(label) / 2f

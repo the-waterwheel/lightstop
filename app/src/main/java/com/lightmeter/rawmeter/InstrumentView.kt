@@ -527,14 +527,18 @@ class InstrumentView(
     ).shutter
 
     fun recordButtonRect(): RectF = RectF(
-        (geometry ?: LayoutGeometry.calculate(
+        // Do not reuse [geometry] here. During an orientation change the parent lays this View
+        // out before the next draw pass, so the cached geometry can still describe the previous
+        // orientation. Overlay controls (notably the angle-metering dial) need the new anchor
+        // immediately, before drawing or a later zoom gesture refreshes the cache.
+        LayoutGeometry.calculate(
             width,
             height,
             density,
             state.frameFormat,
             state.frameLandscape,
             state.isLeftHanded,
-        )).meterButton,
+        ).meterButton,
     )
 
     private fun animatedExposureValue(): Double {

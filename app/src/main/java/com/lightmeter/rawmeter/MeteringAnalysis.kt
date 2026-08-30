@@ -165,6 +165,7 @@ internal object MeteringAnalysis {
         val plane = image.planes.firstOrNull() ?: return null
         val black = result.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)
             ?: fixedBlackLevels(characteristics)
+            ?: return null
         val white = result.get(CaptureResult.SENSOR_DYNAMIC_WHITE_LEVEL)
             ?: characteristics.get(CameraCharacteristics.SENSOR_INFO_WHITE_LEVEL)
             ?: return null
@@ -303,14 +304,13 @@ internal object MeteringAnalysis {
         val plane = image.planes.firstOrNull() ?: return null
         val black = result.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)
             ?: fixedBlackLevels(characteristics)
+            ?: return null
         val white = result.get(CaptureResult.SENSOR_DYNAMIC_WHITE_LEVEL)
             ?: characteristics.get(CameraCharacteristics.SENSOR_INFO_WHITE_LEVEL)
             ?: return null
         val cfa = characteristics.get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT)
-            ?: CameraMetadata.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_RGGB
-        if (cfa == CameraMetadata.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_MONO ||
-            cfa == CameraMetadata.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_NIR
-        ) return null
+            ?.takeIf(RawSensorFormatPolicy::isBayerCfa)
+            ?: return null
         val values = analyzeRawRegion(
             image = image,
             bufferOffset = plane.buffer.position(),
@@ -447,11 +447,13 @@ internal object MeteringAnalysis {
         }
         val black = result.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)
             ?: fixedBlackLevels(characteristics)
+            ?: return approximate
         val white = result.get(CaptureResult.SENSOR_DYNAMIC_WHITE_LEVEL)
             ?: characteristics.get(CameraCharacteristics.SENSOR_INFO_WHITE_LEVEL)
             ?: return approximate
         val cfa = characteristics.get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT)
-            ?: CameraMetadata.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_RGGB
+            ?.takeIf(RawSensorFormatPolicy::isBayerCfa)
+            ?: return approximate
         val sampler = RawGreenSampler(
             image = image,
             bufferOffset = plane.buffer.position(),
@@ -528,11 +530,13 @@ internal object MeteringAnalysis {
         val plane = image.planes.firstOrNull() ?: return null
         val black = result.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)
             ?: fixedBlackLevels(characteristics)
+            ?: return null
         val white = result.get(CaptureResult.SENSOR_DYNAMIC_WHITE_LEVEL)
             ?: characteristics.get(CameraCharacteristics.SENSOR_INFO_WHITE_LEVEL)
             ?: return null
         val cfa = characteristics.get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT)
-            ?: CameraMetadata.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_RGGB
+            ?.takeIf(RawSensorFormatPolicy::isBayerCfa)
+            ?: return null
         val active = validatedActiveRect(image.width, image.height, activeArray)
         val (gridWidth, gridHeight) = if (active.width() >= active.height()) {
             VIGNETTING_GRID_LONG_EDGE to
@@ -975,7 +979,7 @@ internal object MeteringAnalysis {
                 2 -> 2
                 else -> 0
             }
-        else -> position
+        else -> -1
     }
 
     private fun sampleRotatedLuma(
@@ -1057,9 +1061,9 @@ internal object MeteringAnalysis {
     private fun normalizedRotation(rotationDegrees: Int): Int =
         ((rotationDegrees % 360) + 360) % 360
 
-    private fun fixedBlackLevels(characteristics: CameraCharacteristics): FloatArray {
+    private fun fixedBlackLevels(characteristics: CameraCharacteristics): FloatArray? {
         val pattern = characteristics.get(CameraCharacteristics.SENSOR_BLACK_LEVEL_PATTERN)
-            ?: return floatArrayOf(0f, 0f, 0f, 0f)
+            ?: return null
         return floatArrayOf(
             pattern.getOffsetForIndex(0, 0).toFloat(),
             pattern.getOffsetForIndex(1, 0).toFloat(),

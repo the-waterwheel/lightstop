@@ -130,7 +130,7 @@ internal class RecordedMeteringRenderer(
         canvas.drawRoundRect(rect, 3f * density, 3f * density, paint)
         bold.color = if (selected) Color.WHITE else if (enabled) foreground else muted
         bold.textAlign = Paint.Align.CENTER
-        bold.textSize = 10f * density
+        bold.textSize = 12f * density
         centered(canvas, label, rect.centerX(), rect.centerY(), bold)
     }
 

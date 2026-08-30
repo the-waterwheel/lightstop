@@ -212,17 +212,18 @@ data class LayoutGeometry(
                     lower.height() * 0.56f,
                     (actionArea.width() - badgeGap).coerceAtLeast(1f) * 0.62f,
                 )
-                val badgeSize = min(52f * density, meterSize).coerceAtMost(
+                val badgeHeight = min(52f * density, meterSize).coerceAtMost(
                     (actionArea.width() - meterSize - badgeGap).coerceAtLeast(34f * density),
                 )
-                val groupWidth = badgeSize + badgeGap + meterSize
+                val badgeWidth = min(42f * density, badgeHeight * 0.82f)
+                val groupWidth = badgeWidth + badgeGap + meterSize
                 val groupLeft = (actionArea.centerX() - groupWidth / 2f)
                     .coerceIn(actionArea.left, (actionArea.right - groupWidth).coerceAtLeast(actionArea.left))
                 ev100Badge = RectF(
                     groupLeft,
-                    lower.centerY() - badgeSize / 2f - meterButtonNudge,
-                    groupLeft + badgeSize,
-                    lower.centerY() + badgeSize / 2f - meterButtonNudge,
+                    lower.centerY() - badgeHeight / 2f - meterButtonNudge,
+                    groupLeft + badgeWidth,
+                    lower.centerY() + badgeHeight / 2f - meterButtonNudge,
                 )
                 meterButton = RectF(
                     ev100Badge.right + badgeGap,
@@ -276,17 +277,18 @@ data class LayoutGeometry(
                     lower.height() * 0.56f,
                     (actionArea.width() - badgeGap).coerceAtLeast(1f) * 0.62f,
                 )
-                val badgeSize = min(52f * density, meterSize).coerceAtMost(
+                val badgeHeight = min(52f * density, meterSize).coerceAtMost(
                     (actionArea.width() - meterSize - badgeGap).coerceAtLeast(34f * density),
                 )
-                val groupWidth = badgeSize + badgeGap + meterSize
+                val badgeWidth = min(42f * density, badgeHeight * 0.82f)
+                val groupWidth = badgeWidth + badgeGap + meterSize
                 val groupLeft = (actionArea.centerX() - groupWidth / 2f)
                     .coerceIn(actionArea.left, (actionArea.right - groupWidth).coerceAtLeast(actionArea.left))
                 ev100Badge = RectF(
                     groupLeft,
-                    lower.centerY() - badgeSize / 2f,
-                    groupLeft + badgeSize,
-                    lower.centerY() + badgeSize / 2f,
+                    lower.centerY() - badgeHeight / 2f,
+                    groupLeft + badgeWidth,
+                    lower.centerY() + badgeHeight / 2f,
                 )
                 meterButton = RectF(
                     ev100Badge.right + badgeGap,

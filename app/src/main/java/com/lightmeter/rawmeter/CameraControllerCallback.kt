@@ -10,6 +10,7 @@ interface CameraControllerCallback {
     fun onMeteringStarted(source: MeteringSource, frameCount: Int)
     fun onMeterReading(reading: MeterReading)
     fun onMeteringError(message: String)
+    fun onMeteringBaselineRestoring() = Unit
     fun onExposurePreviewUnavailable() = Unit
     fun onVignettingCalibrationStarted()
     fun onVignettingCalibrationCompleted(info: VignettingCalibrationInfo)

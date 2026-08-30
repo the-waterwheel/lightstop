@@ -123,7 +123,7 @@ internal class ParameterRecordEditorView(
         canvas.drawRoundRect(geometry.film, 6f * density, 6f * density, paint)
         boldPaint.textAlign = Paint.Align.LEFT
         boldPaint.color = Color.WHITE
-        boldPaint.textSize = 11f * scaledDensity
+        boldPaint.textSize = 13f * scaledDensity
         val label = value.filmName ?: localized("选择胶片类型", "Select film")
         val fitted = TextUtils.ellipsize(label, boldPaint, geometry.film.width() - geometry.filmEdit.width() - 20f * density, TextUtils.TruncateAt.END)
         centered(canvas, fitted.toString(), geometry.film.left + 10f * density, geometry.film.centerY(), boldPaint)
@@ -185,7 +185,7 @@ internal class ParameterRecordEditorView(
         canvas.drawRoundRect(geometry.save, 7f * density, 7f * density, paint)
         boldPaint.textAlign = Paint.Align.CENTER
         boldPaint.color = Color.WHITE
-        boldPaint.textSize = 11f * scaledDensity
+        boldPaint.textSize = 13f * scaledDensity
         centered(canvas, localized("保存", "Save"), geometry.save.centerX(), geometry.save.centerY(), boldPaint)
     }
 

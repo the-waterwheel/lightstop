@@ -20,15 +20,29 @@ class PreviewHealthAnalyzerTest {
     }
 
     @Test
-    fun greenSceneIsSuspectButNeverAutomaticallyFailed() {
+    fun flatSaturatedGreenOutputFailsAfterAConservativeWindow() {
         val metrics = requireNotNull(PreviewHealthAnalyzer.analyzeArgb(64, 64, solid(0xff00ff00.toInt())))
         val monitor = PreviewHealthMonitor()
 
         repeat(12) { monitor.observe(metrics, it.toLong() + 1L) }
 
         val decision = monitor.observe(metrics, 20L)
-        assertEquals(PreviewHealthState.SUSPECT, decision.state)
+        assertEquals(PreviewHealthState.FAILED, decision.state)
         assertEquals(PreviewHealthReason.GREEN_DOMINANT, decision.reason)
+    }
+
+    @Test
+    fun variedGreenSceneNeverAutomaticallyFails() {
+        val monitor = PreviewHealthMonitor()
+
+        val decisions = (0 until 18).map { frame ->
+            val metrics = requireNotNull(
+                PreviewHealthAnalyzer.analyzeArgb(64, 64, variedGreen(frame)),
+            )
+            monitor.observe(metrics, frame.toLong() + 1L)
+        }
+
+        assertTrue(decisions.none { it.state == PreviewHealthState.FAILED })
     }
 
     @Test
@@ -62,5 +76,14 @@ class PreviewHealthAnalyzerTest {
 
     private fun horizontalStripes(): IntArray = IntArray(64 * 64) { index ->
         if ((index / 64) % 2 == 0) 0xffffffff.toInt() else 0xff000000.toInt()
+    }
+
+    private fun variedGreen(frame: Int): IntArray = IntArray(64 * 64) { index ->
+        val x = index % 64
+        val y = index / 64
+        val green = (90 + (x * 3 + y * 2 + frame * 5) % 150).coerceAtMost(255)
+        val red = 20 + (x + frame) % 70
+        val blue = 15 + (y * 2 + frame) % 65
+        0xff000000.toInt() or (red shl 16) or (green shl 8) or blue
     }
 }

@@ -86,7 +86,9 @@ class CalibrationView(
     private var mode = CalibrationReferenceMode.EV100
     private var geometry: Geometry? = null
     private var currentRawCorrectionEv: Double? = null
-    private var currentCompatibleCorrectionEv = 0.0
+    private var currentYuvCorrectionEv: Double? = null
+    private var currentIspCorrectionEv: Double? = null
+    private var currentLegacyCompatibleCorrectionEv: Double? = null
     private var rawStreamVisible = false
     private var statusText = ""
     private var statusIsError = false
@@ -106,11 +108,15 @@ class CalibrationView(
 
     fun setCurrentCorrections(
         rawCorrectionEv: Double?,
-        compatibleCorrectionEv: Double,
+        yuvCorrectionEv: Double?,
+        ispPreviewCorrectionEv: Double?,
+        legacyCompatibleCorrectionEv: Double?,
         showRawStream: Boolean,
     ) {
         currentRawCorrectionEv = rawCorrectionEv
-        currentCompatibleCorrectionEv = compatibleCorrectionEv
+        currentYuvCorrectionEv = yuvCorrectionEv
+        currentIspCorrectionEv = ispPreviewCorrectionEv
+        currentLegacyCompatibleCorrectionEv = legacyCompatibleCorrectionEv
         rawStreamVisible = showRawStream
         invalidate()
     }
@@ -128,18 +134,13 @@ class CalibrationView(
         measuring: Boolean,
         frameCount: Int? = null,
         source: MeteringSource? = null,
+        step: Int? = null,
+        totalSteps: Int? = null,
     ) {
         isMeasuring = measuring
         if (measuring) {
             statusText = when {
-                source == MeteringSource.RAW && frameCount != null -> localized(
-                    "正在校准 RAW 流（$frameCount 张）…",
-                    "Calibrating RAW stream ($frameCount frames)…",
-                )
-                source != null && source != MeteringSource.RAW && frameCount != null -> localized(
-                    "正在校准预览流…",
-                    "Calibrating preview stream…",
-                )
+                source != null && frameCount != null -> calibrationStepText(source, step, totalSteps, frameCount)
                 else -> localized("正在准备测光…", "Preparing measurement…")
             }
             statusIsError = false
@@ -148,10 +149,17 @@ class CalibrationView(
         invalidate()
     }
 
+    fun setRestoringAutoExposure() {
+        isMeasuring = true
+        statusText = localized("正在恢复自动曝光…", "Restoring auto exposure…")
+        statusIsError = false
+        clearEditorFocus()
+        invalidate()
+    }
+
     fun showResult(record: CameraCalibrationRecord) {
         isMeasuring = false
-        currentRawCorrectionEv = record.rawCorrectionEv
-        currentCompatibleCorrectionEv = record.compatibleCorrectionEv ?: 0.0
+        applyRecord(record)
         statusText = localized("校准完成", "Calibration complete")
         statusIsError = false
         invalidate()
@@ -159,8 +167,7 @@ class CalibrationView(
 
     fun showPartialResult(record: CameraCalibrationRecord, message: String) {
         isMeasuring = false
-        currentRawCorrectionEv = record.rawCorrectionEv
-        currentCompatibleCorrectionEv = record.compatibleCorrectionEv ?: 0.0
+        applyRecord(record)
         statusText = message
         statusIsError = true
         invalidate()
@@ -177,7 +184,9 @@ class CalibrationView(
         isMeasuring = false
         rawStreamVisible = showRawStream
         currentRawCorrectionEv = if (showRawStream) 0.0 else null
-        currentCompatibleCorrectionEv = 0.0
+        currentYuvCorrectionEv = 0.0
+        currentIspCorrectionEv = 0.0
+        currentLegacyCompatibleCorrectionEv = null
         statusText = localized(
             "当前测光修正已重置，可从历史回退",
             "Current correction reset; history remains available",
@@ -188,8 +197,7 @@ class CalibrationView(
 
     fun showHistoryRestored(record: CameraCalibrationRecord) {
         isMeasuring = false
-        currentRawCorrectionEv = record.rawCorrectionEv
-        currentCompatibleCorrectionEv = record.compatibleCorrectionEv ?: 0.0
+        applyRecord(record)
         statusText = localized(
             "已回退到 ${formatCalibrationTime(record.updatedAtEpochMs)} 的校准",
             "Restored calibration from ${formatCalibrationTime(record.updatedAtEpochMs)}",
@@ -417,7 +425,7 @@ class CalibrationView(
     }
 
     private fun drawHistory(canvas: Canvas, g: Geometry) {
-        val cameraId = state.currentCamera()?.cameraId
+        val cameraId = currentCalibrationCameraId()
         val active = cameraId?.let(state::cameraCalibrationRecord)
         val history = cameraId?.let(state::cameraCalibrationHistory).orEmpty().take(3)
         if (g.historyRows.isEmpty()) return
@@ -425,12 +433,19 @@ class CalibrationView(
         paint.color = muted
         paint.textSize = 7.5f * density
         paint.typeface = Typeface.DEFAULT_BOLD
-        canvas.drawText(
-            correctionSummary(currentRawCorrectionEv, currentCompatibleCorrectionEv),
-            g.controls.left,
-            g.historyRows.first().top - 5f * density,
-            paint,
-        )
+        correctionLines(
+            raw = currentRawCorrectionEv,
+            yuv = currentYuvCorrectionEv,
+            isp = currentIspCorrectionEv,
+            legacy = currentLegacyCompatibleCorrectionEv,
+        ).forEachIndexed { index, line ->
+            canvas.drawText(
+                ellipsize(line, g.controls.width(), paint),
+                g.controls.left,
+                g.historyRows.first().top - (15f - index * 9f) * density,
+                paint,
+            )
+        }
         if (history.isEmpty()) {
             paint.typeface = Typeface.DEFAULT
             drawCenteredText(
@@ -472,7 +487,7 @@ class CalibrationView(
             paint.typeface = Typeface.DEFAULT_BOLD
             paint.textSize = 7.4f * density
             val summary = "${formatCalibrationTime(record.updatedAtEpochMs)}  ·  " +
-                correctionSummary(record.rawCorrectionEv, record.compatibleCorrectionEv ?: 0.0)
+                compactCorrectionSummary(record)
             val textWidth = action.left - row.left - 14f * density
             canvas.drawText(
                 ellipsize(summary, textWidth, paint),
@@ -524,7 +539,7 @@ class CalibrationView(
                 val historyIndex = g.historyRows.indexOfFirst { row ->
                     historyActionRect(row).contains(event.x, event.y)
                 }
-                val cameraId = state.currentCamera()?.cameraId
+                val cameraId = currentCalibrationCameraId()
                 val history = cameraId?.let(state::cameraCalibrationHistory).orEmpty().take(3)
                 val selected = history.getOrNull(historyIndex)
                 val active = cameraId?.let(state::cameraCalibrationRecord)
@@ -644,7 +659,9 @@ class CalibrationView(
             controls.bottom,
         )
         val historyGap = 4f * density
-        val historyTop = editorArea.bottom + 17f * density
+        // Reserve a real two-line band for the current RAW/YUV/ISP corrections. EditText children
+        // are rendered above this canvas; the old 17 dp gap put the first line underneath them.
+        val historyTop = editorArea.bottom + 38f * density
         val historyBottom = primary.top - 22f * density
         val historyHeight = ((historyBottom - historyTop - historyGap * 2f) / 3f)
             .coerceAtLeast(18f * density)
@@ -777,21 +794,71 @@ class CalibrationView(
     private fun localized(chinese: String, english: String): String =
         if (state.menuLanguage == MenuLanguage.ENGLISH) english else chinese
 
+    private fun currentCalibrationCameraId(): String =
+        state.cameraInfo.calibrationCameraId
+            .ifBlank { state.selectedCameraId }
+            .ifBlank { state.currentCamera()?.cameraId.orEmpty() }
+            .ifBlank { "0" }
+
     private fun formatCalibrationTime(epochMs: Long): String =
         SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(epochMs))
 
     private fun signedEv(value: Double): String =
         if (value >= 0.0) "+${"%.2f".format(value)}" else "%.2f".format(value)
 
-    private fun correctionSummary(rawCorrectionEv: Double?, compatibleCorrectionEv: Double): String {
-        val preview = "${localized("预览流", "Preview stream")} " +
-            "${signedEv(compatibleCorrectionEv)} EV"
-        if (!rawStreamVisible) return preview
-        val raw = rawCorrectionEv?.let {
-            "${localized("RAW 流", "RAW stream")} ${signedEv(it)} EV"
-        } ?: localized("RAW 流未校准", "RAW stream not calibrated")
-        return "$raw · $preview"
+    private fun applyRecord(record: CameraCalibrationRecord) {
+        currentRawCorrectionEv = record.rawCorrectionEv
+        currentYuvCorrectionEv = record.yuvCorrectionEv
+        currentIspCorrectionEv = record.ispPreviewCorrectionEv
+        currentLegacyCompatibleCorrectionEv = record.legacyCompatibleCorrectionEv
     }
+
+    private fun calibrationStepText(
+        source: MeteringSource,
+        step: Int?,
+        totalSteps: Int?,
+        frameCount: Int,
+    ): String {
+        val progress = if (step != null && totalSteps != null) " $step/$totalSteps" else ""
+        val sourceName = when (source) {
+            MeteringSource.RAW -> localized("RAW 传感器", "RAW sensor")
+            MeteringSource.YUV_PREVIEW -> localized("YUV 兼容流", "YUV compatible stream")
+            MeteringSource.ISP_PREVIEW -> localized("ISP 显示预览", "ISP display preview")
+        }
+        return localized(
+            "正在校准$sourceName$progress（$frameCount 张）…",
+            "Calibrating $sourceName$progress ($frameCount frames)…",
+        )
+    }
+
+    private fun correctionLines(
+        raw: Double?,
+        yuv: Double?,
+        isp: Double?,
+        legacy: Double?,
+    ): List<String> {
+        val first = buildList {
+            if (rawStreamVisible) add(correctionLabel("RAW", raw))
+            add(correctionLabel("YUV", yuv))
+        }.joinToString(" · ")
+        val second = buildList {
+            add(correctionLabel("ISP", isp))
+            legacy?.let { add("${localized("旧版共享", "Legacy shared")} ${signedEv(it)} EV") }
+        }.joinToString(" · ")
+        return listOf(first, second)
+    }
+
+    private fun correctionLabel(label: String, value: Double?): String = value?.let {
+        "$label ${signedEv(it)} EV"
+    } ?: "$label ${localized("未校准", "not calibrated")}"
+
+    private fun compactCorrectionSummary(record: CameraCalibrationRecord): String =
+        correctionLines(
+            record.rawCorrectionEv,
+            record.yuvCorrectionEv,
+            record.ispPreviewCorrectionEv,
+            record.legacyCompatibleCorrectionEv,
+        ).joinToString(" · ")
 
     private fun haptic() {
         performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)

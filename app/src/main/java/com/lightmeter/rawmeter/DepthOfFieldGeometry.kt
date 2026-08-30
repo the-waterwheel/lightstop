@@ -68,9 +68,9 @@ internal object DepthOfFieldGeometryCalculator {
         val controlsTop = ruler.bottom + max(4f * density, availableHeight * 0.012f)
         val controlsHeight = (h - controlsTop).coerceAtLeast(1f)
         val selectorGap = max(5f * density, controlsHeight * 0.025f)
-        val selectorWidth = min(116f * density, w * 0.30f)
-        val selectorHeight = min(44f * density, (controlsHeight - selectorGap) / 2f)
-            .coerceAtLeast(min(34f * density, controlsHeight / 2f))
+        val selectorWidth = min(100f * density, w * 0.26f)
+        val selectorHeight = min(38f * density, (controlsHeight - selectorGap) / 2f)
+            .coerceAtLeast(min(32f * density, controlsHeight / 2f))
         val selectorLeft = (w - selectorWidth) / 2f
         val frame = RectF(selectorLeft, controlsTop, selectorLeft + selectorWidth, controlsTop + selectorHeight)
         val coc = RectF(selectorLeft, frame.bottom + selectorGap, selectorLeft + selectorWidth, frame.bottom + selectorGap + selectorHeight)

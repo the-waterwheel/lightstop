@@ -75,6 +75,7 @@ Java_com_lightmeter_rawmeter_RawMeterBridge_analyzeRaw(
     jdoubleArray output = env->NewDoubleArray(6);
     std::array<jdouble, 6> result{0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
     if (base == nullptr || capacity <= 0 || pixel_stride < 2 || row_stride <= 0 ||
+        cfa < 0 || cfa > 3 ||
         white_level <= 0) {
         env->SetDoubleArrayRegion(output, 0, result.size(), result.data());
         return output;

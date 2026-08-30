@@ -5,7 +5,7 @@ package com.lightmeter.rawmeter
  *
  * [CameraRecoveryPolicy] contains the stateless decision table. This state machine adds the facts
  * that must survive a reopen: the active stream profile, per-error attempts, the global recovery
- * budget, physical-to-logical camera fallback, and consecutive RAW measurement failures.
+ * budget, camera-route fallback, and consecutive RAW measurement failures.
  *
  * Calls are confined to the camera handler after CameraController starts. [reset] may also be used
  * before that handler is created.
@@ -17,7 +17,7 @@ internal class CameraRecoveryStateMachine(
     var profile: CameraSessionProfile? = null
         private set
 
-    var usesLogicalCameraFallback: Boolean = false
+    var routeCandidateIndex: Int = 0
         private set
 
     private val failureAttempts =
@@ -82,10 +82,10 @@ internal class CameraRecoveryStateMachine(
         return true
     }
 
-    /** Switches a physical-lens selection back to its logical camera route at most once. */
-    fun enableLogicalCameraFallback(hasPhysicalSelection: Boolean): Boolean {
-        if (usesLogicalCameraFallback || !hasPhysicalSelection) return false
-        usesLogicalCameraFallback = true
+    /** Advances through transport candidates without changing the user-selected lens identity. */
+    fun advanceCameraRoute(candidateCount: Int): Boolean {
+        if (routeCandidateIndex + 1 >= candidateCount) return false
+        routeCandidateIndex += 1
         profile = CameraSessionProfile.PREVIEW_ONLY
         return true
     }
@@ -109,7 +109,7 @@ internal class CameraRecoveryStateMachine(
 
     fun reset() {
         profile = null
-        usesLogicalCameraFallback = false
+        routeCandidateIndex = 0
         markPreviewStable()
         consecutiveRawMeasurementFailures = 0
     }
