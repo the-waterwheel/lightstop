@@ -39,6 +39,7 @@ data class CameraCalibrationRecord(
     val measuredEv100: Double? get() = rawMeasuredEv100 ?: compatibleMeasuredEv100
 
     companion object {
-        const val CURRENT_SCHEMA_VERSION = 2
+        /** Version 3 uses RGB-reconstructed, tonemap-aware processed-stream luminance. */
+        const val CURRENT_SCHEMA_VERSION = 3
     }
 }

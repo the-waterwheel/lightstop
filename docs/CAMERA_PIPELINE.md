@@ -115,7 +115,15 @@ sensors are filtered out even if they expose a `SurfaceTexture` output.
 ## Preview-stream metering
 
 Preview-stream metering consumes ISP-processed data and therefore does not perform
-multi-frame noise-reduction fusion.
+multi-frame noise-reduction fusion. It does, however, convert every sampled pixel
+back into a common linear-light domain before calculating the region median:
+
+- displayed-preview RGB and reconstructed YUV RGB use the same decoder;
+- a valid per-frame Camera2 tonemap curve is inverted channel by channel;
+- gamma/preset metadata is used when present, otherwise the documented sRGB
+  output transfer is used;
+- YUV defaults to Camera2's JFIF/Rec.601 full-range encoding, while API 33+
+  frame dataspace metadata can select limited range, BT.709, or BT.2020.
 
 `READ_SENSOR_SETTINGS`/`MANUAL_SENSOR` and the advertised result keys provide an
 initial exposure-metadata confidence signal, but their absence never permanently
@@ -129,12 +137,15 @@ control is required.
 1. Prefer one valid `YUV_420_888` frame when the YUV output is active.
 2. Pair the YUV `Image.timestamp` with the `CaptureResult.SENSOR_TIMESTAMP` of
    the same frame; never apply exposure metadata from an unrelated latest frame.
-3. Reuse one luminance buffer instead of allocating a frame-sized array for
-   every callback.
-4. Try at most three YUV frames and never wait longer than 250 ms.
-5. If YUV is missing or invalid, immediately analyze one 96 x 96 sample of the
+3. Read all three planes with their independent buffer offsets and row/pixel
+   strides, reconstruct nonlinear RGB, invert the reported output response, and
+   calculate Rec.709 linear luminance.
+4. Use a per-region median, matching displayed-preview and RAW robust sampling,
+   rather than averaging encoded Y values.
+5. Examine at most 30 paired YUV frames within a 1.5-second bounded window.
+6. If YUV is missing or invalid, analyze one synchronized 96 x 96 sample of the
    displayed preview.
-6. Remember the YUV failure for the current camera session. In the internal
+7. Remember the sustained YUV failure for the current camera session. In the internal
    YUV profile, reopen as `PREVIEW_ONLY` after delivering the reading so later
    measurements do not repeatedly pay the timeout or keep the unused stream.
 
@@ -154,9 +165,10 @@ Compatibility: YUV compatible stream -> ISP display preview
 
 There is no fixed delay between stages. A source which is unavailable is omitted rather than
 shown as calibrated. RAW, YUV, and ISP corrections remain separate per manufacturer, model,
-and camera identity. The old shared `compatible_user_*` correction is a labelled fallback only:
-it is used only until that specific processed source has been recalibrated, and is never copied
-into a new YUV or ISP record as if it were a fresh measurement.
+and camera identity. Processed-stream corrections from the previous Y-only/fixed-sRGB algorithm
+are not applied after the luminance migration because their scene-dependent error cannot be
+converted into a trustworthy constant offset. RAW corrections remain valid; YUV and ISP require
+one new sequential calibration run.
 
 Each stage opens its smallest safe profile (`RAW_ONLY`, `COMPATIBLE`, or `PREVIEW_ONLY`), then
 closes it before the next source. The normal user-selected profile is restored at the end. Before

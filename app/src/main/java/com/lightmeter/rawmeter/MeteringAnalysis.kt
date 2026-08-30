@@ -48,11 +48,13 @@ internal object MeteringAnalysis {
     ): MeteringFrameStat? {
         val centerX = target?.previewX ?: 0.5f
         val centerY = target?.previewY ?: 0.5f
+        val lumaDecoder = ProcessedLumaMetadata.decoder(result)
         val spot = analyzePreviewRegion(
             bitmap,
             spotRoiFraction(meteringMode, meteringRoiFraction),
             centerX,
             centerY,
+            lumaDecoder,
         ) ?: return null
         val region = if (meteringMode == MeteringMode.CENTER_WEIGHTED) {
             val wide = analyzePreviewRegion(
@@ -60,6 +62,7 @@ internal object MeteringAnalysis {
                 CENTER_WEIGHTED_ROI_FRACTION,
                 centerX,
                 centerY,
+                lumaDecoder,
             ) ?: return null
             PreviewRegionStat(
                 luma = spot.luma * CENTER_SPOT_WEIGHT + wide.luma * CENTER_WIDE_WEIGHT,
@@ -95,7 +98,6 @@ internal object MeteringAnalysis {
 
     fun analyzeYuvPreview(
         image: Image,
-        luma: ByteArray,
         result: CaptureResult,
         characteristics: CameraCharacteristics,
         cameraId: String,
@@ -104,20 +106,21 @@ internal object MeteringAnalysis {
         meteringRoiFraction: Float? = null,
     ): MeteringFrameStat? {
         if (image.format != android.graphics.ImageFormat.YUV_420_888) return null
-        if (luma.size < image.width * image.height) return null
-        if (!ZoneYuvLumaCopier.copy(image, luma)) return null
+        if (image.planes.size < 3) return null
+        val lumaDecoder = ProcessedLumaMetadata.decoder(result)
+        val yuvEncoding = ProcessedLumaMetadata.yuvEncoding(image)
         val spot = analyzeYuvRegion(
-            luma,
-            image.width,
-            image.height,
+            image,
             spotRoiFraction(meteringMode, meteringRoiFraction),
+            lumaDecoder,
+            yuvEncoding,
         ) ?: return null
         val region = if (meteringMode == MeteringMode.CENTER_WEIGHTED) {
             val wide = analyzeYuvRegion(
-                luma,
-                image.width,
-                image.height,
+                image,
                 CENTER_WEIGHTED_ROI_FRACTION,
+                lumaDecoder,
+                yuvEncoding,
             ) ?: return null
             PreviewRegionStat(
                 luma = spot.luma * CENTER_SPOT_WEIGHT + wide.luma * CENTER_WIDE_WEIGHT,
@@ -627,6 +630,7 @@ internal object MeteringAnalysis {
         fraction: Float,
         centerX: Float = 0.5f,
         centerY: Float = 0.5f,
+        lumaDecoder: ProcessedLumaDecoder,
     ): PreviewRegionStat? {
         val sampleSize = (min(bitmap.width, bitmap.height) * fraction)
             .roundToInt()
@@ -647,10 +651,7 @@ internal object MeteringAnalysis {
             val red = ((color ushr 16) and 0xff) / 255.0
             val green = ((color ushr 8) and 0xff) / 255.0
             val blue = (color and 0xff) / 255.0
-            luminances[index] =
-                0.2126 * srgbToLinear(red) +
-                    0.7152 * srgbToLinear(green) +
-                    0.0722 * srgbToLinear(blue)
+            luminances[index] = lumaDecoder.linearLuma(red, green, blue)
             if (red >= 0.98 || green >= 0.98 || blue >= 0.98) clipped++
         }
         luminances.sort()
@@ -664,30 +665,52 @@ internal object MeteringAnalysis {
     }
 
     private fun analyzeYuvRegion(
-        luma: ByteArray,
-        width: Int,
-        height: Int,
+        image: Image,
         roiFraction: Float,
+        lumaDecoder: ProcessedLumaDecoder,
+        yuvEncoding: YuvColorEncoding,
     ): PreviewRegionStat? {
-        if (width <= 1 || height <= 1 || luma.size < width * height) return null
+        val width = image.width
+        val height = image.height
+        if (width <= 1 || height <= 1 || image.planes.size < 3) return null
+        val yPlane = YuvPlaneReader(image.planes[0])
+        val uPlane = YuvPlaneReader(image.planes[1])
+        val vPlane = YuvPlaneReader(image.planes[2])
         val roiWidth = (width * roiFraction).roundToInt().coerceIn(2, width)
         val roiHeight = (height * roiFraction).roundToInt().coerceIn(2, height)
         val left = (width - roiWidth) / 2
         val top = (height - roiHeight) / 2
-        var sum = 0.0
+        val luminances = DoubleArray(roiWidth * roiHeight)
         var clipped = 0
         var count = 0
         for (row in top until top + roiHeight) {
-            val rowOffset = row * width
             for (column in left until left + roiWidth) {
-                val value = luma[rowOffset + column].toInt() and 0xff
-                sum += srgbToLinear(value / 255.0)
-                if (value >= YUV_CLIP_LEVEL) clipped += 1
+                val yCode = yPlane.sample(column, row) ?: continue
+                val uCode = uPlane.sample(column / 2, row / 2) ?: continue
+                val vCode = vPlane.sample(column / 2, row / 2) ?: continue
+                val rgb = ProcessedLumaMath.yuvToEncodedRgb(yCode, uCode, vCode, yuvEncoding)
+                luminances[count] = lumaDecoder.linearLuma(rgb.red, rgb.green, rgb.blue)
+                if (rgb.clipped) clipped += 1
                 count += 1
             }
         }
-        if (count == 0) return null
-        return PreviewRegionStat(sum / count, clipped.toDouble() / count)
+        val luma = ProcessedLumaMath.median(luminances, count) ?: return null
+        return PreviewRegionStat(luma, clipped.toDouble() / count)
+    }
+
+    /** Absolute reads preserve each vendor plane's initial buffer offset and row/pixel padding. */
+    private class YuvPlaneReader(plane: Image.Plane) {
+        private val buffer = plane.buffer.duplicate()
+        private val start = buffer.position()
+        private val rowStride = plane.rowStride
+        private val pixelStride = plane.pixelStride
+
+        fun sample(column: Int, row: Int): Int? {
+            if (column < 0 || row < 0 || rowStride <= 0 || pixelStride <= 0) return null
+            val offset = start.toLong() + row.toLong() * rowStride + column.toLong() * pixelStride
+            if (offset < start || offset >= buffer.limit()) return null
+            return buffer.get(offset.toInt()).toInt() and 0xff
+        }
     }
 
     private fun analyzeRawRegion(
@@ -1072,14 +1095,10 @@ internal object MeteringAnalysis {
         )
     }
 
-    private fun srgbToLinear(value: Double): Double =
-        if (value <= 0.04045) value / 12.92 else Math.pow((value + 0.055) / 1.055, 2.4)
-
     private fun log2(value: Double): Double = ln(value) / ln(2.0)
 
     private const val TAG = "lightstop"
     private const val RAW_REFERENCE_LEVEL = 0.18
-    private const val YUV_CLIP_LEVEL = 250
     private const val SPOT_ROI_FRACTION = 0.08f
     private const val MIN_ROI_FRACTION = 0.001f
     private const val CENTER_WEIGHTED_ROI_FRACTION = 0.30f

@@ -20,10 +20,14 @@ class CameraCalibrationStore(context: Context) {
                 preferences.getLong(updatedAtKey(cameraId), 0L),
             )
         ) return 0.0
-        val correction = preferences.optionalFloat(userKey(cameraId, source))
-        return correction ?: if (source == MeteringSource.RAW) 0.0 else {
-            preferences.optionalFloat(legacyCompatibleKey(cameraId)) ?: 0.0
-        }
+        val schemaVersion = preferences.getInt(schemaVersionKey(cameraId), 1)
+        // Version-2 processed corrections were measured from Y-only averages / fixed sRGB output.
+        // Applying them after RGB reconstruction and tonemap inversion would double-correct an
+        // unknown, scene-dependent error. RAW corrections remain valid across this migration.
+        if (source != MeteringSource.RAW &&
+            schemaVersion < CameraCalibrationRecord.CURRENT_SCHEMA_VERSION
+        ) return 0.0
+        return preferences.optionalFloat(userKey(cameraId, source)) ?: 0.0
     }
 
     fun hasCalibrationArtifacts(): Boolean = preferences.all.keys.any { key ->
@@ -56,26 +60,45 @@ class CameraCalibrationStore(context: Context) {
         if (!CalibrationEnvironmentStore.isCalibrationTimestampValid(appContext, updatedAt)) {
             return null
         }
-        return CameraCalibrationRecord(
+        val schemaVersion = preferences.getInt(schemaVersionKey(cameraId), 1)
+        val processedCalibrationIsCurrent =
+            schemaVersion >= CameraCalibrationRecord.CURRENT_SCHEMA_VERSION
+        val record = CameraCalibrationRecord(
             raw = StreamCalibration(
                 correctionEv = preferences.optionalFloat(rawKey),
                 measuredEv100 = preferences.optionalFloat(rawMeasuredKey(cameraId)),
             ),
             yuv = StreamCalibration(
-                correctionEv = preferences.optionalFloat(yuvKey),
-                measuredEv100 = preferences.optionalFloat(yuvMeasuredKey(cameraId)),
+                correctionEv = preferences.optionalFloat(yuvKey).takeIf {
+                    processedCalibrationIsCurrent
+                },
+                measuredEv100 = preferences.optionalFloat(yuvMeasuredKey(cameraId)).takeIf {
+                    processedCalibrationIsCurrent
+                },
             ),
             ispPreview = StreamCalibration(
-                correctionEv = preferences.optionalFloat(ispKey),
-                measuredEv100 = preferences.optionalFloat(ispMeasuredKey(cameraId)),
+                correctionEv = preferences.optionalFloat(ispKey).takeIf {
+                    processedCalibrationIsCurrent
+                },
+                measuredEv100 = preferences.optionalFloat(ispMeasuredKey(cameraId)).takeIf {
+                    processedCalibrationIsCurrent
+                },
             ),
-            legacyCompatibleCorrectionEv = preferences.optionalFloat(legacyKey),
-            legacyCompatibleMeasuredEv100 = preferences.optionalFloat(legacyCompatibleMeasuredKey(cameraId)),
+            legacyCompatibleCorrectionEv = preferences.optionalFloat(legacyKey).takeIf {
+                processedCalibrationIsCurrent
+            },
+            legacyCompatibleMeasuredEv100 = preferences.optionalFloat(
+                legacyCompatibleMeasuredKey(cameraId),
+            ).takeIf { processedCalibrationIsCurrent },
             referenceEv100 = preferences.optionalFloat(referenceKey(cameraId)),
             updatedAtEpochMs = updatedAt,
             calibrationCount = preferences.getInt(countKey(cameraId), 1).coerceAtLeast(1),
-            schemaVersion = preferences.getInt(schemaVersionKey(cameraId), 1),
+            schemaVersion = schemaVersion,
         )
+        return record.takeIf {
+            it.rawCorrectionEv != null || it.yuvCorrectionEv != null ||
+                it.ispPreviewCorrectionEv != null || it.legacyCompatibleCorrectionEv != null
+        }
     }
 
     @Synchronized
@@ -234,29 +257,46 @@ class CameraCalibrationStore(context: Context) {
         if (!CalibrationEnvironmentStore.isCalibrationTimestampValid(appContext, updatedAt)) {
             return null
         }
-        return CameraCalibrationRecord(
+        val schemaVersion = preferences.getInt(historyKey(cameraId, index, "schema"), 1)
+        val processedCalibrationIsCurrent =
+            schemaVersion >= CameraCalibrationRecord.CURRENT_SCHEMA_VERSION
+        val record = CameraCalibrationRecord(
             raw = StreamCalibration(
                 correctionEv = preferences.optionalFloat(rawCorrection),
                 measuredEv100 = preferences.optionalFloat(historyKey(cameraId, index, "measured")),
             ),
             yuv = StreamCalibration(
-                correctionEv = preferences.optionalFloat(yuvCorrection),
-                measuredEv100 = preferences.optionalFloat(historyKey(cameraId, index, "yuv_measured")),
+                correctionEv = preferences.optionalFloat(yuvCorrection).takeIf {
+                    processedCalibrationIsCurrent
+                },
+                measuredEv100 = preferences.optionalFloat(
+                    historyKey(cameraId, index, "yuv_measured"),
+                ).takeIf { processedCalibrationIsCurrent },
             ),
             ispPreview = StreamCalibration(
-                correctionEv = preferences.optionalFloat(ispCorrection),
-                measuredEv100 = preferences.optionalFloat(historyKey(cameraId, index, "isp_measured")),
+                correctionEv = preferences.optionalFloat(ispCorrection).takeIf {
+                    processedCalibrationIsCurrent
+                },
+                measuredEv100 = preferences.optionalFloat(
+                    historyKey(cameraId, index, "isp_measured"),
+                ).takeIf { processedCalibrationIsCurrent },
             ),
-            legacyCompatibleCorrectionEv = preferences.optionalFloat(legacyCorrection),
+            legacyCompatibleCorrectionEv = preferences.optionalFloat(legacyCorrection).takeIf {
+                processedCalibrationIsCurrent
+            },
             legacyCompatibleMeasuredEv100 = preferences.optionalFloat(
                 historyKey(cameraId, index, "compatible_measured"),
-            ),
+            ).takeIf { processedCalibrationIsCurrent },
             referenceEv100 = preferences.optionalFloat(historyKey(cameraId, index, "reference")),
             updatedAtEpochMs = updatedAt,
             calibrationCount = preferences.getInt(historyKey(cameraId, index, "count"), index + 1)
                 .coerceAtLeast(1),
-            schemaVersion = preferences.getInt(historyKey(cameraId, index, "schema"), 1),
+            schemaVersion = schemaVersion,
         )
+        return record.takeIf {
+            it.rawCorrectionEv != null || it.yuvCorrectionEv != null ||
+                it.ispPreviewCorrectionEv != null || it.legacyCompatibleCorrectionEv != null
+        }
     }
 
     private fun android.content.SharedPreferences.Editor.writeActiveRecord(

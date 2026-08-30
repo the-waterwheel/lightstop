@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Rebuilt processed-stream luminance around the Camera2 output model: YUV
+  metering now reconstructs sRGB from all Y/U/V planes, honors reported
+  full/limited range and color matrices, inverts usable per-frame tonemap
+  curves, and uses the same linear-luminance median statistic as ISP/RAW.
+  Older processed-stream calibration offsets are invalidated while RAW
+  calibration remains valid.
 - Corrected public camera/backup disclosures to match optional GPS records,
   JPEG/DNG storage, and Android or vendor backup/device-transfer behavior.
 - Made formal metering and recording use exact sensor-timestamp pairs; stale

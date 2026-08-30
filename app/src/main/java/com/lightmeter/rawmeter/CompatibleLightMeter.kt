@@ -66,7 +66,6 @@ internal class CompatibleLightMeter(
     private val yuvFramePairer = TimestampedResultPairer<Image, CaptureResult>(
         releaseImage = Image::close,
     )
-    private var lumaBuffer = ByteArray(0)
     private var yuvTimeout: Runnable? = null
     private var downgradeYuvSessionAfterSuccess = false
 
@@ -186,13 +185,10 @@ internal class CompatibleLightMeter(
     ) {
         if (activeYuvMeasurement?.id != measurement.id || !isCurrent(measurement.id)) return
         measurement.attemptedFrames += 1
-        val requiredBytes = image.width * image.height
-        if (lumaBuffer.size != requiredBytes) lumaBuffer = ByteArray(requiredBytes)
         val characteristics = measurement.context.characteristics()
         val stat = if (characteristics != null) {
             MeteringAnalysis.analyzeYuvPreview(
                 image,
-                lumaBuffer,
                 result,
                 characteristics,
                 measurement.context.cameraId(),
