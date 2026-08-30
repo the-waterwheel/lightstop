@@ -6,6 +6,18 @@ import org.junit.Test
 
 class CameraRecoveryPolicyTest {
     @Test
+    fun autoModeAvoidsResidentThreeStreamProfile() {
+        val profile = CameraRecoveryPolicy.initialProfile(
+            MeteringPipelineMode.AUTO,
+            rawSupported = true,
+            trackingSupported = true,
+        )
+
+        assertEquals(CameraSessionProfile.RAW_ONLY, profile)
+        assertFalse(profile.usesTracking)
+    }
+
+    @Test
     fun cameraErrorCodesMapToAllKnownFailureKinds() {
         assertEquals(CameraFailureKind.IN_USE, CameraFailureKind.fromDeviceError(1))
         assertEquals(CameraFailureKind.RESOURCE_LIMIT, CameraFailureKind.fromDeviceError(2))

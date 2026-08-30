@@ -1,13 +1,16 @@
 package com.lightmeter.rawmeter
 
 internal enum class CameraSessionProfile(
+    val usesPreview: Boolean,
     val usesRaw: Boolean,
     val usesTracking: Boolean,
 ) {
-    FULL(usesRaw = true, usesTracking = true),
-    RAW_ONLY(usesRaw = true, usesTracking = false),
-    COMPATIBLE(usesRaw = false, usesTracking = true),
-    PREVIEW_ONLY(usesRaw = false, usesTracking = false),
+    FULL(usesPreview = true, usesRaw = true, usesTracking = true),
+    RAW_ONLY(usesPreview = true, usesRaw = true, usesTracking = false),
+    COMPATIBLE(usesPreview = true, usesRaw = false, usesTracking = true),
+    PREVIEW_ONLY(usesPreview = true, usesRaw = false, usesTracking = false),
+    /** Short-lived Zone measurement session; the TextureView keeps displaying its last buffer. */
+    RAW_ISOLATED(usesPreview = false, usesRaw = true, usesTracking = false),
 }
 
 internal enum class CameraFailureKind {
@@ -53,7 +56,9 @@ internal object CameraRecoveryPolicy {
         trackingSupported: Boolean,
     ): CameraSessionProfile = normalizeForMode(
         profile = when (mode) {
-            MeteringPipelineMode.AUTO -> CameraSessionProfile.FULL
+            // Avoid the least portable preview + RAW + YUV combination. Zone tracking adds YUV
+            // only while Zone is active and captures RAW in a short single-output session.
+            MeteringPipelineMode.AUTO -> CameraSessionProfile.RAW_ONLY
             MeteringPipelineMode.ISOLATED -> CameraSessionProfile.RAW_ONLY
             MeteringPipelineMode.FAST -> CameraSessionProfile.COMPATIBLE
         },
@@ -104,6 +109,11 @@ internal object CameraRecoveryPolicy {
             CameraSessionProfile.PREVIEW_ONLY
         }
         CameraSessionProfile.PREVIEW_ONLY -> CameraSessionProfile.PREVIEW_ONLY
+        CameraSessionProfile.RAW_ISOLATED -> if (rawSupported) {
+            CameraSessionProfile.RAW_ISOLATED
+        } else {
+            CameraSessionProfile.PREVIEW_ONLY
+        }
     }
 
     fun nextProfile(
@@ -118,6 +128,7 @@ internal object CameraRecoveryPolicy {
                 CameraSessionProfile.RAW_ONLY -> CameraSessionProfile.COMPATIBLE
                 CameraSessionProfile.COMPATIBLE -> CameraSessionProfile.PREVIEW_ONLY
                 CameraSessionProfile.PREVIEW_ONLY -> null
+                CameraSessionProfile.RAW_ISOLATED -> CameraSessionProfile.COMPATIBLE
             }
             MeteringPipelineMode.ISOLATED -> when (current) {
                 CameraSessionProfile.FULL,
@@ -125,12 +136,14 @@ internal object CameraRecoveryPolicy {
                 -> CameraSessionProfile.PREVIEW_ONLY
                 CameraSessionProfile.COMPATIBLE,
                 CameraSessionProfile.PREVIEW_ONLY,
+                CameraSessionProfile.RAW_ISOLATED,
                 -> null
             }
             MeteringPipelineMode.FAST -> when (current) {
                 CameraSessionProfile.FULL,
                 CameraSessionProfile.RAW_ONLY,
                 CameraSessionProfile.COMPATIBLE,
+                CameraSessionProfile.RAW_ISOLATED,
                 -> CameraSessionProfile.PREVIEW_ONLY
                 CameraSessionProfile.PREVIEW_ONLY -> null
             }

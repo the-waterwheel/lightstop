@@ -82,6 +82,24 @@ class CameraController(
         val displayedPreviewReference: PreviewLumaReference?,
     )
 
+    private data class ZoneRawFailure(
+        val message: String,
+        val meteringMode: MeteringMode,
+        val target: ZoneMeteringTarget?,
+        val meteringRoiFraction: Float?,
+    )
+
+    private data class ZoneRawTransaction(
+        val plan: MeteringPlan,
+        val expectedPhysicalCameraId: String?,
+        val residentCameraInfo: CameraUiInfo,
+        val residentCharacteristics: CameraCharacteristics?,
+        val sessionState: ZoneRawSessionState = ZoneRawSessionState(),
+        var reading: MeterReading? = null,
+        var failure: ZoneRawFailure? = null,
+        var physicalCameraChanged: Boolean = false,
+    )
+
     private data class RouteSelection(
         val descriptor: CameraDescriptor,
         val route: CameraRouteCandidate,
@@ -104,12 +122,48 @@ class CameraController(
             override fun onSessionConfigured(
                 device: CameraDevice,
                 session: CameraCaptureSession,
-                previewSurface: Surface,
+                previewSurface: Surface?,
                 generation: Int,
             ) {
                 if (!started || generation != cameraGeneration) return
                 cameraFailureStage = CameraFailureStage.RUNNING
-                startPreview(device, session, previewSurface, generation)
+                val transaction = zoneRawTransaction
+                if (transaction?.sessionState?.phase == ZoneRawSessionPhase.SWITCHING_TO_RAW &&
+                    activeSessionProfile == CameraSessionProfile.RAW_ISOLATED
+                ) {
+                    if (!transaction.sessionState.markRawSessionConfigured()) return
+                    postInfo(
+                        cameraInfo.copy(
+                            rawAvailable = true,
+                            status = localized("正在读取 RAW", "Reading RAW"),
+                        ),
+                    )
+                    startMeasurement(transaction.plan)
+                    return
+                }
+                if (transaction == null && calibrationSessionProfile == null &&
+                    pendingResidentSessionProfile == null
+                ) {
+                    val desiredProfile = desiredResidentSessionProfile()
+                    if (desiredProfile != activeSessionProfile) {
+                        switchResidentSession(desiredProfile)
+                        return
+                    }
+                }
+                val preview = previewSurface
+                if (preview == null) {
+                    onSessionConfigurationFailed(
+                        generation,
+                        IllegalStateException("Preview session configured without a preview Surface"),
+                    )
+                    return
+                }
+                pendingResidentSessionProfile = null
+                if (startPreview(device, session, preview, generation) &&
+                    transaction?.sessionState?.phase == ZoneRawSessionPhase.RESTORING
+                ) {
+                    completeZoneRawTransaction(transaction)
+                }
             }
 
             override fun onSessionConfigurationFailed(generation: Int, error: Exception?) {
@@ -118,6 +172,9 @@ class CameraController(
                     Log.w(TAG, "Camera session configuration failed for profile=$sessionProfile")
                 } else {
                     Log.e(TAG, "Unable to create camera session for profile=$sessionProfile", error)
+                }
+                if (handleZoneRawSessionFailure(error) || handleResidentSessionFailure(error)) {
+                    return
                 }
                 handleSessionFailure(generation)
             }
@@ -180,7 +237,22 @@ class CameraController(
         vignettingCalibrationStore = vignettingCalibrationStore,
         localized = ::localized,
         listener = object : RawLightMeterListener {
-            override fun onRawCaptureResult(result: CaptureResult) {
+            override fun onRawCaptureResult(
+                result: CaptureResult,
+                totalResult: TotalCaptureResult,
+            ) {
+                val transaction = zoneRawTransaction
+                updateActivePhysicalCamera(totalResult)
+                val expectedPhysicalId = transaction?.expectedPhysicalCameraId
+                val activePhysicalId = cameraInfo.activePhysicalCameraId
+                if (ZoneSessionPolicy.physicalCameraChanged(expectedPhysicalId, activePhysicalId)) {
+                    transaction?.physicalCameraChanged = true
+                    Log.w(
+                        TAG,
+                        "Zone RAW changed physical camera expected=$expectedPhysicalId " +
+                            "actual=$activePhysicalId; the RAW reading will be discarded",
+                    )
+                }
                 latestResult = result
                 updateDynamicLensInfo(result)
             }
@@ -190,6 +262,24 @@ class CameraController(
             }
 
             override fun onRawMeteringReading(reading: MeterReading) {
+                val transaction = zoneRawTransaction
+                if (transaction?.sessionState?.phase == ZoneRawSessionPhase.METERING) {
+                    if (transaction.physicalCameraChanged) {
+                        transaction.failure = ZoneRawFailure(
+                            message = localized(
+                                "RAW 流切换了物理镜头，已改用当前预览流测光",
+                                "RAW switched physical lenses; using the current preview stream",
+                            ),
+                            meteringMode = transaction.plan.meteringMode,
+                            target = transaction.plan.target,
+                            meteringRoiFraction = transaction.plan.meteringRoiFraction,
+                        )
+                    } else {
+                        transaction.reading = reading
+                    }
+                    restoreZoneResidentSession(transaction)
+                    return
+                }
                 resumePreviewAfterRawCapture()
                 meteringOperationActive = false
                 recoveryState.recordRawMeasurementSucceeded()
@@ -202,6 +292,17 @@ class CameraController(
                 target: ZoneMeteringTarget?,
                 meteringRoiFraction: Float?,
             ) {
+                val transaction = zoneRawTransaction
+                if (transaction?.sessionState?.phase == ZoneRawSessionPhase.METERING) {
+                    transaction.failure = ZoneRawFailure(
+                        message = message,
+                        meteringMode = meteringMode,
+                        target = target,
+                        meteringRoiFraction = meteringRoiFraction,
+                    )
+                    restoreZoneResidentSession(transaction)
+                    return
+                }
                 resumePreviewAfterRawCapture()
                 val canUsePreview = textureView?.isAvailable == true &&
                     cameraDevice != null && captureSession != null
@@ -272,15 +373,21 @@ class CameraController(
         rawFailuresBeforeDowngrade = RAW_FAILURES_BEFORE_DOWNGRADE,
     )
     private val sessionProfile: CameraSessionProfile?
-        get() = calibrationSessionProfile ?: recoveryState.profile
+        get() = activeSessionProfile ?: calibrationSessionProfile ?: recoveryState.profile
+    private var activeSessionProfile: CameraSessionProfile? = null
     private var cameraGeneration = 0
     private var calibrationSessionProfile: CameraSessionProfile? = null
     private var pendingCalibrationMeteringPlan: MeteringPlan? = null
+    private var zoneRawTransaction: ZoneRawTransaction? = null
+    private var pendingResidentSessionProfile: CameraSessionProfile? = null
+    private var zoneYuvSessionUnavailable = false
     @Volatile
     private var calibrationStorageCameraId: String? = null
     private var cameraFailureStage = CameraFailureStage.OPENING
     private var cameraInfo = CameraUiInfo()
     private var previewSize: Size? = null
+    private var rawOutputSize: Size? = null
+    private var trackingOutputSize: Size? = null
     private var previewFpsRange: Range<Int>? = null
     private var fpsRequestCeiling: Int? = DEFAULT_PREVIEW_FPS_CEILING
     @Volatile
@@ -349,7 +456,19 @@ class CameraController(
         handler.post {
             if (trackingFramesEnabled == enabled) return@post
             trackingFramesEnabled = enabled
-            updatePreviewRepeatingRequest()
+            if (!started || calibrationSessionProfile != null ||
+                zoneRawTransaction != null || meteringOperationActive
+            ) {
+                return@post
+            }
+            val desiredProfile = desiredResidentSessionProfile()
+            if (cameraDevice != null && captureSession != null &&
+                desiredProfile != activeSessionProfile
+            ) {
+                switchResidentSession(desiredProfile)
+            } else {
+                updatePreviewRepeatingRequest()
+            }
         }
     }
 
@@ -611,6 +730,11 @@ class CameraController(
 
     /** Routes calibration captures through single-source sessions before restoring neutral AE. */
     private fun startMeteringPlan(plan: MeteringPlan) {
+        if (pendingResidentSessionProfile != null) {
+            meteringOperationActive = false
+            postMeterError(localized("相机会话正在切换，请稍候", "The camera session is switching"))
+            return
+        }
         val requestedSource = plan.requestedSource
         if (requestedSource != null && calibrationStorageCameraId == null) {
             calibrationStorageCameraId = calibrationCameraId()
@@ -629,7 +753,19 @@ class CameraController(
         }
         meteringOperationActive = true
         prepareMeteringPreviewBaseline {
-            startMeasurement(plan)
+            if (ZoneSessionPolicy.shouldUseTransientRaw(
+                    zoneActive = trackingFramesEnabled,
+                    requestedSource = plan.requestedSource,
+                    pipelineMode = meteringPipelineMode,
+                    rawSupported = rawHardwareAvailable &&
+                        recoveryState.profile?.usesRaw == true,
+                    manualSafePreview = manualSafePreviewActive,
+                )
+            ) {
+                beginZoneRawTransaction(plan)
+            } else {
+                startMeasurement(plan)
+            }
         }
     }
 
@@ -648,6 +784,224 @@ class CameraController(
         Log.i(TAG, "Switching to isolated calibration session profile=$profile source=${plan.requestedSource}")
         closeCamera(preserveExposurePreview = true)
         openCamera(texture)
+    }
+
+    /** Freezes the Zone reference, then swaps preview + YUV for one short RAW-only session. */
+    private fun beginZoneRawTransaction(plan: MeteringPlan) {
+        if (!started || cameraDevice == null || captureSession == null || rawOutputSize == null) {
+            meteringOperationActive = false
+            postMeterError(localized("RAW 流尚未就绪", "The RAW stream is not ready"))
+            return
+        }
+        val frozenPlan = freezeZoneReference(plan)
+        val transaction = ZoneRawTransaction(
+            plan = frozenPlan,
+            expectedPhysicalCameraId = cameraInfo.activePhysicalCameraId,
+            residentCameraInfo = cameraInfo,
+            residentCharacteristics = characteristics,
+        )
+        zoneRawTransaction = transaction
+        pendingResidentSessionProfile = null
+        previewPausedForRawCapture = false
+        compatibleYuvRequestActive = false
+        postInfo(
+            cameraInfo.copy(
+                rawAvailable = false,
+                status = localized("正在切换到 RAW 测光", "Switching to RAW metering"),
+            ),
+        )
+        if (!reconfigureSession(CameraSessionProfile.RAW_ISOLATED)) {
+            transaction.failure = ZoneRawFailure(
+                message = localized("无法启动 RAW 测光，请重试", "Unable to start RAW metering"),
+                meteringMode = plan.meteringMode,
+                target = plan.target,
+                meteringRoiFraction = plan.meteringRoiFraction,
+            )
+            restoreZoneResidentSession(transaction)
+        }
+    }
+
+    private fun freezeZoneReference(plan: MeteringPlan): MeteringPlan {
+        val target = plan.target ?: return plan
+        val recentFrame = zoneCameraFrames.latestFrame(MAX_METERING_REFERENCE_AGE_NS)
+            ?: return plan
+        val reference = MeteringAnalysis.createPreviewReference(
+            frame = recentFrame,
+            frameAspect = plan.screenAspect,
+            zoom = plan.displayZoom,
+            target = target,
+        ) ?: return plan
+        return plan.copy(displayedPreviewReference = reference)
+    }
+
+    private fun desiredResidentSessionProfile(): CameraSessionProfile {
+        val calibrationProfile = calibrationSessionProfile
+        if (calibrationProfile != null) return calibrationProfile
+        val normalProfile = recoveryState.resolveProfile(
+            mode = meteringPipelineMode,
+            rawSupported = rawHardwareAvailable,
+            trackingSupported = trackingHardwareAvailable,
+        )
+        return ZoneSessionPolicy.residentProfile(
+            normalProfile = normalProfile,
+            zoneActive = trackingFramesEnabled,
+            manualSafePreview = manualSafePreviewActive,
+            trackingSupported = trackingHardwareAvailable,
+            zoneYuvUnavailable = zoneYuvSessionUnavailable,
+        )
+    }
+
+    private fun switchResidentSession(profile: CameraSessionProfile) {
+        if (!started || cameraDevice == null) return
+        pendingResidentSessionProfile = profile
+        postInfo(
+            cameraInfo.copy(
+                rawAvailable = profile.usesRaw && rawHardwareAvailable,
+                status = if (trackingFramesEnabled) {
+                    localized("正在准备 Zone 跟踪", "Preparing Zone tracking")
+                } else {
+                    localized("正在恢复测光会话", "Restoring the metering session")
+                },
+            ),
+        )
+        if (!reconfigureSession(profile)) {
+            val error = IllegalStateException("Unable to replace the resident camera session")
+            if (!handleResidentSessionFailure(error)) {
+                handleSessionFailure(cameraGeneration)
+            }
+        }
+    }
+
+    private fun reconfigureSession(profile: CameraSessionProfile): Boolean {
+        val handler = cameraHandler ?: return false
+        if (!started || cameraDevice == null) return false
+        activeSessionProfile = profile
+        cameraFailureStage = CameraFailureStage.CONFIGURING
+        previewFpsRange = fpsRequestCeiling?.let { ceiling ->
+            val chars = characteristics ?: return@let null
+            val size = previewSize ?: return@let null
+            CameraStreamSelector.chooseFpsRange(
+                characteristics = chars,
+                previewSize = size,
+                trackingSize = trackingOutputSize.takeIf { profile.usesTracking },
+                requestedCeiling = ceiling,
+            )
+        }
+        return try {
+            sessionCoordinator.reconfigure(
+                profile = profile,
+                rawSize = rawOutputSize,
+                trackingSize = trackingOutputSize,
+                physicalCameraId = selectedPhysicalCameraId,
+                generation = cameraGeneration,
+                handler = handler,
+            )
+            true
+        } catch (error: Exception) {
+            Log.e(TAG, "Unable to reconfigure camera session profile=$profile", error)
+            false
+        }
+    }
+
+    private fun restoreZoneResidentSession(transaction: ZoneRawTransaction) {
+        if (zoneRawTransaction !== transaction) return
+        if (!transaction.sessionState.beginRestore()) return
+        previewPausedForRawCapture = false
+        val residentProfile = desiredResidentSessionProfile()
+        characteristics = transaction.residentCharacteristics
+        postInfo(
+            transaction.residentCameraInfo.copy(
+                rawAvailable = residentProfile.usesRaw && rawHardwareAvailable,
+                status = localized("正在恢复预览", "Restoring preview"),
+            ),
+        )
+        if (!reconfigureSession(residentProfile)) {
+            failZoneRawRestore(transaction)
+        }
+    }
+
+    private fun completeZoneRawTransaction(transaction: ZoneRawTransaction) {
+        if (zoneRawTransaction !== transaction) return
+        if (!transaction.sessionState.markResidentSessionConfigured()) return
+        zoneRawTransaction = null
+        transaction.reading?.let { reading ->
+            meteringOperationActive = false
+            recoveryState.recordRawMeasurementSucceeded()
+            mainHandler.post { callback.onMeterReading(reading) }
+            return
+        }
+        val failure = transaction.failure ?: ZoneRawFailure(
+            message = localized("RAW 测光失败，请重试", "RAW metering failed. Please try again"),
+            meteringMode = transaction.plan.meteringMode,
+            target = transaction.plan.target,
+            meteringRoiFraction = transaction.plan.meteringRoiFraction,
+        )
+        downgradeAfterCompatibleMeasurement = calibrationStorageCameraId == null &&
+            recoveryState.recordRawMeasurementFailed(meteringPipelineMode)
+        measureCompatiblePreview(
+            failure.meteringMode,
+            failure.target,
+            failure.meteringRoiFraction,
+            forceProcessedPreview = meteringPipelineMode == MeteringPipelineMode.ISOLATED,
+        )
+    }
+
+    private fun handleZoneRawSessionFailure(error: Exception?): Boolean {
+        val transaction = zoneRawTransaction ?: return false
+        return when (transaction.sessionState.phase) {
+            ZoneRawSessionPhase.SWITCHING_TO_RAW -> {
+                transaction.failure = transaction.failure ?: ZoneRawFailure(
+                    message = localized(
+                        "当前设备无法启动独立 RAW 流，已恢复预览流测光",
+                        "This device could not start isolated RAW; preview metering was restored",
+                    ),
+                    meteringMode = transaction.plan.meteringMode,
+                    target = transaction.plan.target,
+                    meteringRoiFraction = transaction.plan.meteringRoiFraction,
+                )
+                Log.w(TAG, "Isolated Zone RAW session failed; restoring resident session", error)
+                restoreZoneResidentSession(transaction)
+                true
+            }
+            ZoneRawSessionPhase.RESTORING -> {
+                Log.e(TAG, "Unable to restore resident session after Zone RAW", error)
+                failZoneRawRestore(transaction)
+                true
+            }
+            ZoneRawSessionPhase.METERING,
+            ZoneRawSessionPhase.COMPLETE,
+            -> false
+        }
+    }
+
+    private fun failZoneRawRestore(transaction: ZoneRawTransaction) {
+        if (zoneRawTransaction !== transaction) return
+        zoneRawTransaction = null
+        pendingResidentSessionProfile = null
+        meteringOperationActive = false
+        postMeterError(
+            transaction.failure?.message
+                ?: localized("无法恢复相机预览，本次测光已中止", "Unable to restore preview; metering stopped"),
+        )
+        if (started) {
+            scheduleRecovery(
+                CameraSessionProfile.PREVIEW_ONLY,
+                localized("正在恢复安全预览", "Restoring safe preview"),
+                delayMs = 0L,
+            )
+        }
+    }
+
+    private fun handleResidentSessionFailure(error: Exception?): Boolean {
+        val failedProfile = pendingResidentSessionProfile ?: return false
+        pendingResidentSessionProfile = null
+        if (failedProfile == CameraSessionProfile.COMPATIBLE && trackingFramesEnabled) {
+            zoneYuvSessionUnavailable = true
+            Log.w(TAG, "Zone YUV resident session failed; falling back to preview-only", error)
+            switchResidentSession(CameraSessionProfile.PREVIEW_ONLY)
+            return true
+        }
+        return false
     }
 
     /** Restores the profile selected by the user's normal metering mode after a calibration run. */
@@ -683,8 +1037,8 @@ class CameraController(
             return
         }
         if (!cameraInfo.rawAvailable) {
-            meteringOperationActive = false
-            postMeterError(
+            finishMeasurementStartFailure(
+                plan,
                 localized(
                     "当前摄像头无法读取 RAW 流",
                     "The RAW stream is unavailable for this camera",
@@ -693,16 +1047,16 @@ class CameraController(
             return
         }
         if (rawMeter.isMeasuring || activeVignettingCapture != null) {
-            meteringOperationActive = false
-            postMeterError(
+            finishMeasurementStartFailure(
+                plan,
                 localized("请等待当前操作完成", "Wait for the current operation"),
             )
             return
         }
         val rawContext = rawMeteringContext()
         if (rawContext == null || !cameraInfo.rawAvailable) {
-            meteringOperationActive = false
-            postMeterError(
+            finishMeasurementStartFailure(
+                plan,
                 localized(
                     "RAW 流尚未就绪",
                     "The RAW stream is not ready",
@@ -749,8 +1103,26 @@ class CameraController(
         )
         if (!accepted) {
             resumePreviewAfterRawCapture()
+            finishMeasurementStartFailure(
+                plan,
+                localized("请等待当前操作完成", "Wait for the current operation"),
+            )
+        }
+    }
+
+    private fun finishMeasurementStartFailure(plan: MeteringPlan, message: String) {
+        val transaction = zoneRawTransaction
+        if (transaction?.sessionState?.phase == ZoneRawSessionPhase.METERING) {
+            transaction.failure = ZoneRawFailure(
+                message = message,
+                meteringMode = plan.meteringMode,
+                target = plan.target,
+                meteringRoiFraction = plan.meteringRoiFraction,
+            )
+            restoreZoneResidentSession(transaction)
+        } else {
             meteringOperationActive = false
-            postMeterError(localized("请等待当前操作完成", "Wait for the current operation"))
+            postMeterError(message)
         }
     }
 
@@ -1169,14 +1541,22 @@ class CameraController(
                 requiresPreviewOnlySession &&
                     sessionProfile == CameraSessionProfile.COMPATIBLE -> {
                     if (started && cameraDevice != null) {
-                        scheduleRecovery(
-                            CameraSessionProfile.PREVIEW_ONLY,
-                            localized(
-                                "已切换到更稳定的预览方式",
-                                "Using a more stable preview method",
-                            ),
-                            SESSION_RECOVERY_DELAY_MS,
-                        )
+                        if (trackingFramesEnabled && recoveryState.profile?.usesRaw == true &&
+                            !downgradeAfterCompatibleMeasurement
+                        ) {
+                            // Losing Zone YUV must not also disable a separately working RAW path.
+                            zoneYuvSessionUnavailable = true
+                            switchResidentSession(CameraSessionProfile.PREVIEW_ONLY)
+                        } else {
+                            scheduleRecovery(
+                                CameraSessionProfile.PREVIEW_ONLY,
+                                localized(
+                                    "已切换到更稳定的预览方式",
+                                    "Using a more stable preview method",
+                                ),
+                                SESSION_RECOVERY_DELAY_MS,
+                            )
+                        }
                     }
                 }
                 downgradeAfterCompatibleMeasurement -> {
@@ -1186,6 +1566,16 @@ class CameraController(
                         CameraSessionProfile.COMPATIBLE
                     } else {
                         CameraSessionProfile.PREVIEW_ONLY
+                    }
+                    if (sessionProfile == compatible) {
+                        recoveryState.forceProfile(compatible)
+                        val readyInfo = cameraInfo.copy(
+                            rawAvailable = false,
+                            status = readyCameraStatus(),
+                        )
+                        cameraInfo = readyInfo
+                        postInfo(readyInfo)
+                        return@post
                     }
                     scheduleRecovery(
                         compatible,
@@ -1313,13 +1703,21 @@ class CameraController(
             previewSize = chosenPreview
             val trackingSize = CameraStreamSelector.chooseTrackingSize(map, chosenPreview)
             trackingHardwareAvailable = trackingSize != null
-            val profile = calibrationSessionProfile ?: recoveryState.resolveProfile(
+            val normalProfile = calibrationSessionProfile ?: recoveryState.resolveProfile(
                 mode = meteringPipelineMode,
                 rawSupported = rawHardwareAvailable,
                 trackingSupported = trackingHardwareAvailable,
             )
+            val profile = calibrationSessionProfile ?: ZoneSessionPolicy.residentProfile(
+                normalProfile = normalProfile,
+                zoneActive = trackingFramesEnabled,
+                manualSafePreview = manualSafePreviewActive,
+                trackingSupported = trackingHardwareAvailable,
+                zoneYuvUnavailable = zoneYuvSessionUnavailable,
+            )
+            activeSessionProfile = profile
             val rawAvailable = rawHardwareAvailable && profile.usesRaw
-            val rawSize = if (rawAvailable) {
+            val availableRawSize = if (rawHardwareAvailable) {
                 val rawSizes = map.getOutputSizes(ImageFormat.RAW_SENSOR)
                 rawSizes?.minByOrNull { it.width.toLong() * it.height.toLong() }
                     ?: throw IllegalStateException(
@@ -1331,6 +1729,9 @@ class CameraController(
             } else {
                 null
             }
+            rawOutputSize = availableRawSize
+            trackingOutputSize = trackingSize
+            val rawSize = availableRawSize.takeIf { profile.usesRaw }
             val configuredTrackingSize = trackingSize.takeIf { profile.usesTracking }
             val chosenRange = fpsRequestCeiling?.let { ceiling ->
                 CameraStreamSelector.chooseFpsRange(
@@ -1661,6 +2062,7 @@ class CameraController(
     private fun resetRecoveryState() {
         recoveryState.reset()
         manualSafePreviewActive = false
+        zoneYuvSessionUnavailable = false
         downgradeAfterCompatibleMeasurement = false
         fpsRequestCeiling = DEFAULT_PREVIEW_FPS_CEILING
         previewHealthRecoveryAttempts = 0
@@ -1673,7 +2075,7 @@ class CameraController(
         session: CameraCaptureSession,
         preview: Surface,
         generation: Int,
-    ) {
+    ): Boolean {
         try {
             if (previewHealthConfirmationPending) {
                 previewHealthConfirmationGeneration = generation
@@ -1685,7 +2087,8 @@ class CameraController(
             )
             cameraInfo = readyInfo
             postInfo(readyInfo)
-            if (!readyInfo.rawAvailable && !manualSafePreviewActive &&
+            if (!readyInfo.rawAvailable && !transientZoneRawAvailable() &&
+                !manualSafePreviewActive &&
                 meteringPipelineMode == MeteringPipelineMode.AUTO &&
                 calibrationSessionProfile == null
             ) {
@@ -1713,9 +2116,11 @@ class CameraController(
                 },
                 STABLE_PREVIEW_RESET_DELAY_MS,
             )
+            return true
         } catch (error: Exception) {
             Log.e(TAG, "Unable to start preview for profile=$sessionProfile", error)
             if (generation == cameraGeneration) handlePreviewRequestFailure(generation)
+            return false
         }
     }
 
@@ -2009,7 +2414,7 @@ class CameraController(
             return localized("$size · 手动安全预览", "$size · Manual safe preview")
         }
         return when (meteringPipelineMode) {
-            MeteringPipelineMode.AUTO -> if (cameraInfo.rawAvailable) {
+            MeteringPipelineMode.AUTO -> if (cameraInfo.rawAvailable || transientZoneRawAvailable()) {
                 localized("$size · 高精度测光", "$size · High-accuracy metering")
             } else {
                 localized("$size · 预览流测光", "$size · Preview-stream metering")
@@ -2020,6 +2425,10 @@ class CameraController(
                 localized("$size · 兼容模式", "$size · Compatibility mode")
         }
     }
+
+    private fun transientZoneRawAvailable(): Boolean =
+        trackingFramesEnabled && rawHardwareAvailable && !manualSafePreviewActive &&
+            recoveryState.profile?.usesRaw == true
 
     private val previewCaptureCallback = object : CameraCaptureSession.CaptureCallback() {
         override fun onCaptureCompleted(
@@ -2179,6 +2588,9 @@ class CameraController(
                 return@post
             }
             previewHealthRecoveryPending = false
+            // A deliberate session replacement freezes the TextureView briefly. Let the restored
+            // preview produce fresh samples before deciding that its output is unhealthy.
+            if (zoneRawTransaction != null || pendingResidentSessionProfile != null) return@post
             if (previewHealthConfirmationPending &&
                 previewHealthConfirmationGeneration == generation
             ) {
@@ -2491,6 +2903,8 @@ class CameraController(
         }
         rawMeter.cancel(cameraHandler)
         compatibleMeter.cancel(cameraHandler, resetYuvAvailability = true)
+        zoneRawTransaction = null
+        pendingResidentSessionProfile = null
         meteringOperationActive = false
         downgradeAfterCompatibleMeasurement = false
         compatibleYuvRequestActive = false
@@ -2500,7 +2914,10 @@ class CameraController(
         sessionCoordinator.close()
         zoneCameraFrames.reset()
         previewSize = null
+        rawOutputSize = null
+        trackingOutputSize = null
         previewFpsRange = null
+        activeSessionProfile = null
         characteristics = null
         logicalCharacteristics = null
         selectedPhysicalCameraId = null

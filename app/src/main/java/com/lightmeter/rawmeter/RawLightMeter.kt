@@ -30,7 +30,7 @@ internal data class RawMeteringContext(
 )
 
 internal interface RawLightMeterListener {
-    fun onRawCaptureResult(result: CaptureResult)
+    fun onRawCaptureResult(result: CaptureResult, totalResult: TotalCaptureResult)
     fun onRawMeteringStarted(frameCount: Int)
     fun onRawMeteringReading(reading: MeterReading)
     fun onRawMeteringError(
@@ -285,7 +285,7 @@ internal class RawLightMeter(
         ) {
             val context = activeContext ?: return
             val effectiveResult = effectiveCaptureResult(result, context.selectedPhysicalCameraId)
-            listener.onRawCaptureResult(effectiveResult)
+            listener.onRawCaptureResult(effectiveResult, result)
             val timestamp = effectiveResult.get(CaptureResult.SENSOR_TIMESTAMP)
                 ?: result.get(CaptureResult.SENSOR_TIMESTAMP)
                 ?: return

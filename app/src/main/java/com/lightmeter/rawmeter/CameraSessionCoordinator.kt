@@ -21,7 +21,7 @@ internal interface CameraSessionCoordinatorListener {
     fun onSessionConfigured(
         device: CameraDevice,
         session: CameraCaptureSession,
-        previewSurface: Surface,
+        previewSurface: Surface?,
         generation: Int,
     )
     fun onSessionConfigurationFailed(generation: Int, error: Exception? = null)
@@ -65,6 +65,7 @@ internal class CameraSessionCoordinator(
         private set
 
     private var activeGeneration: Int? = null
+    private var sessionRevision = 0L
 
     fun configureOutputs(
         surfaceTexture: SurfaceTexture,
@@ -110,13 +111,13 @@ internal class CameraSessionCoordinator(
         handler: Handler,
     ) {
         check(!isOpening && device == null) { "Camera session is already opening or open" }
-        val preview = checkNotNull(previewSurface) { "Preview output is not configured" }
+        checkNotNull(previewSurface) { "Preview output is not configured" }
         activeGeneration = generation
         isOpening = true
         try {
             cameraManager.openCamera(
                 logicalCameraId,
-                createDeviceCallback(physicalCameraId, preview, generation, handler),
+                createDeviceCallback(physicalCameraId, generation, handler),
                 handler,
             )
         } catch (error: Exception) {
@@ -126,9 +127,45 @@ internal class CameraSessionCoordinator(
         }
     }
 
+    /**
+     * Replaces only the capture session and ImageReaders while retaining the open CameraDevice and
+     * TextureView Surface. Excluding [previewSurface] keeps its last submitted buffer visible during
+     * a short RAW-only Zone measurement.
+     */
+    fun reconfigure(
+        profile: CameraSessionProfile,
+        rawSize: Size?,
+        trackingSize: Size?,
+        physicalCameraId: String?,
+        generation: Int,
+        handler: Handler,
+    ) {
+        val camera = checkNotNull(device) { "Camera device is not open" }
+        check(isActive(generation)) { "Camera generation is no longer active" }
+        val preview = previewSurface
+        if (profile.usesPreview) checkNotNull(preview) { "Preview output is not configured" }
+        if (profile.usesRaw) checkNotNull(rawSize) { "RAW output size is unavailable" }
+        if (profile.usesTracking) checkNotNull(trackingSize) { "YUV output size is unavailable" }
+
+        invalidateCurrentSession()
+        replaceReaders(
+            rawSize = rawSize.takeIf { profile.usesRaw },
+            trackingSize = trackingSize.takeIf { profile.usesTracking },
+            handler = handler,
+        )
+        createSession(
+            camera = camera,
+            physicalCameraId = physicalCameraId,
+            preview = preview.takeIf { profile.usesPreview },
+            generation = generation,
+            handler = handler,
+        )
+    }
+
     /** Closes producers before readers and releases the TextureView Surface last. */
     fun close() {
         activeGeneration = null
+        sessionRevision += 1L
         isOpening = false
         try {
             session?.close()
@@ -160,7 +197,6 @@ internal class CameraSessionCoordinator(
 
     private fun createDeviceCallback(
         physicalCameraId: String?,
-        preview: Surface,
         generation: Int,
         handler: Handler,
     ) = object : CameraDevice.StateCallback() {
@@ -172,7 +208,7 @@ internal class CameraSessionCoordinator(
             isOpening = false
             device = camera
             listener.onCameraOpened(generation)
-            createSession(camera, physicalCameraId, preview, generation, handler)
+            createSession(camera, physicalCameraId, previewSurface, generation, handler)
         }
 
         override fun onDisconnected(camera: CameraDevice) {
@@ -201,18 +237,20 @@ internal class CameraSessionCoordinator(
     private fun createSession(
         camera: CameraDevice,
         physicalCameraId: String?,
-        preview: Surface,
+        preview: Surface?,
         generation: Int,
         handler: Handler,
     ) {
+        val revision = ++sessionRevision
         val outputs = buildList {
-            add(preview)
+            preview?.let(::add)
             rawReader?.surface?.let(::add)
             trackingReader?.surface?.let(::add)
         }
+        check(outputs.isNotEmpty()) { "Camera session has no outputs" }
         val stateCallback = object : CameraCaptureSession.StateCallback() {
             override fun onConfigured(configuredSession: CameraCaptureSession) {
-                if (!isActive(generation) || device !== camera) {
+                if (!isSessionActive(generation, revision) || device !== camera) {
                     configuredSession.close()
                     return
                 }
@@ -222,7 +260,9 @@ internal class CameraSessionCoordinator(
 
             override fun onConfigureFailed(failedSession: CameraCaptureSession) {
                 failedSession.close()
-                if (isActive(generation)) listener.onSessionConfigurationFailed(generation)
+                if (isSessionActive(generation, revision)) {
+                    listener.onSessionConfigurationFailed(generation)
+                }
             }
         }
         try {
@@ -263,13 +303,56 @@ internal class CameraSessionCoordinator(
             }
             camera.createCaptureSession(configuration)
         } catch (error: Exception) {
-            if (isActive(generation)) {
+            if (isSessionActive(generation, revision)) {
                 listener.onSessionConfigurationFailed(generation, error)
             }
         }
     }
 
+    private fun invalidateCurrentSession() {
+        sessionRevision += 1L
+        val current = session
+        session = null
+        if (current != null) {
+            runCatching { current.stopRepeating() }
+            runCatching { current.abortCaptures() }
+            runCatching { current.close() }
+        }
+    }
+
+    private fun replaceReaders(
+        rawSize: Size?,
+        trackingSize: Size?,
+        handler: Handler,
+    ) {
+        runCatching { rawReader?.close() }
+        rawReader = rawSize?.let { size ->
+            ImageReader.newInstance(
+                size.width,
+                size.height,
+                ImageFormat.RAW_SENSOR,
+                RAW_READER_MAX_IMAGES,
+            ).also { reader ->
+                reader.setOnImageAvailableListener(onRawImageAvailable, handler)
+            }
+        }
+        runCatching { trackingReader?.close() }
+        trackingReader = trackingSize?.let { size ->
+            ImageReader.newInstance(
+                size.width,
+                size.height,
+                ImageFormat.YUV_420_888,
+                ZoneLumaBufferPool.DEFAULT_CAPACITY,
+            ).also { reader ->
+                reader.setOnImageAvailableListener(onTrackingImageAvailable, handler)
+            }
+        }
+    }
+
     private fun isActive(generation: Int): Boolean = activeGeneration == generation
+
+    private fun isSessionActive(generation: Int, revision: Long): Boolean =
+        isActive(generation) && sessionRevision == revision
 
     private companion object {
         private const val RAW_READER_MAX_IMAGES = 1
