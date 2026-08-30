@@ -231,13 +231,43 @@ class CameraManagementView(
             row.top + 39f * density,
             paint,
         )
-        val calibration = state.cameraCalibrationRecord(camera.cameraId)
-        paint.color = if (calibration == null) muted else foreground
+        val coverage = CameraCalibrationCoverageResolver.resolve(
+            camera = camera,
+            cameras = state.availableCameras,
+            selectedCameraId = state.selectedCameraId,
+            cameraInfo = state.cameraInfo,
+            record = state::cameraCalibrationRecord,
+        )
+        val calibration = coverage.activePhysical?.record ?: coverage.direct?.record
+        val hasCalibration = calibration != null || coverage.physical.isNotEmpty()
+        paint.color = if (hasCalibration) foreground else muted
         paint.textSize = 7.5f * density
-        val calibrationSummary = if (calibration == null) {
+        val calibrationSummary = if (!hasCalibration) {
             localized("未校准", "Not calibrated")
-        } else {
+        } else if (camera.lensRole == CameraLensRole.AUTOMATIC &&
+            coverage.activePhysical == null && coverage.physical.isNotEmpty()
+        ) {
+            val records = coverage.physical.map { it.record }
             buildList {
+                add(
+                    localized(
+                        "已校准镜头 ${coverage.physical.size}/${coverage.physicalLensCount}",
+                        "Calibrated lenses ${coverage.physical.size}/${coverage.physicalLensCount}",
+                    ),
+                )
+                val rawCount = records.count { it.rawCorrectionEv != null }
+                val yuvCount = records.count { it.yuvCorrectionEv != null }
+                val ispCount = records.count { it.ispPreviewCorrectionEv != null }
+                if (rawCount > 0) add("RAW $rawCount")
+                if (yuvCount > 0) add("YUV $yuvCount")
+                if (ispCount > 0) add("ISP $ispCount")
+            }.joinToString(" · ")
+        } else {
+            requireNotNull(calibration)
+            buildList {
+                if (coverage.activePhysical != null) {
+                    add(localized("当前镜头", "Active lens"))
+                }
                 if (camera.rawAvailable) {
                     add(calibration.rawCorrectionEv?.let { "RAW ${signedEv(it)} EV" } ?: "RAW —")
                 }
@@ -245,6 +275,9 @@ class CameraManagementView(
                 calibration.ispPreviewCorrectionEv?.let { add("ISP ${signedEv(it)} EV") }
                 calibration.legacyCompatibleCorrectionEv?.let {
                     add("${localized("旧版", "Legacy")} ${signedEv(it)} EV")
+                }
+                if (coverage.physicalLensCount > 1) {
+                    add("${coverage.physical.size}/${coverage.physicalLensCount}")
                 }
             }.joinToString(" · ") + " · ${calibration.calibrationCount}"
         }

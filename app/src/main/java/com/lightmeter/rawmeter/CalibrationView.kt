@@ -89,6 +89,7 @@ class CalibrationView(
     private var currentYuvCorrectionEv: Double? = null
     private var currentIspCorrectionEv: Double? = null
     private var currentLegacyCompatibleCorrectionEv: Double? = null
+    private var boundCalibrationCameraId: String? = null
     private var rawStreamVisible = false
     private var statusText = ""
     private var statusIsError = false
@@ -107,12 +108,14 @@ class CalibrationView(
         calculateGeometry(width, height).preview
 
     fun setCurrentCorrections(
+        cameraId: String,
         rawCorrectionEv: Double?,
         yuvCorrectionEv: Double?,
         ispPreviewCorrectionEv: Double?,
         legacyCompatibleCorrectionEv: Double?,
         showRawStream: Boolean,
     ) {
+        boundCalibrationCameraId = cameraId
         currentRawCorrectionEv = rawCorrectionEv
         currentYuvCorrectionEv = yuvCorrectionEv
         currentIspCorrectionEv = ispPreviewCorrectionEv
@@ -795,7 +798,8 @@ class CalibrationView(
         if (state.menuLanguage == MenuLanguage.ENGLISH) english else chinese
 
     private fun currentCalibrationCameraId(): String =
-        state.cameraInfo.calibrationCameraId
+        boundCalibrationCameraId
+            ?: state.cameraInfo.calibrationCameraId
             .ifBlank { state.selectedCameraId }
             .ifBlank { state.currentCamera()?.cameraId.orEmpty() }
             .ifBlank { "0" }

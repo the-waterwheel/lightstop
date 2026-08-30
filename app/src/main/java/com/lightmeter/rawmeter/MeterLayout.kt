@@ -41,6 +41,7 @@ class MeterLayout @JvmOverloads constructor(
         fun onControlsChanged(frameChanged: Boolean)
         fun onSettingRejected(key: SettingKey, value: String)
         fun onCalibrationOpened()
+        fun onSafePreviewRequested()
         fun onCameraSelected(cameraId: String)
         fun onCameraNoteRequested(cameraId: String)
         fun onCameraVisibilityRequested(cameraId: String, hidden: Boolean)
@@ -194,6 +195,9 @@ class MeterLayout @JvmOverloads constructor(
                     if (settingsOpenedFromZone && key != SettingActionKey.SHOW_ABOUT) {
                         exitZoneForAction {
                             when (key) {
+                                SettingActionKey.USE_SAFE_PREVIEW -> {
+                                    value?.onSafePreviewRequested()
+                                }
                                 SettingActionKey.MANAGE_CAMERAS -> {
                                     showCameraManagement(CameraManagementOrigin.SETTINGS)
                                 }
@@ -211,6 +215,9 @@ class MeterLayout @JvmOverloads constructor(
                         return
                     }
                     when (key) {
+                        SettingActionKey.USE_SAFE_PREVIEW -> {
+                            value?.onSafePreviewRequested()
+                        }
                         SettingActionKey.MANAGE_CAMERAS -> {
                             showCameraManagement(CameraManagementOrigin.SETTINGS)
                         }

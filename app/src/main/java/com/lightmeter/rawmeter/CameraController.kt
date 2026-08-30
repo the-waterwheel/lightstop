@@ -326,10 +326,13 @@ class CameraController(
         onHealthyPreviewConfirmed = ::confirmPreviewHealthRecovery,
     )
     @Volatile
+    private var previewHealthDetectionEnabled = true
+    @Volatile
     private var previewHealthRecoveryPending = false
     private var previewHealthRecoveryAttempts = 0
     private var previewHealthConfirmationPending = false
     private var previewHealthConfirmationGeneration = -1
+    private var manualSafePreviewActive = false
 
     fun attach(texture: TextureView) {
         textureView = texture
@@ -373,6 +376,51 @@ class CameraController(
             )
             openCamera(textureView?.surfaceTexture)
         }
+    }
+
+    fun setPreviewHealthDetectionEnabled(enabled: Boolean) {
+        if (previewHealthDetectionEnabled == enabled) return
+        previewHealthDetectionEnabled = enabled
+        mainHandler.post(::resetPreviewHealthMonitoring)
+        cameraHandler?.post {
+            previewHealthRecoveryPending = false
+            previewHealthConfirmationPending = false
+            previewHealthConfirmationGeneration = -1
+        }
+    }
+
+    /** Uses only the display SurfaceTexture for this controller run; camera selection resets it. */
+    fun switchToSafePreview(): Boolean {
+        val handler = cameraHandler ?: return false
+        if (!started || meteringOperationActive || calibrationStorageCameraId != null ||
+            activeVignettingCapture != null || activeRawRecordCapture != null
+        ) {
+            return false
+        }
+        handler.post {
+            if (!started || meteringOperationActive || calibrationStorageCameraId != null ||
+                activeVignettingCapture != null || activeRawRecordCapture != null
+            ) {
+                return@post
+            }
+            closeCamera()
+            recoveryState.forceProfile(CameraSessionProfile.PREVIEW_ONLY)
+            manualSafePreviewActive = true
+            previewHealthRecoveryAttempts = 0
+            previewHealthConfirmationPending = false
+            previewHealthConfirmationGeneration = -1
+            postInfo(
+                cameraInfo.copy(
+                    rawAvailable = false,
+                    status = localized(
+                        "已手动切换到安全预览",
+                        "Safe preview selected manually",
+                    ),
+                ),
+            )
+            openCamera(textureView?.surfaceTexture)
+        }
+        return true
     }
 
     /** Applies the calibrated exposure represented by the currently displayed parameter rows. */
@@ -952,6 +1000,9 @@ class CameraController(
         calibrationStore.record(calibrationCameraId())
 
     @Synchronized
+    fun currentCalibrationCameraId(): String = calibrationCameraId()
+
+    @Synchronized
     internal fun currentCalibrationIdentity(): CalibrationCaptureIdentity = CalibrationCaptureIdentity(
         routeId = CalibrationRouteIdentity.resolve(
             selectedCameraId = cameraInfo.cameraId,
@@ -1008,15 +1059,16 @@ class CameraController(
     }
 
     @Synchronized
-    fun resetUserCalibration() {
-        val cameraId = calibrationCameraId()
+    fun resetUserCalibration(cameraId: String = calibrationCameraId()) {
         calibrationStore.resetUserCorrection(cameraId)
         Log.e(TAG, "User calibration reset: camera=$cameraId")
     }
 
     @Synchronized
-    fun restoreUserCalibration(updatedAtEpochMs: Long): CameraCalibrationRecord? {
-        val cameraId = calibrationCameraId()
+    fun restoreUserCalibration(
+        updatedAtEpochMs: Long,
+        cameraId: String = calibrationCameraId(),
+    ): CameraCalibrationRecord? {
         val restored = calibrationStore.restore(cameraId, updatedAtEpochMs) ?: return null
         Log.i(
             TAG,
@@ -1171,7 +1223,9 @@ class CameraController(
                 lastDisplayZoom,
             )
         }
-        previewHealthSampler.onTextureUpdated(textureView, surface, started)
+        if (previewHealthDetectionEnabled) {
+            previewHealthSampler.onTextureUpdated(textureView, surface, started)
+        }
     }
 
     @SuppressLint("MissingPermission")
@@ -1606,6 +1660,7 @@ class CameraController(
 
     private fun resetRecoveryState() {
         recoveryState.reset()
+        manualSafePreviewActive = false
         downgradeAfterCompatibleMeasurement = false
         fpsRequestCeiling = DEFAULT_PREVIEW_FPS_CEILING
         previewHealthRecoveryAttempts = 0
@@ -1630,7 +1685,8 @@ class CameraController(
             )
             cameraInfo = readyInfo
             postInfo(readyInfo)
-            if (!readyInfo.rawAvailable && meteringPipelineMode == MeteringPipelineMode.AUTO &&
+            if (!readyInfo.rawAvailable && !manualSafePreviewActive &&
+                meteringPipelineMode == MeteringPipelineMode.AUTO &&
                 calibrationSessionProfile == null
             ) {
                 mainHandler.post {
@@ -1949,6 +2005,9 @@ class CameraController(
 
     private fun readyCameraStatus(): String {
         val size = "${cameraInfo.previewSize?.width}×${cameraInfo.previewSize?.height}"
+        if (manualSafePreviewActive) {
+            return localized("$size · 手动安全预览", "$size · Manual safe preview")
+        }
         return when (meteringPipelineMode) {
             MeteringPipelineMode.AUTO -> if (cameraInfo.rawAvailable) {
                 localized("$size · 高精度测光", "$size · High-accuracy metering")
@@ -2111,11 +2170,14 @@ class CameraController(
     }
 
     private fun requestPreviewHealthRecovery(reason: PreviewHealthReason) {
+        if (!previewHealthDetectionEnabled) return
         if (previewHealthRecoveryPending) return
         previewHealthRecoveryPending = true
         val generation = cameraGeneration
         cameraHandler?.post {
-            if (!started || generation != cameraGeneration) return@post
+            if (!previewHealthDetectionEnabled || !started || generation != cameraGeneration) {
+                return@post
+            }
             previewHealthRecoveryPending = false
             if (previewHealthConfirmationPending &&
                 previewHealthConfirmationGeneration == generation

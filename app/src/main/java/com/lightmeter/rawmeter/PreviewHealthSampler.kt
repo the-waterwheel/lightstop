@@ -45,7 +45,8 @@ internal class PreviewHealthSampler(
                 "Preview health state=${decision.state} reason=${decision.reason} " +
                     "stripeH=${metrics.horizontalStripeScore} stripeV=${metrics.verticalStripeScore} " +
                     "green=${metrics.greenDominance} greenPixels=${metrics.saturatedGreenFraction} " +
-                    "lumaStd=${metrics.lumaStandardDeviation} dark=${metrics.darkFraction}",
+                    "lumaStd=${metrics.lumaStandardDeviation} dark=${metrics.darkFraction} " +
+                    "bright=${metrics.brightFraction}",
             )
         }
         if (decision.state == PreviewHealthState.FAILED) {

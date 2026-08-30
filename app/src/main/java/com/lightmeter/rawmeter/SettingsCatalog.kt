@@ -13,6 +13,7 @@ enum class SettingKey {
     METERING_MODE,
     METERING_PIPELINE,
     EXPOSURE_PREVIEW,
+    PREVIEW_HEALTH_DETECTION,
     ZONE_MARKING_METHOD,
     LANGUAGE,
     THEME,
@@ -21,6 +22,7 @@ enum class SettingKey {
 
 enum class SettingActionKey {
     MANAGE_CAMERAS,
+    USE_SAFE_PREVIEW,
     SHOW_ABOUT,
     START_METERING_CALIBRATION,
     START_VIGNETTING_CALIBRATION,
@@ -123,6 +125,14 @@ object SettingsCatalog {
                     ),
                 ),
                 SettingItemSpec(
+                    key = SettingKey.PREVIEW_HEALTH_DETECTION,
+                    label = LocalizedLabel("预览异常检测", "Preview health detection"),
+                    options = listOf(
+                        option(PreviewHealthDetectionMode.ON, "开启（推荐）", "On (recommended)"),
+                        option(PreviewHealthDetectionMode.OFF, "关闭", "Off"),
+                    ),
+                ),
+                SettingItemSpec(
                     key = SettingKey.ZONE_MARKING_METHOD,
                     label = LocalizedLabel("标点方式", "Marking method"),
                     options = listOf(
@@ -132,6 +142,14 @@ object SettingsCatalog {
                 ),
             ),
             actions = listOf(
+                SettingActionSpec(
+                    key = SettingActionKey.USE_SAFE_PREVIEW,
+                    label = LocalizedLabel("手动切换到安全预览", "Switch to safe preview"),
+                    description = LocalizedLabel(
+                        "本次运行仅保留显示预览；重新选择摄像头或重启后恢复自动流配置",
+                        "Use display preview only for this run; selecting a camera or restarting restores automatic stream setup",
+                    ),
+                ),
                 SettingActionSpec(
                     key = SettingActionKey.MANAGE_CAMERAS,
                     label = LocalizedLabel("选择与管理摄像头", "Select and manage cameras"),

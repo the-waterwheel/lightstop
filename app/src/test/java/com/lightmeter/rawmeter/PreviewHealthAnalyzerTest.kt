@@ -50,11 +50,25 @@ class PreviewHealthAnalyzerTest {
         val metrics = requireNotNull(PreviewHealthAnalyzer.analyzeArgb(64, 64, horizontalStripes()))
         val monitor = PreviewHealthMonitor()
 
-        repeat(8) { monitor.observe(metrics, it.toLong() + 1L) }
+        repeat(14) { monitor.observe(metrics, it.toLong() + 1L) }
 
-        val decision = monitor.observe(metrics, 20L)
+        val decision = monitor.observe(metrics, 30L)
         assertEquals(PreviewHealthState.FAILED, decision.state)
         assertEquals(PreviewHealthReason.HORIZONTAL_STRIPES, decision.reason)
+    }
+
+    @Test
+    fun ordinaryWindowBlindsNeverAutomaticallyFail() {
+        val monitor = PreviewHealthMonitor()
+
+        val decisions = (0 until 30).map { frame ->
+            val metrics = requireNotNull(
+                PreviewHealthAnalyzer.analyzeArgb(64, 64, windowBlinds(frame)),
+            )
+            monitor.observe(metrics, frame.toLong() + 1L)
+        }
+
+        assertTrue(decisions.none { it.state == PreviewHealthState.FAILED })
     }
 
     @Test
@@ -76,6 +90,14 @@ class PreviewHealthAnalyzerTest {
 
     private fun horizontalStripes(): IntArray = IntArray(64 * 64) { index ->
         if ((index / 64) % 2 == 0) 0xffffffff.toInt() else 0xff000000.toInt()
+    }
+
+    private fun windowBlinds(frame: Int): IntArray = IntArray(64 * 64) { index ->
+        val x = index % 64
+        val y = index / 64
+        val band = if ((y / 4) % 2 == 0) 185 else 70
+        val value = (band + (x * 23 + y * 7 + frame) % 31 - 15).coerceIn(35, 220)
+        0xff000000.toInt() or (value shl 16) or (value shl 8) or value
     }
 
     private fun variedGreen(frame: Int): IntArray = IntArray(64 * 64) { index ->

@@ -63,6 +63,20 @@ class CameraRecoveryStateMachineTest {
         assertFalse(state.recordRawMeasurementFailed(MeteringPipelineMode.FAST))
     }
 
+    @Test
+    fun `manual safe profile preserves selected route and resets recovery budget`() {
+        val state = stateMachine(maxAttempts = 1)
+        state.resolveProfile(MeteringPipelineMode.AUTO, rawSupported = true, trackingSupported = true)
+        assertTrue(state.advanceCameraRoute(candidateCount = 2))
+        assertTrue(state.beginRecovery(CameraSessionProfile.COMPATIBLE))
+
+        state.forceProfile(CameraSessionProfile.PREVIEW_ONLY)
+
+        assertEquals(1, state.routeCandidateIndex)
+        assertEquals(CameraSessionProfile.PREVIEW_ONLY, state.profile)
+        assertTrue(state.beginRecovery(CameraSessionProfile.PREVIEW_ONLY))
+    }
+
     private fun stateMachine(maxAttempts: Int = 6, rawFailures: Int = 2) =
         CameraRecoveryStateMachine(maxAttempts, rawFailures)
 }

@@ -49,6 +49,8 @@ class MainActivity : Activity(), CameraControllerCallback {
     private var cameraPermissionDialogVisible = false
     private var cameraPermissionRequestInFlight = false
     private var pendingCalibrationEnvironmentChange: CalibrationEnvironmentChange? = null
+    private var calibrationDisplayCameraId: String? = null
+    private var calibrationDisplaySelectionId: String? = null
     private var backInvokedCallback: OnBackInvokedCallback? = null
     private var parameterLocation: RecordedLocation? = null
     private var parameterLocationListener: LocationListener? = null
@@ -76,6 +78,9 @@ class MainActivity : Activity(), CameraControllerCallback {
         cameraController = CameraController(this, this)
         appliedPipelineMode = state.meteringPipelineMode
         cameraController.setMeteringPipelineMode(state.meteringPipelineMode)
+        cameraController.setPreviewHealthDetectionEnabled(
+            state.previewHealthDetectionMode == PreviewHealthDetectionMode.ON,
+        )
         val cameraPermissionGranted =
             checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
         val selectedCamera = if (cameraPermissionGranted) {
@@ -126,6 +131,9 @@ class MainActivity : Activity(), CameraControllerCallback {
                 val currentMode = state.meteringPipelineMode
                 appliedPipelineMode = currentMode
                 cameraController.setMeteringPipelineMode(currentMode)
+                cameraController.setPreviewHealthDetectionEnabled(
+                    state.previewHealthDetectionMode == PreviewHealthDetectionMode.ON,
+                )
                 if (previousMode != null && previousMode != currentMode) {
                     refreshCalibrationCorrections()
                     if (currentMode == MeteringPipelineMode.FAST) {
@@ -156,6 +164,26 @@ class MainActivity : Activity(), CameraControllerCallback {
 
             override fun onCalibrationOpened() {
                 refreshCalibrationCorrections()
+            }
+
+            override fun onSafePreviewRequested() {
+                val accepted = cameraController.switchToSafePreview()
+                if (accepted) meterLayout.closeSettings()
+                Toast.makeText(
+                    this@MainActivity,
+                    if (accepted) {
+                        localized(
+                            "正在切换到安全预览；重新选择摄像头或重启后恢复",
+                            "Switching to safe preview; select a camera or restart to restore",
+                        )
+                    } else {
+                        localized(
+                            "请等待当前测量或校准完成后再切换",
+                            "Wait for the current measurement or calibration before switching",
+                        )
+                    },
+                    Toast.LENGTH_SHORT,
+                ).show()
             }
 
             override fun onCameraSelected(cameraId: String) {
@@ -209,7 +237,11 @@ class MainActivity : Activity(), CameraControllerCallback {
             }
 
             override fun onCalibrationHistoryRestoreRequested(updatedAtEpochMs: Long) {
-                val restored = cameraController.restoreUserCalibration(updatedAtEpochMs) ?: return
+                val restored = cameraController.restoreUserCalibration(
+                    updatedAtEpochMs = updatedAtEpochMs,
+                    cameraId = calibrationDisplayCameraId
+                        ?: cameraController.currentCalibrationCameraId(),
+                ) ?: return
                 meterLayout.calibrationView.showHistoryRestored(restored)
                 meterLayout.refresh()
             }
@@ -760,7 +792,17 @@ class MainActivity : Activity(), CameraControllerCallback {
     }
 
     private fun refreshCalibrationCorrections() {
-        val record = cameraController.currentUserCalibrationRecord()
+        if (calibrationDisplaySelectionId != state.selectedCameraId) {
+            calibrationDisplaySelectionId = state.selectedCameraId
+            calibrationDisplayCameraId = null
+        }
+        val liveCameraId = cameraController.currentCalibrationCameraId()
+        val cameraId = CalibrationDisplayIdentity.resolve(
+            boundCameraId = calibrationDisplayCameraId,
+            liveCameraId = liveCameraId,
+        )
+        calibrationDisplayCameraId = cameraId
+        val record = state.cameraCalibrationRecord(cameraId)
         val showRawStream = shouldShowRawCalibration()
         val rawCorrection = if (showRawStream) {
             record?.rawCorrectionEv ?: 0.0
@@ -768,6 +810,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             null
         }
         meterLayout.calibrationView.setCurrentCorrections(
+            cameraId = cameraId,
             rawCorrectionEv = rawCorrection,
             yuvCorrectionEv = record?.yuvCorrectionEv,
             ispPreviewCorrectionEv = record?.ispPreviewCorrectionEv,
@@ -1013,7 +1056,9 @@ class MainActivity : Activity(), CameraControllerCallback {
             )
             .setNegativeButton(if (english) "Cancel" else "取消", null)
             .setPositiveButton(if (english) "Reset" else "重置") { _, _ ->
-                cameraController.resetUserCalibration()
+                cameraController.resetUserCalibration(
+                    calibrationDisplayCameraId ?: cameraController.currentCalibrationCameraId(),
+                )
                 meterLayout.calibrationView.showReset(shouldShowRawCalibration())
             }
             .setOnDismissListener { calibrationResetDialogVisible = false }

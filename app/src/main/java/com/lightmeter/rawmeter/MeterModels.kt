@@ -180,6 +180,11 @@ enum class AppTheme {
     DARK,
 }
 
+enum class PreviewHealthDetectionMode {
+    ON,
+    OFF,
+}
+
 enum class Handedness {
     RIGHT,
     LEFT,
@@ -331,6 +336,11 @@ class MeterState(context: Context) {
     var exposurePreviewMode: ExposurePreviewMode = preferences.enumValue(
         "exposure_preview_mode",
         ExposurePreviewMode.OFF,
+    )
+
+    var previewHealthDetectionMode: PreviewHealthDetectionMode = preferences.enumValue(
+        "preview_health_detection_mode",
+        PreviewHealthDetectionMode.ON,
     )
 
     var zoneMarkingMethod: ZoneMarkingMethod = preferences.enumValue(
@@ -499,6 +509,8 @@ class MeterState(context: Context) {
             }
             SettingKey.EXPOSURE_PREVIEW ->
                 exposurePreviewMode = enumValue(value, exposurePreviewMode)
+            SettingKey.PREVIEW_HEALTH_DETECTION ->
+                previewHealthDetectionMode = enumValue(value, previewHealthDetectionMode)
             SettingKey.ZONE_MARKING_METHOD ->
                 zoneMarkingMethod = enumValue(value, zoneMarkingMethod)
             SettingKey.LANGUAGE -> menuLanguage = enumValue(value, menuLanguage)
@@ -659,6 +671,7 @@ class MeterState(context: Context) {
         SettingKey.METERING_MODE -> meteringMode.name
         SettingKey.METERING_PIPELINE -> meteringPipelineMode.name
         SettingKey.EXPOSURE_PREVIEW -> exposurePreviewMode.name
+        SettingKey.PREVIEW_HEALTH_DETECTION -> previewHealthDetectionMode.name
         SettingKey.ZONE_MARKING_METHOD -> zoneMarkingMethod.name
         SettingKey.LANGUAGE -> menuLanguage.name
         SettingKey.THEME -> appTheme.name
@@ -759,6 +772,7 @@ class MeterState(context: Context) {
             .putString("metering_mode", meteringMode.name)
             .putString("metering_pipeline_mode", meteringPipelineMode.name)
             .putString("exposure_preview_mode", exposurePreviewMode.name)
+            .putString("preview_health_detection_mode", previewHealthDetectionMode.name)
             .putInt(angleMeteringKey(selectedCameraId), angleMeteringDegrees)
             .putString("zone_marking_method", zoneMarkingMethod.name)
             .putString("menu_language", menuLanguage.name)

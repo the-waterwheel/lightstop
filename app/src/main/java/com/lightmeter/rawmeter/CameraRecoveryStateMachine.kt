@@ -107,6 +107,13 @@ internal class CameraRecoveryStateMachine(
         totalRecoveryAttempts = 0
     }
 
+    /** Applies a user-requested profile without consuming a recovery attempt or changing route. */
+    fun forceProfile(profile: CameraSessionProfile) {
+        this.profile = profile
+        markPreviewStable()
+        consecutiveRawMeasurementFailures = 0
+    }
+
     fun reset() {
         profile = null
         routeCandidateIndex = 0

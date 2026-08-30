@@ -20,6 +20,7 @@ internal data class PreviewHealthMetrics(
     val meanLuma: Double,
     val lumaStandardDeviation: Double,
     val darkFraction: Double,
+    val brightFraction: Double,
     val greenDominance: Double,
     val saturatedGreenFraction: Double,
     val horizontalStripeScore: Double,
@@ -48,6 +49,7 @@ internal object PreviewHealthAnalyzer {
         var greenSum = 0.0
         var blueSum = 0.0
         var dark = 0
+        var bright = 0
         var saturatedGreen = 0
         for (y in 0 until height) {
             for (x in 0 until width) {
@@ -64,6 +66,7 @@ internal object PreviewHealthAnalyzer {
                 rowMeans[y] += luma
                 columnMeans[x] += luma
                 if (luma <= DARK_LUMA) dark += 1
+                if (luma >= BRIGHT_LUMA) bright += 1
                 if (green >= SATURATED_GREEN_MINIMUM &&
                     green - max(red, blue) >= SATURATED_GREEN_SEPARATION
                 ) {
@@ -81,6 +84,7 @@ internal object PreviewHealthAnalyzer {
             meanLuma = meanLuma,
             lumaStandardDeviation = sqrt(lumaVariance),
             darkFraction = dark / count,
+            brightFraction = bright / count,
             greenDominance = meanGreen - (redSum + blueSum) / (2.0 * count),
             saturatedGreenFraction = saturatedGreen / count,
             horizontalStripeScore = stripeScore(rowMeans),
@@ -125,6 +129,7 @@ internal object PreviewHealthAnalyzer {
     }
 
     private const val DARK_LUMA = 0.025
+    private const val BRIGHT_LUMA = 0.975
     private const val SATURATED_GREEN_MINIMUM = 0.55
     private const val SATURATED_GREEN_SEPARATION = 0.45
     private const val HASH_EDGE = 8
@@ -144,12 +149,15 @@ internal class PreviewHealthMonitor {
         observedFrames += 1
         if (observedFrames <= WARMUP_FRAMES) return PreviewHealthDecision(PreviewHealthState.WARMING_UP)
 
+        val extremeBlackWhiteOutput = metrics.darkFraction >= STRIPE_DARK_FRACTION &&
+            metrics.brightFraction >= STRIPE_BRIGHT_FRACTION &&
+            metrics.lumaStandardDeviation >= STRIPE_LUMA_DEVIATION
         val direction = when {
-            metrics.horizontalStripeScore >= STRIPE_SCORE &&
-                metrics.horizontalStripeScore > metrics.verticalStripeScore * 1.15 ->
+            extremeBlackWhiteOutput && metrics.horizontalStripeScore >= STRIPE_SCORE &&
+                metrics.horizontalStripeScore > metrics.verticalStripeScore * STRIPE_DOMINANCE ->
                 PreviewStripeDirection.HORIZONTAL
-            metrics.verticalStripeScore >= STRIPE_SCORE &&
-                metrics.verticalStripeScore > metrics.horizontalStripeScore * 1.15 ->
+            extremeBlackWhiteOutput && metrics.verticalStripeScore >= STRIPE_SCORE &&
+                metrics.verticalStripeScore > metrics.horizontalStripeScore * STRIPE_DOMINANCE ->
                 PreviewStripeDirection.VERTICAL
             else -> null
         }
@@ -208,8 +216,12 @@ internal class PreviewHealthMonitor {
 
     private companion object {
         private const val WARMUP_FRAMES = 3
-        private const val STRIPE_SCORE = 1.3
-        private const val STRIPE_FAILURE_FRAMES = 6
+        private const val STRIPE_SCORE = 1.8
+        private const val STRIPE_DOMINANCE = 1.25
+        private const val STRIPE_DARK_FRACTION = 0.18
+        private const val STRIPE_BRIGHT_FRACTION = 0.18
+        private const val STRIPE_LUMA_DEVIATION = 0.28
+        private const val STRIPE_FAILURE_FRAMES = 12
         private const val GREEN_DOMINANCE = 0.45
         private const val FLAT_GREEN_PIXEL_FRACTION = 0.985
         private const val FLAT_GREEN_LUMA_DEVIATION = 0.025

@@ -59,6 +59,20 @@ class SettingsCatalogTest {
     }
 
     @Test
+    fun meteringSectionOffersPreviewHealthControlAndManualSafePreview() {
+        val metering = SettingsCatalog.sections.single { it.key == SettingsSectionKey.METERING }
+        val health = metering.items.single {
+            it.key == SettingKey.PREVIEW_HEALTH_DETECTION
+        }
+
+        assertEquals(
+            listOf(PreviewHealthDetectionMode.ON.name, PreviewHealthDetectionMode.OFF.name),
+            health.options.map { it.value },
+        )
+        assertTrue(metering.actions.any { it.key == SettingActionKey.USE_SAFE_PREVIEW })
+    }
+
+    @Test
     fun oldCompatiblePreferenceMigratesToFastMode() {
         assertEquals(
             MeteringPipelineMode.FAST,
