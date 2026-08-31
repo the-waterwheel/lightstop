@@ -432,7 +432,8 @@ class CameraController(
     private var rawOutputSize: Size? = null
     private var trackingOutputSize: Size? = null
     private var previewFpsRange: Range<Int>? = null
-    private var fpsRequestCeiling: Int? = DEFAULT_PREVIEW_FPS_CEILING
+    private var previewFrameRateMode = PreviewFrameRateMode.LOW
+    private var fpsRequestCeiling: Int? = previewFrameRateMode.requestedCeiling
     @Volatile
     private var latestResult: CaptureResult? = null
     private val previewResultStore = TimestampedCaptureResultStore<CaptureResult>()
@@ -630,6 +631,34 @@ class CameraController(
             previewHealthRecoveryPending = false
             previewHealthConfirmationPending = false
             previewHealthConfirmationGeneration = -1
+        }
+    }
+
+    fun setPreviewFrameRateMode(mode: PreviewFrameRateMode) {
+        val handler = cameraHandler
+        if (handler == null) {
+            if (previewFrameRateMode != mode) {
+                previewFrameRateMode = mode
+                fpsRequestCeiling = mode.requestedCeiling
+            }
+            return
+        }
+        handler.post {
+            if (previewFrameRateMode == mode) return@post
+            previewFrameRateMode = mode
+            fpsRequestCeiling = mode.requestedCeiling
+            if (!started) return@post
+            val profile = activeSessionProfile ?: return@post
+            if (!profile.usesPreview) return@post
+            previewFpsRange = choosePreviewFpsRange(profile)
+            val fps = previewFpsRange?.upper ?: cameraInfo.previewFps
+            cameraInfo = cameraInfo.copy(previewFps = fps)
+            Log.i(
+                TAG,
+                "Viewfinder frame-rate preference=$mode selected=$previewFpsRange " +
+                    "profile=$profile",
+            )
+            updatePreviewRepeatingRequest()
         }
     }
 
@@ -1015,16 +1044,7 @@ class CameraController(
         if (!started || cameraDevice == null) return false
         activeSessionProfile = profile
         cameraFailureStage = CameraFailureStage.CONFIGURING
-        previewFpsRange = fpsRequestCeiling?.let { ceiling ->
-            val chars = characteristics ?: return@let null
-            val size = previewSize ?: return@let null
-            CameraStreamSelector.chooseFpsRange(
-                characteristics = chars,
-                previewSize = size,
-                trackingSize = trackingOutputSize.takeIf { profile.usesTracking },
-                requestedCeiling = ceiling,
-            )
-        }
+        previewFpsRange = choosePreviewFpsRange(profile)
         return try {
             sessionCoordinator.reconfigure(
                 profile = profile,
@@ -2537,7 +2557,7 @@ class CameraController(
         manualSafePreviewActive = false
         zoneYuvSessionUnavailable = false
         downgradeAfterCompatibleMeasurement = false
-        fpsRequestCeiling = DEFAULT_PREVIEW_FPS_CEILING
+        fpsRequestCeiling = previewFrameRateMode.requestedCeiling
         previewHealthRecoveryAttempts = 0
         previewHealthConfirmationPending = false
         previewHealthConfirmationGeneration = -1
@@ -2650,9 +2670,13 @@ class CameraController(
             val maximumFrameDuration = characteristics?.get(
                 CameraCharacteristics.SENSOR_INFO_MAX_FRAME_DURATION,
             ) ?: manualExposure.exposureTimeNs
+            val targetFrameDurationNs = previewFpsRange?.upper
+                ?.takeIf { it > 0 }
+                ?.let { 1_000_000_000L / it }
+                ?: LOW_PREVIEW_TARGET_FRAME_DURATION_NS
             builder.set(
                 CaptureRequest.SENSOR_FRAME_DURATION,
-                max(MANUAL_PREVIEW_TARGET_FRAME_DURATION_NS, manualExposure.exposureTimeNs)
+                max(targetFrameDurationNs, manualExposure.exposureTimeNs)
                     .coerceAtMost(maximumFrameDuration),
             )
         } else {
@@ -2876,11 +2900,7 @@ class CameraController(
         if (generation != cameraGeneration) return
         val currentCeiling = fpsRequestCeiling
         if (previewFpsRange != null && currentCeiling != null) {
-            fpsRequestCeiling = if (currentCeiling > CONSERVATIVE_PREVIEW_FPS_CEILING) {
-                CONSERVATIVE_PREVIEW_FPS_CEILING
-            } else {
-                null
-            }
+            fpsRequestCeiling = CameraStreamSelector.nextFallbackFpsCeiling(currentCeiling)
             scheduleRecovery(
                 sessionProfile ?: CameraSessionProfile.PREVIEW_ONLY,
                 localized(
@@ -2910,6 +2930,18 @@ class CameraController(
             MeteringPipelineMode.FAST ->
                 localized("$size · 兼容模式", "$size · Compatibility mode")
         }
+    }
+
+    private fun choosePreviewFpsRange(profile: CameraSessionProfile): Range<Int>? {
+        val ceiling = fpsRequestCeiling ?: return null
+        val chars = characteristics ?: return null
+        val size = previewSize ?: return null
+        return CameraStreamSelector.chooseFpsRange(
+            characteristics = chars,
+            previewSize = size,
+            trackingSize = trackingOutputSize.takeIf { profile.usesTracking },
+            requestedCeiling = ceiling,
+        )
     }
 
     private fun transientZoneRawAvailable(): Boolean =
@@ -3476,11 +3508,9 @@ class CameraController(
         private const val SESSION_RECOVERY_DELAY_MS = 300L
         private const val STABLE_PREVIEW_RESET_DELAY_MS = 10_000L
         private const val PREVIEW_BASELINE_TIMEOUT_MS = 1_200L
-        private const val MANUAL_PREVIEW_TARGET_FRAME_DURATION_NS = 33_333_333L
+        private const val LOW_PREVIEW_TARGET_FRAME_DURATION_NS = 33_333_333L
         private const val MAX_TOTAL_RECOVERY_ATTEMPTS = 6
         private const val RAW_FAILURES_BEFORE_DOWNGRADE = 2
-        private const val DEFAULT_PREVIEW_FPS_CEILING = 30
-        private const val CONSERVATIVE_PREVIEW_FPS_CEILING = 24
         private const val MAX_PREVIEW_HEALTH_RECOVERY_ATTEMPTS = 1
     }
 }

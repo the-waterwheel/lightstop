@@ -56,6 +56,24 @@ class CameraStreamSelectorTest {
     }
 
     @Test
+    fun `high preference selects an advertised 60 fps range`() {
+        val selected = CameraStreamSelector.selectFpsRangeBounds(
+            listOf(15 to 30, 30 to 30, 30 to 60, 60 to 60),
+            requestedCeiling = 60,
+        )
+
+        assertEquals(60 to 60, selected)
+    }
+
+    @Test
+    fun `fps fallback descends without changing stream workflow`() {
+        assertEquals(30, CameraStreamSelector.nextFallbackFpsCeiling(60))
+        assertEquals(24, CameraStreamSelector.nextFallbackFpsCeiling(30))
+        assertNull(CameraStreamSelector.nextFallbackFpsCeiling(24))
+        assertNull(CameraStreamSelector.nextFallbackFpsCeiling(null))
+    }
+
+    @Test
     fun `omits explicit request when no advertised range stays under target`() {
         val selected = CameraStreamSelector.selectFpsRangeBounds(
             listOf(15 to 30, 30 to 60),

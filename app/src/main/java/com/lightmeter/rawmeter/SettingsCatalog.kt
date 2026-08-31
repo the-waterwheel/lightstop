@@ -15,6 +15,7 @@ enum class SettingKey {
     METERING_PIPELINE,
     EXPOSURE_PREVIEW,
     PREVIEW_HEALTH_DETECTION,
+    PREVIEW_FRAME_RATE,
     ZONE_MARKING_METHOD,
     LANGUAGE,
     THEME,
@@ -181,6 +182,14 @@ object SettingsCatalog {
             key = SettingsSectionKey.GENERAL,
             label = LocalizedLabel("通用设置", "General"),
             items = listOf(
+                SettingItemSpec(
+                    key = SettingKey.PREVIEW_FRAME_RATE,
+                    label = LocalizedLabel("取景帧率", "Viewfinder frame rate"),
+                    options = listOf(
+                        option(PreviewFrameRateMode.LOW, "低帧率", "Low frame rate"),
+                        option(PreviewFrameRateMode.HIGH, "高帧率", "High frame rate"),
+                    ),
+                ),
                 SettingItemSpec(
                     key = SettingKey.LANGUAGE,
                     label = LocalizedLabel("语言 / Language", "Language / 语言"),

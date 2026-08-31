@@ -186,6 +186,15 @@ enum class PreviewHealthDetectionMode {
     OFF,
 }
 
+/** User preference for the regular Camera2 viewfinder request. */
+enum class PreviewFrameRateMode(val requestedCeiling: Int) {
+    /** Preserve the existing compatibility-first behavior: never request above 30 fps. */
+    LOW(30),
+
+    /** Try an advertised regular-session range up to 60 fps, with automatic fallback. */
+    HIGH(60),
+}
+
 enum class Handedness {
     RIGHT,
     LEFT,
@@ -348,6 +357,11 @@ class MeterState(context: Context) {
     var previewHealthDetectionMode: PreviewHealthDetectionMode = preferences.enumValue(
         "preview_health_detection_mode",
         PreviewHealthDetectionMode.ON,
+    )
+
+    var previewFrameRateMode: PreviewFrameRateMode = preferences.enumValue(
+        "preview_frame_rate_mode",
+        PreviewFrameRateMode.LOW,
     )
 
     var zoneMarkingMethod: ZoneMarkingMethod = preferences.enumValue(
@@ -523,6 +537,8 @@ class MeterState(context: Context) {
                 exposurePreviewMode = enumValue(value, exposurePreviewMode)
             SettingKey.PREVIEW_HEALTH_DETECTION ->
                 previewHealthDetectionMode = enumValue(value, previewHealthDetectionMode)
+            SettingKey.PREVIEW_FRAME_RATE ->
+                previewFrameRateMode = enumValue(value, previewFrameRateMode)
             SettingKey.ZONE_MARKING_METHOD ->
                 zoneMarkingMethod = enumValue(value, zoneMarkingMethod)
             SettingKey.LANGUAGE -> menuLanguage = enumValue(value, menuLanguage)
@@ -685,6 +701,7 @@ class MeterState(context: Context) {
         SettingKey.METERING_PIPELINE -> meteringPipelineMode.name
         SettingKey.EXPOSURE_PREVIEW -> exposurePreviewMode.name
         SettingKey.PREVIEW_HEALTH_DETECTION -> previewHealthDetectionMode.name
+        SettingKey.PREVIEW_FRAME_RATE -> previewFrameRateMode.name
         SettingKey.ZONE_MARKING_METHOD -> zoneMarkingMethod.name
         SettingKey.LANGUAGE -> menuLanguage.name
         SettingKey.THEME -> appTheme.name
@@ -790,6 +807,7 @@ class MeterState(context: Context) {
             )
             .putString("exposure_preview_mode", exposurePreviewMode.name)
             .putString("preview_health_detection_mode", previewHealthDetectionMode.name)
+            .putString("preview_frame_rate_mode", previewFrameRateMode.name)
             .putInt(angleMeteringKey(selectedCameraId), angleMeteringDegrees)
             .putString("zone_marking_method", zoneMarkingMethod.name)
             .putString("menu_language", menuLanguage.name)

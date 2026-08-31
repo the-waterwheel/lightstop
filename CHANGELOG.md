@@ -3,6 +3,14 @@
 All notable user-facing changes are recorded here. The project follows
 [Semantic Versioning](https://semver.org/) for public releases.
 
+## Unreleased
+
+- Added a General viewfinder-frame-rate preference. Low remains the default
+  and preserves the existing 30 fps ceiling; High can try advertised regular
+  session ranges up to 60 fps when current stream durations permit it. FPS
+  rejection falls back through 30/24 fps and the HAL default without changing
+  the selected RAW/YUV/ISP workflow.
+
 ## 0.2.2 - 2026-08-31
 
 - Added per-camera Camera2 workflow-matrix search with ordered RAW split,

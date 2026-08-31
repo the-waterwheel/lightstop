@@ -119,6 +119,25 @@ class SettingsCatalogTest {
     }
 
     @Test
+    fun generalSectionOffersLowAndHighViewfinderFrameRates() {
+        val general = SettingsCatalog.sections.single { it.key == SettingsSectionKey.GENERAL }
+        val frameRate = general.items.single { it.key == SettingKey.PREVIEW_FRAME_RATE }
+
+        assertEquals("取景帧率", frameRate.label.resolve(MenuLanguage.CHINESE))
+        assertEquals("Viewfinder frame rate", frameRate.label.resolve(MenuLanguage.ENGLISH))
+        assertEquals(
+            listOf(PreviewFrameRateMode.LOW.name, PreviewFrameRateMode.HIGH.name),
+            frameRate.options.map { it.value },
+        )
+        assertEquals(
+            listOf("低帧率", "高帧率"),
+            frameRate.options.map { it.label.resolve(MenuLanguage.CHINESE) },
+        )
+        assertEquals(30, PreviewFrameRateMode.LOW.requestedCeiling)
+        assertEquals(60, PreviewFrameRateMode.HIGH.requestedCeiling)
+    }
+
+    @Test
     fun informationActionsHaveBothLanguageLabels() {
         val actions = SettingsCatalog.sections
             .single { it.key == SettingsSectionKey.GENERAL }

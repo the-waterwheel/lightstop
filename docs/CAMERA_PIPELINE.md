@@ -97,10 +97,14 @@ sensors are filtered out even if they expose a `SurfaceTexture` output.
   Zone measurements, avoiding resident preview + RAW and `FULL` combinations.
 - Before resident RAW or vignetting capture, repeating requests stop and resume
   on success and every error path.
-- The app never synthesizes or forces 60 fps. It chooses a range advertised by
-  the active camera at or below 30 fps, considers preview/YUV minimum frame
-  durations, then retries at 24 fps and finally without an explicit range if a
-  vendor rejects the request.
+- The General setting defaults to Low, selecting an advertised range at or
+  below 30 fps. High may select an advertised regular-session range up to
+  60 fps after applying the preview/YUV minimum-frame-duration ceiling. A
+  rejected request falls back through 30 fps, 24 fps, and no explicit range;
+  this fallback is independent of the RAW/YUV/ISP workflow matrix.
+- A single repeating request drives every targeted output, so High also raises
+  resident Zone YUV delivery when the HAL supports it. The tracker acquires the
+  latest image and drops work while busy, bounding memory and latency.
 
 ## RAW metering
 
@@ -299,7 +303,8 @@ RAW 分离 -> RAW 完全瞬时隔离 -> FULL -> 稳定 YUV -> 兼容 ISP
 - 高精度 Zone 跟踪常驻预览 + YUV；1–3 帧测光窗口切换到 `RAW_ISOLATED`，屏幕保留最后一个 TextureView 缓冲，成功或错误路径都恢复预览 + YUV。
 - 受限 HAL 可让普通测光与 Zone 都采用 RAW 完全瞬时隔离，避免常驻预览 + RAW 和 `FULL` 组合。
 - 常驻 RAW 或暗角捕获开始前停止重复请求，成功和所有错误路径都会恢复预览。
-- 不合成也不强制请求 60 fps。应用从当前相机声明的 30 fps 及以下范围中选择，并同时考虑预览/YUV 的最小帧时长；厂商拒绝时依次尝试 24 fps，最后不指定帧率并交回系统默认。
+- 通用设置默认“低帧率”，从当前相机声明的 30 fps 及以下范围中选择。“高帧率”在预览/YUV 最小帧时长允许时可选择设备声明的最高 60 fps 普通会话范围。厂商拒绝时依次回退 30 fps、24 fps，最后不指定帧率并交回系统默认；帧率回退与 RAW/YUV/ISP 组合矩阵相互独立。
+- 同一个重复请求会驱动其目标输出，因此 HAL 支持时高帧率也会提高 Zone 常驻 YUV 的送帧频率。跟踪管线只取最新图像，并在忙碌时丢帧，避免队列和延迟无界增长。
 
 ### RAW 测光
 

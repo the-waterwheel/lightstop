@@ -64,8 +64,11 @@ code.
   at a time, reducing delay and motion error.
 - Single-frame preview metering: try up to three ISP-processed YUV frames for
   at most 250 ms, then try a strictly timestamp-paired displayed-preview sample.
-- Preview requests never force 60 fps. They select an advertised range at or
-  below 30 fps and can retry at 24 fps or without an explicit frame-rate range.
+- `General` → `Viewfinder frame rate` defaults to Low, preserving the existing
+  advertised range at or below 30 fps. High tries an advertised regular-session
+  range up to 60 fps only when the active preview/YUV stream durations allow it;
+  rejection falls back through 30 fps, 24 fps, and the HAL default without
+  downgrading the selected RAW/YUV/ISP workflow.
 - Manual exposure preview prioritizes a responsive shutter (normally at least
   1/30 s, no slower than 1/15 s in low light) and raises ISO first. Metering
   restores neutral AE before sampling so an exposure-preview frame is never
@@ -174,6 +177,9 @@ code.
   tools are complete.
 - Open `General` → `About` for the metering-result notice; the open-source
   license browser is available after the About text.
+- High viewfinder frame rate can increase power, heat, and YUV tracking work,
+  and may shorten AE exposure in low light. Low remains the compatibility-first
+  default; neither option changes metering math or calibration data.
 
 ## Project structure
 

@@ -85,6 +85,7 @@ class MainActivity : Activity(), CameraControllerCallback {
         cameraController.setPreviewHealthDetectionEnabled(
             state.previewHealthDetectionMode == PreviewHealthDetectionMode.ON,
         )
+        cameraController.setPreviewFrameRateMode(state.previewFrameRateMode)
         val cameraPermissionGranted =
             checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
         val selectedCamera = if (cameraPermissionGranted) {
@@ -138,6 +139,7 @@ class MainActivity : Activity(), CameraControllerCallback {
                 cameraController.setPreviewHealthDetectionEnabled(
                     state.previewHealthDetectionMode == PreviewHealthDetectionMode.ON,
                 )
+                cameraController.setPreviewFrameRateMode(state.previewFrameRateMode)
                 if (previousMode != null && previousMode != currentMode) {
                     refreshCalibrationCorrections()
                     if (currentMode == MeteringPipelineMode.FAST) {

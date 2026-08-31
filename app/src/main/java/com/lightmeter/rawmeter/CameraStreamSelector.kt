@@ -15,8 +15,9 @@ import kotlin.math.min
  *
  * Keeping this outside [CameraController] makes device-capability decisions independently
  * reviewable and prevents the camera lifecycle class from accumulating more sizing policy.
- * Frame-rate selection intentionally stays at or below 30 fps. Some vendor HALs advertise a
- * 60 fps preview range but cannot sustain it once a YUV or RAW output belongs to the session.
+ * Frame-rate selection stays within the user's ceiling, the advertised AE ranges, and the
+ * configured streams' minimum frame durations. The optional high-rate preference is capped at
+ * 60 fps; constrained high-speed sessions are deliberately outside this app's metering pipeline.
  */
 internal object CameraStreamSelector {
     fun choosePreviewSize(characteristics: CameraCharacteristics): Size? {
@@ -88,8 +89,20 @@ internal object CameraStreamSelector {
         } ?: requestedCeiling
         return selectFpsRange(
             ranges = ranges,
-            requestedCeiling = min(30, min(requestedCeiling, streamCeiling)),
+            requestedCeiling = min(
+                MAX_REGULAR_PREVIEW_FPS,
+                min(requestedCeiling, streamCeiling),
+            ),
         )
+    }
+
+    /** Keeps an FPS rejection independent from RAW/YUV/ISP workflow fallback. */
+    fun nextFallbackFpsCeiling(currentCeiling: Int?): Int? = when {
+        currentCeiling == null -> null
+        currentCeiling > LOW_PREVIEW_FPS_CEILING -> LOW_PREVIEW_FPS_CEILING
+        currentCeiling > CONSERVATIVE_PREVIEW_FPS_CEILING ->
+            CONSERVATIVE_PREVIEW_FPS_CEILING
+        else -> null
     }
 
     /** Selects an advertised AE range without synthesizing a range the HAL may reject. */
@@ -158,4 +171,7 @@ internal object CameraStreamSelector {
     private const val TRACKING_MAX_LONG_EDGE = 720
     private const val TRACKING_MIN_SHORT_EDGE = 240
     private const val ASPECT_TOLERANCE = 0.03
+    private const val MAX_REGULAR_PREVIEW_FPS = 60
+    private const val LOW_PREVIEW_FPS_CEILING = 30
+    private const val CONSERVATIVE_PREVIEW_FPS_CEILING = 24
 }
