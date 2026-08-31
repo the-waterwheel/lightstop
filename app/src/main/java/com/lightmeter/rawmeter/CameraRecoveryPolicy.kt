@@ -59,8 +59,8 @@ internal object CameraRecoveryPolicy {
             // Avoid the least portable preview + RAW + YUV combination. Zone tracking adds YUV
             // only while Zone is active and captures RAW in a short single-output session.
             MeteringPipelineMode.AUTO -> CameraSessionProfile.RAW_ONLY
-            MeteringPipelineMode.ISOLATED -> CameraSessionProfile.RAW_ONLY
-            MeteringPipelineMode.FAST -> CameraSessionProfile.COMPATIBLE
+            MeteringPipelineMode.ISOLATED -> CameraSessionProfile.COMPATIBLE
+            MeteringPipelineMode.FAST -> CameraSessionProfile.PREVIEW_ONLY
         },
         mode = mode,
         rawSupported = rawSupported,
@@ -76,14 +76,12 @@ internal object CameraRecoveryPolicy {
         val normalized = normalize(profile, rawSupported, trackingSupported)
         return when (mode) {
             MeteringPipelineMode.AUTO -> normalized
-            MeteringPipelineMode.ISOLATED -> when {
-                normalized.usesRaw && rawSupported -> CameraSessionProfile.RAW_ONLY
-                else -> CameraSessionProfile.PREVIEW_ONLY
+            MeteringPipelineMode.ISOLATED -> if (normalized.usesTracking && trackingSupported) {
+                CameraSessionProfile.COMPATIBLE
+            } else {
+                CameraSessionProfile.PREVIEW_ONLY
             }
-            MeteringPipelineMode.FAST -> when {
-                normalized.usesTracking && trackingSupported -> CameraSessionProfile.COMPATIBLE
-                else -> CameraSessionProfile.PREVIEW_ONLY
-            }
+            MeteringPipelineMode.FAST -> CameraSessionProfile.PREVIEW_ONLY
         }
     }
 
@@ -133,11 +131,10 @@ internal object CameraRecoveryPolicy {
             MeteringPipelineMode.ISOLATED -> when (current) {
                 CameraSessionProfile.FULL,
                 CameraSessionProfile.RAW_ONLY,
-                -> CameraSessionProfile.PREVIEW_ONLY
-                CameraSessionProfile.COMPATIBLE,
-                CameraSessionProfile.PREVIEW_ONLY,
                 CameraSessionProfile.RAW_ISOLATED,
-                -> null
+                -> CameraSessionProfile.COMPATIBLE
+                CameraSessionProfile.COMPATIBLE -> CameraSessionProfile.PREVIEW_ONLY
+                CameraSessionProfile.PREVIEW_ONLY -> null
             }
             MeteringPipelineMode.FAST -> when (current) {
                 CameraSessionProfile.FULL,

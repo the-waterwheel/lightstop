@@ -24,7 +24,7 @@ internal object ZoneSessionPolicy {
         manualSafePreview: Boolean,
     ): Boolean = zoneActive &&
         requestedSource == null &&
-        pipelineMode != MeteringPipelineMode.FAST &&
+        pipelineMode == MeteringPipelineMode.AUTO &&
         rawSupported &&
         !manualSafePreview
 

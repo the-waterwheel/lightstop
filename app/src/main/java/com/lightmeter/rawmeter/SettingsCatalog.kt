@@ -11,6 +11,7 @@ enum class SettingKey {
     SHUTTER_STEP,
     EXPOSURE_COMPENSATION_STEP,
     METERING_MODE,
+    COMBINATION_SELECTION,
     METERING_PIPELINE,
     EXPOSURE_PREVIEW,
     PREVIEW_HEALTH_DETECTION,
@@ -96,8 +97,24 @@ object SettingsCatalog {
                     ),
                 ),
                 SettingItemSpec(
+                    key = SettingKey.COMBINATION_SELECTION,
+                    label = LocalizedLabel("组合选择", "Combination selection"),
+                    options = listOf(
+                        option(
+                            MeteringCombinationSelectionMode.SYSTEM,
+                            "系统设置",
+                            "System",
+                        ),
+                        option(
+                            MeteringCombinationSelectionMode.MANUAL,
+                            "手动选择",
+                            "Manual",
+                        ),
+                    ),
+                ),
+                SettingItemSpec(
                     key = SettingKey.METERING_PIPELINE,
-                    label = LocalizedLabel("测光方式", "Metering method"),
+                    label = LocalizedLabel("系统测光模式", "System metering mode"),
                     options = listOf(
                         option(
                             MeteringPipelineMode.AUTO,
@@ -106,13 +123,13 @@ object SettingsCatalog {
                         ),
                         option(
                             MeteringPipelineMode.ISOLATED,
-                            "稳定模式",
-                            "Stable",
+                            "稳定模式（YUV）",
+                            "Stable (YUV)",
                         ),
                         option(
                             MeteringPipelineMode.FAST,
-                            "兼容模式",
-                            "Compatibility mode",
+                            "兼容模式（ISP）",
+                            "Compatibility mode (ISP)",
                         ),
                     ),
                 ),

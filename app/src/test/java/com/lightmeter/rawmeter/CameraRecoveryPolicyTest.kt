@@ -28,7 +28,7 @@ class CameraRecoveryPolicyTest {
     }
 
     @Test
-    fun fastModeNeverRequestsRaw() {
+    fun compatibilityModeUsesOnlyDisplayPreview() {
         val withTracking = CameraRecoveryPolicy.initialProfile(
             MeteringPipelineMode.FAST,
             rawSupported = true,
@@ -40,29 +40,38 @@ class CameraRecoveryPolicyTest {
             trackingSupported = false,
         )
 
-        assertEquals(CameraSessionProfile.COMPATIBLE, withTracking)
+        assertEquals(CameraSessionProfile.PREVIEW_ONLY, withTracking)
         assertEquals(CameraSessionProfile.PREVIEW_ONLY, withoutTracking)
         assertFalse(withTracking.usesRaw)
         assertFalse(withoutTracking.usesRaw)
     }
 
     @Test
-    fun isolatedModeNeverCombinesRawAndYuv() {
-        val withRaw = CameraRecoveryPolicy.initialProfile(
+    fun stableModeUsesYuvWithoutCreatingRaw() {
+        val withYuv = CameraRecoveryPolicy.initialProfile(
             MeteringPipelineMode.ISOLATED,
             rawSupported = true,
             trackingSupported = true,
         )
-        val withoutRaw = CameraRecoveryPolicy.initialProfile(
+        val withoutYuv = CameraRecoveryPolicy.initialProfile(
             MeteringPipelineMode.ISOLATED,
-            rawSupported = false,
-            trackingSupported = true,
+            rawSupported = true,
+            trackingSupported = false,
         )
 
-        assertEquals(CameraSessionProfile.RAW_ONLY, withRaw)
-        assertEquals(CameraSessionProfile.PREVIEW_ONLY, withoutRaw)
-        assertFalse(withRaw.usesTracking)
-        assertFalse(withoutRaw.usesTracking)
+        assertEquals(CameraSessionProfile.COMPATIBLE, withYuv)
+        assertEquals(CameraSessionProfile.PREVIEW_ONLY, withoutYuv)
+        assertFalse(withYuv.usesRaw)
+        assertFalse(withoutYuv.usesRaw)
+        assertFalse(
+            ZoneSessionPolicy.shouldUseTransientRaw(
+                zoneActive = true,
+                requestedSource = null,
+                pipelineMode = MeteringPipelineMode.ISOLATED,
+                rawSupported = true,
+                manualSafePreview = false,
+            ),
+        )
     }
 
     @Test

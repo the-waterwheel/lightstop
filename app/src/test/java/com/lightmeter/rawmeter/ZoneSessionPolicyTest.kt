@@ -39,7 +39,16 @@ class ZoneSessionPolicyTest {
     }
 
     @Test
-    fun compatibilityAndManualSafeModesNeverStartTransientRaw() {
+    fun stableCompatibilityAndManualSafeModesNeverStartTransientRaw() {
+        assertFalse(
+            ZoneSessionPolicy.shouldUseTransientRaw(
+                zoneActive = true,
+                requestedSource = null,
+                pipelineMode = MeteringPipelineMode.ISOLATED,
+                rawSupported = true,
+                manualSafePreview = false,
+            ),
+        )
         assertFalse(
             ZoneSessionPolicy.shouldUseTransientRaw(
                 zoneActive = true,

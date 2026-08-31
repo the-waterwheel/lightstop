@@ -40,6 +40,10 @@ class MeterLayout @JvmOverloads constructor(
         fun onPreviewGeometryChanged(width: Int, height: Int)
         fun onControlsChanged(frameChanged: Boolean)
         fun onSettingRejected(key: SettingKey, value: String)
+        fun onCombinationSelectionModeChanged(mode: MeteringCombinationSelectionMode)
+        fun onManualCombinationLooksNormal()
+        fun onManualCombinationLooksAbnormal()
+        fun onManualCombinationSelectionCancelled()
         fun onCalibrationOpened()
         fun onSafePreviewRequested()
         fun onCameraSelected(cameraId: String)
@@ -73,6 +77,7 @@ class MeterLayout @JvmOverloads constructor(
     val cameraManagementView = CameraManagementView(context, state)
     val calibrationView = CalibrationView(context, state)
     val vignettingCalibrationView = VignettingCalibrationView(context, state)
+    internal val combinationSelectionView = CameraCombinationSelectionView(context, state)
     val zoneView = ZoneSystemView(context, state)
     val toolsView = ToolsView(context, state)
     private val filmLatitudeRepository = FilmLatitudeRepository(context)
@@ -109,6 +114,8 @@ class MeterLayout @JvmOverloads constructor(
     var isVignettingCalibrationOpen: Boolean = false
         private set
     var isCameraManagementOpen: Boolean = false
+        private set
+    var isCombinationSelectionOpen: Boolean = false
         private set
     var isToolsOpen: Boolean = false
         private set
@@ -185,6 +192,22 @@ class MeterLayout @JvmOverloads constructor(
                     instrumentView.invalidate()
                     settingsView.invalidate()
                     value?.onControlsChanged(frameChanged)
+                    if (key == SettingKey.COMBINATION_SELECTION) {
+                        val notifySelectionChange: () -> Unit = {
+                            value?.onCombinationSelectionModeChanged(
+                                state.meteringCombinationSelectionMode,
+                            )
+                            Unit
+                        }
+                        if (settingsOpenedFromZone &&
+                            state.meteringCombinationSelectionMode ==
+                            MeteringCombinationSelectionMode.MANUAL
+                        ) {
+                            exitZoneForAction(notifySelectionChange)
+                        } else {
+                            notifySelectionChange()
+                        }
+                    }
                 }
 
                 override fun onSettingRejected(key: SettingKey, rejectedValue: String) {
@@ -235,6 +258,20 @@ class MeterLayout @JvmOverloads constructor(
                     }
                 }
             }
+            combinationSelectionView.listener =
+                object : CameraCombinationSelectionView.Listener {
+                    override fun onCombinationLooksNormal() {
+                        value?.onManualCombinationLooksNormal()
+                    }
+
+                    override fun onCombinationLooksAbnormal() {
+                        value?.onManualCombinationLooksAbnormal()
+                    }
+
+                    override fun onCombinationSelectionCancelled() {
+                        value?.onManualCombinationSelectionCancelled()
+                    }
+                }
             informationView.listener = object : InformationView.Listener {
                 override fun onCloseRequested() {
                     closeInformation()
@@ -447,6 +484,8 @@ class MeterLayout @JvmOverloads constructor(
         addView(filmSelectorView)
         parameterHistoryView.visibility = View.GONE
         addView(parameterHistoryView)
+        combinationSelectionView.visibility = View.GONE
+        addView(combinationSelectionView)
         zoneView.setAppliedLatitude(filmLatitudeRepository.loadApplied()?.range)
         instrumentView.setAppliedReciprocity(filmReciprocityRepository.appliedMethod())
         zoneView.setAppliedReciprocity(filmReciprocityRepository.appliedMethod())
@@ -692,6 +731,10 @@ class MeterLayout @JvmOverloads constructor(
             MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
             MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
         )
+        combinationSelectionView.measure(
+            MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
+        )
         val toolsRect = toolsPanelRect(width, height)
         toolsHost.measure(
             MeasureSpec.makeMeasureSpec(toolsRect.width().roundToInt().coerceAtLeast(0), MeasureSpec.EXACTLY),
@@ -709,7 +752,9 @@ class MeterLayout @JvmOverloads constructor(
             state.frameLandscape,
             state.isLeftHanded,
         )
-        val cameraFrame = if (isVignettingCalibrationOpen) {
+        val cameraFrame = if (isCombinationSelectionOpen) {
+            RectF(0f, 0f, width.toFloat(), height.toFloat())
+        } else if (isVignettingCalibrationOpen) {
             vignettingCalibrationView.calculatePreviewFrame(width, height)
         } else if (isCalibrationOpen) {
             calibrationView.calculatePreviewFrame(width, height)
@@ -759,7 +804,9 @@ class MeterLayout @JvmOverloads constructor(
             state.frameLandscape,
             state.isLeftHanded,
         )
-        val cameraFrame = if (isVignettingCalibrationOpen) {
+        val cameraFrame = if (isCombinationSelectionOpen) {
+            RectF(0f, 0f, width.toFloat(), height.toFloat())
+        } else if (isVignettingCalibrationOpen) {
             vignettingCalibrationView.calculatePreviewFrame(width, height)
         } else if (isCalibrationOpen) {
             calibrationView.calculatePreviewFrame(width, height)
@@ -814,6 +861,7 @@ class MeterLayout @JvmOverloads constructor(
         )
         filmSelectorView.layout(0, 0, width, height)
         parameterHistoryView.layout(0, 0, width, height)
+        combinationSelectionView.layout(0, 0, width, height)
         updateAngleMeteringControl()
         updateRecordSliderAnchor()
         // A format change can resize this child while the ViewGroup's own bounds stay the
@@ -882,7 +930,7 @@ class MeterLayout @JvmOverloads constructor(
 
     fun showSettings() {
         if (isSettingsOpen || isCalibrationOpen || isVignettingCalibrationOpen ||
-            isCameraManagementOpen ||
+            isCameraManagementOpen || isCombinationSelectionOpen ||
             isZoneMode || zoneTransitionFraction > 0f
         ) return
         settingsOpenedFromZone = false
@@ -1593,6 +1641,53 @@ class MeterLayout @JvmOverloads constructor(
             }
             .start()
         return true
+    }
+
+    internal fun showCombinationSelection(
+        candidate: CameraCombinationCandidate,
+        index: Int,
+        count: Int,
+        ready: Boolean,
+        status: String,
+    ) {
+        if (!isCombinationSelectionOpen) {
+            closeSettingsImmediately()
+            closeTools()
+            isCombinationSelectionOpen = true
+            instrumentView.visibility = View.GONE
+            zoneView.visibility = View.GONE
+            combinationSelectionView.visibility = View.VISIBLE
+            combinationSelectionView.bringToFront()
+            requestLayout()
+        }
+        combinationSelectionView.showCandidate(candidate, index, count, ready, status)
+    }
+
+    internal fun updateCombinationProbeState(ready: Boolean, status: String) {
+        combinationSelectionView.updateProbeState(ready, status)
+    }
+
+    internal fun closeCombinationSelection(): Boolean {
+        if (!isCombinationSelectionOpen) return false
+        isCombinationSelectionOpen = false
+        combinationSelectionView.visibility = View.GONE
+        instrumentView.visibility = if (isZoneMode) View.GONE else View.VISIBLE
+        zoneView.visibility = if (isZoneMode) View.VISIBLE else View.GONE
+        requestLayout()
+        return true
+    }
+
+    fun closeCombinationSelectionFromBack(): Boolean {
+        if (!isCombinationSelectionOpen) return false
+        listener?.onManualCombinationSelectionCancelled()
+        return true
+    }
+
+    private fun closeSettingsImmediately() {
+        isSettingsOpen = false
+        settingsView.animate().cancel()
+        settingsView.translationY = 0f
+        settingsView.visibility = View.GONE
     }
 
     private fun showInformation(page: InformationView.Page) {

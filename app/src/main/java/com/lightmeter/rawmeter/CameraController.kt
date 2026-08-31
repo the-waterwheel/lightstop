@@ -107,6 +107,13 @@ class CameraController(
         val streamCharacteristics: CameraCharacteristics,
     )
 
+    private data class ManualCombinationProbe(
+        val plan: CameraCombinationPlan,
+        val stages: List<CameraSessionProfile>,
+        val completion: (Result<Unit>) -> Unit,
+        var stageIndex: Int = 0,
+    )
+
     private val mainHandler = Handler(Looper.getMainLooper())
     private val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
     private val sessionCoordinator = CameraSessionCoordinator(
@@ -127,6 +134,26 @@ class CameraController(
             ) {
                 if (!started || generation != cameraGeneration) return
                 cameraFailureStage = CameraFailureStage.RUNNING
+                val manualProbe = manualCombinationProbe
+                if (manualProbe != null) {
+                    handleManualProbeSessionConfigured(
+                        probe = manualProbe,
+                        device = device,
+                        session = session,
+                        previewSurface = previewSurface,
+                        generation = generation,
+                    )
+                    return
+                }
+                if (beginPendingSystemWorkflowProbe(
+                        device = device,
+                        session = session,
+                        previewSurface = previewSurface,
+                        generation = generation,
+                    )
+                ) {
+                    return
+                }
                 val transaction = zoneRawTransaction
                 if (transaction?.sessionState?.phase == ZoneRawSessionPhase.SWITCHING_TO_RAW &&
                     activeSessionProfile == CameraSessionProfile.RAW_ISOLATED
@@ -173,6 +200,12 @@ class CameraController(
                 } else {
                     Log.e(TAG, "Unable to create camera session for profile=$sessionProfile", error)
                 }
+                if (manualCombinationProbe != null) {
+                    failManualCombinationProbe(
+                        error ?: IllegalStateException("Manual stream workflow was rejected"),
+                    )
+                    return
+                }
                 if (handleZoneRawSessionFailure(error) || handleResidentSessionFailure(error)) {
                     return
                 }
@@ -201,6 +234,7 @@ class CameraController(
         },
     )
     private val cameraCatalog = CameraCatalog(cameraManager)
+    private val combinationSelectionStore = CameraCombinationSelectionStore(context)
     private val calibrationStore = CameraCalibrationStore(context)
     private val vignettingCalibrationStore = VignettingCalibrationStore(context)
     private val measurementId = AtomicInteger(0)
@@ -358,6 +392,15 @@ class CameraController(
     private val trackingReader: ImageReader?
         get() = sessionCoordinator.trackingReader
     private var characteristics: CameraCharacteristics? = null
+    private var combinationSelectionMode = MeteringCombinationSelectionMode.SYSTEM
+    private var activeCombinationPlan: CameraCombinationPlan? = null
+    private var manualProbePlanId: String? = null
+    @Volatile
+    private var manualCombinationProbe: ManualCombinationProbe? = null
+    private var currentCombinationCandidates: List<CameraCombinationCandidate> = emptyList()
+    private var systemCombinationCandidates: List<CameraCombinationCandidate> = emptyList()
+    private val rejectedSystemCombinationIds = mutableSetOf<String>()
+    private var pendingSystemWorkflowProbePlanId: String? = null
     private var logicalCharacteristics: CameraCharacteristics? = null
     private var selectedPhysicalCameraId: String? = null
     private val activePhysicalCameraTracker = ActivePhysicalCameraTracker()
@@ -494,6 +537,88 @@ class CameraController(
                 ),
             )
             openCamera(textureView?.surfaceTexture)
+        }
+    }
+
+    fun setCombinationSelectionMode(mode: MeteringCombinationSelectionMode) {
+        combinationSelectionMode = mode
+        if (mode == MeteringCombinationSelectionMode.SYSTEM) {
+            manualProbePlanId = null
+        }
+    }
+
+    internal fun manualCombinationCandidates(): List<CameraCombinationCandidate> =
+        currentCombinationCandidates
+
+    /** Replays every distinct session stage of the workflow before asking the user to judge it. */
+    internal fun probeManualCombination(
+        planId: String,
+        completion: (Result<Unit>) -> Unit,
+    ): Boolean {
+        val candidate = currentCombinationCandidates.firstOrNull { it.plan.id == planId }
+            ?: return false
+        val handler = cameraHandler ?: return false
+        if (!started || meteringOperationActive || calibrationStorageCameraId != null ||
+            activeVignettingCapture != null || manualCombinationProbe != null
+        ) {
+            return false
+        }
+        handler.post {
+            if (!started || meteringOperationActive || calibrationStorageCameraId != null ||
+                activeVignettingCapture != null || manualCombinationProbe != null
+            ) {
+                mainHandler.post {
+                    completion(Result.failure(IllegalStateException("Camera is busy")))
+                }
+                return@post
+            }
+            val plan = candidate.plan
+            val stages = buildManualProbeStages(plan)
+            manualProbePlanId = plan.id
+            activeCombinationPlan = plan
+            manualCombinationProbe = ManualCombinationProbe(plan, stages, completion)
+            manualSafePreviewActive = false
+            closeCamera(preserveExposurePreview = true)
+            val texture = textureView?.surfaceTexture
+            if (texture == null) {
+                failManualCombinationProbe(IllegalStateException("Preview Surface is unavailable"))
+            } else {
+                openCamera(texture)
+            }
+        }
+        return true
+    }
+
+    internal fun acceptManualCombination(planId: String): Boolean {
+        val plan = currentCombinationCandidates.firstOrNull { it.plan.id == planId }?.plan
+            ?: return false
+        combinationSelectionMode = MeteringCombinationSelectionMode.MANUAL
+        manualProbePlanId = null
+        activeCombinationPlan = plan
+        combinationSelectionStore.save(cameraInfo.cameraId, plan.id)
+        cameraHandler?.post {
+            if (started && manualCombinationProbe == null && cameraDevice != null) {
+                val desired = desiredResidentSessionProfile()
+                if (desired != activeSessionProfile) switchResidentSession(desired)
+            }
+        }
+        return true
+    }
+
+    internal fun cancelManualCombinationSelection() {
+        val handler = cameraHandler ?: return
+        handler.post {
+            manualCombinationProbe?.let { probe ->
+                manualCombinationProbe = null
+                mainHandler.post {
+                    probe.completion(Result.failure(IllegalStateException("Cancelled")))
+                }
+            }
+            manualProbePlanId = null
+            resetRecoveryState()
+            if (!started) return@post
+            closeCamera(preserveExposurePreview = true)
+            textureView?.surfaceTexture?.let(::openCamera)
         }
     }
 
@@ -675,7 +800,7 @@ class CameraController(
         meteringAngleDegrees: Int = AngleMeteringMath.DEFAULT_DEGREES,
         requestedSource: MeteringSource? = null,
     ): Boolean {
-        if (meteringOperationActive) return false
+        if (meteringOperationActive || manualCombinationProbe != null) return false
         meteringOperationActive = true
         val screenAspect = if (frameLandscape) {
             frameFormat.landscapeAspect
@@ -753,7 +878,15 @@ class CameraController(
         }
         meteringOperationActive = true
         prepareMeteringPreviewBaseline {
-            if (ZoneSessionPolicy.shouldUseTransientRaw(
+            val workflowMeteringProfile = activeCombinationPlan?.let { workflow ->
+                if (trackingFramesEnabled) workflow.zoneMeteringProfile
+                else workflow.normalMeteringProfile
+            }
+            val useTransientRaw = plan.requestedSource == null &&
+                workflowMeteringProfile == CameraSessionProfile.RAW_ISOLATED &&
+                rawHardwareAvailable && !manualSafePreviewActive
+            if (useTransientRaw || workflowMeteringProfile == null &&
+                ZoneSessionPolicy.shouldUseTransientRaw(
                     zoneActive = trackingFramesEnabled,
                     requestedSource = plan.requestedSource,
                     pipelineMode = meteringPipelineMode,
@@ -837,6 +970,11 @@ class CameraController(
     private fun desiredResidentSessionProfile(): CameraSessionProfile {
         val calibrationProfile = calibrationSessionProfile
         if (calibrationProfile != null) return calibrationProfile
+        if (manualSafePreviewActive) return CameraSessionProfile.PREVIEW_ONLY
+        activeCombinationPlan?.let { plan ->
+            return if (trackingFramesEnabled) plan.zoneResidentProfile
+            else plan.normalResidentProfile
+        }
         val normalProfile = recoveryState.resolveProfile(
             mode = meteringPipelineMode,
             rawSupported = rawHardwareAvailable,
@@ -903,6 +1041,186 @@ class CameraController(
         }
     }
 
+    private fun buildManualProbeStages(plan: CameraCombinationPlan): List<CameraSessionProfile> {
+        val stages = mutableListOf<CameraSessionProfile>()
+        fun addStage(profile: CameraSessionProfile) {
+            if (stages.lastOrNull() != profile) stages += profile
+        }
+        addStage(plan.normalResidentProfile)
+        addStage(plan.normalMeteringProfile)
+        addStage(plan.zoneResidentProfile)
+        addStage(plan.zoneMeteringProfile)
+        // Always restore the workflow's ordinary preview before the user judges the image.
+        addStage(plan.normalResidentProfile)
+        return stages
+    }
+
+    private fun beginPendingSystemWorkflowProbe(
+        device: CameraDevice,
+        session: CameraCaptureSession,
+        previewSurface: Surface?,
+        generation: Int,
+    ): Boolean {
+        if (combinationSelectionMode != MeteringCombinationSelectionMode.SYSTEM ||
+            calibrationSessionProfile != null || manualSafePreviewActive
+        ) {
+            return false
+        }
+        val planId = pendingSystemWorkflowProbePlanId ?: return false
+        val plan = activeCombinationPlan?.takeIf { it.id == planId } ?: return false
+        val probe = ManualCombinationProbe(
+            plan = plan,
+            stages = buildManualProbeStages(plan),
+            completion = { result ->
+                cameraHandler?.post {
+                    if (pendingSystemWorkflowProbePlanId != plan.id) return@post
+                    pendingSystemWorkflowProbePlanId = null
+                    if (result.isSuccess) {
+                        combinationSelectionStore.saveSystem(
+                            cameraRouteId = cameraInfo.cameraId,
+                            mode = meteringPipelineMode,
+                            planId = plan.id,
+                        )
+                        postInfo(cameraInfo.copy(status = readyCameraStatus()))
+                    } else {
+                        advanceSystemCombination(
+                            localized(
+                                "组合流程检测失败，正在测试下一个组合",
+                                "Combination workflow failed. Testing the next combination",
+                            ),
+                        )
+                    }
+                }
+            },
+        )
+        manualCombinationProbe = probe
+        postInfo(
+            cameraInfo.copy(
+                status = localized(
+                    "正在检测相机输出组合",
+                    "Checking camera output combination",
+                ),
+            ),
+        )
+        handleManualProbeSessionConfigured(
+            probe = probe,
+            device = device,
+            session = session,
+            previewSurface = previewSurface,
+            generation = generation,
+        )
+        return true
+    }
+
+    private fun handleManualProbeSessionConfigured(
+        probe: ManualCombinationProbe,
+        device: CameraDevice,
+        session: CameraCaptureSession,
+        previewSurface: Surface?,
+        generation: Int,
+    ) {
+        if (manualCombinationProbe !== probe || generation != cameraGeneration) return
+        val expected = probe.stages.getOrNull(probe.stageIndex)
+        if (expected == null || expected != activeSessionProfile) {
+            failManualCombinationProbe(
+                IllegalStateException("Unexpected manual probe profile=$activeSessionProfile"),
+            )
+            return
+        }
+        pendingResidentSessionProfile = null
+        if (expected.usesPreview) {
+            val preview = previewSurface ?: run {
+                failManualCombinationProbe(IllegalStateException("Probe preview Surface is missing"))
+                return
+            }
+            if (!startPreview(device, session, preview, generation)) return
+        }
+        if (expected.usesRaw) {
+            captureManualProbeRawFrame(probe, device, session, generation)
+        } else {
+            cameraHandler?.postDelayed(
+                { advanceManualCombinationProbe(probe) },
+                MANUAL_PROBE_STAGE_DELAY_MS,
+            )
+        }
+    }
+
+    private fun captureManualProbeRawFrame(
+        probe: ManualCombinationProbe,
+        device: CameraDevice,
+        session: CameraCaptureSession,
+        generation: Int,
+    ) {
+        val rawSurface = rawReader?.surface ?: run {
+            failManualCombinationProbe(IllegalStateException("Probe RAW Surface is missing"))
+            return
+        }
+        try {
+            val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
+                addTarget(rawSurface)
+                set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
+                set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
+                setSupportedAutoFocus(this)
+            }
+            session.capture(
+                builder.build(),
+                object : CameraCaptureSession.CaptureCallback() {
+                    override fun onCaptureCompleted(
+                        session: CameraCaptureSession,
+                        request: CaptureRequest,
+                        result: TotalCaptureResult,
+                    ) {
+                        if (generation != cameraGeneration || manualCombinationProbe !== probe) return
+                        cameraHandler?.postDelayed(
+                            { advanceManualCombinationProbe(probe) },
+                            MANUAL_PROBE_RAW_DRAIN_DELAY_MS,
+                        )
+                    }
+
+                    override fun onCaptureFailed(
+                        session: CameraCaptureSession,
+                        request: CaptureRequest,
+                        failure: CaptureFailure,
+                    ) {
+                        if (generation == cameraGeneration && manualCombinationProbe === probe) {
+                            failManualCombinationProbe(
+                                IllegalStateException(
+                                    "Manual RAW probe failed: ${failure.reason}",
+                                ),
+                            )
+                        }
+                    }
+                },
+                cameraHandler,
+            )
+        } catch (error: Exception) {
+            failManualCombinationProbe(error)
+        }
+    }
+
+    private fun advanceManualCombinationProbe(probe: ManualCombinationProbe) {
+        if (manualCombinationProbe !== probe) return
+        probe.stageIndex += 1
+        val next = probe.stages.getOrNull(probe.stageIndex)
+        if (next == null) {
+            manualCombinationProbe = null
+            mainHandler.post { probe.completion(Result.success(Unit)) }
+            return
+        }
+        if (!reconfigureSession(next)) {
+            failManualCombinationProbe(
+                IllegalStateException("Unable to configure manual probe profile=$next"),
+            )
+        }
+    }
+
+    private fun failManualCombinationProbe(error: Throwable) {
+        val probe = manualCombinationProbe ?: return
+        manualCombinationProbe = null
+        Log.w(TAG, "Manual combination probe failed plan=${probe.plan.id}", error)
+        mainHandler.post { probe.completion(Result.failure(error)) }
+    }
+
     private fun restoreZoneResidentSession(transaction: ZoneRawTransaction) {
         if (zoneRawTransaction !== transaction) return
         if (!transaction.sessionState.beginRestore()) return
@@ -942,7 +1260,6 @@ class CameraController(
             failure.meteringMode,
             failure.target,
             failure.meteringRoiFraction,
-            forceProcessedPreview = meteringPipelineMode == MeteringPipelineMode.ISOLATED,
         )
     }
 
@@ -1388,8 +1705,7 @@ class CameraController(
 
     @Synchronized
     fun isYuvMeteringAvailable(): Boolean =
-        meteringPipelineMode != MeteringPipelineMode.ISOLATED &&
-            trackingReader != null && compatibleMeter.yuvAvailable
+        trackingReader != null && compatibleMeter.yuvAvailable
 
     /** Hardware-level sources that calibration can open sequentially in isolated sessions. */
     fun calibrationCapabilities(): MeteringCalibrationCapabilities =
@@ -1403,11 +1719,7 @@ class CameraController(
 
     @Synchronized
     fun preferredCompatibleMeteringSource(): MeteringSource =
-        if (meteringPipelineMode == MeteringPipelineMode.ISOLATED) {
-            MeteringSource.ISP_PREVIEW
-        } else {
-            compatibleMeter.preferredSource(trackingReader != null)
-        }
+        compatibleMeter.preferredSource(trackingReader != null)
 
     @Synchronized
     fun updateUserCalibration(
@@ -1482,8 +1794,7 @@ class CameraController(
             postMeterError(localized("请等待当前操作完成", "Wait for the current operation"))
             return
         }
-        val useProcessedPreview = forceProcessedPreview ||
-            meteringPipelineMode == MeteringPipelineMode.ISOLATED
+        val useProcessedPreview = forceProcessedPreview
         val needsYuvRequest = !useProcessedPreview && target == null &&
             trackingReader != null && compatibleMeter.yuvAvailable
         val accepted = compatibleMeter.measure(
@@ -1541,6 +1852,22 @@ class CameraController(
                 requiresPreviewOnlySession &&
                     sessionProfile == CameraSessionProfile.COMPATIBLE -> {
                     if (started && cameraDevice != null) {
+                        if (advanceSystemCombination(
+                                localized(
+                                    "YUV 组合不可用，正在测试下一个组合",
+                                    "The YUV combination is unavailable. Testing the next one",
+                                ),
+                            )
+                        ) {
+                            return@post
+                        }
+                        if (combinationSelectionMode ==
+                            MeteringCombinationSelectionMode.MANUAL
+                        ) {
+                            activeCombinationPlan = CameraCombinationPolicy.compatibilityIsp
+                            switchResidentSession(CameraSessionProfile.PREVIEW_ONLY)
+                            return@post
+                        }
                         if (trackingFramesEnabled && recoveryState.profile?.usesRaw == true &&
                             !downgradeAfterCompatibleMeasurement
                         ) {
@@ -1562,10 +1889,26 @@ class CameraController(
                 downgradeAfterCompatibleMeasurement -> {
                     downgradeAfterCompatibleMeasurement = false
                     if (!started || cameraDevice == null) return@post
+                    if (advanceSystemCombination(
+                            localized(
+                                "RAW 组合连续失败，正在测试下一个组合",
+                                "The RAW combination failed repeatedly. Testing the next one",
+                            ),
+                        )
+                    ) {
+                        return@post
+                    }
                     val compatible = if (trackingHardwareAvailable && compatibleMeter.yuvAvailable) {
                         CameraSessionProfile.COMPATIBLE
                     } else {
                         CameraSessionProfile.PREVIEW_ONLY
+                    }
+                    if (combinationSelectionMode == MeteringCombinationSelectionMode.MANUAL) {
+                        activeCombinationPlan = if (compatible == CameraSessionProfile.COMPATIBLE) {
+                            CameraCombinationPolicy.stableYuv
+                        } else {
+                            CameraCombinationPolicy.compatibilityIsp
+                        }
                     }
                     if (sessionProfile == compatible) {
                         recoveryState.forceProfile(compatible)
@@ -1613,7 +1956,9 @@ class CameraController(
                 lastDisplayZoom,
             )
         }
-        if (previewHealthDetectionEnabled) {
+        if (previewHealthDetectionEnabled && manualCombinationProbe == null &&
+            combinationSelectionMode != MeteringCombinationSelectionMode.MANUAL
+        ) {
             previewHealthSampler.onTextureUpdated(textureView, surface, started)
         }
     }
@@ -1708,15 +2053,13 @@ class CameraController(
                 rawSupported = rawHardwareAvailable,
                 trackingSupported = trackingHardwareAvailable,
             )
-            val profile = calibrationSessionProfile ?: ZoneSessionPolicy.residentProfile(
+            var profile = calibrationSessionProfile ?: ZoneSessionPolicy.residentProfile(
                 normalProfile = normalProfile,
                 zoneActive = trackingFramesEnabled,
                 manualSafePreview = manualSafePreviewActive,
                 trackingSupported = trackingHardwareAvailable,
                 zoneYuvUnavailable = zoneYuvSessionUnavailable,
             )
-            activeSessionProfile = profile
-            val rawAvailable = rawHardwareAvailable && profile.usesRaw
             val availableRawSize = if (rawHardwareAvailable) {
                 val rawSizes = map.getOutputSizes(ImageFormat.RAW_SENSOR)
                 rawSizes?.minByOrNull { it.width.toLong() * it.height.toLong() }
@@ -1731,6 +2074,89 @@ class CameraController(
             }
             rawOutputSize = availableRawSize
             trackingOutputSize = trackingSize
+            val matrix = CameraCombinationMatrix.inspect(
+                characteristics = chars,
+                previewSize = chosenPreview,
+                rawSize = availableRawSize,
+                yuvSize = trackingSize,
+            )
+            val matrixCandidates = CameraCombinationPolicy.orderedCandidates(
+                mode = MeteringPipelineMode.AUTO,
+                capabilities = matrix.capabilities,
+                mandatoryGuaranteedProfiles = matrix.mandatoryGuaranteedProfiles,
+            )
+            val systemCandidates = CameraCombinationPolicy.orderedCandidates(
+                mode = meteringPipelineMode,
+                capabilities = matrix.capabilities,
+                mandatoryGuaranteedProfiles = matrix.mandatoryGuaranteedProfiles,
+            )
+            currentCombinationCandidates = matrixCandidates
+            systemCombinationCandidates = systemCandidates
+            if (calibrationSessionProfile == null && !manualSafePreviewActive) {
+                val storedManualPlanId = if (combinationSelectionMode ==
+                    MeteringCombinationSelectionMode.MANUAL
+                ) {
+                    combinationSelectionStore.selectedPlanId(activeCameraId)?.takeIf { planId ->
+                        matrixCandidates.any { it.plan.id == planId }
+                    }
+                } else {
+                    null
+                }
+                val manualPlanRequested = manualProbePlanId != null || storedManualPlanId != null
+                if (combinationSelectionMode == MeteringCombinationSelectionMode.MANUAL &&
+                    !manualPlanRequested
+                ) {
+                    // A manual result is scoped to this route and OS build. Keep the visible
+                    // setting aligned with the automatic workflow when that result expires.
+                    combinationSelectionMode = MeteringCombinationSelectionMode.SYSTEM
+                    mainHandler.post(callback::onCombinationSelectionFallbackToSystem)
+                }
+                val cachedSystemPlanId = if (!manualPlanRequested) {
+                    combinationSelectionStore.selectedSystemPlanId(
+                        activeCameraId,
+                        meteringPipelineMode,
+                    )?.takeIf { it !in rejectedSystemCombinationIds }
+                } else {
+                    null
+                }
+                val selectedPlanId = manualProbePlanId ?: if (manualPlanRequested) {
+                    storedManualPlanId
+                } else {
+                    cachedSystemPlanId
+                }
+                val candidatePool = if (manualPlanRequested) {
+                    matrixCandidates
+                } else {
+                    systemCandidates.filterNot { it.plan.id in rejectedSystemCombinationIds }
+                }
+                val selectedPlan = selectedPlanId?.let { planId ->
+                    candidatePool.firstOrNull { it.plan.id == planId }?.plan
+                } ?: candidatePool.firstOrNull {
+                    it.plan.normalResidentProfile == profile
+                }?.plan
+                activeCombinationPlan = selectedPlan
+                pendingSystemWorkflowProbePlanId = if (!manualPlanRequested &&
+                    selectedPlan != null && selectedPlan.id != cachedSystemPlanId
+                ) {
+                    selectedPlan.id
+                } else {
+                    null
+                }
+                if (selectedPlan != null) {
+                    profile = if (trackingFramesEnabled) selectedPlan.zoneResidentProfile
+                    else selectedPlan.normalResidentProfile
+                }
+            }
+            activeSessionProfile = profile
+            val rawAvailable = rawHardwareAvailable && profile.usesRaw
+            Log.i(
+                TAG,
+                "Stream matrix candidates mode=$meteringPipelineMode selected=" +
+                    "${activeCombinationPlan?.id}: " +
+                    systemCandidates.joinToString { candidate ->
+                        "${candidate.plan.id}:${candidate.matrixSupport}"
+                    },
+            )
             val rawSize = availableRawSize.takeIf { profile.usesRaw }
             val configuredTrackingSize = trackingSize.takeIf { profile.usesTracking }
             val chosenRange = fpsRequestCeiling?.let { ceiling ->
@@ -1827,6 +2253,15 @@ class CameraController(
     private fun handleSessionFailure(generation: Int) {
         if (generation != cameraGeneration) return
         if (abortIsolatedCalibrationSessionIfActive()) return
+        if (advanceSystemCombination(
+                localized(
+                    "当前组合无法启动，正在测试下一个组合",
+                    "This combination could not start. Testing the next combination",
+                ),
+            )
+        ) {
+            return
+        }
         val next = recoveryState.nextProfile(
             mode = meteringPipelineMode,
             rawSupported = rawHardwareAvailable,
@@ -1866,13 +2301,23 @@ class CameraController(
             trackingSupported = trackingHardwareAvailable,
         )
         when (decision.action) {
-            CameraRecoveryAction.RETRY,
-            CameraRecoveryAction.DOWNGRADE,
-            -> scheduleRecovery(
+            CameraRecoveryAction.RETRY -> scheduleRecovery(
                 decision.profile ?: sessionProfile ?: CameraSessionProfile.PREVIEW_ONLY,
                 recoveryMessage(failure),
                 decision.delayMs,
             )
+
+            CameraRecoveryAction.DOWNGRADE -> if (!advanceSystemCombination(
+                    recoveryMessage(failure),
+                    decision.delayMs,
+                )
+            ) {
+                scheduleRecovery(
+                    decision.profile ?: sessionProfile ?: CameraSessionProfile.PREVIEW_ONLY,
+                    recoveryMessage(failure),
+                    decision.delayMs,
+                )
+            }
 
             CameraRecoveryAction.STOP -> {
                 val canChangeCameraRoute = failure == CameraFailureKind.DEVICE ||
@@ -1884,6 +2329,30 @@ class CameraController(
                 }
             }
         }
+    }
+
+    private fun advanceSystemCombination(
+        message: String,
+        delayMs: Long = SESSION_RECOVERY_DELAY_MS,
+    ): Boolean {
+        if (combinationSelectionMode != MeteringCombinationSelectionMode.SYSTEM) return false
+        val active = activeCombinationPlan ?: return false
+        rejectedSystemCombinationIds += active.id
+        // Do not revive a workflow on the next launch after either the HAL or the live preview
+        // has disproved a previously cached result.
+        combinationSelectionStore.clearSystem(cameraInfo.cameraId, meteringPipelineMode)
+        val next = systemCombinationCandidates.firstOrNull {
+            it.plan.id !in rejectedSystemCombinationIds
+        }?.plan ?: return false
+        activeCombinationPlan = next
+        val resident = if (trackingFramesEnabled) next.zoneResidentProfile
+        else next.normalResidentProfile
+        scheduleRecovery(resident, message, delayMs)
+        Log.i(
+            TAG,
+            "Combination search rejected=${active.id}; next=${next.id}; resident=$resident",
+        )
+        return true
     }
 
     /** A failed calibration-only session advances the UI to the next source instead of recovery. */
@@ -2060,7 +2529,11 @@ class CameraController(
     }
 
     private fun resetRecoveryState() {
+        if (pendingSystemWorkflowProbePlanId != null) manualCombinationProbe = null
         recoveryState.reset()
+        activeCombinationPlan = null
+        rejectedSystemCombinationIds.clear()
+        pendingSystemWorkflowProbePlanId = null
         manualSafePreviewActive = false
         zoneYuvSessionUnavailable = false
         downgradeAfterCompatibleMeasurement = false
@@ -2112,6 +2585,19 @@ class CameraController(
                     if (generation == cameraGeneration && captureSession === session) {
                         recoveryState.markPreviewStable()
                         previewHealthRecoveryAttempts = 0
+                        if (combinationSelectionMode == MeteringCombinationSelectionMode.SYSTEM &&
+                            calibrationSessionProfile == null && !manualSafePreviewActive &&
+                            pendingSystemWorkflowProbePlanId == null &&
+                            manualCombinationProbe == null
+                        ) {
+                            activeCombinationPlan?.let { plan ->
+                                combinationSelectionStore.saveSystem(
+                                    cameraRouteId = cameraInfo.cameraId,
+                                    mode = meteringPipelineMode,
+                                    planId = plan.id,
+                                )
+                            }
+                        }
                     }
                 },
                 STABLE_PREVIEW_RESET_DELAY_MS,
@@ -2153,7 +2639,7 @@ class CameraController(
         builder.setTag(requestTag)
         builder.addTarget(preview)
         val includeYuv = trackingReader != null &&
-            (trackingFramesEnabled || compatibleYuvRequestActive)
+            (trackingFramesEnabled || compatibleYuvRequestActive || manualCombinationProbe != null)
         if (includeYuv) trackingReader?.surface?.let(builder::addTarget)
         builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
         val manualExposure = previewManualExposure
@@ -2427,8 +2913,12 @@ class CameraController(
     }
 
     private fun transientZoneRawAvailable(): Boolean =
-        trackingFramesEnabled && rawHardwareAvailable && !manualSafePreviewActive &&
-            recoveryState.profile?.usesRaw == true
+        rawHardwareAvailable && !manualSafePreviewActive &&
+            (activeCombinationPlan?.let { plan ->
+                val meteringProfile = if (trackingFramesEnabled) plan.zoneMeteringProfile
+                else plan.normalMeteringProfile
+                meteringProfile == CameraSessionProfile.RAW_ISOLATED
+            } ?: (trackingFramesEnabled && recoveryState.profile?.usesRaw == true))
 
     private val previewCaptureCallback = object : CameraCaptureSession.CaptureCallback() {
         override fun onCaptureCompleted(
@@ -2591,6 +3081,16 @@ class CameraController(
             // A deliberate session replacement freezes the TextureView briefly. Let the restored
             // preview produce fresh samples before deciding that its output is unhealthy.
             if (zoneRawTransaction != null || pendingResidentSessionProfile != null) return@post
+            if (advanceSystemCombination(
+                    localized(
+                        "检测到当前组合画面异常，正在测试下一个组合",
+                        "This combination produced an invalid preview. Testing the next one",
+                    ),
+                    delayMs = 0L,
+                )
+            ) {
+                return@post
+            }
             if (previewHealthConfirmationPending &&
                 previewHealthConfirmationGeneration == generation
             ) {
@@ -2971,6 +3471,8 @@ class CameraController(
         private const val PREVIEW_REFERENCE_LONG_EDGE = 384
         private const val VIGNETTING_TIMEOUT_MS = 8_000L
         private const val RAW_RECORD_TIMEOUT_MS = 8_000L
+        private const val MANUAL_PROBE_STAGE_DELAY_MS = 650L
+        private const val MANUAL_PROBE_RAW_DRAIN_DELAY_MS = 350L
         private const val SESSION_RECOVERY_DELAY_MS = 300L
         private const val STABLE_PREVIEW_RESET_DELAY_MS = 10_000L
         private const val PREVIEW_BASELINE_TIMEOUT_MS = 1_200L

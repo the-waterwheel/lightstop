@@ -54,6 +54,9 @@ class MainActivity : Activity(), CameraControllerCallback {
     private var backInvokedCallback: OnBackInvokedCallback? = null
     private var parameterLocation: RecordedLocation? = null
     private var parameterLocationListener: LocationListener? = null
+    private var manualCombinationCandidates: List<CameraCombinationCandidate> = emptyList()
+    private var manualCombinationIndex = -1
+    private var manualCombinationGeneration = 0
     private val displayListener = object : DisplayManager.DisplayListener {
         override fun onDisplayAdded(displayId: Int) = Unit
 
@@ -78,6 +81,7 @@ class MainActivity : Activity(), CameraControllerCallback {
         cameraController = CameraController(this, this)
         appliedPipelineMode = state.meteringPipelineMode
         cameraController.setMeteringPipelineMode(state.meteringPipelineMode)
+        cameraController.setCombinationSelectionMode(state.meteringCombinationSelectionMode)
         cameraController.setPreviewHealthDetectionEnabled(
             state.previewHealthDetectionMode == PreviewHealthDetectionMode.ON,
         )
@@ -160,6 +164,30 @@ class MainActivity : Activity(), CameraControllerCallback {
                 if (key == SettingKey.METERING_MODE && value == MeteringMode.ANGLE.name) {
                     showAngleCompatibilityWarning()
                 }
+            }
+
+            override fun onCombinationSelectionModeChanged(
+                mode: MeteringCombinationSelectionMode,
+            ) {
+                cameraController.setCombinationSelectionMode(mode)
+                if (mode == MeteringCombinationSelectionMode.MANUAL) {
+                    startManualCombinationSelection()
+                } else {
+                    cameraController.cancelManualCombinationSelection()
+                }
+            }
+
+            override fun onManualCombinationLooksNormal() {
+                acceptCurrentManualCombination()
+            }
+
+            override fun onManualCombinationLooksAbnormal() {
+                manualCombinationIndex += 1
+                showNextManualCombination()
+            }
+
+            override fun onManualCombinationSelectionCancelled() {
+                cancelManualCombinationSelection()
             }
 
             override fun onCalibrationOpened() {
@@ -395,8 +423,160 @@ class MainActivity : Activity(), CameraControllerCallback {
             state.transientMessage = null
             meterLayout.refresh()
         }
+        if (meterLayout.isCombinationSelectionOpen) {
+            cancelManualCombinationSelection()
+        }
         cameraController.stop()
         super.onPause()
+    }
+
+    private fun startManualCombinationSelection() {
+        if (state.measuring || calibrationCoordinator.isActive ||
+            vignettingCalibrationPending || zoneMeasurementPending
+        ) {
+            restoreSystemCombinationSelection()
+            Toast.makeText(
+                this,
+                localized("请等待当前操作完成", "Wait for the current operation"),
+                Toast.LENGTH_SHORT,
+            ).show()
+            return
+        }
+        val candidates = cameraController.manualCombinationCandidates()
+        if (candidates.isEmpty()) {
+            restoreSystemCombinationSelection()
+            Toast.makeText(
+                this,
+                localized(
+                    "相机尚未完成组合初筛，请稍后再试",
+                    "The camera has not finished combination preflight. Try again shortly",
+                ),
+                Toast.LENGTH_SHORT,
+            ).show()
+            return
+        }
+        manualCombinationGeneration += 1
+        manualCombinationCandidates = candidates
+        manualCombinationIndex = 0
+        showNextManualCombination()
+    }
+
+    private fun showNextManualCombination() {
+        val generation = manualCombinationGeneration
+        val candidate = manualCombinationCandidates.getOrNull(manualCombinationIndex)
+        if (candidate == null) {
+            meterLayout.closeCombinationSelection()
+            restoreSystemCombinationSelection()
+            cameraController.cancelManualCombinationSelection()
+            Toast.makeText(
+                this,
+                localized(
+                    "没有找到用户确认正常的组合，已恢复系统设置",
+                    "No combination was confirmed; System selection was restored",
+                ),
+                Toast.LENGTH_LONG,
+            ).show()
+            return
+        }
+        meterLayout.showCombinationSelection(
+            candidate = candidate,
+            index = manualCombinationIndex,
+            count = manualCombinationCandidates.size,
+            ready = false,
+            status = localized(
+                "正在按真实流程测试各路输出…",
+                "Testing every output stage with the real workflow…",
+            ),
+        )
+        val accepted = cameraController.probeManualCombination(candidate.plan.id) { result ->
+            if (generation != manualCombinationGeneration ||
+                !meterLayout.isCombinationSelectionOpen
+            ) {
+                return@probeManualCombination
+            }
+            if (result.isSuccess) {
+                meterLayout.updateCombinationProbeState(
+                    ready = true,
+                    status = localized(
+                        "流程测试完成，请检查绿屏、条纹、黑屏、闪烁或明显卡顿",
+                        "Workflow complete. Check for green, stripes, black, flicker, or stalls",
+                    ),
+                )
+            } else {
+                meterLayout.updateCombinationProbeState(
+                    ready = false,
+                    status = localized(
+                        "该组合无法完成会话流程，正在跳过",
+                        "This combination could not complete its session workflow; skipping",
+                    ),
+                )
+                mainHandler.postDelayed(
+                    {
+                        if (generation == manualCombinationGeneration) {
+                            manualCombinationIndex += 1
+                            showNextManualCombination()
+                        }
+                    },
+                    650L,
+                )
+            }
+        }
+        if (!accepted) {
+            meterLayout.updateCombinationProbeState(
+                ready = false,
+                status = localized("相机正忙，请稍后重试", "Camera is busy. Try again shortly"),
+            )
+            mainHandler.postDelayed(
+                {
+                    if (generation == manualCombinationGeneration &&
+                        meterLayout.isCombinationSelectionOpen
+                    ) {
+                        showNextManualCombination()
+                    }
+                },
+                500L,
+            )
+        }
+    }
+
+    private fun acceptCurrentManualCombination() {
+        val candidate = manualCombinationCandidates.getOrNull(manualCombinationIndex) ?: return
+        if (!cameraController.acceptManualCombination(candidate.plan.id)) {
+            manualCombinationIndex += 1
+            showNextManualCombination()
+            return
+        }
+        manualCombinationGeneration += 1
+        manualCombinationCandidates = emptyList()
+        manualCombinationIndex = -1
+        meterLayout.closeCombinationSelection()
+        meterLayout.refresh(frameChanged = true)
+        Toast.makeText(
+            this,
+            localized(
+                "已保存此摄像头的人工组合；系统升级后会要求重新筛选",
+                "Manual combination saved for this camera; an OS update will require a new check",
+            ),
+            Toast.LENGTH_LONG,
+        ).show()
+    }
+
+    private fun cancelManualCombinationSelection() {
+        manualCombinationGeneration += 1
+        manualCombinationCandidates = emptyList()
+        manualCombinationIndex = -1
+        meterLayout.closeCombinationSelection()
+        restoreSystemCombinationSelection()
+        cameraController.cancelManualCombinationSelection()
+    }
+
+    private fun restoreSystemCombinationSelection() {
+        state.updateSetting(
+            SettingKey.COMBINATION_SELECTION,
+            MeteringCombinationSelectionMode.SYSTEM.name,
+        )
+        cameraController.setCombinationSelectionMode(MeteringCombinationSelectionMode.SYSTEM)
+        meterLayout.refresh()
     }
 
     @SuppressLint("GestureBackNavigation")
@@ -407,6 +587,7 @@ class MainActivity : Activity(), CameraControllerCallback {
     }
 
     private fun handleBackNavigation(): Boolean {
+        if (meterLayout.closeCombinationSelectionFromBack()) return true
         if (meterLayout.closeInformationFromBack()) return true
         if (meterLayout.closeParameterHistoryFromBack()) return true
         if (meterLayout.closeCameraManagement()) return true
@@ -507,6 +688,29 @@ class MainActivity : Activity(), CameraControllerCallback {
         }
         meterLayout.refresh(frameChanged = meterLayout.isVignettingCalibrationOpen)
         updateExposurePreviewFromMeter()
+    }
+
+    override fun onCombinationSelectionFallbackToSystem() {
+        if (state.meteringCombinationSelectionMode ==
+            MeteringCombinationSelectionMode.SYSTEM
+        ) {
+            return
+        }
+        state.updateSetting(
+            SettingKey.COMBINATION_SELECTION,
+            MeteringCombinationSelectionMode.SYSTEM.name,
+        )
+        meterLayout.refresh()
+        if (activityResumed) {
+            Toast.makeText(
+                this,
+                localized(
+                    "当前摄像头没有有效的人工组合记录，已恢复系统设置",
+                    "This camera has no valid manual combination; System selection was restored",
+                ),
+                Toast.LENGTH_LONG,
+            ).show()
+        }
     }
 
     override fun onRawUnavailable() {

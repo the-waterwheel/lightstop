@@ -8,7 +8,17 @@ class SettingsCatalogTest {
     @Test
     fun meteringSectionOffersAccuracyStableAndCompatibilityModes() {
         val metering = SettingsCatalog.sections.single { it.key == SettingsSectionKey.METERING }
+        val selection = metering.items.single { it.key == SettingKey.COMBINATION_SELECTION }
         val engine = metering.items.single { it.key == SettingKey.METERING_PIPELINE }
+
+        assertEquals(
+            listOf(
+                MeteringCombinationSelectionMode.SYSTEM.name,
+                MeteringCombinationSelectionMode.MANUAL.name,
+            ),
+            selection.options.map { it.value },
+        )
+        assertEquals("系统测光模式", engine.label.resolve(MenuLanguage.CHINESE))
 
         assertEquals(
             listOf(
@@ -19,11 +29,15 @@ class SettingsCatalogTest {
             engine.options.map { it.value },
         )
         assertEquals(
-            listOf("高精度（推荐）", "稳定模式", "兼容模式"),
+            listOf("高精度（推荐）", "稳定模式（YUV）", "兼容模式（ISP）"),
             engine.options.map { it.label.resolve(MenuLanguage.CHINESE) },
         )
         assertEquals(
-            listOf("High accuracy (recommended)", "Stable", "Compatibility mode"),
+            listOf(
+                "High accuracy (recommended)",
+                "Stable (YUV)",
+                "Compatibility mode (ISP)",
+            ),
             engine.options.map { it.label.resolve(MenuLanguage.ENGLISH) },
         )
     }
@@ -82,13 +96,10 @@ class SettingsCatalogTest {
     }
 
     @Test
-    fun calibrationUsesRawInAccuracyAndStableButNeverCompatibilityMode() {
-        assertTrue(CalibrationStreamPolicy.includesRaw(MeteringPipelineMode.AUTO, true))
-        assertTrue(CalibrationStreamPolicy.includesRaw(MeteringPipelineMode.ISOLATED, true))
-        assertEquals(
-            false,
-            CalibrationStreamPolicy.includesRaw(MeteringPipelineMode.FAST, true),
-        )
+    fun calibrationKeepsAllHardwareSourcesIndependentOfRuntimeMode() {
+        MeteringPipelineMode.entries.forEach { mode ->
+            assertTrue(CalibrationStreamPolicy.includesRaw(mode, true))
+        }
         MeteringPipelineMode.entries.forEach { mode ->
             assertEquals(false, CalibrationStreamPolicy.includesRaw(mode, false))
         }

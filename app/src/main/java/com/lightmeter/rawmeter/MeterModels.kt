@@ -147,7 +147,7 @@ enum class MeteringPipelineMode {
     /** Uses RAW when possible and automatically falls back when a device rejects it. */
     AUTO,
 
-    /** Stable path: retains RAW while keeping it isolated from processed YUV requests. */
+    /** Stable path: resident preview + YUV metering, without creating a RAW output. */
     ISOLATED,
 
     /** Compatibility path: uses one ISP-processed sample and never opens a RAW output. */
@@ -164,10 +164,11 @@ enum class MeteringPipelineMode {
     }
 }
 
-/** User calibration exposes RAW only when both the selected mode and camera can provide it. */
+/** Calibration is source-complete; it may open isolated RAW even when runtime metering uses YUV. */
 internal object CalibrationStreamPolicy {
+    @Suppress("UNUSED_PARAMETER")
     fun includesRaw(mode: MeteringPipelineMode, rawSupported: Boolean): Boolean =
-        mode != MeteringPipelineMode.FAST && rawSupported
+        rawSupported
 }
 
 enum class MenuLanguage {
@@ -332,6 +333,12 @@ class MeterState(context: Context) {
     var meteringPipelineMode: MeteringPipelineMode = MeteringPipelineMode.fromStored(
         preferences.getString("metering_pipeline_mode", null),
     )
+
+    var meteringCombinationSelectionMode: MeteringCombinationSelectionMode =
+        preferences.enumValue(
+            "metering_combination_selection_mode",
+            MeteringCombinationSelectionMode.SYSTEM,
+        )
 
     var exposurePreviewMode: ExposurePreviewMode = preferences.enumValue(
         "exposure_preview_mode",
@@ -507,6 +514,11 @@ class MeterState(context: Context) {
                     meteringPipelineMode,
                 )
             }
+            SettingKey.COMBINATION_SELECTION ->
+                meteringCombinationSelectionMode = enumValue(
+                    value,
+                    meteringCombinationSelectionMode,
+                )
             SettingKey.EXPOSURE_PREVIEW ->
                 exposurePreviewMode = enumValue(value, exposurePreviewMode)
             SettingKey.PREVIEW_HEALTH_DETECTION ->
@@ -669,6 +681,7 @@ class MeterState(context: Context) {
         SettingKey.SHUTTER_STEP -> shutterStep.name
         SettingKey.EXPOSURE_COMPENSATION_STEP -> exposureCompensationStep.name
         SettingKey.METERING_MODE -> meteringMode.name
+        SettingKey.COMBINATION_SELECTION -> meteringCombinationSelectionMode.name
         SettingKey.METERING_PIPELINE -> meteringPipelineMode.name
         SettingKey.EXPOSURE_PREVIEW -> exposurePreviewMode.name
         SettingKey.PREVIEW_HEALTH_DETECTION -> previewHealthDetectionMode.name
@@ -771,6 +784,10 @@ class MeterState(context: Context) {
             .putString("exposure_compensation_step", exposureCompensationStep.name)
             .putString("metering_mode", meteringMode.name)
             .putString("metering_pipeline_mode", meteringPipelineMode.name)
+            .putString(
+                "metering_combination_selection_mode",
+                meteringCombinationSelectionMode.name,
+            )
             .putString("exposure_preview_mode", exposurePreviewMode.name)
             .putString("preview_health_detection_mode", previewHealthDetectionMode.name)
             .putInt(angleMeteringKey(selectedCameraId), angleMeteringDegrees)
