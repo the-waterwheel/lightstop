@@ -25,7 +25,9 @@
 
 ### RAW 与预览流测光
 
-- 设置提供三档：**高精度（推荐）**优先 RAW 并自动降级；**稳定模式**保留 RAW，同时隔离容易出问题的处理后图像请求；**兼容模式**不创建 RAW 资源，只读取一次 ISP 处理后的预览。旧版本保存的“兼容”设置会迁移到当前兼容模式，保持升级前行为。LEGACY 或 RAW CFA 布局不受支持的设备按不支持 RAW 处理；固定物理镜头不因逻辑相机声明 APPROXIMATE 同步而被禁止，API 29+ 自动逻辑路由还会逐帧记录实际 active physical ID。
+- 设置按每个摄像头的工作流矩阵提供三档：**高精度（推荐）**按精度和流压力依次尝试 RAW 组合，全部失败后自动转入稳定 YUV、再转入兼容 ISP；**稳定模式**使用预览 + YUV，不使用 RAW；**兼容模式**只使用屏幕显示的 ISP 预览。旧版本保存的“兼容”设置会迁移到当前兼容模式，保持升级前行为。LEGACY 或 RAW CFA 布局不受支持的设备按不支持 RAW 处理；固定物理镜头不因逻辑相机声明 APPROXIMATE 同步而被禁止，API 29+ 自动逻辑路由还会逐帧记录实际 active physical ID。
+- “测光组合选择”可保持“系统设置”，由程序自动完成矩阵初筛、真实会话配置和健康检测；也可选择“手动选择”，按精度从高到低用真实工作流逐个显示预览，由用户确认是否存在闪烁、卡顿、黑屏、绿屏或条纹。人工确认结果只对同一相机路由和同一系统版本有效。
+- Android 强制流组合表和输出数量上限只用于保守初筛；未被表格保证的组合仍会进入真实 Camera2 配置。部分 vivo/MediaTek HAL 会在查询时返回不支持，但随后能成功创建同一会话，因此查询的否定结果只作提示，真实配置回调才是最终判据。
 
 - RAW 测光按实际捕获 ISO 调整采样量：ISO 低于 500 使用 1 张，ISO 500–1199 使用 2 张，ISO 1200 及以上使用 3 张。这样优先减少等待和手持晃动带来的误差。
 - 同一时刻只允许 1 张全尺寸 RAW 在途；当前图像关闭后才提交下一张，以限制原生相机缓冲峰值。
@@ -35,9 +37,9 @@
 - EV 以 18% 线性亮度为参考，并叠加设备/镜头基线和用户校准偏移。
 - 支持点测光和中央重点测光：点测光读取中心小区域；中央重点按小区域 70%、较大中心区域 30% 融合。
 - 预览流测光不做多帧降噪：优先读取 1 个 ISP 处理后的有效帧；最多尝试 3 个 YUV 帧且总等待不超过 250 ms，随后尝试一帧严格时间戳配对的显示预览。
-- 普通预览不再持续向 YUV 输出；只有 Zone 跟踪或一次快速采样需要时才临时加入。RAW 和暗角捕获期间会暂停重复预览/YUV 请求，完成或失败后统一恢复。
+- 高精度 Zone 跟踪常驻预览 + YUV，测光瞬间切到仅 RAW 会话采集 1–3 帧，随后恢复预览 + YUV。对于无法常驻预览 + RAW 的受限 HAL，另一高精度组合也可在普通测光时使用同样的瞬时仅 RAW 窗口。
 - 手动曝光预览优先保持流畅快门：通常不慢于 1/30s，低光最多放慢到 1/15s，并优先提高 ISO。正式测光会先恢复中性 AE，绝不把曝光预览帧误当作正式读数。
-- 完整会话失败时按“RAW + YUV → 仅 RAW → YUV 兼容 → 仅预览”逐级减少输出；物理镜头仍不可用时可退回逻辑主摄。
+- 相机工作流搜索与恢复会从 RAW 组合逐步降低为稳定 YUV、兼容 ISP；物理镜头仍不可用时可退回逻辑主摄。
 - 预览健康检测会有限识别持续的周期性绿色/黑白条纹；安全预览恢复后还必须连续通过 3 次取样才被接受。真实绿色或黑暗场景只会被标为可疑，不会自动判定相机故障。
 - 前摄取景作水平镜像；RAW 触点测光和历史 RAW 网格查询会先撤销该镜像，确保画面所见与传感器取样位置一致。
 
@@ -73,7 +75,7 @@
 - 校准偏移按“设备厂商 + 型号 + camera ID”独立保存，不影响其他镜头。
 - 每个镜头保留最近 3 次历史，可重置当前修正并从历史恢复。
 - 用户修正限制在 ±8 EV。
-- 校准页面分别显示“RAW 传感器”“YUV 兼容流”“ISP 显示预览”，并将旧版“共享预览修正”明确标为兼容回退值。高精度按 RAW → YUV → ISP 顺序、稳定模式按 RAW → ISP 顺序、兼容模式按 YUV → ISP 顺序校准；各步骤顺序执行，绝不并发采集，并分别使用最小安全 Camera2 会话，结束后恢复用户原本的会话。一次校准会固定用户选择的相机路由和修正存储身份；逻辑相机在会话重开时短暂不报告实际物理镜头不会中止校准，但若先后明确报告两个不同的物理镜头仍会安全中止。不支持的来源不会显示为虚假的校准成功；尚未重新校准的 YUV/ISP 可暂时使用旧版共享值，避免升级后读数突变。
+- 校准页面分别显示“RAW 传感器”“YUV 兼容流”“ISP 显示预览”，并将旧版“共享预览修正”明确标为兼容回退值。一次校准不受当前测光模式限制，会完成设备实际支持的全部来源：三者都存在时依次 RAW → YUV → ISP，否则校准可用子集；各步骤顺序执行，绝不并发采集，并分别使用最小安全 Camera2 会话，结束后恢复用户原本的会话。一次校准会固定用户选择的相机路由和修正存储身份；逻辑相机在会话重开时短暂不报告实际物理镜头不会中止校准，但若先后明确报告两个不同的物理镜头仍会安全中止。不支持的来源不会显示为虚假的校准成功；尚未重新校准的 YUV/ISP 可暂时使用旧版共享值，避免升级后读数突变。
 - 切换到兼容模式时会显示中英文提示，说明该模式不使用 RAW；可选择“确定”或用“不再提示”永久关闭。
 - Vivo V2405A 的 camera `0` 内置 `+1.074 EV` 基线；其他设备和镜头默认基线为 0，应使用灰卡、标准测光表或参考相机分别校准。
 
@@ -99,6 +101,7 @@
 - 从主界面的 `zone` 把手滑入：进入 Zone System。
 - Zone“按键与触屏”模式下可直接点击取景画面，也可使用标点按钮；“仅按键”模式下使用标点按钮。
 - 点击齿轮：进入测光、通用、镜头管理和校准设置。
+- 在“测光组合选择”中保留“系统设置”即可自动完成矩阵与健康检测；选择“手动选择”可自行检查候选组合。若提示尚未完成初筛，请等待相机就绪后再次选择“手动选择”。
 - 点击“小工具”按钮并选择“景深计算”：用当前画幅、取景视角和测光光圈作为默认值；可选择或自定义画幅与弥散圆，并用两个拨盘调整光圈和对焦距离。
 - 当前小工具入口依次为景深计算、宽容度、参数记录、倒易率计算和色温估算；闪光指数与曝光纠正保留内部扩展标识，但在功能完整前不显示入口。
 
@@ -118,6 +121,9 @@ app/src/main/java/com/lightmeter/rawmeter
 ├─ TimestampedResultPairer.kt       图像/结果配对与所有权
 ├─ CameraRecoveryPolicy.kt          会话档位、错误分类和恢复决策
 ├─ CameraRecoveryStateMachine.kt    重试历史与路线降级状态
+├─ CameraCombinationPolicy.kt       工作流分类、排序与降级
+├─ CameraCombinationMatrix.kt       强制矩阵与输出数量初筛
+├─ CameraCombinationSelectionStore.kt 镜头/系统版本人工结果缓存
 ├─ CompatibleMeteringPolicy.kt      单帧预览流测光的尝试与超时上限
 ├─ CameraCatalog.kt                 逻辑/物理镜头发现与选择策略
 ├─ CameraStreamSelector.kt          预览、YUV 跟踪流和帧率选择
@@ -133,8 +139,11 @@ app/src/main/java/com/lightmeter/rawmeter
 ├─ InstrumentView.kt                普通仪表绘制、动画与手势
 ├─ SettingsCatalog.kt               设置定义
 ├─ SettingsView.kt                  设置界面
+├─ CameraCombinationSelectionView.kt 全屏人工预览检查
 ├─ CameraManagementView.kt          镜头选择、备注和隐藏
 ├─ CalibrationMath.kt               校准参考值换算
+├─ MeteringCalibrationPlan.kt       全来源校准计划
+├─ MeteringCalibrationCoordinator.kt 顺序校准状态机
 ├─ CameraCalibrationStore.kt        镜头级测光校准与历史
 ├─ CalibrationView.kt               测光校准界面
 ├─ VignettingCalibrationStore.kt    二维暗角增益图与历史
@@ -226,6 +235,37 @@ app/build/outputs/bundle/release/app-release.aab
 
 仓库不会保存签名密钥或密码。APK 安装和对外分发前必须使用 Android Studio 的 `Generate Signed Bundle / APK`，或 Android SDK 的 `zipalign` 与 `apksigner` 完成签名。密钥应离线备份，禁止提交 `*.jks`、`*.keystore`、`keystore.properties` 或任何密码。应用商店优先发布 AAB；GitHub Release 应上传签名 APK、SHA-256、`LICENSE`、`NOTICE` 和 `THIRD_PARTY_NOTICES.md`，不要把生成的 release 文件提交到源码仓库。
 
+Windows 命令行发布时，先构建未签名 APK，再对齐并签名。下面故意不传密码参数，让 `apksigner` 交互式询问，避免密码进入 PowerShell 历史：
+
+```powershell
+$buildTools = (Get-ChildItem "$env:LOCALAPPDATA\Android\Sdk\build-tools" -Directory |
+  Sort-Object Name -Descending | Select-Object -First 1).FullName
+New-Item -ItemType Directory -Force dist | Out-Null
+& "$buildTools\zipalign.exe" -f -p 4 `
+  app\build\outputs\apk\release\app-release-unsigned.apk `
+  dist\lightstop-v0.2.2-aligned.apk
+& "$buildTools\apksigner.bat" sign `
+  --ks C:\secure\lightstop-release.jks `
+  --ks-key-alias lightstop `
+  --out dist\lightstop-v0.2.2-universal.apk `
+  dist\lightstop-v0.2.2-aligned.apk
+& "$buildTools\apksigner.bat" verify --verbose --print-certs `
+  dist\lightstop-v0.2.2-universal.apk
+Get-FileHash dist\lightstop-v0.2.2-universal.apk -Algorithm SHA256 |
+  Format-List Algorithm, Hash, Path
+```
+
+第一次公开发布后绝对不能丢失或更换签名密钥，后续 APK 更新必须使用同一个密钥。请把密钥、别名与密码分别保存在两个安全位置。发布前先提交源码，建立带说明的标签并推送提交与标签：
+
+```powershell
+git status
+git tag -a v0.2.2 -m "lightstop 0.2.2"
+git push origin HEAD:main
+git push origin v0.2.2
+```
+
+然后在 GitHub 从 `v0.2.2` 创建 Release，保留 GitHub 自动生成的源码压缩包，并上传签名通用 APK、写有 SHA-256 的文本文件、`LICENSE`、`NOTICE` 与 `THIRD_PARTY_NOTICES.md`。上传后再下载一次 APK 并复验签名和哈希；GitHub Release 是可追溯的分发记录，签名 APK 与妥善保护的密钥则保证后续更新连续性。
+
 ### 精简 OpenCV
 
 应用固定使用本地版本化 AAR `app/libs/opencv-slim-4.12.0-r2.aar`，不再在应用构建期间从 Maven 动态解析 OpenCV。AAR 由 OpenCV `4.12.0` 官方源码构建，保留应用和官方 Android Java 胶水层所需模块，并包含 `arm64-v8a`、`armeabi-v7a`、`x86_64`；本修订关闭了应用不会调用的 IPP、TBB、KleidiCV、ITT 以及 OpenJPEG、TIFF、WebP、OpenEXR、AVIF、Jasper 后端。完整的版本矩阵、源码校验值、模块说明、Windows 启动器、构建命令和升级规则见 [精简 OpenCV 构建说明](tools/opencv-slim/README.md)。
@@ -238,25 +278,24 @@ app/build/outputs/bundle/release/app-release.aab
 
 ## Release 体积
 
-当前 release 已启用 R8 和资源收缩，并在一个通用 APK 中包含 `arm64-v8a`、`armeabi-v7a`、`x86_64` 三个 ABI。使用 r2 精简 OpenCV 后，实测 unsigned release 通用 APK 为 `41,759,676` bytes（约 39.82 MiB），release AAB 为 `18,206,882` bytes（约 17.36 MiB）。APK 内容大致为：
+当前 release 已启用 R8 和资源收缩，并在一个通用 APK 中包含 `arm64-v8a`、`armeabi-v7a`、`x86_64` 三个 ABI。0.2.2 使用 r2 精简 OpenCV 后，实测 unsigned release 通用 APK 为 `42,102,352` bytes（约 40.15 MiB），release AAB 为 `18,660,835` bytes（约 17.80 MiB）。APK 内容按 ZIP 压缩后大小大致为：
 
 | 内容 | 大小 |
 |---|---:|
-| x86_64 原生库 | 15.68 MiB |
-| arm64-v8a 原生库 | 11.32 MiB |
-| armeabi-v7a 原生库 | 7.72 MiB |
-| libc++_shared（3 份） | 3.25 MiB |
-| DEX | 0.71 MiB |
-| 第三方许可证资源（APK 压缩后） | 约 0.13 MiB |
+| x86_64 原生库（含 libc++） | 17.12 MiB |
+| arm64-v8a 原生库（含 libc++） | 12.81 MiB |
+| armeabi-v7a 原生库（含 libc++） | 8.71 MiB |
+| DEX | 1.07 MiB |
+| 第三方许可证资源 | 约 0.22 MiB |
 | Android 资源 | 约 0.11 MiB |
 
 与 r1 精简构建（通用 APK 约 72.53 MiB）及原先约 97.5 MiB 的完整 Maven OpenCV 通用 APK 相比，r2 已显著减少原生库占用。原生库仍占绝大多数体积，R8 和资源收缩主要压缩 Java/Kotlin DEX 与 Android 资源。当前水平与可进一步达到的目标：
 
-- 通用三 ABI APK，R8 + 资源收缩：实测约 39.82 MiB。
+- 通用三 ABI APK，R8 + 资源收缩：实测约 40.15 MiB。
 - 单独 arm64-v8a APK：约 14–15 MiB。
 - 单独 armeabi-v7a APK：约 11–12 MiB。
 - 单独 x86_64 APK：约 16–17 MiB。
-- Android App Bundle：当前上传包约 17.36 MiB；商店按 ABI 拆分后，每台设备只接收匹配的原生库，下载量约为上述单 ABI APK 大小。
+- Android App Bundle：当前上传包约 17.80 MiB；商店按 ABI 拆分后，每台设备只接收匹配的原生库，下载量约为上述单 ABI APK 大小。
 
 ABI 是 CPU 架构标识而不是可安装文件；可安装的只有 APK。通用 APK 任何设备都能装但体积最大，分 ABI APK 体积约为三分之一但必须选对架构，AAB 不能直接安装、仅供商店按设备生成对应的分发 APK。
 
@@ -295,3 +334,4 @@ ABI 是 CPU 架构标识而不是可安装文件；可安装的只有 APK。通�
 - 当前源码已通过 `:app:testDebugUnitTest`、`:app:assembleDebug`、开启 R8/资源收缩的 `:app:assembleRelease` 和 `:app:bundleRelease`。
 - 自动化单元测试覆盖相机会话恢复、严格时间戳配对、RAW CFA 可用性、预览健康分析、参数记录恢复、前后摄旋转与镜像、单帧兼容测光限制、左右手布局下 Zone/Normal 模式入口拖动方向、OpenCV 延迟创建、三缓冲复用、引用计数、带 stride 的 Y 平面复制、显示方向坐标稳定性、横竖布局点位映射及其往返关系、65:24 通用画幅名称、曝光补偿档位换算、左右手拨盘方向和刻度符号，以及“关于”入口的中英文设置目录约束；Camera2、传感器和设备相关行为仍需真机验证。
 - Camera2 和 RAW 行为存在明显厂商差异，正式发布前仍需覆盖不同品牌、RAW/非 RAW、逻辑/物理多摄和横竖屏组合的实机矩阵。
+- 当前候选版本已在 Android 16 的 vivo V2405A 上验证：成功枚举自动逻辑相机、超广角、主摄、长焦与前摄，瞬时仅 RAW 工作流完成后能恢复常驻 YUV 会话。这只是一个兼容性数据点，不能替代更多厂商和 API 版本的实机矩阵。

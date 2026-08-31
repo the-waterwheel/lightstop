@@ -38,9 +38,20 @@ code.
   unsupported RAW CFA devices are treated as non-RAW. A fixed physical lens is
   attempted independently of a logical camera's `APPROXIMATE` sync declaration;
   API 29+ logical routes also track the active physical lens reported per frame.
-- Three bilingual metering modes: **High accuracy (recommended)**, **Stable**
-  (RAW retained with processed-stream requests isolated), and **Compatibility
-  mode** (one ISP-processed sample and no RAW resources).
+- Three bilingual metering modes selected through a per-camera workflow matrix:
+  **High accuracy (recommended)** tries RAW workflows from highest precision to
+  lowest stream pressure, then falls back to Stable YUV and Compatibility ISP;
+  **Stable** uses preview + YUV without RAW; **Compatibility mode** uses only
+  the displayed ISP preview.
+- `Metering combination selection` can use the automatic system probe or a
+  full-screen manual check. The manual path tries the same prefiltered workflows
+  in precision order and asks the user to confirm that each real preview flow is
+  free from flicker, stalls, black/green frames, and stripes. A confirmed result
+  is scoped to the same camera route and OS build.
+- Stream-combination tables and output-count limits are used only for conservative
+  prefiltering. Unknown combinations still reach a real Camera2 configuration;
+  a vendor HAL's negative preflight answer is advisory because some vivo/MediaTek
+  builds reject the query while successfully creating the same session.
 - Formal RAW, YUV, DNG, colour-temperature, and vignetting operations accept
   only exact `Image`/`CaptureResult` sensor-timestamp pairs. Displayed-preview
   fallback verifies a matching `SurfaceTexture` timestamp before and after its
@@ -59,18 +70,22 @@ code.
   1/30 s, no slower than 1/15 s in low light) and raises ISO first. Metering
   restores neutral AE before sampling so an exposure-preview frame is never
   mistaken for a formal reading.
-- YUV is targeted only while Zone tracking or a compatible sample needs it;
-  repeating preview requests pause during RAW capture and resume afterwards.
-- Camera-session recovery from full RAW + tracking to RAW-only, compatible
-  YUV, preview-only, and finally a logical-camera route when appropriate.
+- High-accuracy Zone tracking keeps preview + YUV resident, briefly switches to
+  an isolated RAW-only session for the 1–3 metering frames, and then restores
+  preview + YUV. A second high-accuracy workflow can use the same isolated RAW
+  window for ordinary metering on HALs that cannot keep preview + RAW resident.
+- Camera-session recovery and workflow search reduce stream pressure from RAW
+  workflows to Stable YUV, Compatibility ISP, and finally a logical-camera route
+  when appropriate.
 - Bounded preview-health detection for repeated periodic green/black-white
   stripe failures. A recovered safe preview must pass three further samples;
   this does not classify real green or dark scenes as camera failures.
 - Spot and center-weighted metering.
 - Per-camera calibration separately displays **RAW sensor**, **YUV compatible stream**, and
-  **ISP display preview** corrections. High accuracy runs RAW → YUV → ISP; Stable runs
-  RAW → ISP; Compatibility runs YUV → ISP. Stages are sequential, never concurrent, and the
-  labelled legacy shared correction is only a fallback while a processed source awaits recalibration.
+  **ISP display preview** corrections. One run calibrates every source the hardware can
+  provide, regardless of the currently selected metering mode: RAW → YUV → ISP when all
+  three exist, or the supported subset otherwise. Stages are sequential, never concurrent,
+  and the labelled legacy shared correction is only a fallback while a processed source awaits recalibration.
   Each stage uses its smallest safe Camera2 session and restores the user's normal session after it.
   The selected camera route and calibration storage identity are pinned for the whole run. A logical
   camera may temporarily omit its active physical-camera ID while a new session opens; that transient
@@ -146,6 +161,10 @@ code.
 - Drag the `zone` handle into the page to enter Zone System mode.
 - Tap the gear for metering, general, camera-management, and calibration
   settings; Zone mode has the same gear at its viewfinder's bottom-left corner.
+- In `Metering combination selection`, keep `System` for automatic matrix and
+  health probing, or choose `Manual` to inspect candidate workflows yourself.
+  If no candidate has finished preflight yet, wait for the camera to become
+  ready and select Manual again.
 - Tap Tools and choose Depth of field to calculate animated near/focus/far
   limits from the current frame, field of view, and metering aperture; frame
   size and circle of confusion can also be selected or entered manually.
@@ -173,6 +192,9 @@ app/src/main/java/com/lightmeter/rawmeter
 ├─ TimestampedResultPairer.kt        image/result ownership and pairing
 ├─ CameraRecoveryPolicy.kt           session profiles and recovery decisions
 ├─ CameraRecoveryStateMachine.kt     retry history and route downgrade state
+├─ CameraCombinationPolicy.kt        workflow classes, ordering, and fallback
+├─ CameraCombinationMatrix.kt        mandatory-matrix/output-count prefilter
+├─ CameraCombinationSelectionStore.kt per-camera/OS accepted-workflow cache
 ├─ CompatibleMeteringPolicy.kt       single-frame compatibility limits
 ├─ CameraCatalog.kt                  logical/physical camera discovery
 ├─ CameraStreamSelector.kt           preview, tracking stream, and FPS choice
@@ -191,6 +213,9 @@ app/src/main/java/com/lightmeter/rawmeter
 ├─ InstrumentView.kt                 normal meter drawing and gestures
 ├─ SettingsCatalog.kt                settings definitions
 ├─ SettingsView.kt                   settings interface
+├─ CameraCombinationSelectionView.kt full-screen human preview check
+├─ MeteringCalibrationPlan.kt        source-complete calibration plan
+├─ MeteringCalibrationCoordinator.kt sequential calibration state machine
 ├─ CameraCalibrationStore.kt         per-camera calibration history
 ├─ VignettingCalibrationStore.kt     vignetting map persistence
 ├─ ZoneCoordinateMapper.kt           UI/preview/OpenCV coordinate mapping
@@ -253,10 +278,10 @@ app/build/outputs/apk/release/app-release-unsigned.apk
 app/build/outputs/bundle/release/app-release.aab
 ```
 
-For version 0.2.1 with the slimmed r2 OpenCV runtime, the verified unsigned
-universal APK is 41,759,676 bytes (39.82 MiB), and the release AAB is
-18,206,882 bytes (17.36 MiB). Native libraries dominate the universal APK;
-R8 reduces the DEX payload to about 0.71 MiB. The same build with the
+For version 0.2.2 with the slimmed r2 OpenCV runtime, the verified unsigned
+universal APK is 42,102,352 bytes (40.15 MiB), and the release AAB is
+18,660,835 bytes (17.80 MiB). Native libraries dominate the universal APK;
+R8 reduces the compressed DEX payload to about 1.07 MiB. The same build with the
 previous r1 OpenCV runtime was 76,056,239 bytes (72.53 MiB) for the universal
 APK and 32,959,091 bytes (31.43 MiB) for the AAB.
 
@@ -266,6 +291,46 @@ APK must be signed before installation or distribution. Android Studio's
 performed with Android SDK `zipalign` and `apksigner`. Keep the release
 keystore offline and backed up. Never commit `*.jks`, `*.keystore`, signing
 passwords, or `keystore.properties`.
+
+For a command-line GitHub release on Windows, first build the unsigned artifact,
+then align and sign it. Omitting password arguments makes `apksigner` prompt
+interactively instead of storing a secret in shell history:
+
+```powershell
+$buildTools = (Get-ChildItem "$env:LOCALAPPDATA\Android\Sdk\build-tools" -Directory |
+  Sort-Object Name -Descending | Select-Object -First 1).FullName
+New-Item -ItemType Directory -Force dist | Out-Null
+& "$buildTools\zipalign.exe" -f -p 4 `
+  app\build\outputs\apk\release\app-release-unsigned.apk `
+  dist\lightstop-v0.2.2-aligned.apk
+& "$buildTools\apksigner.bat" sign `
+  --ks C:\secure\lightstop-release.jks `
+  --ks-key-alias lightstop `
+  --out dist\lightstop-v0.2.2-universal.apk `
+  dist\lightstop-v0.2.2-aligned.apk
+& "$buildTools\apksigner.bat" verify --verbose --print-certs `
+  dist\lightstop-v0.2.2-universal.apk
+Get-FileHash dist\lightstop-v0.2.2-universal.apk -Algorithm SHA256 |
+  Format-List Algorithm, Hash, Path
+```
+
+Do not delete or replace the keystore after the first public release: future
+APK updates must be signed by the same key. Back up the keystore and its alias
+and passwords in separate secure locations. Before publishing, commit the
+source, create an annotated tag, and push both commit and tag:
+
+```powershell
+git status
+git tag -a v0.2.2 -m "lightstop 0.2.2"
+git push origin HEAD:main
+git push origin v0.2.2
+```
+
+On GitHub, create a Release from `v0.2.2`, retain the generated source archives,
+and upload the signed universal APK, a text file containing its SHA-256, plus
+`LICENSE`, `NOTICE`, and `THIRD_PARTY_NOTICES.md`. Verify the uploaded APK after
+downloading it once; a GitHub Release is a distribution record, while the
+signed APK and the protected signing key are the continuity record for updates.
 
 Use an Android App Bundle for an app store so the store can deliver only the
 device's ABI. An AAB is a publishing format and cannot be installed directly;
@@ -335,6 +400,12 @@ physical devices. Calibration is intentionally per physical camera identity beca
 cameras and vendor pipelines differ. RAW, paired YUV, and displayed ISP-preview corrections
 are separate. A legacy shared preview correction remains only as a labelled fallback until the
 processed sources have been recalibrated.
+
+The current candidate was exercised on a vivo V2405A running Android 16. Its
+logical automatic camera, ultrawide, main, telephoto, and front routes were
+enumerated; an isolated RAW workflow completed and restored the resident YUV
+session. This is one compatibility data point, not a substitute for a wider
+manufacturer/API-level device matrix.
 
 ## License
 

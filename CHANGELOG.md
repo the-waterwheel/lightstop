@@ -1,6 +1,31 @@
 # Changelog
 
-## Unreleased
+All notable user-facing changes are recorded here. The project follows
+[Semantic Versioning](https://semver.org/) for public releases.
+
+## 0.2.2 - 2026-08-31
+
+- Added per-camera Camera2 workflow-matrix search with ordered RAW split,
+  fully isolated RAW, full multi-stream, Stable YUV, and Compatibility ISP
+  candidates. Unknown mandatory-matrix results still receive a real session
+  test; vendor preflight `false` results are advisory.
+- Added System and Manual metering-combination selection. Manual selection runs
+  every required session stage and lets the user judge flicker, stalls,
+  black/green frames, and stripes; accepted results expire after an OS build
+  or camera-route change.
+- Defined Stable as preview + YUV without RAW and Compatibility as displayed
+  ISP preview without RAW/YUV. High accuracy now falls back through those
+  classes only after all RAW workflows fail.
+- Added transient isolated RAW capture for Zone and constrained ordinary
+  metering, restoring the resident preview + YUV workflow afterward.
+- Made one calibration run cover every hardware-supported RAW, YUV, and ISP
+  source independently of the selected user mode.
+- Relaxed automatic preview-health classification so green, near-black, and
+  frozen scenes remain suspicious rather than immediate failures; added manual
+  safe-preview selection and a setting to disable automatic health detection.
+- Fixed a vivo/MediaTek interoperability failure where
+  `isSessionConfigurationSupported()` reported false after isolated RAW even
+  though recreating the same processed session succeeded.
 
 - Rebuilt processed-stream luminance around the Camera2 output model: YUV
   metering now reconstructs sRGB from all Y/U/V planes, honors reported
@@ -18,11 +43,6 @@
 - Added bounded preview stripe recovery with safe-preview confirmation, plus
   front-camera mirror-aware RAW coordinate mapping and crash-recoverable
   parameter-record commits.
-
-All notable user-facing changes are recorded here. The project follows
-[Semantic Versioning](https://semver.org/) for public releases.
-
-## Unreleased
 
 - Added the Tools panel framework: a button beside Settings opens a
   scrollable three-column tools grid (depth of field, latitude, parameter
@@ -42,12 +62,12 @@ All notable user-facing changes are recorded here. The project follows
 - Anchored the focal-length readout to the viewfinder's bottom-right corner
   in every mode and show only the selected frame format's equivalent focal
   length.
-- Paired camera images and results exact-first with a bounded half-frame-period
-  tolerance, tolerating the small buffer/metadata timestamp offsets some
-  vendor HALs report.
-- Prefer the logical-camera route when a logical camera reports APPROXIMATE
-  physical synchronization, avoiding timestamp-domain mismatch on physical
-  routes.
+- Required exact sensor-timestamp image/result pairing for formal metering and
+  recording; unmatched frames are rejected instead of borrowing adjacent
+  exposure metadata.
+- Attempt fixed physical-camera routes even when the logical camera reports
+  APPROXIMATE synchronization, because that declaration describes concurrent
+  sensors rather than prohibiting one physical output.
 - Treat RAW as unavailable on LEGACY hardware-level devices even when they
   advertise RAW output.
 - Use the advertised RAW minimum frame duration for RAW capture requests
@@ -68,28 +88,29 @@ All notable user-facing changes are recorded here. The project follows
 - Added recoverable camera-permission denial handling and a system-settings route.
 - Made OpenCV initialization fail safely into fixed Zone markers before any native
   tracker object is created.
-- Added Camera2 session-combination preflight with the existing RAW-first fallback
-  chain, while continuing to prefer every camera that advertises a usable RAW stream.
+- Added conservative Camera2 mandatory-stream/output-count prefiltering and
+  real workflow configuration probes while continuing to prefer every camera
+  that advertises a usable RAW stream.
 - Updated the app build to API 36.1 / target 36 while retaining min API 28, and
   updated native build inputs for 16 KB page-size compatibility.
 - Renamed the user modes to **High accuracy (recommended)**, **Stable**, and
   **Compatibility mode**, without changing persisted enum values or old preference
   migration.
-- Renamed calibration results to **RAW stream** and **Preview stream**. Stable
-  mode now calibrates RAW then preview sequentially; Compatibility mode skips RAW,
-  and non-RAW cameras hide the RAW calibration row.
+- Split calibration results into **RAW sensor**, **YUV compatible stream**, and
+  **ISP display preview**; every hardware-supported source is calibrated
+  sequentially regardless of the current metering mode.
 - Added a bilingual Compatibility-mode RAW notice with **OK** and a persistent
   **Don't show again** action.
 - Reduced RAW sampling to one frame below ISO 500, two below ISO 1200, and three
   at ISO 1200 or above to reduce measurement delay and motion error.
 - Added 6×12, 6×17, 4×5, 5×7, and 8×10 formats, selected-format focal-length
   equivalence, and wrapped format menus that keep every option readable.
-- Added sequential RAW and preview-stream calibration for RAW-capable cameras,
-  while cameras without RAW skip and hide RAW calibration.
+- Added source-complete sequential calibration; cameras without RAW skip only
+  the RAW stage while retaining independent YUV and ISP corrections.
 - Added bilingual compatibility mode settings and camera-error recovery across
   full, RAW-only, YUV-compatible, preview-only, and logical-camera routes.
-- Reworked metering into three user modes: recommended high accuracy, stable
-  stream isolation, and RAW-free compatibility metering. Existing compatible-mode
+- Reworked metering into three user modes: RAW-first high accuracy, RAW-free
+  Stable YUV, and minimum-output Compatibility ISP. Existing compatible-mode
   preferences migrate to the current Compatibility mode.
 - Fixed vignetting-calibration geometry refresh so its camera preview, action
   button, and correction history remain aligned and visible after camera/session
@@ -99,9 +120,9 @@ All notable user-facing changes are recorded here. The project follows
   when Automatic camera and Main camera are backed by the same lens.
 - Limited explicit preview requests to safe advertised ranges at or below
   30 fps, with automatic 24 fps and system-default fallback when rejected.
-- Stopped targeting YUV continuously: it is now attached only for Zone tracking
-  or one compatible sample, and repeating preview/YUV requests pause while RAW
-  or vignetting captures are in progress.
+- Made resident outputs workflow-specific: Stable and high-accuracy Zone paths
+  keep YUV, constrained RAW paths use a short isolated capture, and repeating
+  requests pause while resident RAW or vignetting captures are in progress.
 - Added an automatic logical-camera entry as the default on multi-camera phones;
   fixed physical lenses remain selectable and monochrome/NIR sensors are hidden.
 - Changed compatible metering to one ISP-processed frame, with a maximum

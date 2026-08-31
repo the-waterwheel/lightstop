@@ -18,28 +18,41 @@ function. Profiles are capability-driven rather than manufacturer-driven.
 | `RAW_ONLY` | yes | yes | no | retain high-accuracy metering when the combined stream set fails |
 | `COMPATIBLE` | yes | no | yes | ISP-processed compatible metering without RAW resources |
 | `PREVIEW_ONLY` | yes | no | no | lowest common Camera2 path |
+| `RAW_ISOLATED` | no | yes | no | short 1–3-frame RAW window while the last preview buffer remains visible |
 
-The user-facing modes map to these profiles as follows:
+The user-facing modes search complete workflows rather than mapping one-to-one
+to a resident profile:
 
-- **High accuracy (recommended):** starts at normalized `FULL`, uses RAW when
-  possible, and automatically follows the full downgrade chain.
-- **Stable:** starts at `RAW_ONLY` when RAW exists and otherwise at
-  `PREVIEW_ONLY`. It never configures RAW and YUV in the same session.
-- **Compatibility mode:** starts at `COMPATIBLE` and never creates a RAW reader.
-  A preference stored as the old `COMPATIBLE` user mode migrates to this mode.
+- **High accuracy (recommended):** searches RAW workflows first: resident
+  preview + RAW with preview + YUV for Zone and an isolated Zone RAW capture;
+  resident preview + YUV with isolated RAW for all measurements; then `FULL`
+  as a lower-stability option. If none succeeds, it searches Stable and then
+  Compatibility workflows.
+- **Stable:** uses resident preview + YUV and never creates a RAW reader.
+- **Compatibility mode:** uses only the displayed preview (`PREVIEW_ONLY`) and
+  never creates RAW or YUV readers. A preference stored as the old
+  `COMPATIBLE` user mode migrates to this mode.
 
-Session creation failure removes optional streams without crossing the selected
-mode's isolation boundary. The complete high-accuracy chain is:
+Candidate order is therefore:
 
 ```text
-FULL -> RAW_ONLY -> COMPATIBLE -> PREVIEW_ONLY
+RAW split -> RAW fully isolated -> FULL -> Stable YUV -> Compatibility ISP
 ```
 
-Before creating a session, Android 10 / API 29+ is asked whether the complete
-output configuration is supported. A definitive rejection enters this same
-downgrade chain immediately. Android 9, and HALs that cannot implement the
-query, attempt real session creation, which remains the final compatibility
-test.
+Advertised formats, output-count limits, and Android 10 / API 29+ mandatory
+stream-combination tables conservatively reject impossible candidates. A table
+omission remains `UNKNOWN`, not unsupported, and reaches a real session test.
+`isSessionConfigurationSupported()` is also advisory: tested vivo/MediaTek
+software has returned `false` while successfully recreating the same processed
+session after isolated RAW. The actual asynchronous configuration callback is
+the final compatibility result on every API level.
+
+`Metering combination selection` offers two selectors over this same candidate
+set. `System` performs real configure/workflow probes and caches a successful
+plan per camera route, user mode, and OS build. `Manual` runs every required
+stage, then shows the real preview and asks the user to mark flicker, stalls,
+black/green frames, or stripes as normal or abnormal. A manual acceptance is
+also scoped to the camera route and OS build.
 
 Runtime camera errors are classified before retry or downgrade. A fixed-lens
 selection advances through its available transport routes before finally
@@ -75,11 +88,15 @@ sensors are filtered out even if they expose a `SurfaceTexture` output.
 
 ## Preview requests and frame rate
 
-- A repeating request normally targets only the displayed preview surface.
-- YUV is added only while Zone tracking is enabled or one fast measurement is
-  waiting for a frame; it is removed immediately after the measurement.
-- Before RAW or vignetting capture, repeating preview/YUV requests stop so the
-  last displayed frame stays frozen. They resume on success and every error path.
+- The resident profile always includes the displayed preview and may keep RAW
+  or YUV according to the selected workflow.
+- High-accuracy Zone tracking keeps preview + YUV resident. Its 1–3-frame meter
+  window reconfigures to `RAW_ISOLATED`, keeps the last TextureView buffer on
+  screen, and restores preview + YUV on every completion or error path.
+- A constrained HAL can use the fully isolated RAW workflow for ordinary and
+  Zone measurements, avoiding resident preview + RAW and `FULL` combinations.
+- Before resident RAW or vignetting capture, repeating requests stop and resume
+  on success and every error path.
 - The app never synthesizes or forces 60 fps. It chooses a range advertised by
   the active camera at or below 30 fps, considers preview/YUV minimum frame
   durations, then retries at 24 fps and finally without an explicit range if a
@@ -154,13 +171,12 @@ boundary is any device that can provide a basic third-party Camera2 preview.
 
 ## Calibration sequence
 
-One calibration request uses the same fixed reference input for a sequential, source-specific
-plan. It never performs RAW and YUV calibration captures concurrently:
+One calibration request uses the same fixed reference input for a sequential,
+source-complete plan. The selected metering mode does not hide a source. It
+never performs RAW and YUV calibration captures concurrently:
 
 ```text
-High accuracy: RAW sensor -> YUV compatible stream -> ISP display preview
-Stable:        RAW sensor -> ISP display preview
-Compatibility: YUV compatible stream -> ISP display preview
+All supported sources: RAW sensor -> YUV compatible stream -> ISP display preview
 ```
 
 There is no fixed delay between stages. A source which is unavailable is omitted rather than
@@ -257,27 +273,32 @@ lifecycle, calibration stores, stream-profile selection, and user callbacks.
 | `RAW_ONLY` | 有 | 有 | 无 | 组合流失败时保留高精度测光 |
 | `COMPATIBLE` | 有 | 无 | 有 | 不占用 RAW 资源的 ISP 兼容测光 |
 | `PREVIEW_ONLY` | 有 | 无 | 无 | Camera2 最低共同路径 |
+| `RAW_ISOLATED` | 无 | 有 | 无 | 屏幕保留最后一帧时短暂采集 1–3 帧 RAW |
 
-用户可见的三档模式与内部会话对应如下：
+用户可见的三档模式搜索完整工作流，不与某一个常驻会话一一对应：
 
-- **高精度（推荐）**：从能力归一化后的 `FULL` 开始，优先 RAW，并允许沿完整链路自动降级。
-- **稳定模式**：有 RAW 时从 `RAW_ONLY` 开始，否则使用 `PREVIEW_ONLY`；RAW 与 YUV 绝不出现在同一会话。
-- **兼容模式**：从 `COMPATIBLE` 开始，绝不创建 RAW reader。旧版本保存的“兼容”设置会迁移到当前兼容模式，保持原行为。
+- **高精度（推荐）**：先搜索 RAW 工作流：普通模式常驻预览 + RAW、Zone 常驻预览 + YUV 并瞬时仅 RAW；所有模式常驻预览 + YUV、测光时瞬时仅 RAW；最后把 `FULL` 作为稳定性较低的候选。RAW 候选全部失败后继续搜索稳定与兼容工作流。
+- **稳定模式**：常驻预览 + YUV，不创建 RAW reader。
+- **兼容模式**：只使用显示预览（`PREVIEW_ONLY`），不创建 RAW 或 YUV reader。旧版本保存的“兼容”设置会迁移到当前兼容模式，保持原行为。
 
-会话失败时只在当前模式允许的范围内减少输出，不会破坏稳定模式的隔离边界。高精度模式的完整降级链为：
+候选精度顺序为：
 
 ```text
-FULL -> RAW_ONLY -> COMPATIBLE -> PREVIEW_ONLY
+RAW 分离 -> RAW 完全瞬时隔离 -> FULL -> 稳定 YUV -> 兼容 ISP
 ```
 
-Android 10（API 29）及以上会先询问 Camera HAL 是否支持完整输出组合；明确拒绝时立即进入同一降级链。Android 9 以及无法实现该查询的定制 HAL 会直接尝试实际创建会话，以真实结果作为最终判据。
+输出格式、输出数量上限以及 Android 10（API 29）以上的强制流组合表只会保守排除明确不可能的候选；不在强制表中的组合标为“未知”，仍进入真实会话测试。`isSessionConfigurationSupported()` 的否定结果也只作提示：实测部分 vivo/MediaTek 软件在瞬时 RAW 后重建相同处理流时会返回 `false`，实际创建却成功。所有 API 版本都以异步真实配置回调为最终判据。
+
+“测光组合选择”的“系统设置”和“手动选择”使用同一组候选。系统设置执行真实配置/工作流探测，并按相机路由、用户模式和系统版本缓存成功方案；手动选择先运行组合要求的每个真实阶段，再显示预览，让用户把闪烁、卡顿、黑屏、绿屏或条纹判为正常/不正常。人工确认也只对同一相机路由和系统版本有效。
 
 运行错误会先分类，再决定重试或降级；固定镜头最终还能退回逻辑相机。多摄设备会列出自动逻辑相机和各固定物理镜头；默认选择先按“自动 RAW、主摄 RAW、其他 RAW”排序，再考虑不支持 RAW 的自动/主摄，因此厂商声明且实际提供 `RAW_SENSOR` 尺寸时优先 RAW。同一物理镜头若也出现在公开 `cameraIdList` 中，界面仍只保留一个镜头条目，内部按“公开 ID 直连 → 逻辑相机固定物理输出 → 逻辑相机回退”依次验证；隐藏物理镜头则从固定物理输出开始。固定物理路由会在 CALIBRATED、APPROXIMATE 和未声明同步类型的设备上都实际尝试；同步类型只影响多个传感器同时工作的时间关系，不能用来阻止单个物理输出。硬件 RAW 能力与当前会话是否真的带 RAW 输出分开记录：降级只在本次控制器运行内保持，重新选择镜头、切换测光模式或从后台返回时重新探测高能力档位，同一次稳定运行中不自动升级，避免在绿屏/条纹设备上反复重开。API 29+ 的自动逻辑路由会记录每帧报告的 active physical ID；逻辑回退后的测光和校准采用实际运行 identity，不写入原副摄 key。API 28 保持逻辑复合相机身份，绝不猜测物理镜头。单色和红外物理传感器不会加入普通镜头列表。逻辑与物理路由优先使用两者都常见的 4:3 预览，即使逻辑相机元数据声明为 16:9，也不会在自动主摄与固定主摄之间切换时改变比例或看起来被拉伸；没有 4:3 输出时才退回最接近传感器元数据的比例。权限被拒、系统隐私策略、其他应用长期占用相机，或厂商连基础预览都实现异常时，仍可能无法打开任何档位。
 
 ### 预览请求与帧率
 
-- 重复请求通常只包含屏幕预览；只有 Zone 跟踪或一次快速采样等待图像时才临时加入 YUV，测量完成后立即移除。
-- RAW 或暗角捕获开始前停止重复预览/YUV 请求，屏幕保留最后一帧；成功和所有错误路径都会恢复预览。
+- 常驻工作流始终包含屏幕预览，并按选中的组合保留 RAW 或 YUV。
+- 高精度 Zone 跟踪常驻预览 + YUV；1–3 帧测光窗口切换到 `RAW_ISOLATED`，屏幕保留最后一个 TextureView 缓冲，成功或错误路径都恢复预览 + YUV。
+- 受限 HAL 可让普通测光与 Zone 都采用 RAW 完全瞬时隔离，避免常驻预览 + RAW 和 `FULL` 组合。
+- 常驻 RAW 或暗角捕获开始前停止重复请求，成功和所有错误路径都会恢复预览。
 - 不合成也不强制请求 60 fps。应用从当前相机声明的 30 fps 及以下范围中选择，并同时考虑预览/YUV 的最小帧时长；厂商拒绝时依次尝试 24 fps，最后不指定帧率并交回系统默认。
 
 ### RAW 测光
@@ -306,12 +327,10 @@ Android 10（API 29）及以上会先询问 Camera HAL 是否支持完整输出�
 
 ### 校准顺序
 
-一次校准使用同一组固定参考输入，按来源顺序完成，绝不并发执行 RAW 与 YUV 校准捕获：
+一次校准使用同一组固定参考输入，完成硬件支持的全部来源；当前测光模式不会隐藏任何来源，且绝不并发执行 RAW 与 YUV 校准捕获：
 
 ```text
-高精度：RAW 传感器 -> YUV 兼容流 -> ISP 显示预览
-稳定模式：RAW 传感器 -> ISP 显示预览
-兼容模式：YUV 兼容流 -> ISP 显示预览
+全部可用来源：RAW 传感器 -> YUV 兼容流 -> ISP 显示预览
 ```
 
 阶段之间没有固定等待。不支持的来源会被跳过，而不会显示为已校准。RAW、YUV 与 ISP 修正继续按厂商、型号和实际 camera identity 分开保存。旧版共享的 `compatible_user_*` 修正仅作为带标签的兼容回退：只在相应处理后来源尚未重新校准时应用，绝不复制为看似精确的新 YUV 或 ISP 校准记录。
@@ -364,7 +383,8 @@ Bayer/native 统计器，更不得以 RGGB 作为默认猜测。
 绿色、近黑和冻结画面只给出 suspect，避免把真实场景误判为故障；持续六帧的高对比周期性横/竖
 黑白条纹才会触发一次 `PREVIEW_ONLY` 安全会话恢复。恢复的安全会话必须再连续通过三次独立健康
 采样才被接受；确认期间再次出现条纹时，固定物理镜头退回逻辑相机作对照，逻辑路线则显示最终故障。
-profile/尺寸级的持久兼容性缓存仍是后续工作，尚未因一次故障永久拉黑设备。
+单次健康检测不会永久拉黑设备或流尺寸；系统/人工完整工作流成功后会按相机路由和系统版本缓存，
+系统升级或相机环境变化后重新筛选。
 
 参数记录在移动 pending JPEG/DNG 前写入只包含 category/record UUID 的事务标记；索引原子提交后
 才清除标记。应用启动时，已存在于索引的记录保留其文件并清除残留标记；未提交标记只会清理它
