@@ -12,6 +12,7 @@ import android.hardware.camera2.params.SessionConfiguration
 import android.media.ImageReader
 import android.os.Build
 import android.os.Handler
+import android.util.Log
 import android.util.Size
 import android.view.Surface
 import java.util.concurrent.Executor
@@ -295,11 +296,14 @@ internal class CameraSessionCoordinator(
                 true
             }
             if (!supported) {
-                listener.onSessionConfigurationFailed(
-                    generation,
-                    IllegalArgumentException("Camera HAL rejected the requested stream profile"),
+                // Some vivo/MediaTek builds return false while replacing an isolated RAW
+                // session even though the identical processed session was configured moments
+                // earlier. Treat this API as a preflight hint: the asynchronous configure
+                // callback remains the only reliable rejection signal across vendor HALs.
+                Log.w(
+                    TAG,
+                    "Session preflight reported unsupported; attempting real configuration",
                 )
-                return
             }
             camera.createCaptureSession(configuration)
         } catch (error: Exception) {
@@ -355,6 +359,7 @@ internal class CameraSessionCoordinator(
         isActive(generation) && sessionRevision == revision
 
     private companion object {
+        private const val TAG = "CameraSession"
         private const val RAW_READER_MAX_IMAGES = 1
     }
 }

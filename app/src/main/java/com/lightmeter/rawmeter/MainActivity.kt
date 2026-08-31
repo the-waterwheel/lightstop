@@ -479,7 +479,6 @@ class MainActivity : Activity(), CameraControllerCallback {
             return
         }
         meterLayout.showCombinationSelection(
-            candidate = candidate,
             index = manualCombinationIndex,
             count = manualCombinationCandidates.size,
             ready = false,
@@ -498,8 +497,8 @@ class MainActivity : Activity(), CameraControllerCallback {
                 meterLayout.updateCombinationProbeState(
                     ready = true,
                     status = localized(
-                        "流程测试完成，请检查绿屏、条纹、黑屏、闪烁或明显卡顿",
-                        "Workflow complete. Check for green, stripes, black, flicker, or stalls",
+                        "请检查画面是否有闪烁、卡顿、黑屏、绿屏或条纹",
+                        "Check the preview for flicker, stalls, black, green, or stripes",
                     ),
                 )
             } else {

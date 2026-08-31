@@ -318,7 +318,7 @@ class MeterState(context: Context) {
 
     var meteringMode: MeteringMode = preferences.enumValue(
         "metering_mode",
-        MeteringMode.SPOT,
+        MeteringMode.CENTER_WEIGHTED,
     )
 
     var angleMeteringDegrees: Int = AngleMeteringMath.nearestSelectableDegrees(

@@ -1543,7 +1543,7 @@ class MeterLayout @JvmOverloads constructor(
             state.meteringPipelineMode != MeteringPipelineMode.FAST &&
             transitionSettled &&
             !isCalibrationOpen && !isVignettingCalibrationOpen &&
-            !isCameraManagementOpen && !isInformationOpen &&
+            !isCameraManagementOpen && !isCombinationSelectionOpen && !isInformationOpen &&
             !isSettingsOpen && !isToolsOpen && !isFilmSelectorOpen &&
             !isParameterEditorOpen && !isParameterHistoryOpen
         if (!visible) {
@@ -1644,7 +1644,6 @@ class MeterLayout @JvmOverloads constructor(
     }
 
     internal fun showCombinationSelection(
-        candidate: CameraCombinationCandidate,
         index: Int,
         count: Int,
         ready: Boolean,
@@ -1658,9 +1657,10 @@ class MeterLayout @JvmOverloads constructor(
             zoneView.visibility = View.GONE
             combinationSelectionView.visibility = View.VISIBLE
             combinationSelectionView.bringToFront()
+            updateAngleMeteringControl()
             requestLayout()
         }
-        combinationSelectionView.showCandidate(candidate, index, count, ready, status)
+        combinationSelectionView.showCandidate(index, count, ready, status)
     }
 
     internal fun updateCombinationProbeState(ready: Boolean, status: String) {
@@ -1673,6 +1673,7 @@ class MeterLayout @JvmOverloads constructor(
         combinationSelectionView.visibility = View.GONE
         instrumentView.visibility = if (isZoneMode) View.GONE else View.VISIBLE
         zoneView.visibility = if (isZoneMode) View.VISIBLE else View.GONE
+        updateAngleMeteringControl()
         requestLayout()
         return true
     }

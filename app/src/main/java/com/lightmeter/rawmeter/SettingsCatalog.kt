@@ -98,7 +98,7 @@ object SettingsCatalog {
                 ),
                 SettingItemSpec(
                     key = SettingKey.COMBINATION_SELECTION,
-                    label = LocalizedLabel("组合选择", "Combination selection"),
+                    label = LocalizedLabel("测光组合选择", "Metering combination selection"),
                     options = listOf(
                         option(
                             MeteringCombinationSelectionMode.SYSTEM,
@@ -123,13 +123,13 @@ object SettingsCatalog {
                         ),
                         option(
                             MeteringPipelineMode.ISOLATED,
-                            "稳定模式（YUV）",
-                            "Stable (YUV)",
+                            "稳定模式",
+                            "Stable",
                         ),
                         option(
                             MeteringPipelineMode.FAST,
-                            "兼容模式（ISP）",
-                            "Compatibility mode (ISP)",
+                            "兼容模式",
+                            "Compatibility mode",
                         ),
                     ),
                 ),
