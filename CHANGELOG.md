@@ -9,7 +9,8 @@ All notable user-facing changes are recorded here. The project follows
   and preserves the existing 30 fps ceiling; High can try advertised regular
   session ranges up to 60 fps when current stream durations permit it. FPS
   rejection falls back through 30/24 fps and the HAL default without changing
-  the selected RAW/YUV/ISP workflow.
+  the selected RAW/YUV/ISP workflow; preview-health failures above 30 fps also
+  retry the same workflow at Low before combination search.
 
 ## 0.2.2 - 2026-08-31
 

@@ -102,6 +102,9 @@ sensors are filtered out even if they expose a `SurfaceTexture` output.
   60 fps after applying the preview/YUV minimum-frame-duration ceiling. A
   rejected request falls back through 30 fps, 24 fps, and no explicit range;
   this fallback is independent of the RAW/YUV/ISP workflow matrix.
+- If health analysis sees an invalid frame above 30 fps, it first retries the
+  same workflow at the Low ceiling. Stream-combination search starts only if
+  that lower-rate preview is also unhealthy.
 - A single repeating request drives every targeted output, so High also raises
   resident Zone YUV delivery when the HAL supports it. The tracker acquires the
   latest image and drops work while busy, bounding memory and latency.
@@ -304,6 +307,7 @@ RAW 分离 -> RAW 完全瞬时隔离 -> FULL -> 稳定 YUV -> 兼容 ISP
 - 受限 HAL 可让普通测光与 Zone 都采用 RAW 完全瞬时隔离，避免常驻预览 + RAW 和 `FULL` 组合。
 - 常驻 RAW 或暗角捕获开始前停止重复请求，成功和所有错误路径都会恢复预览。
 - 通用设置默认“低帧率”，从当前相机声明的 30 fps 及以下范围中选择。“高帧率”在预览/YUV 最小帧时长允许时可选择设备声明的最高 60 fps 普通会话范围。厂商拒绝时依次回退 30 fps、24 fps，最后不指定帧率并交回系统默认；帧率回退与 RAW/YUV/ISP 组合矩阵相互独立。
+- 健康检测若在实际高于 30 fps 时发现异常帧，会先保持当前工作流并按低帧率复测；只有低帧率下仍异常才进入流组合筛选。
 - 同一个重复请求会驱动其目标输出，因此 HAL 支持时高帧率也会提高 Zone 常驻 YUV 的送帧频率。跟踪管线只取最新图像，并在忙碌时丢帧，避免队列和延迟无界增长。
 
 ### RAW 测光

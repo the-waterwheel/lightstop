@@ -3113,6 +3113,19 @@ class CameraController(
             // A deliberate session replacement freezes the TextureView briefly. Let the restored
             // preview produce fresh samples before deciding that its output is unhealthy.
             if (zoneRawTransaction != null || pendingResidentSessionProfile != null) return@post
+            if ((previewFpsRange?.upper ?: 0) > PreviewFrameRateMode.LOW.requestedCeiling) {
+                fpsRequestCeiling = PreviewFrameRateMode.LOW.requestedCeiling
+                scheduleRecovery(
+                    sessionProfile ?: CameraSessionProfile.PREVIEW_ONLY,
+                    localized(
+                        "高帧率画面异常，正在保持当前组合并降低取景帧率",
+                        "High-rate preview is invalid. Keeping this workflow and lowering FPS",
+                    ),
+                    delayMs = 0L,
+                )
+                Log.w(TAG, "Preview health failure at high FPS; retrying same workflow reason=$reason")
+                return@post
+            }
             if (advanceSystemCombination(
                     localized(
                         "检测到当前组合画面异常，正在测试下一个组合",
