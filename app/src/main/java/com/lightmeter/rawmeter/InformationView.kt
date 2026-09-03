@@ -218,7 +218,7 @@ class InformationView(
     private fun drawAbout(canvas: Canvas, headerHeight: Float, foreground: Int) {
         val version = runCatching {
             context.packageManager.getPackageInfo(context.packageName, 0).versionName
-        }.getOrNull().orEmpty().ifBlank { "0.2.2" }
+        }.getOrNull().orEmpty().ifBlank { "0.3.0" }
         val text = if (state.menuLanguage == MenuLanguage.ENGLISH) {
             """
             lightstop

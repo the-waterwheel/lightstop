@@ -51,6 +51,7 @@
 - 可锁定光圈或快门；锁定项只在当前档位网格上移动，另一项保持连续曝光关系。
 - 测光、ISO 或曝光补偿变化时，两条曝光标尺平滑联动，不强制把结果舍入成某一组标准刻度。
 - 倒易率计算器通常把最终校正时间限制在 24 小时内；若厂商精确数据明确延伸更久，则只允许到该数据截止。超过 1 小时的结果以 `HH:MM:SS` 显示，并在各列下标注 `h`、`min`、`s`。
+- 离散倒易率节点先转换到 `log2(测光时间) → log2(校正时间/测光时间)` 的补偿档位空间，再用保形三次曲线拟合；曲线连续通过原始节点，补偿不会在节点间回落或过冲。可为任意内置胶片编辑或补录离散点、幂函数、固定 EV、有限无需补偿范围，也可新增自定义胶片；用户数据独立保存，并可随时重置为应用内置设定。
 - 支持中文/English、浅色/深色外观和完整的右手/左手布局。
 - 通用设置中提供紧凑的“关于”入口，包含应用版本、AI 辅助开发说明、OpenCV 归属说明与中英文测光结果提示。
 - 高取景帧率可能增加耗电、发热和 Zone YUV 跟踪负载，并在暗光下缩短自动曝光时间；低帧率仍是兼容性优先的默认项。两者均不改变测光算法或校准数据。
@@ -102,6 +103,7 @@
 - 从主界面的 `zone` 把手滑入：进入 Zone System。
 - Zone“按键与触屏”模式下可直接点击取景画面，也可使用标点按钮；“仅按键”模式下使用标点按钮。
 - 点击齿轮：进入测光、通用、镜头管理和校准设置。
+- “更多设置”是“测光设置”底部的子页面入口；预览异常检测、信息栏、手动安全预览和逐镜头传感器输出比例均集中在该页面。
 - 在“测光组合选择”中保留“系统设置”即可自动完成矩阵与健康检测；选择“手动选择”可自行检查候选组合。若提示尚未完成初筛，请等待相机就绪后再次选择“手动选择”。
 - 点击“小工具”按钮并选择“景深计算”：用当前画幅、取景视角和测光光圈作为默认值；可选择或自定义画幅与弥散圆，并用两个拨盘调整光圈和对焦距离。
 - 当前小工具入口依次为景深计算、宽容度、参数记录、倒易率计算和色温估算；闪光指数与曝光纠正保留内部扩展标识，但在功能完整前不显示入口。
@@ -244,15 +246,15 @@ $buildTools = (Get-ChildItem "$env:LOCALAPPDATA\Android\Sdk\build-tools" -Direct
 New-Item -ItemType Directory -Force dist | Out-Null
 & "$buildTools\zipalign.exe" -f -p 4 `
   app\build\outputs\apk\release\app-release-unsigned.apk `
-  dist\lightstop-v0.2.2-aligned.apk
+  dist\lightstop-v0.3.0-aligned.apk
 & "$buildTools\apksigner.bat" sign `
   --ks C:\secure\lightstop-release.jks `
   --ks-key-alias lightstop `
-  --out dist\lightstop-v0.2.2-universal.apk `
-  dist\lightstop-v0.2.2-aligned.apk
+  --out dist\lightstop-v0.3.0-universal.apk `
+  dist\lightstop-v0.3.0-aligned.apk
 & "$buildTools\apksigner.bat" verify --verbose --print-certs `
-  dist\lightstop-v0.2.2-universal.apk
-Get-FileHash dist\lightstop-v0.2.2-universal.apk -Algorithm SHA256 |
+  dist\lightstop-v0.3.0-universal.apk
+Get-FileHash dist\lightstop-v0.3.0-universal.apk -Algorithm SHA256 |
   Format-List Algorithm, Hash, Path
 ```
 
@@ -260,12 +262,12 @@ Get-FileHash dist\lightstop-v0.2.2-universal.apk -Algorithm SHA256 |
 
 ```powershell
 git status
-git tag -a v0.2.2 -m "lightstop 0.2.2"
+git tag -a v0.3.0 -m "lightstop 0.3.0"
 git push origin HEAD:main
-git push origin v0.2.2
+git push origin v0.3.0
 ```
 
-然后在 GitHub 从 `v0.2.2` 创建 Release，保留 GitHub 自动生成的源码压缩包，并上传签名通用 APK、写有 SHA-256 的文本文件、`LICENSE`、`NOTICE` 与 `THIRD_PARTY_NOTICES.md`。上传后再下载一次 APK 并复验签名和哈希；GitHub Release 是可追溯的分发记录，签名 APK 与妥善保护的密钥则保证后续更新连续性。
+然后在 GitHub 从 `v0.3.0` 创建 Release，保留 GitHub 自动生成的源码压缩包，并上传签名通用 APK、写有 SHA-256 的文本文件、`LICENSE`、`NOTICE` 与 `THIRD_PARTY_NOTICES.md`。上传后再下载一次 APK 并复验签名和哈希；GitHub Release 是可追溯的分发记录，签名 APK 与妥善保护的密钥则保证后续更新连续性。
 
 ### 精简 OpenCV
 
@@ -279,7 +281,7 @@ git push origin v0.2.2
 
 ## Release 体积
 
-当前 release 已启用 R8 和资源收缩，并在一个通用 APK 中包含 `arm64-v8a`、`armeabi-v7a`、`x86_64` 三个 ABI。0.2.2 使用 r2 精简 OpenCV 后，实测 unsigned release 通用 APK 为 `42,102,352` bytes（约 40.15 MiB），release AAB 为 `18,660,835` bytes（约 17.80 MiB）。APK 内容按 ZIP 压缩后大小大致为：
+当前 release 已启用 R8 和资源收缩，并在一个通用 APK 中包含 `arm64-v8a`、`armeabi-v7a`、`x86_64` 三个 ABI。0.3.0 使用 r2 精简 OpenCV 后，实测 unsigned release 通用 APK 为 `42,154,080` bytes（约 40.20 MiB），release AAB 为 `18,735,241` bytes（约 17.87 MiB）。APK 内容按 ZIP 压缩后大小大致为：
 
 | 内容 | 大小 |
 |---|---:|

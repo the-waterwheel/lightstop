@@ -5,11 +5,14 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.math.exp
+import kotlin.math.ln
+import kotlin.math.pow
 import kotlin.math.sqrt
 
 class ReciprocityMathTest {
     @Test
-    fun `table interpolation is log-log and passes manufacturer nodes`() {
+    fun `table curve fit is smooth and passes manufacturer nodes`() {
         val method = method(
             type = ReciprocityMethodType.TABLE,
             start = 0.1,
@@ -21,11 +24,20 @@ class ReciprocityMathTest {
         )
 
         val exact = ReciprocityMath.calculate(method, 1.0)
-        val middle = ReciprocityMath.calculate(method, sqrt(10.0))
+        val middle = ReciprocityMath.calculate(method, 3.0)
 
         assertEquals(1.2599, exact.correctedSeconds!!, 1e-9)
-        assertEquals(sqrt(1.2599 * 15.0), middle.correctedSeconds!!, 1e-7)
+        assertTrue(middle.correctedSeconds!! > exact.correctedSeconds!!)
+        assertTrue(middle.correctedSeconds!! < 15.0)
         assertEquals(ReciprocityStatus.CORRECTED, middle.status)
+
+        val delta = 1e-4
+        val center = ReciprocityMath.calculate(method, 1.0).correctedSeconds!!
+        val left = ReciprocityMath.calculate(method, exp(-delta)).correctedSeconds!!
+        val right = ReciprocityMath.calculate(method, exp(delta)).correctedSeconds!!
+        val leftSlope = ln(center / left) / delta
+        val rightSlope = ln(right / center) / delta
+        assertEquals(leftSlope, rightSlope, 0.01)
     }
 
     @Test
@@ -39,6 +51,51 @@ class ReciprocityMathTest {
 
         assertEquals(0.1, ReciprocityMath.calculate(method, 0.1).correctedSeconds!!, 0.0)
         assertTrue(ReciprocityMath.calculate(method, 0.2).correctedSeconds!! > 0.2)
+    }
+
+    @Test
+    fun `point curve joins the no compensation range smoothly in stop space`() {
+        val method = method(
+            type = ReciprocityMethodType.TABLE,
+            start = 10.0,
+            maximum = 1000.0,
+            points = listOf(
+                ReciprocityPoint(20.0, 26.985657, null),
+                ReciprocityPoint(100.0, 158.489319, null),
+                ReciprocityPoint(1000.0, 1995.262315, null),
+            ),
+        )
+        val deltaStops = 1e-4
+        val boundary = ReciprocityMath.calculate(method, 10.0).correctedSeconds!!
+        val justAfter = ReciprocityMath.calculate(method, 10.0 * 2.0.pow(deltaStops)).correctedSeconds!!
+        val rightStopSlope = ln(justAfter / boundary) / ln(2.0) / deltaStops
+
+        assertEquals(1.0, rightStopSlope, 0.001)
+        assertEquals(10.0, boundary, 0.0)
+    }
+
+    @Test
+    fun `point curve compensation never dips between increasing stop nodes`() {
+        val method = method(
+            type = ReciprocityMethodType.TABLE,
+            start = 1.0,
+            maximum = 1000.0,
+            points = listOf(
+                ReciprocityPoint(4.0, 5.656854, null),
+                ReciprocityPoint(16.0, 32.0, null),
+                ReciprocityPoint(128.0, 362.038672, null),
+                ReciprocityPoint(1000.0, 4000.0, null),
+            ),
+        )
+
+        var previousStops = 0.0
+        for (index in 0..400) {
+            val metered = 2.0.pow(index * 10.0 / 400.0)
+            val corrected = ReciprocityMath.calculate(method, metered).correctedSeconds!!
+            val stops = ln(corrected / metered) / ln(2.0)
+            assertTrue("compensation dipped at $metered seconds", stops + 1e-9 >= previousStops)
+            previousStops = stops
+        }
     }
 
     @Test
@@ -86,6 +143,22 @@ class ReciprocityMathTest {
     }
 
     @Test
+    fun `bounded unchanged methods stop at the published maximum without extrapolation`() {
+        val bounded = method(
+            type = ReciprocityMethodType.BOUNDED_UNCHANGED,
+            start = 120.0,
+            maximum = 120.0,
+        )
+
+        val lastPublished = ReciprocityMath.calculate(bounded, 120.0)
+        assertEquals(ReciprocityStatus.UNCHANGED, lastPublished.status)
+        assertEquals(120.0, lastPublished.correctedSeconds!!, 0.0)
+        assertEquals(ReciprocityStatus.OUT_OF_RANGE, ReciprocityMath.calculate(bounded, 120.001).status)
+        assertNull(ReciprocityMath.calculate(bounded, 120.001).correctedSeconds)
+        assertEquals(120.0, ReciprocityLimitPolicy.maximumInputSeconds(bounded, ExposureStep.FULL), 0.0)
+    }
+
+    @Test
     fun `calculation itself can evaluate beyond the ui limit`() {
         val power = method(
             type = ReciprocityMethodType.POWER,
@@ -110,6 +183,21 @@ class ReciprocityMathTest {
 
         assertFalse(result.needsCorrection)
         assertEquals(ReciprocityStatus.UNCHANGED, result.status)
+    }
+
+    @Test
+    fun `power correction never shortens the metered exposure`() {
+        val method = method(
+            type = ReciprocityMethodType.POWER,
+            parameter = 1.53,
+            start = 0.5,
+        )
+
+        listOf(0.5001, 0.594604, 0.707107, 0.840896).forEach { meteredSeconds ->
+            val result = ReciprocityMath.calculate(method, meteredSeconds)
+            assertEquals(meteredSeconds, result.correctedSeconds!!, 0.0)
+            assertEquals(ReciprocityStatus.UNCHANGED, result.status)
+        }
     }
 
     @Test
@@ -168,7 +256,7 @@ class ReciprocityMathTest {
     }
 
     @Test
-    fun `limit follows corrected result unless exact table data extends beyond one day`() {
+    fun `limit keeps every displayed corrected result below one day`() {
         val estimated = method(
             type = ReciprocityMethodType.POWER,
             parameter = 1.4,
@@ -188,10 +276,34 @@ class ReciprocityMathTest {
                 ReciprocityPoint(100_000.0, 120_000.0, null),
             ),
         )
-        assertEquals(
-            100_000.0,
-            ReciprocityLimitPolicy.maximumInputSeconds(exactLongTable, ExposureStep.FULL),
-            0.0,
+        val maximumInput = ReciprocityLimitPolicy.maximumInputSeconds(exactLongTable, ExposureStep.FULL)
+        assertTrue(maximumInput < ReciprocityShutterScale.MAX_SECONDS)
+        assertTrue(
+            ReciprocityMath.calculate(exactLongTable, maximumInput).correctedSeconds!! <
+                ReciprocityLimitPolicy.NORMAL_RESULT_LIMIT_SECONDS,
+        )
+    }
+
+    @Test
+    fun `only methods with an evaluable long exposure model are selectable`() {
+        assertFalse(method(type = ReciprocityMethodType.NONE, start = 1.0).hasCalculationData)
+        assertFalse(method(type = ReciprocityMethodType.RANGE, start = 1.0).hasCalculationData)
+        assertTrue(
+            method(
+                type = ReciprocityMethodType.BOUNDED_UNCHANGED,
+                start = 120.0,
+                maximum = 120.0,
+            ).hasCalculationData,
+        )
+        assertTrue(
+            method(type = ReciprocityMethodType.POWER, parameter = 1.3, start = 1.0).hasCalculationData,
+        )
+        assertTrue(
+            method(
+                type = ReciprocityMethodType.TABLE,
+                start = 1.0,
+                points = listOf(ReciprocityPoint(10.0, 20.0, null)),
+            ).hasCalculationData,
         )
     }
 

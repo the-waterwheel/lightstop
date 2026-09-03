@@ -24,10 +24,11 @@ class CameraManagementView(
         fun onCloseRequested()
         fun onCameraSelected(cameraId: String)
         fun onCameraNoteRequested(cameraId: String)
+        fun onCameraAspectRequested(cameraId: String)
         fun onCameraVisibilityRequested(cameraId: String, hidden: Boolean)
     }
 
-    private enum class RowAction { SELECT, NOTE, VISIBILITY }
+    private enum class RowAction { SELECT, NOTE, ASPECT, VISIBILITY }
 
     private data class HitTarget(
         val cameraId: String,
@@ -62,7 +63,9 @@ class CameraManagementView(
         super.onDraw(canvas)
         val background = if (state.isDarkMode) Color.BLACK else Color.WHITE
         val foreground = if (state.isDarkMode) Color.rgb(210, 210, 206) else Color.rgb(20, 20, 20)
-        val navGray = if (state.isDarkMode) Color.rgb(102, 102, 100) else Color.rgb(226, 226, 223)
+        // This is a nested settings page, so its canvas and header use the same surface color
+        // as the settings page it came from instead of looking like a separate gray overlay.
+        val navGray = background
         val divider = if (state.isDarkMode) Color.rgb(72, 72, 70) else Color.rgb(205, 205, 201)
         val muted = if (state.isDarkMode) Color.rgb(145, 145, 142) else Color.rgb(108, 108, 104)
         val red = Color.rgb(166, 27, 36)
@@ -142,7 +145,7 @@ class CameraManagementView(
         val cameras = state.visibleCameras()
         val listTop = hiddenToggleRect.bottom + 10f * density
         val rowGap = 8f * density
-        val rowHeight = 112f * density
+        val rowHeight = 116f * density
         val contentHeight = cameras.size * rowHeight + max(0, cameras.size - 1) * rowGap
         maxScrollOffset = max(0f, contentHeight - (height - listTop - 12f * density))
         scrollOffset = scrollOffset.coerceIn(0f, maxScrollOffset)
@@ -222,6 +225,11 @@ class CameraManagementView(
         paint.typeface = Typeface.DEFAULT
         val summary = buildString {
             append(camera.technicalSummary())
+            state.cameraOutputAspect(state.aspectStorageCameraId(camera.cameraId))?.let {
+                append("  ·  ")
+                append(localized("输出 ", "Output "))
+                append(PreviewOutputGeometry.label(it))
+            }
             if (hidden) append(localized("  ·  已隐藏", "  ·  Hidden"))
             if (selected) append(localized("  ·  当前", "  ·  Current"))
         }
@@ -291,8 +299,13 @@ class CameraManagementView(
         val gap = 6f * density
         val buttonTop = row.bottom - 34f * density
         val buttonBottom = row.bottom - 8f * density
-        val buttonWidth = (row.width() - 24f * density - gap * 2f) / 3f
-        val actions = listOf(RowAction.SELECT, RowAction.NOTE, RowAction.VISIBILITY)
+        val buttonWidth = (row.width() - 24f * density - gap * 3f) / 4f
+        val actions = listOf(
+            RowAction.SELECT,
+            RowAction.NOTE,
+            RowAction.ASPECT,
+            RowAction.VISIBILITY,
+        )
         actions.forEachIndexed { index, action ->
             val left = row.left + 12f * density + index * (buttonWidth + gap)
             val rect = RectF(left, buttonTop, left + buttonWidth, buttonBottom)
@@ -317,6 +330,7 @@ class CameraManagementView(
                 RowAction.SELECT -> if (selected) localized("当前", "Current")
                 else localized("选择", "Select")
                 RowAction.NOTE -> localized("备注", "Note")
+                RowAction.ASPECT -> localized("比例", "Aspect")
                 RowAction.VISIBILITY -> if (hidden) localized("取消隐藏", "Unhide")
                 else localized("隐藏", "Hide")
             }
@@ -378,6 +392,7 @@ class CameraManagementView(
                 when (target.action) {
                     RowAction.SELECT -> listener?.onCameraSelected(target.cameraId)
                     RowAction.NOTE -> listener?.onCameraNoteRequested(target.cameraId)
+                    RowAction.ASPECT -> listener?.onCameraAspectRequested(target.cameraId)
                     RowAction.VISIBILITY -> listener?.onCameraVisibilityRequested(
                         target.cameraId,
                         !state.isCameraHidden(target.cameraId),

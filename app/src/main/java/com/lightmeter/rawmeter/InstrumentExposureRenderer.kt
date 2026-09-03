@@ -63,7 +63,7 @@ internal class InstrumentExposureRenderer(
     fun scaleContent(
         rect: RectF,
         lockTrack: RectF,
-        titleWidth: Float = 46f * density,
+        titleWidth: Float = 72f * density,
     ): RectF = if (state.isLeftHanded) {
         RectF(
             lockTrack.right + 4f * density,
@@ -81,7 +81,7 @@ internal class InstrumentExposureRenderer(
     }
 
     fun pixelsPerStop(content: RectF): Double =
-        maxOf(62f * density, content.width() / 4.6f).toDouble()
+        (maxOf(62f * density, content.width() / 4.6f) * (2f / 3f)).toDouble()
 
     private fun drawScale(
         canvas: Canvas,
@@ -105,17 +105,17 @@ internal class InstrumentExposureRenderer(
         paint.color = foreground
         canvas.drawRect(rect, paint)
 
-        val titleWidth = 46f * density
+        val titleWidth = 72f * density
         val content = scaleContent(rect, lockTrack, titleWidth)
         val titleLeft = if (state.isLeftHanded) rect.right - titleWidth else rect.left
         paint.style = Paint.Style.FILL
         paint.color = scaleForeground
         paint.typeface = Typeface.DEFAULT_BOLD
-        paint.textSize = 12f * density
-        drawCenteredText(canvas, title, titleLeft + titleWidth * 0.24f, rect.centerY())
+        paint.textSize = 12.5f * density
+        drawCenteredText(canvas, title, titleLeft + 10f * density, rect.centerY())
         // The exact current value is a primary control readout, not a scale annotation.
-        paint.textSize = 11f * density
-        paint.typeface = Typeface.DEFAULT
+        paint.textSize = 15f * density
+        paint.typeface = Typeface.DEFAULT_BOLD
         val shutterSeconds = if (apertureRow) null else {
             ExposureMath.shutterValueForCoordinate(centerCoordinate, state.shutterStep)
         }
@@ -127,7 +127,7 @@ internal class InstrumentExposureRenderer(
             formatExactShutter(shutterSeconds!!)
         }
         val reciprocity = shutterSeconds?.let { ReciprocityMath.calculate(appliedReciprocityMethod, it) }
-        val readoutX = titleLeft + titleWidth * 0.65f
+        val readoutX = titleLeft + 44f * density
         drawCenteredText(canvas, exactValue, readoutX, rect.centerY())
         if (reciprocity?.needsCorrection == true) {
             drawReciprocityBadge(canvas, readoutX, rect.centerY() - 13f * density)
@@ -300,8 +300,7 @@ internal class InstrumentExposureRenderer(
             "%.1f".format(value)
         }
 
-    private fun formatExactAperture(value: Double): String =
-        if (value >= 10.0) "%.1f".format(value) else "%.2f".format(value)
+    private fun formatExactAperture(value: Double): String = "%.1f".format(value)
 
     private fun formatExactShutter(seconds: Double): String = when {
         seconds >= 10.0 -> "${seconds.roundToInt()}″"

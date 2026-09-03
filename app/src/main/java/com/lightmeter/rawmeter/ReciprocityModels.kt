@@ -7,7 +7,7 @@ import kotlin.math.pow
 import kotlin.math.roundToInt
 import java.util.Locale
 
-internal enum class ReciprocityMethodType { NONE, RANGE, TABLE, FIXED_EV, POWER }
+internal enum class ReciprocityMethodType { NONE, RANGE, BOUNDED_UNCHANGED, TABLE, FIXED_EV, POWER }
 
 internal data class ReciprocityPoint(
     val meteredSeconds: Double,
@@ -27,7 +27,23 @@ internal data class ReciprocityMethod(
     val warning: String,
     val sourceUrl: String,
     val points: List<ReciprocityPoint>,
-)
+) {
+    val hasCalculationData: Boolean
+        get() = when (type) {
+            ReciprocityMethodType.POWER,
+            ReciprocityMethodType.FIXED_EV,
+            -> parameter?.isFinite() == true
+            ReciprocityMethodType.TABLE -> points.any { point ->
+                point.meteredSeconds.isFinite() && point.correctedSeconds.isFinite() &&
+                    point.meteredSeconds > 0.0 && point.correctedSeconds > 0.0
+            }
+            ReciprocityMethodType.BOUNDED_UNCHANGED ->
+                officialMaximumSeconds?.let { it.isFinite() && it > 0.0 } == true
+            ReciprocityMethodType.NONE,
+            ReciprocityMethodType.RANGE,
+            -> false
+        }
+}
 
 internal enum class ReciprocityStatus { UNCHANGED, CORRECTED, ESTIMATED, UNAVAILABLE, OUT_OF_RANGE }
 
@@ -62,6 +78,14 @@ internal object ReciprocityMath {
                 null,
                 ReciprocityStatus.OUT_OF_RANGE,
             )
+            ReciprocityMethodType.BOUNDED_UNCHANGED -> {
+                val maximum = method.officialMaximumSeconds ?: return unavailable(input)
+                if (input <= maximum + EPSILON) {
+                    ReciprocityResult(input, input, null, ReciprocityStatus.UNCHANGED)
+                } else {
+                    ReciprocityResult(input, null, null, ReciprocityStatus.OUT_OF_RANGE)
+                }
+            }
             ReciprocityMethodType.FIXED_EV -> fixedEv(method, input, estimated)
             ReciprocityMethodType.POWER -> power(method, input, estimated)
             ReciprocityMethodType.TABLE -> table(method, input, estimated)
@@ -75,7 +99,9 @@ internal object ReciprocityMath {
 
     private fun power(method: ReciprocityMethod, input: Double, estimated: Boolean): ReciprocityResult {
         val exponent = method.parameter ?: return unavailable(input)
-        return corrected(input, input.pow(exponent), filterFor(method, input), estimated)
+        // Reciprocity correction must never recommend less exposure than the meter reading.
+        // Keep this invariant here as a final guard against a bad threshold or imported curve.
+        return corrected(input, input.pow(exponent).coerceAtLeast(input), filterFor(method, input), estimated)
     }
 
     private fun table(method: ReciprocityMethod, input: Double, outsideOfficialRange: Boolean): ReciprocityResult {
@@ -84,34 +110,14 @@ internal object ReciprocityMath {
         nodes.firstOrNull { abs(it.meteredSeconds - input) <= EPSILON }?.let { node ->
             return corrected(input, node.correctedSeconds, normalizedFilter(node.filter), outsideOfficialRange)
         }
-        val upperIndex = nodes.indexOfFirst { it.meteredSeconds > input }
         val boundary = ReciprocityPoint(
             meteredSeconds = method.noCompensationSeconds,
             correctedSeconds = method.noCompensationSeconds,
             filter = null,
         )
-        val upper: ReciprocityPoint
-        val lower: ReciprocityPoint
-        val estimated: Boolean
-        if (upperIndex < 0) {
-            upper = nodes.last()
-            lower = nodes.getOrNull(nodes.lastIndex - 1) ?: boundary
-            estimated = true
-        } else {
-            upper = nodes[upperIndex]
-            lower = if (upperIndex == 0) boundary else nodes[upperIndex - 1]
-            estimated = outsideOfficialRange
-        }
-        if (lower.meteredSeconds >= upper.meteredSeconds) {
-            return unavailable(input)
-        }
-        if (upperIndex == 0 && lower.meteredSeconds <= 0.0) {
-            return unavailable(input)
-        }
-        if (lower.meteredSeconds <= 0.0 || lower.correctedSeconds <= 0.0) return unavailable(input)
-        val exponent = ln(upper.correctedSeconds / lower.correctedSeconds) /
-            ln(upper.meteredSeconds / lower.meteredSeconds)
-        val output = lower.correctedSeconds * (input / lower.meteredSeconds).pow(exponent)
+        val output = ReciprocityCurveFitter.evaluate(listOf(boundary) + nodes, input)
+            ?: return unavailable(input)
+        val estimated = outsideOfficialRange || input > nodes.last().meteredSeconds + EPSILON
         return corrected(input, output, filterFor(method, input), estimated)
     }
 

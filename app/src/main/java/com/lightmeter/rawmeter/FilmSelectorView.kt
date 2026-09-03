@@ -19,6 +19,7 @@ import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
+import android.widget.Toast
 import kotlin.math.abs
 import kotlin.math.max
 
@@ -28,12 +29,14 @@ internal class FilmSelectorView(
     context: Context,
     private val state: MeterState,
     private val repository: FilmLatitudeRepository,
+    private val reciprocityRepository: FilmReciprocityRepository,
 ) : ViewGroup(context) {
 
     interface Listener {
         fun onCloseRequested()
         fun onFilmSelected(profile: FilmLatitudeProfile)
         fun onFilmRangeReset(profile: FilmLatitudeProfile)
+        fun onFilmReciprocityChanged(profile: FilmLatitudeProfile)
     }
 
     var listener: Listener? = null
@@ -54,6 +57,7 @@ internal class FilmSelectorView(
     private val blue = Color.rgb(36, 112, 190)
     private var geometry = FilmSelectorGeometry.EMPTY
     private var visibleFilms: List<FilmLatitudeProfile> = emptyList()
+    private var mode = FilmSelectorMode.STANDARD
     private var favoritesOnly = false
     private var scrollOffset = 0f
     private var touchStartX = 0f
@@ -63,6 +67,7 @@ internal class FilmSelectorView(
     private var dragging = false
     private val flingScroller = VerticalFlingScroller(context)
     private val dialogs = FilmLatitudeDialogs(context, state)
+    private val reciprocityDialogs = FilmReciprocityDialogs(context, state)
 
     private val searchField = EditText(context).apply {
         isSingleLine = true
@@ -85,8 +90,9 @@ internal class FilmSelectorView(
         refreshFilms()
     }
 
-    fun open() {
+    fun open(mode: FilmSelectorMode = FilmSelectorMode.STANDARD) {
         flingScroller.cancel()
+        this.mode = mode
         applyTheme()
         refreshFilms()
         scrollOffset = 0f
@@ -178,6 +184,7 @@ internal class FilmSelectorView(
     }
 
     private fun drawFilmRow(canvas: Canvas, row: RectF, profile: FilmLatitudeProfile) {
+        val unavailable = isUnavailable(profile)
         paint.style = Paint.Style.FILL
         paint.color = surface
         canvas.drawRoundRect(row, 6f * density, 6f * density, paint)
@@ -191,18 +198,36 @@ internal class FilmSelectorView(
         val textRight = row.right - actionWidth - favoriteWidth - 14f * density
         boldPaint.textAlign = Paint.Align.LEFT
         boldPaint.textSize = 14f * scaledDensity
-        boldPaint.color = foreground
+        boldPaint.color = if (unavailable) muted else foreground
         val label = TextUtils.ellipsize(profile.displayName, boldPaint, textRight - row.left - 14f * density, TextUtils.TruncateAt.END)
         canvas.drawText(label.toString(), row.left + 10f * density, row.top + 25f * density, boldPaint)
 
         val range = repository.effectiveRange(profile)
         paint.style = Paint.Style.FILL
-        paint.color = if (state.isDarkMode) Color.rgb(168, 168, 164) else Color.rgb(96, 96, 92)
+        paint.color = if (unavailable) {
+            muted
+        } else if (state.isDarkMode) {
+            Color.rgb(168, 168, 164)
+        } else {
+            Color.rgb(96, 96, 92)
+        }
         paint.textSize = 13f * scaledDensity
         paint.textAlign = Paint.Align.LEFT
-        val iso = profile.iso?.let { "  ISO $it" }.orEmpty()
+        val iso = profile.iso?.let { "ISO $it" }.orEmpty()
+        val details = when {
+            mode == FilmSelectorMode.RECIPROCITY && unavailable ->
+                listOfNotNull(
+                    localized("无倒易率数据", "No reciprocity data"),
+                    iso.takeIf(String::isNotEmpty),
+                ).joinToString(" · ")
+            mode == FilmSelectorMode.RECIPROCITY -> iso
+            else -> listOfNotNull(
+                "${signed(range.shadowEv)} / ${signed(range.highlightEv)} EV",
+                iso.takeIf(String::isNotEmpty),
+            ).joinToString(" · ")
+        }
         canvas.drawText(
-            "${signed(range.shadowEv)} / ${signed(range.highlightEv)} EV$iso",
+            details,
             row.left + 10f * density,
             row.bottom - 13f * density,
             paint,
@@ -210,9 +235,19 @@ internal class FilmSelectorView(
 
         val resetRect = rowResetRect(row)
         paint.textAlign = Paint.Align.CENTER
-        paint.color = if (range == profile.originalRange) muted else foreground
+        paint.color = if (mode == FilmSelectorMode.RECIPROCITY || range != profile.originalRange) foreground else muted
         paint.textSize = 10f * scaledDensity
-        centeredText(canvas, localized("重置宽容度", "Reset latitude"), resetRect.centerX(), resetRect.centerY(), paint)
+        centeredText(
+            canvas,
+            if (mode == FilmSelectorMode.RECIPROCITY) {
+                localized("编辑倒易率", "Edit reciprocity")
+            } else {
+                localized("重置宽容度", "Reset latitude")
+            },
+            resetRect.centerX(),
+            resetRect.centerY(),
+            paint,
+        )
         boldPaint.textAlign = Paint.Align.CENTER
         boldPaint.textSize = 18f * scaledDensity
         boldPaint.color = if (repository.isFavorite(profile.id)) red else foreground
@@ -314,11 +349,37 @@ internal class FilmSelectorView(
                 favoritesOnly = !favoritesOnly
                 refreshFilms()
             }
-            TouchTarget.ROW_SELECT -> touchFilm?.let { listener?.onFilmSelected(it) }
+            TouchTarget.ROW_SELECT -> touchFilm?.let { profile ->
+                if (isUnavailable(profile)) {
+                    val method = reciprocityRepository.methodForFilm(profile.id)
+                    val message = if (method?.type == ReciprocityMethodType.RANGE) {
+                        localized(
+                            "仅有 ${ExposureMath.formatShutter(method.noCompensationSeconds)} 以内无需补偿的数据；更长曝光无可计算数据。",
+                            "Only the no-compensation range through ${ExposureMath.formatShutter(method.noCompensationSeconds)} is known; longer exposures have no calculation data.",
+                        )
+                    } else {
+                        localized(
+                            "该胶片没有可用的倒易率计算数据。",
+                            "No reciprocity calculation data is available for this film.",
+                        )
+                    }
+                    Toast.makeText(
+                        context,
+                        message,
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                } else {
+                    listener?.onFilmSelected(profile)
+                }
+            }
             TouchTarget.ROW_RESET -> touchFilm?.let { profile ->
-                repository.resetOverride(profile.id)
-                listener?.onFilmRangeReset(profile)
-                refreshFilms()
+                if (mode == FilmSelectorMode.RECIPROCITY) {
+                    showReciprocityEditor(profile)
+                } else {
+                    repository.resetOverride(profile.id)
+                    listener?.onFilmRangeReset(profile)
+                    refreshFilms()
+                }
             }
             TouchTarget.ROW_FAVORITE -> touchFilm?.let {
                 repository.toggleFavorite(it.id)
@@ -329,23 +390,62 @@ internal class FilmSelectorView(
     }
 
     private fun showCustomDialog() {
-        dialogs.showCustomFilm { name, shadow, highlight ->
-            val profile = repository.addCustomFilm(name, shadow, highlight)
-            refreshFilms()
-            listener?.onFilmSelected(profile)
+        if (mode == FilmSelectorMode.RECIPROCITY) {
+            reciprocityDialogs.showNewFilm { name, method ->
+                val profile = repository.addCustomFilm(name, -5.0, 5.0)
+                reciprocityRepository.saveUserOverride(profile.id, method)
+                refreshFilms()
+                listener?.onFilmReciprocityChanged(profile)
+                listener?.onFilmSelected(profile)
+            }
+        } else {
+            dialogs.showCustomFilm { name, shadow, highlight ->
+                val profile = repository.addCustomFilm(name, shadow, highlight)
+                refreshFilms()
+                listener?.onFilmSelected(profile)
+            }
         }
+    }
+
+    private fun showReciprocityEditor(profile: FilmLatitudeProfile) {
+        reciprocityDialogs.showForFilm(
+            filmName = profile.displayName,
+            existing = reciprocityRepository.methodForFilm(profile.id),
+            canReset = reciprocityRepository.hasUserOverride(profile.id),
+            hasOriginal = reciprocityRepository.originalMethodForFilm(profile.id) != null,
+            onSaved = { method ->
+                reciprocityRepository.saveUserOverride(profile.id, method)
+                refreshFilms()
+                listener?.onFilmReciprocityChanged(profile)
+            },
+            onReset = {
+                reciprocityRepository.resetUserOverride(profile.id)
+                refreshFilms()
+                listener?.onFilmReciprocityChanged(profile)
+            },
+        )
     }
 
     private fun refreshFilms() {
         val query = searchField.text?.toString()?.trim().orEmpty()
-        visibleFilms = repository.films().filter { profile ->
+        val filtered = repository.films().filter { profile ->
             (!favoritesOnly || repository.isFavorite(profile.id)) &&
                 (query.isBlank() || profile.displayName.contains(query, ignoreCase = true) ||
                     profile.type.contains(query, ignoreCase = true))
         }
+        visibleFilms = if (mode == FilmSelectorMode.RECIPROCITY) {
+            FilmSelectorOrdering.availableFirst(filtered) { profile ->
+                reciprocityRepository.hasCalculationData(profile.id)
+            }
+        } else {
+            filtered
+        }
         scrollOffset = 0f
         invalidate()
     }
+
+    private fun isUnavailable(profile: FilmLatitudeProfile): Boolean =
+        mode == FilmSelectorMode.RECIPROCITY && !reciprocityRepository.hasCalculationData(profile.id)
 
     private fun rowFavoriteRect(row: RectF): RectF = RectF(row.right - 50f * density, row.top, row.right, row.bottom)
 

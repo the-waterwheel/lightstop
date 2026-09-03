@@ -207,21 +207,7 @@ class CameraCalibrationStore(context: Context) {
 
     @Synchronized
     fun totalCorrection(cameraId: String, source: MeteringSource = MeteringSource.RAW): Double =
-        if (source == MeteringSource.RAW) {
-            baselineCorrection(cameraId) + userCorrection(cameraId, source)
-        } else {
-            userCorrection(cameraId, source)
-        }
-
-    private fun baselineCorrection(cameraId: String): Double {
-        val key = deviceKey(cameraId)
-        if (preferences.contains(key)) {
-            return preferences.getFloat(key, 0f).toDouble()
-        }
-        val default = knownBaseline(cameraId)
-        preferences.edit().putFloat(key, default.toFloat()).apply()
-        return default
-    }
+        userCorrection(cameraId, source)
 
     private fun userKey(cameraId: String, source: MeteringSource): String = when (source) {
         MeteringSource.RAW -> "user_${deviceKey(cameraId)}"
@@ -406,14 +392,6 @@ class CameraCalibrationStore(context: Context) {
         append('_')
         append(cameraId)
     }.replace(Regex("[^a-z0-9_.-]"), "_")
-
-    private fun knownBaseline(cameraId: String): Double =
-        when {
-            Build.MANUFACTURER.equals("vivo", ignoreCase = true) &&
-                Build.MODEL.equals("V2405A", ignoreCase = true) &&
-                cameraId == "0" -> 1.074
-            else -> 0.0
-        }
 
     private fun android.content.SharedPreferences.optionalFloat(key: String): Double? =
         if (contains(key)) getFloat(key, 0f).toDouble() else null

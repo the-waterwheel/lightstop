@@ -7,7 +7,10 @@ import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
 import android.content.res.Configuration
+import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
 import android.hardware.display.DisplayManager
 import android.location.Location
 import android.location.LocationListener
@@ -17,6 +20,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.Surface
 import android.view.View
 import android.view.WindowInsets
@@ -26,6 +30,7 @@ import android.window.OnBackInvokedCallback
 import android.window.OnBackInvokedDispatcher
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.TextView
 import android.widget.Toast
 import java.io.File
 
@@ -52,6 +57,7 @@ class MainActivity : Activity(), CameraControllerCallback {
     private var calibrationDisplayCameraId: String? = null
     private var calibrationDisplaySelectionId: String? = null
     private var backInvokedCallback: OnBackInvokedCallback? = null
+    private var lastOverlayBackHandledAtMs = 0L
     private var parameterLocation: RecordedLocation? = null
     private var parameterLocationListener: LocationListener? = null
     private var manualCombinationCandidates: List<CameraCombinationCandidate> = emptyList()
@@ -86,6 +92,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             state.previewHealthDetectionMode == PreviewHealthDetectionMode.ON,
         )
         cameraController.setPreviewFrameRateMode(state.previewFrameRateMode)
+        cameraController.setPreviewOutputAspectOverride(state.currentCameraOutputAspect())
         val cameraPermissionGranted =
             checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
         val selectedCamera = if (cameraPermissionGranted) {
@@ -231,12 +238,19 @@ class MainActivity : Activity(), CameraControllerCallback {
                 if (state.selectCamera(cameraId)) {
                     state.transientMessage = localized("正在切换摄像头", "Switching camera")
                     meterLayout.refresh(frameChanged = true)
+                    cameraController.setPreviewOutputAspectOverride(
+                        state.currentCameraOutputAspect(),
+                    )
                     cameraController.selectCamera(cameraId)
                 }
             }
 
             override fun onCameraNoteRequested(cameraId: String) {
                 showCameraNoteDialog(cameraId)
+            }
+
+            override fun onCameraAspectRequested(cameraId: String) {
+                showCameraOutputAspectDialog(cameraId)
             }
 
             override fun onCameraVisibilityRequested(cameraId: String, hidden: Boolean) {
@@ -584,23 +598,29 @@ class MainActivity : Activity(), CameraControllerCallback {
     @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
     override fun onBackPressed() {
         if (handleBackNavigation()) return
+        if (recentlyHandledOverlayBack()) return
         super.onBackPressed()
     }
 
     private fun handleBackNavigation(): Boolean {
-        if (meterLayout.closeCombinationSelectionFromBack()) return true
-        if (meterLayout.closeInformationFromBack()) return true
-        if (meterLayout.closeParameterHistoryFromBack()) return true
-        if (meterLayout.closeCameraManagement()) return true
-        if (meterLayout.closeVignettingCalibration()) return true
-        if (meterLayout.closeCalibration()) return true
-        if (meterLayout.closeFilmSelector()) return true
-        if (meterLayout.closeParameterEditorFromBack()) return true
-        if (meterLayout.closeSettings()) return true
-        if (meterLayout.closeTools()) return true
-        if (meterLayout.closeZoneMode()) return true
-        return false
+        val handled = meterLayout.closeCombinationSelectionFromBack() ||
+            meterLayout.closeInformationFromBack() ||
+            meterLayout.closeParameterHistoryFromBack() ||
+            meterLayout.closeCameraManagement() ||
+            meterLayout.closeVignettingCalibration() ||
+            meterLayout.closeCalibration() ||
+            meterLayout.closeFilmSelector() ||
+            meterLayout.closeParameterEditorFromBack() ||
+            meterLayout.closeSettings() ||
+            meterLayout.closeTools() ||
+            meterLayout.closeZoneMode()
+        if (handled) lastOverlayBackHandledAtMs = SystemClock.uptimeMillis()
+        return handled
     }
+
+    private fun recentlyHandledOverlayBack(): Boolean =
+        lastOverlayBackHandledAtMs > 0L &&
+            SystemClock.uptimeMillis() - lastOverlayBackHandledAtMs < BACK_DUPLICATE_GUARD_MS
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
@@ -672,10 +692,18 @@ class MainActivity : Activity(), CameraControllerCallback {
         if (state.menuLanguage == MenuLanguage.ENGLISH) english else chinese
 
     override fun onCameraInfo(info: CameraUiInfo) {
+        val oldInfo = state.cameraInfo
+        val oldAspect = state.currentPreviewLandscapeAspect()
         if (info.cameraId.isNotBlank() && info.cameraId != state.selectedCameraId) {
             state.selectCamera(info.cameraId)
         }
         state.cameraInfo = info
+        cameraController.setPreviewOutputAspectOverride(state.currentCameraOutputAspect())
+        val geometryChanged = oldInfo.previewSize != info.previewSize ||
+            oldInfo.sensorOrientationDegrees != info.sensorOrientationDegrees ||
+            oldInfo.lensFacing != info.lensFacing ||
+            oldInfo.activePhysicalCameraId != info.activePhysicalCameraId ||
+            kotlin.math.abs(oldAspect - state.currentPreviewLandscapeAspect()) > 0.001f
         val switchingMessage = localized("正在切换摄像头", "Switching camera")
         if (state.transientMessage == switchingMessage &&
             info.cameraId == state.selectedCameraId &&
@@ -687,7 +715,9 @@ class MainActivity : Activity(), CameraControllerCallback {
         if (meterLayout.isCalibrationOpen) {
             refreshCalibrationCorrections()
         }
-        meterLayout.refresh(frameChanged = meterLayout.isVignettingCalibrationOpen)
+        meterLayout.refresh(
+            frameChanged = geometryChanged || meterLayout.isVignettingCalibrationOpen,
+        )
         updateExposurePreviewFromMeter()
     }
 
@@ -1137,7 +1167,9 @@ class MainActivity : Activity(), CameraControllerCallback {
     private fun registerPredictiveBackCallback() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
         val callback = OnBackInvokedCallback {
-            if (!handleBackNavigation()) finishAfterTransition()
+            if (!handleBackNavigation() && !recentlyHandledOverlayBack()) {
+                finishAfterTransition()
+            }
         }
         onBackInvokedDispatcher.registerOnBackInvokedCallback(
             OnBackInvokedDispatcher.PRIORITY_DEFAULT,
@@ -1380,6 +1412,89 @@ class MainActivity : Activity(), CameraControllerCallback {
             .show()
     }
 
+    private fun showCameraOutputAspectDialog(cameraId: String) {
+        val camera = state.availableCameras.firstOrNull { it.cameraId == cameraId } ?: return
+        val storageCameraId = state.aspectStorageCameraId(cameraId)
+        val configured = state.cameraOutputAspect(storageCameraId)
+        val detected = if (cameraId == state.selectedCameraId) {
+            state.cameraInfo.previewSize?.let {
+                PreviewOutputGeometry.landscapeAspect(it.width, it.height, null)
+            }
+        } else {
+            null
+        }
+        val editor = EditText(this).apply {
+            setText(configured?.let(PreviewOutputGeometry::label).orEmpty())
+            hint = detected?.let(PreviewOutputGeometry::label) ?: "4:3 / 16:9 / 1.500"
+            isSingleLine = true
+            selectAll()
+        }
+        val padding = (20f * resources.displayMetrics.density).toInt()
+        val container = FrameLayout(this).apply {
+            setPadding(padding, 0, padding, 0)
+            addView(
+                editor,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                ),
+            )
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(localized("传感器输出画面比例", "Sensor output aspect"))
+            .setMessage(
+                localized(
+                    "${state.cameraName(camera)}\n输入会被视为最终输出画面比例，可用 4:3、16:9 或 1.5。" +
+                        "留空或点击重置则恢复自动读取。",
+                    "${state.cameraName(camera)}\nThe entered value is treated as the final output aspect. " +
+                        "Use 4:3, 16:9, or 1.5. Leave blank or reset to use the detected size.",
+                ),
+            )
+            .setView(container)
+            .setNegativeButton(localized("取消", "Cancel"), null)
+            .setNeutralButton(localized("重置", "Reset")) { _, _ ->
+                state.setCameraOutputAspect(storageCameraId, null)
+                cameraController.setPreviewOutputAspectOverride(state.currentCameraOutputAspect())
+                meterLayout.refresh(frameChanged = true)
+            }
+            .setPositiveButton(localized("保存", "Save"), null)
+            .create()
+        dialog.setOnShowListener {
+            applyInterfaceDialogColors(dialog, editor)
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val text = editor.text.toString()
+                val aspect = if (text.isBlank()) null else PreviewOutputGeometry.parseAspect(text)
+                if (text.isNotBlank() && aspect == null) {
+                    editor.error = localized("请输入 4:3、16:9 或 1.0–4.0", "Enter 4:3, 16:9, or 1.0–4.0")
+                    return@setOnClickListener
+                }
+                state.setCameraOutputAspect(storageCameraId, aspect)
+                cameraController.setPreviewOutputAspectOverride(state.currentCameraOutputAspect())
+                meterLayout.refresh(frameChanged = true)
+                dialog.dismiss()
+            }
+        }
+        dialog.show()
+    }
+
+    private fun applyInterfaceDialogColors(dialog: AlertDialog, editor: EditText) {
+        val background = if (state.isDarkMode) Color.BLACK else Color.WHITE
+        val foreground = if (state.isDarkMode) Color.rgb(210, 210, 206) else Color.rgb(20, 20, 20)
+        val muted = if (state.isDarkMode) Color.rgb(145, 145, 142) else Color.rgb(108, 108, 104)
+        dialog.window?.setBackgroundDrawable(ColorDrawable(background))
+        dialog.findViewById<TextView>(android.R.id.message)?.setTextColor(foreground)
+        val titleId = resources.getIdentifier("alertTitle", "id", "android")
+        if (titleId != 0) dialog.findViewById<TextView>(titleId)?.setTextColor(foreground)
+        editor.setTextColor(foreground)
+        editor.setHintTextColor(muted)
+        editor.backgroundTintList = ColorStateList.valueOf(foreground)
+        listOf(
+            AlertDialog.BUTTON_NEGATIVE,
+            AlertDialog.BUTTON_NEUTRAL,
+            AlertDialog.BUTTON_POSITIVE,
+        ).forEach { button -> dialog.getButton(button)?.setTextColor(foreground) }
+    }
+
     private fun enableParameterGps() {
         val hasFine = checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
             PackageManager.PERMISSION_GRANTED
@@ -1581,6 +1696,7 @@ class MainActivity : Activity(), CameraControllerCallback {
         private const val SUPPRESS_ANGLE_COMPATIBILITY_WARNING =
             "suppress_angle_compatibility_warning"
         private const val CAMERA_PERMISSION_REQUEST_MARKER = "camera-permission-requested"
+        private const val BACK_DUPLICATE_GUARD_MS = 400L
         private val TRANSIENT_TOKEN = Any()
     }
 }

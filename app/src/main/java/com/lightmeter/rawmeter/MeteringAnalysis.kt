@@ -429,17 +429,20 @@ internal object MeteringAnalysis {
         screenToSensorTransform: ScreenToSensorCoordinateTransform,
     ): RawMeterPoint {
         val plane = image.planes.firstOrNull()
-        val crop = rawMeterCrop(
-            image.width,
-            image.height,
-            cameraInfo.activeArray,
-            frameAspect,
-            zoom,
+        val active = RectF(validatedActiveRect(image.width, image.height, cameraInfo.activeArray))
+        val visibleCrop = rawVisiblePreviewCrop(
+            active = active,
+            target = target,
+            zoom = zoom,
+            transform = screenToSensorTransform,
         )
-        val approximate = rawPointForScreenCoordinate(
+        val approximate = rawPointForFrameCoordinate(
             target.frameX,
             target.frameY,
-            crop,
+            active,
+            visibleCrop,
+            target,
+            zoom,
             screenToSensorTransform,
         )
         if (plane == null || reference == null ||
@@ -474,10 +477,12 @@ internal object MeteringAnalysis {
             if (candidateX !in 0f..1f || candidateY !in 0f..1f) return
             val rawSamples = sampleRawFeature(
                 sampler,
-                crop,
+                active,
                 candidateX,
                 candidateY,
                 reference,
+                target,
+                zoom,
                 screenToSensorTransform,
             ) ?: return
             val correlation = normalizedCorrelation(reference.samples, rawSamples)
@@ -515,10 +520,13 @@ internal object MeteringAnalysis {
             }
         }
         if (bestCorrelation < MIN_RAW_MATCH_CORRELATION) return approximate
-        val resolved = rawPointForScreenCoordinate(
+        val resolved = rawPointForFrameCoordinate(
             bestX,
             bestY,
-            crop,
+            active,
+            visibleCrop,
+            target,
+            zoom,
             screenToSensorTransform,
         )
         return resolved.copy(matchScore = bestCorrelation)
@@ -779,15 +787,26 @@ internal object MeteringAnalysis {
         roiFraction: Float,
         rawMeterPoint: RawMeterPoint?,
     ): Rect {
-        val crop = rawMeterCrop(
+        val pointCrop = rawMeterPoint?.let {
+            RectF(it.visibleCropLeft, it.visibleCropTop, it.visibleCropRight, it.visibleCropBottom)
+        }?.takeIf {
+            it.left.isFinite() && it.top.isFinite() && it.right.isFinite() &&
+                it.bottom.isFinite() && it.width() > 1f && it.height() > 1f
+        }
+        val crop = pointCrop ?: rawMeterCrop(
             imageWidth,
             imageHeight,
             reportedActiveArray,
             frameAspect,
             zoom,
         )
+        val maximumRoiSize = min(
+            min(imageWidth, imageHeight),
+            min(crop.width(), crop.height()).roundToInt(),
+        ).coerceAtLeast(2)
+        val minimumRoiSize = min(32, maximumRoiSize)
         val roiSize = (min(crop.width(), crop.height()) * roiFraction).roundToInt()
-            .coerceIn(32, min(imageWidth, imageHeight))
+            .coerceIn(minimumRoiSize, maximumRoiSize)
         val centerX = rawMeterPoint?.sensorX ?: crop.centerX()
         val centerY = rawMeterPoint?.sensorY ?: crop.centerY()
         val minLeft = crop.left.roundToInt().coerceIn(0, imageWidth - roiSize)
@@ -895,28 +914,73 @@ internal object MeteringAnalysis {
         )
     }
 
-    private fun rawPointForScreenCoordinate(
-        screenX: Float,
-        screenY: Float,
-        crop: RectF,
+    private fun rawPointForFrameCoordinate(
+        frameX: Float,
+        frameY: Float,
+        active: RectF,
+        visibleCrop: RectF,
+        target: ZoneMeteringTarget,
+        zoom: Float,
         transform: ScreenToSensorCoordinateTransform,
     ): RawMeterPoint {
-        val x = screenX.coerceIn(0f, 1f)
-        val y = screenY.coerceIn(0f, 1f)
-        val (sensorX, sensorY) = transform.map(x, y)
+        val (previewX, previewY) = frameToPreviewCoordinate(frameX, frameY, target, zoom)
+        val (sensorX, sensorY) = transform.map(previewX, previewY)
         return RawMeterPoint(
-            sensorX = crop.left + sensorX * crop.width(),
-            sensorY = crop.top + sensorY * crop.height(),
+            sensorX = active.left + sensorX * active.width(),
+            sensorY = active.top + sensorY * active.height(),
             matchScore = Double.NaN,
+            visibleCropLeft = visibleCrop.left,
+            visibleCropTop = visibleCrop.top,
+            visibleCropRight = visibleCrop.right,
+            visibleCropBottom = visibleCrop.bottom,
         )
+    }
+
+    private fun rawVisiblePreviewCrop(
+        active: RectF,
+        target: ZoneMeteringTarget,
+        zoom: Float,
+        transform: ScreenToSensorCoordinateTransform,
+    ): RectF {
+        val corners = listOf(0f to 0f, 1f to 0f, 0f to 1f, 1f to 1f).map { (x, y) ->
+            val (previewX, previewY) = frameToPreviewCoordinate(x, y, target, zoom)
+            transform.map(previewX, previewY)
+        }
+        val left = corners.minOf { it.first }
+        val top = corners.minOf { it.second }
+        val right = corners.maxOf { it.first }
+        val bottom = corners.maxOf { it.second }
+        return RectF(
+            active.left + left * active.width(),
+            active.top + top * active.height(),
+            active.left + right * active.width(),
+            active.top + bottom * active.height(),
+        )
+    }
+
+    private fun frameToPreviewCoordinate(
+        frameX: Float,
+        frameY: Float,
+        target: ZoneMeteringTarget,
+        zoom: Float,
+    ): Pair<Float, Float> {
+        val geometricX = target.previewX +
+            (frameX - target.frameX) * target.previewFrameWidthFraction
+        val geometricY = target.previewY +
+            (frameY - target.frameY) * target.previewFrameHeightFraction
+        val safeZoom = zoom.coerceAtLeast(1f)
+        return (0.5f + (geometricX - 0.5f) / safeZoom).coerceIn(0f, 1f) to
+            (0.5f + (geometricY - 0.5f) / safeZoom).coerceIn(0f, 1f)
     }
 
     private fun sampleRawFeature(
         sampler: RawGreenSampler,
-        crop: RectF,
+        active: RectF,
         centerX: Float,
         centerY: Float,
         reference: PreviewLumaReference,
+        target: ZoneMeteringTarget,
+        zoom: Float,
         transform: ScreenToSensorCoordinateTransform,
     ): FloatArray? {
         val samples = FloatArray(reference.samples.size)
@@ -926,10 +990,13 @@ internal object MeteringAnalysis {
                 val offsetX = normalizedGridOffset(column, reference.gridSize) * reference.halfSpan
                 val screenX = (centerX + offsetX).coerceIn(0f, 1f)
                 val screenY = (centerY + offsetY).coerceIn(0f, 1f)
-                val point = rawPointForScreenCoordinate(
+                val point = rawPointForFrameCoordinate(
                     screenX,
                     screenY,
-                    crop,
+                    active,
+                    active,
+                    target,
+                    zoom,
                     transform,
                 )
                 samples[row * reference.gridSize + column] =

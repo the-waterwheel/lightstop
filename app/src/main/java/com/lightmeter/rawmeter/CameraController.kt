@@ -120,6 +120,7 @@ class CameraController(
         cameraManager = cameraManager,
         onRawImageAvailable = ::onRawImageAvailable,
         onTrackingImageAvailable = ::onTrackingImageAvailable,
+        sessionParametersProvider = ::createSessionParameters,
         listener = object : CameraSessionCoordinatorListener {
             override fun onCameraOpened(generation: Int) {
                 if (!started || generation != cameraGeneration) return
@@ -432,8 +433,11 @@ class CameraController(
     private var rawOutputSize: Size? = null
     private var trackingOutputSize: Size? = null
     private var previewFpsRange: Range<Int>? = null
-    private var previewFrameRateMode = PreviewFrameRateMode.LOW
-    private var fpsRequestCeiling: Int? = previewFrameRateMode.requestedCeiling
+    @Volatile
+    private var previewOutputAspectOverride: Float? = null
+    private var actualFpsWindowStartNs = 0L
+    private var actualFpsFrameCount = 0
+    private val frameRateController = PreviewFrameRateController()
     @Volatile
     private var latestResult: CaptureResult? = null
     private val previewResultStore = TimestampedCaptureResultStore<CaptureResult>()
@@ -637,29 +641,49 @@ class CameraController(
     fun setPreviewFrameRateMode(mode: PreviewFrameRateMode) {
         val handler = cameraHandler
         if (handler == null) {
-            if (previewFrameRateMode != mode) {
-                previewFrameRateMode = mode
-                fpsRequestCeiling = mode.requestedCeiling
-            }
+            frameRateController.setMode(mode)
             return
         }
         handler.post {
-            if (previewFrameRateMode == mode) return@post
-            previewFrameRateMode = mode
-            fpsRequestCeiling = mode.requestedCeiling
+            if (!frameRateController.setMode(mode)) return@post
             if (!started) return@post
             val profile = activeSessionProfile ?: return@post
             if (!profile.usesPreview) return@post
             previewFpsRange = choosePreviewFpsRange(profile)
-            val fps = previewFpsRange?.upper ?: cameraInfo.previewFps
-            cameraInfo = cameraInfo.copy(previewFps = fps)
+            val range = previewFpsRange
+            val fps = range?.upper ?: cameraInfo.previewFps
+            cameraInfo = cameraInfo.copy(
+                previewFps = fps,
+                previewFpsLower = range?.lower ?: fps,
+                previewFpsUpper = fps,
+            )
             Log.i(
                 TAG,
-                "Viewfinder frame-rate preference=$mode selected=$previewFpsRange " +
+                "Viewfinder frame-rate preference=$mode lowLight=${frameRateController.isLowLight} " +
+                    "selected=$previewFpsRange " +
                     "profile=$profile",
             )
             updatePreviewRepeatingRequest()
+            postInfo(cameraInfo.copy(status = readyCameraStatus()))
         }
+    }
+
+    fun setPreviewOutputAspectOverride(aspect: Float?) {
+        val normalized = aspect
+            ?.takeIf { it.isFinite() && it > 0f }
+            ?.let { max(it, 1f / it).coerceIn(1f, 4f) }
+        val update: () -> Unit = {
+            val current = previewOutputAspectOverride
+            if (current == null && normalized == null ||
+                current != null && normalized != null && abs(current - normalized) < 0.0001f
+            ) {
+                Unit
+            } else {
+                previewOutputAspectOverride = normalized
+                latestResult?.let(::observePreviewSensorViewport)
+            }
+        }
+        cameraHandler?.post(update) ?: update()
     }
 
     /** Uses only the display SurfaceTexture for this controller run; camera selection resets it. */
@@ -745,6 +769,7 @@ class CameraController(
             return
         }
         started = true
+        mainHandler.post(::resetPreviewHealthMonitoring)
         // A new foreground lifecycle is a fresh capability probe. Session downgrades remain
         // sticky only for the current run, preventing a transient HAL failure from permanently
         // hiding RAW or YUV until the user manually changes a setting.
@@ -1409,6 +1434,7 @@ class CameraController(
                 cameraInfo.lensFacing,
             ),
             mirrored = CameraPreviewTransform.shouldMirrorPreview(cameraInfo.lensFacing),
+            sensorViewport = cameraInfo.previewSensorViewport,
         )
         val recentTrackingFrame = zoneCameraFrames.latestFrame(MAX_METERING_REFERENCE_AGE_NS)
         val previewReference = if (plan.target != null && recentTrackingFrame != null) {
@@ -2179,12 +2205,13 @@ class CameraController(
             )
             val rawSize = availableRawSize.takeIf { profile.usesRaw }
             val configuredTrackingSize = trackingSize.takeIf { profile.usesTracking }
-            val chosenRange = fpsRequestCeiling?.let { ceiling ->
+            val chosenRange = frameRateController.requestCeiling?.let { ceiling ->
                 CameraStreamSelector.chooseFpsRange(
                     characteristics = chars,
                     previewSize = chosenPreview,
                     trackingSize = configuredTrackingSize,
                     requestedCeiling = ceiling,
+                    lowLight = frameRateController.isLowLight,
                 )
             }
             previewFpsRange = chosenRange
@@ -2224,6 +2251,8 @@ class CameraController(
                 maxDisplayZoom = maxZoom,
                 previewSize = chosenPreview,
                 previewFps = chosenRange?.upper ?: 30,
+                previewFpsLower = chosenRange?.lower ?: chosenRange?.upper ?: 30,
+                previewFpsUpper = chosenRange?.upper ?: 30,
                 activeArray = activeArray,
                 status = localized("正在打开摄像头", "Opening camera"),
             )
@@ -2557,7 +2586,7 @@ class CameraController(
         manualSafePreviewActive = false
         zoneYuvSessionUnavailable = false
         downgradeAfterCompatibleMeasurement = false
-        fpsRequestCeiling = previewFrameRateMode.requestedCeiling
+        frameRateController.resetForCamera()
         previewHealthRecoveryAttempts = 0
         previewHealthConfirmationPending = false
         previewHealthConfirmationGeneration = -1
@@ -2628,6 +2657,20 @@ class CameraController(
             if (generation == cameraGeneration) handlePreviewRequestFailure(generation)
             return false
         }
+    }
+
+    /** FPS is a Camera2 session parameter; providing it up front avoids 60-fps reconfigure lag. */
+    private fun createSessionParameters(
+        device: CameraDevice,
+        hasPreview: Boolean,
+    ): CaptureRequest? {
+        if (!hasPreview) return null
+        val range = previewFpsRange ?: return null
+        val sessionKeys = (logicalCharacteristics ?: characteristics)?.availableSessionKeys
+        if (sessionKeys?.contains(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE) != true) return null
+        return device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+            set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, range)
+        }.build()
     }
 
     private fun resumePendingCalibrationMetering(generation: Int) {
@@ -2898,9 +2941,7 @@ class CameraController(
 
     private fun handlePreviewRequestFailure(generation: Int) {
         if (generation != cameraGeneration) return
-        val currentCeiling = fpsRequestCeiling
-        if (previewFpsRange != null && currentCeiling != null) {
-            fpsRequestCeiling = CameraStreamSelector.nextFallbackFpsCeiling(currentCeiling)
+        if (previewFpsRange != null && frameRateController.useNextCompatibilityCeiling()) {
             scheduleRecovery(
                 sessionProfile ?: CameraSessionProfile.PREVIEW_ONLY,
                 localized(
@@ -2916,6 +2957,22 @@ class CameraController(
 
     private fun readyCameraStatus(): String {
         val size = "${cameraInfo.previewSize?.width}×${cameraInfo.previewSize?.height}"
+        if (frameRateController.isLowLight) {
+            return if (previewFpsRange?.let {
+                    it.lower < it.upper || it.upper < PreviewFrameRateMode.LOW.requestedCeiling
+                } == true
+            ) {
+                localized(
+                    "$size · 环境光较暗，已自动降低取景帧率",
+                    "$size · Low light; viewfinder frame rate reduced",
+                )
+            } else {
+                localized(
+                    "$size · 环境光过暗",
+                    "$size · Ambient light is too low",
+                )
+            }
+        }
         if (manualSafePreviewActive) {
             return localized("$size · 手动安全预览", "$size · Manual safe preview")
         }
@@ -2933,7 +2990,7 @@ class CameraController(
     }
 
     private fun choosePreviewFpsRange(profile: CameraSessionProfile): Range<Int>? {
-        val ceiling = fpsRequestCeiling ?: return null
+        val ceiling = frameRateController.requestCeiling ?: return null
         val chars = characteristics ?: return null
         val size = previewSize ?: return null
         return CameraStreamSelector.chooseFpsRange(
@@ -2941,6 +2998,7 @@ class CameraController(
             previewSize = size,
             trackingSize = trackingOutputSize.takeIf { profile.usesTracking },
             requestedCeiling = ceiling,
+            lowLight = frameRateController.isLowLight,
         )
     }
 
@@ -2951,6 +3009,44 @@ class CameraController(
                 else plan.normalMeteringProfile
                 meteringProfile == CameraSessionProfile.RAW_ISOLATED
             } ?: (trackingFramesEnabled && recoveryState.profile?.usesRaw == true))
+
+    /** Uses capture metadata only; no bitmap/YUV sampling is needed for low-light adaptation. */
+    private fun observePreviewLighting(result: CaptureResult, timestampNs: Long?) {
+        if (previewManualExposure != null || previewExposureCompensationSteps != 0 ||
+            previewBaselineOperation != null
+        ) {
+            return
+        }
+        val aperture = result.get(CaptureResult.LENS_APERTURE)
+            ?: cameraInfo.aperture.takeIf { it > 0f }
+        val changed = frameRateController.observeExposure(
+            exposureTimeNs = result.get(CaptureResult.SENSOR_EXPOSURE_TIME),
+            sensitivity = result.get(CaptureResult.SENSOR_SENSITIVITY),
+            aperture = aperture,
+            timestampNs = timestampNs,
+            aeRequestsFlash = result.get(CaptureResult.CONTROL_AE_STATE) ==
+                CaptureResult.CONTROL_AE_STATE_FLASH_REQUIRED,
+        )
+        if (!changed) return
+        val profile = activeSessionProfile ?: return
+        if (!profile.usesPreview) return
+        val previousRange = previewFpsRange
+        previewFpsRange = choosePreviewFpsRange(profile)
+        val nextInfo = cameraInfo.copy(
+            previewFps = previewFpsRange?.upper ?: cameraInfo.previewFps,
+            previewFpsLower = previewFpsRange?.lower ?: cameraInfo.previewFpsLower,
+            previewFpsUpper = previewFpsRange?.upper ?: cameraInfo.previewFpsUpper,
+            status = readyCameraStatus(),
+        )
+        cameraInfo = nextInfo
+        Log.i(
+            TAG,
+            "Preview lighting changed lowLight=${frameRateController.isLowLight} " +
+                "fps=$previousRange->$previewFpsRange",
+        )
+        if (previewFpsRange != previousRange) updatePreviewRepeatingRequest()
+        postInfo(nextInfo)
+    }
 
     private val previewCaptureCallback = object : CameraCaptureSession.CaptureCallback() {
         override fun onCaptureCompleted(
@@ -2965,8 +3061,11 @@ class CameraController(
             val timestamp = effectiveResult.get(CaptureResult.SENSOR_TIMESTAMP)
                 ?: result.get(CaptureResult.SENSOR_TIMESTAMP)
             if (timestamp != null) previewResultStore.put(timestamp, effectiveResult)
+            observeActualPreviewFps(timestamp)
+            observePreviewSensorViewport(effectiveResult)
             updateDynamicLensInfo(effectiveResult)
             onPreviewBaselineResult(request, effectiveResult)
+            observePreviewLighting(effectiveResult, timestamp)
             // A few physical-camera HALs omit SENSOR_TIMESTAMP from the physical result even
             // though the logical TotalCaptureResult carries the timestamp for the same frame.
             compatibleMeter.onCaptureResult(
@@ -3086,6 +3185,7 @@ class CameraController(
                 sensorOrientationDegrees = chars.get(CameraCharacteristics.SENSOR_ORIENTATION)
                     ?: cameraInfo.sensorOrientationDegrees,
                 activeArray = activeArray ?: cameraInfo.activeArray,
+                previewSensorViewport = NormalizedSensorViewport.FULL,
             ),
         )
     }
@@ -3113,8 +3213,9 @@ class CameraController(
             // A deliberate session replacement freezes the TextureView briefly. Let the restored
             // preview produce fresh samples before deciding that its output is unhealthy.
             if (zoneRawTransaction != null || pendingResidentSessionProfile != null) return@post
-            if ((previewFpsRange?.upper ?: 0) > PreviewFrameRateMode.LOW.requestedCeiling) {
-                fpsRequestCeiling = PreviewFrameRateMode.LOW.requestedCeiling
+            if ((previewFpsRange?.upper ?: 0) > PreviewFrameRateMode.LOW.requestedCeiling &&
+                frameRateController.limitToStandardRate()
+            ) {
                 scheduleRecovery(
                     sessionProfile ?: CameraSessionProfile.PREVIEW_ONLY,
                     localized(
@@ -3268,6 +3369,7 @@ class CameraController(
                     cameraInfo.lensFacing,
                 ),
                 mirrored = CameraPreviewTransform.shouldMirrorPreview(cameraInfo.lensFacing),
+                sensorViewport = cameraInfo.previewSensorViewport,
             )
             val sensorAspect = CameraPreviewTransform.screenAspectInSensorCoordinates(
                 active.screenAspect,
@@ -3462,6 +3564,8 @@ class CameraController(
         rawOutputSize = null
         trackingOutputSize = null
         previewFpsRange = null
+        actualFpsWindowStartNs = 0L
+        actualFpsFrameCount = 0
         activeSessionProfile = null
         characteristics = null
         logicalCharacteristics = null
@@ -3489,13 +3593,77 @@ class CameraController(
         mainHandler.post { callback.onCameraInfo(info) }
     }
 
+    /** Publishes high-frequency display metadata without turning it into an error-level log. */
+    private fun postRuntimeInfo(info: CameraUiInfo) {
+        cameraInfo = info
+        val generation = cameraGeneration
+        mainHandler.post {
+            if (generation == cameraGeneration && cameraInfo.cameraId == info.cameraId) {
+                callback.onCameraInfo(info)
+            }
+        }
+    }
+
+    private fun observeActualPreviewFps(timestampNs: Long?) {
+        val timestamp = timestampNs ?: return
+        if (actualFpsWindowStartNs <= 0L || timestamp <= actualFpsWindowStartNs) {
+            actualFpsWindowStartNs = timestamp
+            actualFpsFrameCount = 1
+            return
+        }
+        actualFpsFrameCount += 1
+        val elapsed = timestamp - actualFpsWindowStartNs
+        if (elapsed < ACTUAL_FPS_WINDOW_NS) return
+        val fps = ((actualFpsFrameCount - 1) * 1_000_000_000.0 / elapsed)
+            .toFloat()
+            .coerceIn(0f, 240f)
+        actualFpsWindowStartNs = timestamp
+        actualFpsFrameCount = 1
+        postRuntimeInfo(cameraInfo.copy(actualPreviewFps = fps))
+    }
+
+    private fun observePreviewSensorViewport(result: CaptureResult) {
+        val active = cameraInfo.activeArray ?: return
+        val output = previewSize ?: cameraInfo.previewSize ?: return
+        val crop = result.get(CaptureResult.SCALER_CROP_REGION)
+        val zoom = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            result.get(CaptureResult.CONTROL_ZOOM_RATIO)
+        } else {
+            null
+        }
+        val outputAspect = previewOutputAspectOverride
+        val outputWidth = outputAspect?.let { (it * OUTPUT_ASPECT_SCALE).roundToInt() }
+            ?: output.width
+        val outputHeight = if (outputAspect != null) OUTPUT_ASPECT_SCALE else output.height
+        val viewport = PreviewOutputGeometry.sensorViewport(
+            activeLeft = active.left,
+            activeTop = active.top,
+            activeRight = active.right,
+            activeBottom = active.bottom,
+            cropLeft = crop?.left,
+            cropTop = crop?.top,
+            cropRight = crop?.right,
+            cropBottom = crop?.bottom,
+            zoomRatio = zoom,
+            outputWidth = outputWidth,
+            outputHeight = outputHeight,
+        )
+        if (viewport.isCloseTo(cameraInfo.previewSensorViewport)) return
+        Log.i(TAG, "Preview sensor viewport changed ${cameraInfo.previewSensorViewport}->$viewport")
+        postRuntimeInfo(cameraInfo.copy(previewSensorViewport = viewport))
+    }
+
     private fun postMeterError(message: String) {
         mainHandler.post { callback.onMeteringError(message) }
     }
 
     /** Preview bitmap sampling and its monitor state are confined to the main/UI thread. */
     private fun resetPreviewHealthMonitoring() {
-        previewHealthSampler.reset()
+        if (previewHealthDetectionEnabled && started) {
+            previewHealthSampler.restartMonitoringWindow()
+        } else {
+            previewHealthSampler.stopMonitoring()
+        }
         previewHealthRecoveryPending = false
         if (!started) {
             previewHealthConfirmationPending = false
@@ -3522,6 +3690,8 @@ class CameraController(
         private const val STABLE_PREVIEW_RESET_DELAY_MS = 10_000L
         private const val PREVIEW_BASELINE_TIMEOUT_MS = 1_200L
         private const val LOW_PREVIEW_TARGET_FRAME_DURATION_NS = 33_333_333L
+        private const val ACTUAL_FPS_WINDOW_NS = 1_000_000_000L
+        private const val OUTPUT_ASPECT_SCALE = 10_000
         private const val MAX_TOTAL_RECOVERY_ATTEMPTS = 6
         private const val RAW_FAILURES_BEFORE_DOWNGRADE = 2
         private const val MAX_PREVIEW_HEALTH_RECOVERY_ATTEMPTS = 1

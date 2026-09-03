@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.view.HapticFeedbackConstants
@@ -51,22 +52,31 @@ class SettingsView(
 
     private var selectedSectionIndex = 0
     private var closeRect = RectF()
+    private var nestedBackRect = RectF()
     private var tabRects: List<RectF> = emptyList()
+    private var tabSections: List<SettingsSectionSpec> = emptyList()
     private var optionTargets: List<OptionHitTarget> = emptyList()
     private var actionTargets: List<ActionHitTarget> = emptyList()
     private var downX = 0f
     private var downY = 0f
-    private var lastY = 0f
     private var dragging = false
     private var scrollOffset = 0f
     private var maxScrollOffset = 0f
+    private val flingScroller = VerticalFlingScroller(context)
 
     fun selectSection(key: SettingsSectionKey) {
         val index = SettingsCatalog.sections.indexOfFirst { it.key == key }
         if (index < 0) return
         selectedSectionIndex = index
         scrollOffset = 0f
+        flingScroller.cancel()
         invalidate()
+    }
+
+    fun resetNestedSection() {
+        if (SettingsCatalog.sections.getOrNull(selectedSectionIndex)?.key == SettingsSectionKey.MORE) {
+            selectSection(SettingsSectionKey.METERING)
+        }
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -80,6 +90,9 @@ class SettingsView(
         val navGray = if (state.isDarkMode) Color.rgb(102, 102, 100) else Color.rgb(226, 226, 223)
         val divider = if (state.isDarkMode) Color.rgb(72, 72, 70) else Color.rgb(205, 205, 201)
         val red = Color.rgb(166, 27, 36)
+        val sections = SettingsCatalog.sections
+        val section = sections[selectedSectionIndex]
+        val nestedMore = section.key == SettingsSectionKey.MORE
 
         canvas.drawColor(background)
         val headerHeight = minOf(height * 0.15f, 76f * density).coerceAtLeast(58f * density)
@@ -89,43 +102,70 @@ class SettingsView(
 
         val closeWidth = 48f * density
         closeRect = RectF(width - closeWidth, 0f, width.toFloat(), headerHeight)
-        val tabsWidth = closeRect.left
-        val sections = SettingsCatalog.sections
-        val tabWidth = tabsWidth / sections.size
-        tabRects = sections.indices.map { index ->
-            RectF(index * tabWidth, 0f, (index + 1) * tabWidth, headerHeight)
-        }
-        sections.forEachIndexed { index, section ->
-            val rect = tabRects[index]
-            val selected = index == selectedSectionIndex
-            if (selected) {
-                paint.style = Paint.Style.FILL
-                paint.color = foreground
-                canvas.drawRect(rect, paint)
+        if (nestedMore) {
+            tabRects = emptyList()
+            tabSections = emptyList()
+            nestedBackRect = RectF(0f, 0f, 56f * density, headerHeight)
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 1.6f * density
+            paint.color = foreground
+            val arrow = Path().apply {
+                moveTo(nestedBackRect.right - 12f * density, nestedBackRect.centerY())
+                lineTo(nestedBackRect.left + 16f * density, nestedBackRect.centerY())
+                lineTo(nestedBackRect.left + 27f * density, nestedBackRect.centerY() - 9f * density)
+                moveTo(nestedBackRect.left + 16f * density, nestedBackRect.centerY())
+                lineTo(nestedBackRect.left + 27f * density, nestedBackRect.centerY() + 9f * density)
             }
-            boldPaint.textSize = 12f * density
-            boldPaint.color = when {
-                !section.enabled -> Color.rgb(145, 145, 142)
-                selected -> background
-                else -> foreground
-            }
+            canvas.drawPath(arrow, paint)
+            boldPaint.textSize = 14f * density
+            boldPaint.color = foreground
             drawCenteredText(
                 canvas,
                 section.label.resolve(state.menuLanguage),
-                rect.centerX(),
-                rect.centerY(),
+                width / 2f,
+                headerHeight / 2f,
                 boldPaint,
             )
-            if (selected) {
-                paint.style = Paint.Style.FILL
-                paint.color = red
-                canvas.drawRect(
-                    rect.left + 12f * density,
-                    rect.bottom - 2.2f * density,
-                    rect.right - 12f * density,
-                    rect.bottom,
-                    paint,
+        } else {
+            nestedBackRect.setEmpty()
+            val tabsWidth = closeRect.left
+            tabSections = sections.filter { it.key != SettingsSectionKey.MORE }
+            val tabWidth = tabsWidth / tabSections.size
+            tabRects = tabSections.indices.map { index ->
+                RectF(index * tabWidth, 0f, (index + 1) * tabWidth, headerHeight)
+            }
+            tabSections.forEachIndexed { index, tabSection ->
+                val rect = tabRects[index]
+                val selected = tabSection.key == section.key
+                if (selected) {
+                    paint.style = Paint.Style.FILL
+                    paint.color = foreground
+                    canvas.drawRect(rect, paint)
+                }
+                boldPaint.textSize = 12f * density
+                boldPaint.color = when {
+                    !tabSection.enabled -> Color.rgb(145, 145, 142)
+                    selected -> background
+                    else -> foreground
+                }
+                drawCenteredText(
+                    canvas,
+                    tabSection.label.resolve(state.menuLanguage),
+                    rect.centerX(),
+                    rect.centerY(),
+                    boldPaint,
                 )
+                if (selected) {
+                    paint.style = Paint.Style.FILL
+                    paint.color = red
+                    canvas.drawRect(
+                        rect.left + 12f * density,
+                        rect.bottom - 2.2f * density,
+                        rect.right - 12f * density,
+                        rect.bottom,
+                        paint,
+                    )
+                }
             }
         }
 
@@ -148,19 +188,25 @@ class SettingsView(
             paint,
         )
 
-        val section = sections[selectedSectionIndex]
         val topPadding = 14f * density
         val bottomPadding = 18f * density
         val rowGap = 10f * density
         val rowHeight = if (width > height) 74f * density else 84f * density
         val compactActionHeight = if (width > height) 48f * density else 54f * density
-        val actionHeights = section.actions.map { action ->
-            if (action.key == SettingActionKey.SHOW_ABOUT) compactActionHeight else rowHeight
+        val inlineActions = section.inlineActions.values.flatten()
+        val allActions = inlineActions + section.actions
+        fun actionHeight(action: SettingActionSpec): Float = when (action.key) {
+            SettingActionKey.SHOW_ABOUT,
+            SettingActionKey.MANAGE_CAMERAS,
+            SettingActionKey.MANAGE_OUTPUT_ASPECTS,
+            SettingActionKey.SHOW_MORE_SETTINGS,
+            -> compactActionHeight
+            else -> rowHeight
         }
-        val rowCount = section.items.size + section.actions.size
+        val rowCount = section.items.size + allActions.size
         val contentHeight = topPadding +
             section.items.size * rowHeight +
-            actionHeights.sum() +
+            allActions.sumOf { actionHeight(it).toDouble() }.toFloat() +
             max(0, rowCount - 1) * rowGap +
             bottomPadding
         maxScrollOffset = max(0f, contentHeight - (height - headerHeight))
@@ -171,7 +217,66 @@ class SettingsView(
         var y = headerHeight + topPadding - scrollOffset
         val newTargets = mutableListOf<OptionHitTarget>()
         val newActionTargets = mutableListOf<ActionHitTarget>()
-        section.items.forEach { item ->
+        val drawAction: (SettingActionSpec) -> Unit = { action ->
+            val height = actionHeight(action)
+            val sameSurface = action.key in setOf(
+                SettingActionKey.MANAGE_CAMERAS,
+                SettingActionKey.MANAGE_OUTPUT_ASPECTS,
+                SettingActionKey.SHOW_MORE_SETTINGS,
+            )
+            val row = RectF(10f * density, y, width - 10f * density, y + height)
+            paint.style = Paint.Style.FILL
+            paint.color = background
+            canvas.drawRect(row, paint)
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 1f * density
+            paint.color = divider
+            canvas.drawRect(row, paint)
+
+            val verticalInset = if (height == compactActionHeight) 6f * density else 9f * density
+            val button = RectF(
+                row.left + 10f * density,
+                row.top + verticalInset,
+                row.right - 10f * density,
+                row.bottom - verticalInset,
+            )
+            paint.style = Paint.Style.FILL
+            paint.color = if (sameSurface) background else foreground
+            canvas.drawRoundRect(button, 3f * density, 3f * density, paint)
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = if (sameSurface) 1f * density else 1.4f * density
+            paint.color = if (sameSurface) foreground else red
+            canvas.drawRoundRect(button, 3f * density, 3f * density, paint)
+
+            boldPaint.textSize = (if (height == compactActionHeight) 9.5f else 11f) * density
+            boldPaint.color = if (sameSurface) foreground else background
+            val showDescription = action.description != null && height != compactActionHeight
+            val titleY = if (showDescription) button.centerY() - 8f * density else button.centerY()
+            drawCenteredText(
+                canvas,
+                action.label.resolve(state.menuLanguage),
+                button.centerX(),
+                titleY,
+                boldPaint,
+            )
+            if (showDescription) {
+                paint.style = Paint.Style.FILL
+                paint.typeface = Typeface.DEFAULT
+                paint.textSize = 7.5f * density
+                paint.color = background
+                drawCenteredText(
+                    canvas,
+                    requireNotNull(action.description).resolve(state.menuLanguage),
+                    button.centerX(),
+                    button.centerY() + 11f * density,
+                    paint,
+                )
+            }
+            newActionTargets += ActionHitTarget(action, button)
+            y += height + rowGap
+        }
+        section.inlineActions[0].orEmpty().forEach(drawAction)
+        section.items.forEachIndexed { itemIndex, item ->
             val row = RectF(10f * density, y, width - 10f * density, y + rowHeight)
             paint.style = Paint.Style.FILL
             paint.color = background
@@ -231,62 +336,9 @@ class SettingsView(
                 newTargets += OptionHitTarget(item, option, rect)
             }
             y += rowHeight + rowGap
+            section.inlineActions[itemIndex + 1].orEmpty().forEach(drawAction)
         }
-        section.actions.forEachIndexed { index, action ->
-            val actionHeight = actionHeights[index]
-            val row = RectF(10f * density, y, width - 10f * density, y + actionHeight)
-            paint.style = Paint.Style.FILL
-            paint.color = background
-            canvas.drawRect(row, paint)
-            paint.style = Paint.Style.STROKE
-            paint.strokeWidth = 1f * density
-            paint.color = divider
-            canvas.drawRect(row, paint)
-
-            val button = RectF(
-                row.left + 10f * density,
-                row.top + 9f * density,
-                row.right - 10f * density,
-                row.bottom - 9f * density,
-            )
-            paint.style = Paint.Style.FILL
-            paint.color = foreground
-            canvas.drawRoundRect(button, 3f * density, 3f * density, paint)
-            paint.style = Paint.Style.STROKE
-            paint.strokeWidth = 1.4f * density
-            paint.color = red
-            canvas.drawRoundRect(button, 3f * density, 3f * density, paint)
-
-            boldPaint.textSize = 11f * density
-            boldPaint.color = background
-            val titleY = if (action.description == null) {
-                button.centerY()
-            } else {
-                button.centerY() - 8f * density
-            }
-            drawCenteredText(
-                canvas,
-                action.label.resolve(state.menuLanguage),
-                button.centerX(),
-                titleY,
-                boldPaint,
-            )
-            action.description?.let { description ->
-                paint.style = Paint.Style.FILL
-                paint.typeface = Typeface.DEFAULT
-                paint.textSize = 7.5f * density
-                paint.color = background
-                drawCenteredText(
-                    canvas,
-                    description.resolve(state.menuLanguage),
-                    button.centerX(),
-                    button.centerY() + 11f * density,
-                    paint,
-                )
-            }
-            newActionTargets += ActionHitTarget(action, button)
-            y += actionHeight + rowGap
-        }
+        section.actions.forEach(drawAction)
         optionTargets = newTargets
         actionTargets = newActionTargets
         canvas.restore()
@@ -295,30 +347,34 @@ class SettingsView(
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                flingScroller.begin(event)
                 downX = event.x
                 downY = event.y
-                lastY = event.y
                 dragging = false
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
-                val delta = event.y - lastY
                 if (abs(event.y - downY) > touchSlop) dragging = true
                 if (dragging && maxScrollOffset > 0f) {
-                    scrollOffset = (scrollOffset - delta).coerceIn(0f, maxScrollOffset)
+                    scrollOffset = flingScroller.drag(event, scrollOffset, maxScrollOffset)
                     invalidate()
                 }
-                lastY = event.y
                 return true
             }
             MotionEvent.ACTION_UP -> {
                 if (!dragging && abs(event.x - downX) <= touchSlop * 2f) {
                     handleTap(event.x, event.y)
                 }
+                if (flingScroller.finish(event, scrollOffset, maxScrollOffset)) {
+                    postInvalidateOnAnimation()
+                }
                 performClick()
                 return true
             }
-            MotionEvent.ACTION_CANCEL -> return true
+            MotionEvent.ACTION_CANCEL -> {
+                flingScroller.cancel()
+                return true
+            }
         }
         return super.onTouchEvent(event)
     }
@@ -328,18 +384,32 @@ class SettingsView(
         return true
     }
 
+    override fun computeScroll() {
+        flingScroller.compute(maxScrollOffset)?.let {
+            scrollOffset = it
+            postInvalidateOnAnimation()
+        }
+    }
+
     private fun handleTap(x: Float, y: Float) {
         if (closeRect.contains(x, y)) {
             haptic()
             listener?.onCloseRequested()
             return
         }
+        if (nestedBackRect.contains(x, y)) {
+            haptic()
+            selectSection(SettingsSectionKey.METERING)
+            return
+        }
         val tabIndex = tabRects.indexOfFirst { it.contains(x, y) }
         if (tabIndex >= 0) {
-            val section = SettingsCatalog.sections[tabIndex]
-            if (section.enabled && tabIndex != selectedSectionIndex) {
-                selectedSectionIndex = tabIndex
+            val section = tabSections[tabIndex]
+            val sectionIndex = SettingsCatalog.sections.indexOf(section)
+            if (section.enabled && sectionIndex != selectedSectionIndex) {
+                selectedSectionIndex = sectionIndex
                 scrollOffset = 0f
+                flingScroller.cancel()
                 haptic()
                 invalidate()
             }
@@ -348,7 +418,11 @@ class SettingsView(
         val actionTarget = actionTargets.firstOrNull { it.rect.contains(x, y) }
         if (actionTarget != null) {
             haptic()
-            listener?.onActionRequested(actionTarget.action.key)
+            if (actionTarget.action.key == SettingActionKey.SHOW_MORE_SETTINGS) {
+                selectSection(SettingsSectionKey.MORE)
+            } else {
+                listener?.onActionRequested(actionTarget.action.key)
+            }
             return
         }
         val target = optionTargets.firstOrNull { it.rect.contains(x, y) } ?: return

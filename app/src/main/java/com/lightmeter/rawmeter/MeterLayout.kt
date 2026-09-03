@@ -12,6 +12,7 @@ import android.graphics.SurfaceTexture
 import android.util.Log
 import android.util.AttributeSet
 import android.view.TextureView
+import android.view.Surface
 import android.view.View
 import android.view.ViewGroup
 import android.view.animation.DecelerateInterpolator
@@ -48,6 +49,7 @@ class MeterLayout @JvmOverloads constructor(
         fun onSafePreviewRequested()
         fun onCameraSelected(cameraId: String)
         fun onCameraNoteRequested(cameraId: String)
+        fun onCameraAspectRequested(cameraId: String)
         fun onCameraVisibilityRequested(cameraId: String, hidden: Boolean)
         fun onCalibrationMeasureRequested(referenceEv100: Double)
         fun onCalibrationResetRequested()
@@ -90,7 +92,12 @@ class MeterLayout @JvmOverloads constructor(
         filmLatitudeRepository,
         filmReciprocityRepository,
     )
-    private val filmSelectorView = FilmSelectorView(context, state, filmLatitudeRepository)
+    private val filmSelectorView = FilmSelectorView(
+        context,
+        state,
+        filmLatitudeRepository,
+        filmReciprocityRepository,
+    )
     private val parameterRecordRepository = ParameterRecordRepository(context)
     private val parameterRecordToolView = ParameterRecordToolView(context, state, parameterRecordRepository)
     private val parameterRecordEditorView = ParameterRecordEditorView(context, state)
@@ -224,6 +231,9 @@ class MeterLayout @JvmOverloads constructor(
                                 SettingActionKey.MANAGE_CAMERAS -> {
                                     showCameraManagement(CameraManagementOrigin.SETTINGS)
                                 }
+                                SettingActionKey.MANAGE_OUTPUT_ASPECTS -> {
+                                    showCameraManagement(CameraManagementOrigin.SETTINGS)
+                                }
                                 SettingActionKey.START_METERING_CALIBRATION -> {
                                     showCalibration()
                                     value?.onCalibrationOpened()
@@ -232,6 +242,7 @@ class MeterLayout @JvmOverloads constructor(
                                     showVignettingCalibration()
                                     value?.onVignettingCalibrationOpened()
                                 }
+                                SettingActionKey.SHOW_MORE_SETTINGS -> Unit
                                 else -> Unit
                             }
                         }
@@ -242,6 +253,9 @@ class MeterLayout @JvmOverloads constructor(
                             value?.onSafePreviewRequested()
                         }
                         SettingActionKey.MANAGE_CAMERAS -> {
+                            showCameraManagement(CameraManagementOrigin.SETTINGS)
+                        }
+                        SettingActionKey.MANAGE_OUTPUT_ASPECTS -> {
                             showCameraManagement(CameraManagementOrigin.SETTINGS)
                         }
                         SettingActionKey.SHOW_ABOUT -> {
@@ -255,6 +269,7 @@ class MeterLayout @JvmOverloads constructor(
                             showVignettingCalibration()
                             value?.onVignettingCalibrationOpened()
                         }
+                        SettingActionKey.SHOW_MORE_SETTINGS -> Unit
                     }
                 }
             }
@@ -334,6 +349,10 @@ class MeterLayout @JvmOverloads constructor(
 
                 override fun onCameraNoteRequested(cameraId: String) {
                     value?.onCameraNoteRequested(cameraId)
+                }
+
+                override fun onCameraAspectRequested(cameraId: String) {
+                    value?.onCameraAspectRequested(cameraId)
                 }
 
                 override fun onCameraVisibilityRequested(cameraId: String, hidden: Boolean) {
@@ -674,6 +693,12 @@ class MeterLayout @JvmOverloads constructor(
             override fun onFilmRangeReset(profile: FilmLatitudeProfile) {
                 if (filmSelectionTarget == FilmSelectionTarget.LATITUDE) {
                     latitudeView.onFilmRangeReset(profile)
+                }
+            }
+
+            override fun onFilmReciprocityChanged(profile: FilmLatitudeProfile) {
+                if (filmSelectionTarget == FilmSelectionTarget.RECIPROCITY) {
+                    reciprocityView.onFilmReciprocityChanged(profile)
                 }
             }
         }
@@ -1232,7 +1257,13 @@ class MeterLayout @JvmOverloads constructor(
         if (isFilmSelectorOpen || !allowed) return
         filmSelectionTarget = target
         isFilmSelectorOpen = true
-        filmSelectorView.open()
+        filmSelectorView.open(
+            if (target == FilmSelectionTarget.RECIPROCITY) {
+                FilmSelectorMode.RECIPROCITY
+            } else {
+                FilmSelectorMode.STANDARD
+            },
+        )
         filmSelectorView.animate().cancel()
         filmSelectorView.visibility = View.VISIBLE
         filmSelectorView.bringToFront()
@@ -1636,6 +1667,7 @@ class MeterLayout @JvmOverloads constructor(
             .withEndAction {
                 if (!isSettingsOpen) {
                     settingsView.visibility = View.GONE
+                    settingsView.resetNestedSection()
                     updateAngleMeteringControl()
                 }
             }
@@ -2035,14 +2067,16 @@ class MeterLayout @JvmOverloads constructor(
         // Vignetting calibration needs the entire camera output, including the corners. Its
         // overlay is already fitted to the stream aspect, so never enlarge/crop this TextureView.
         if (showFullPreview) return RectF(cameraFrame)
-        val previewSize = state.cameraInfo.previewSize
-        val longAspect = if (previewSize != null && previewSize.width > 0 && previewSize.height > 0) {
-            max(previewSize.width, previewSize.height).toFloat() /
-                min(previewSize.width, previewSize.height).toFloat()
-        } else {
-            16f / 9f
-        }
-        val displayedAspect = if (width > height) longAspect else 1f / longAspect
+        val info = state.cameraInfo
+        val relativeRotation = CameraPreviewTransform.relativeRotationDegrees(
+            sensorOrientationDegrees = info.sensorOrientationDegrees,
+            displayRotation = textureView.display?.rotation ?: Surface.ROTATION_0,
+            lensFacing = info.lensFacing,
+        )
+        val displayedAspect = PreviewOutputGeometry.displayAspect(
+            landscapeAspect = state.currentPreviewLandscapeAspect(),
+            relativeRotationDegrees = relativeRotation,
+        )
         val frameAspect = cameraFrame.width() / cameraFrame.height().coerceAtLeast(1f)
         return if (frameAspect > displayedAspect) {
             val textureHeight = cameraFrame.width() / displayedAspect

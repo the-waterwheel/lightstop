@@ -10,15 +10,21 @@ package com.lightmeter.rawmeter
 internal data class ScreenToSensorCoordinateTransform(
     val rotationDegrees: Int,
     val mirrored: Boolean,
+    val sensorViewport: NormalizedSensorViewport = NormalizedSensorViewport.FULL,
 ) {
     fun map(screenX: Float, screenY: Float): Pair<Float, Float> {
         val x = (if (mirrored) 1f - screenX else screenX).coerceIn(0f, 1f)
         val y = screenY.coerceIn(0f, 1f)
-        return when (((rotationDegrees % 360) + 360) % 360) {
+        val (localX, localY) = when (((rotationDegrees % 360) + 360) % 360) {
             90 -> y to (1f - x)
             180 -> (1f - x) to (1f - y)
             270 -> (1f - y) to x
             else -> x to y
         }
+        return (
+            sensorViewport.left + localX * sensorViewport.width
+            ).coerceIn(0f, 1f) to (
+            sensorViewport.top + localY * sensorViewport.height
+            ).coerceIn(0f, 1f)
     }
 }

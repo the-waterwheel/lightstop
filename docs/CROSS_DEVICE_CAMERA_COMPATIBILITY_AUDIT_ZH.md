@@ -310,7 +310,7 @@ data class CalibrationSignature(
 - 逻辑自动相机与用户可选的固定物理摄像头分别保存，不共享 correction；
 - 校准过程中若活动物理 ID 改变，立即中止当前来源，不把跨镜头平均值写入数据库。
 
-当前 Vivo V2405A 的硬编码 baseline 仅对 camera ID `0` 命中，而物理路由身份可能是 `0@2`，存在已知值失效或错误复用风险。实施时二选一：
+Vivo V2405A 的旧硬编码 baseline 曾只对 camera ID `0` 命中，而物理路由身份可能是 `0@2`，存在已知值失效或错误复用风险。当前实现已采用下列方案 2，固定 baseline 不再参与读数：
 
 1. 将已知 baseline 明确迁移为“经验证的 runtime route 别名”；或
 2. 删除设备硬编码 baseline，只保留用户校准。

@@ -1,6 +1,6 @@
 package com.lightmeter.rawmeter
 
-/** Product boundary for the calculator: normal results stop at 24 h, exact data may extend it. */
+/** Product boundary for the calculator: every displayed corrected result stays below 24 h. */
 internal object ReciprocityLimitPolicy {
     const val NORMAL_RESULT_LIMIT_SECONDS = 24.0 * 60.0 * 60.0
 
@@ -8,39 +8,19 @@ internal object ReciprocityLimitPolicy {
         if (method == null || method.type in setOf(ReciprocityMethodType.NONE, ReciprocityMethodType.RANGE)) {
             return NORMAL_RESULT_LIMIT_SECONDS
         }
-        val exactCeiling = exactInputCeiling(method)
-        if (exactCeiling != null && exactResultExceedsNormalLimit(method, exactCeiling)) {
-            return exactCeiling
+        if (method.type == ReciprocityMethodType.BOUNDED_UNCHANGED) {
+            return method.officialMaximumSeconds
+                ?.coerceIn(MIN_INPUT_SECONDS, NORMAL_RESULT_LIMIT_SECONDS - EPSILON)
+                ?: NORMAL_RESULT_LIMIT_SECONDS
         }
         val ticks = ReciprocityShutterScale.ticks(step, NORMAL_RESULT_LIMIT_SECONDS)
         return ticks.lastOrNull { tick ->
             ReciprocityMath.calculate(method, tick.nominalSeconds).correctedSeconds
-                ?.let { it <= NORMAL_RESULT_LIMIT_SECONDS + EPSILON }
+                ?.let { it < NORMAL_RESULT_LIMIT_SECONDS - EPSILON }
                 ?: false
         }?.nominalSeconds ?: ticks.first().nominalSeconds
     }
 
-    private fun exactInputCeiling(method: ReciprocityMethod): Double? = when (method.type) {
-        ReciprocityMethodType.TABLE -> {
-            val lastNode = method.points
-                .filter { point ->
-                    method.officialMaximumSeconds?.let { point.meteredSeconds <= it + EPSILON } ?: true
-                }
-                .maxByOrNull(ReciprocityPoint::meteredSeconds)
-            lastNode?.meteredSeconds
-        }
-        ReciprocityMethodType.FIXED_EV,
-        ReciprocityMethodType.POWER,
-        -> method.officialMaximumSeconds
-        ReciprocityMethodType.NONE,
-        ReciprocityMethodType.RANGE,
-        -> null
-    }
-
-    private fun exactResultExceedsNormalLimit(method: ReciprocityMethod, ceiling: Double): Boolean =
-        ReciprocityMath.calculate(method, ceiling).correctedSeconds
-            ?.let { it > NORMAL_RESULT_LIMIT_SECONDS + EPSILON }
-            ?: false
-
     private const val EPSILON = 1e-9
+    private const val MIN_INPUT_SECONDS = 1.0 / 8000.0
 }

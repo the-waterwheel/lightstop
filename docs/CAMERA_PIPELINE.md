@@ -97,11 +97,14 @@ sensors are filtered out even if they expose a `SurfaceTexture` output.
   Zone measurements, avoiding resident preview + RAW and `FULL` combinations.
 - Before resident RAW or vignetting capture, repeating requests stop and resume
   on success and every error path.
-- The General setting defaults to Low, selecting an advertised range at or
-  below 30 fps. High may select an advertised regular-session range up to
-  60 fps after applying the preview/YUV minimum-frame-duration ceiling. A
-  rejected request falls back through 30 fps, 24 fps, and no explicit range;
-  this fallback is independent of the RAW/YUV/ISP workflow matrix.
+- The General setting defaults to Standard, selecting an advertised range at
+  or below 30 fps. Smooth may select an advertised regular-session range up to
+  60 fps after applying the preview/YUV minimum-frame-duration ceiling. The
+  initial advertised range is also supplied as a session parameter when the
+  camera declares that key. Neutral AE exposure metadata enters low-light mode
+  after 750 ms and prefers a variable range near 15–30 fps; returning to normal
+  requires two seconds above the exit threshold. A rejected request falls back
+  through 30 fps, 24 fps, and no explicit range independently of the workflow.
 - If health analysis sees an invalid frame above 30 fps, it first retries the
   same workflow at the Low ceiling. Stream-combination search starts only if
   that lower-rate preview is also unhealthy.
@@ -306,7 +309,7 @@ RAW 分离 -> RAW 完全瞬时隔离 -> FULL -> 稳定 YUV -> 兼容 ISP
 - 高精度 Zone 跟踪常驻预览 + YUV；1–3 帧测光窗口切换到 `RAW_ISOLATED`，屏幕保留最后一个 TextureView 缓冲，成功或错误路径都恢复预览 + YUV。
 - 受限 HAL 可让普通测光与 Zone 都采用 RAW 完全瞬时隔离，避免常驻预览 + RAW 和 `FULL` 组合。
 - 常驻 RAW 或暗角捕获开始前停止重复请求，成功和所有错误路径都会恢复预览。
-- 通用设置默认“低帧率”，从当前相机声明的 30 fps 及以下范围中选择。“高帧率”在预览/YUV 最小帧时长允许时可选择设备声明的最高 60 fps 普通会话范围。厂商拒绝时依次回退 30 fps、24 fps，最后不指定帧率并交回系统默认；帧率回退与 RAW/YUV/ISP 组合矩阵相互独立。
+- 通用设置默认“标准（最高 30 fps）”，从当前相机声明的 30 fps 及以下范围中选择；“流畅（最高 60 fps）”仅在预览/YUV 最小帧时长允许时选择设备声明的普通会话范围。相机声明 FPS 为 session key 时，初始范围也会在创建会话时提前提交。中性 AE 元数据持续 750 ms 低于暗光阈值后，优先改用厂商声明的约 15–30 fps 可变范围；亮度恢复需连续两秒超过退出阈值。厂商拒绝时依次回退 30 fps、24 fps，最后不指定帧率并交回系统默认；该回退与 RAW/YUV/ISP 组合矩阵相互独立。
 - 健康检测若在实际高于 30 fps 时发现异常帧，会先保持当前工作流并按低帧率复测；只有低帧率下仍异常才进入流组合筛选。
 - 同一个重复请求会驱动其目标输出，因此 HAL 支持时高帧率也会提高 Zone 常驻 YUV 的送帧频率。跟踪管线只取最新图像，并在忙碌时丢帧，避免队列和延迟无界增长。
 
@@ -388,7 +391,7 @@ Bayer/native 统计器，更不得以 RGGB 作为默认猜测。
 该线程释放 session、device、readers 后回到主线程完成 thread 交接；如果在此期间重新进入前台，
 启动请求会延后到旧线程彻底结束，从而避免旧 generation 关闭新会话。
 
-预览健康检测在 UI 线程每四个显示帧取一次 64×64 临时样本，立即分析后回收 bitmap。纯分析器对
+预览健康检测只在应用/相机启动或替换后的六秒窗口内，于 UI 线程每四个显示帧取一次 64×64 临时样本，窗口结束后不再调用 `getBitmap()`。纯分析器对
 绿色、近黑和冻结画面只给出 suspect，避免把真实场景误判为故障；持续六帧的高对比周期性横/竖
 黑白条纹才会触发一次 `PREVIEW_ONLY` 安全会话恢复。恢复的安全会话必须再连续通过三次独立健康
 采样才被接受；确认期间再次出现条纹时，固定物理镜头退回逻辑相机作对照，逻辑路线则显示最终故障。

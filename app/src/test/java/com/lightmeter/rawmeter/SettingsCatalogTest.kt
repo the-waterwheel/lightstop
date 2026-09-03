@@ -78,9 +78,9 @@ class SettingsCatalogTest {
     }
 
     @Test
-    fun meteringSectionOffersPreviewHealthControlAndManualSafePreview() {
-        val metering = SettingsCatalog.sections.single { it.key == SettingsSectionKey.METERING }
-        val health = metering.items.single {
+    fun moreSectionOffersPreviewHealthInfoBarAndManualSafePreview() {
+        val more = SettingsCatalog.sections.single { it.key == SettingsSectionKey.MORE }
+        val health = more.items.single {
             it.key == SettingKey.PREVIEW_HEALTH_DETECTION
         }
 
@@ -88,7 +88,20 @@ class SettingsCatalogTest {
             listOf(PreviewHealthDetectionMode.ON.name, PreviewHealthDetectionMode.OFF.name),
             health.options.map { it.value },
         )
-        assertTrue(metering.actions.any { it.key == SettingActionKey.USE_SAFE_PREVIEW })
+        assertTrue(more.items.any { it.key == SettingKey.PREVIEW_INFORMATION_BAR })
+        assertTrue(more.actions.any { it.key == SettingActionKey.USE_SAFE_PREVIEW })
+        assertTrue(more.actions.any { it.key == SettingActionKey.MANAGE_OUTPUT_ASPECTS })
+    }
+
+    @Test
+    fun cameraActionsFollowTheThreeExposureStepRows() {
+        val metering = SettingsCatalog.sections.single { it.key == SettingsSectionKey.METERING }
+
+        assertEquals(
+            listOf(SettingActionKey.MANAGE_CAMERAS),
+            metering.inlineActions.getValue(3).map { it.key },
+        )
+        assertEquals(listOf(SettingActionKey.SHOW_MORE_SETTINGS), metering.actions.map { it.key })
     }
 
     @Test
@@ -130,7 +143,7 @@ class SettingsCatalogTest {
             frameRate.options.map { it.value },
         )
         assertEquals(
-            listOf("低帧率", "高帧率"),
+            listOf("标准（最高 30 fps）", "流畅（最高 60 fps）"),
             frameRate.options.map { it.label.resolve(MenuLanguage.CHINESE) },
         )
         assertEquals(30, PreviewFrameRateMode.LOW.requestedCeiling)

@@ -854,7 +854,7 @@ class InstrumentView(
     }
 
     private fun drawStatus(canvas: Canvas, g: LayoutGeometry) {
-        val message = state.transientMessage ?: state.cameraInfo.status
+        val message = PreviewInformationLine.text(state)
         if (message.isBlank()) return
         paint.style = Paint.Style.FILL
         paint.color = if (state.transientMessage != null) red else middleGray

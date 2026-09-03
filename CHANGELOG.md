@@ -3,8 +3,24 @@
 All notable user-facing changes are recorded here. The project follows
 [Semantic Versioning](https://semver.org/) for public releases.
 
-## Unreleased
+## 0.3.0 - 2026-09-03
 
+- Moved sensor-output aspect overrides into a nested More Settings page reached
+  from Metering, removed More from the top-level settings tabs, and matched the
+  camera/aspect controls to the active settings surface color.
+- Increased the primary aperture and shutter readouts in both Normal and Zone,
+  limited the Normal aperture readout to one decimal place, and reduced tick
+  spacing to two-thirds while keeping scale-drag sensitivity synchronized.
+- Removed reciprocity algorithm/source labels from film selection and the
+  selected-film card; film name, ISO, and unavailable state remain visible.
+- Added per-film reciprocity editing and custom-film creation. Users can enter
+  discrete points, a power-law exponent, fixed-EV compensation, or a finite
+  no-compensation range; overrides are stored separately and can be reset to
+  the bundled data.
+- Changed discrete reciprocity interpolation to explicit exposure-stop space
+  (`log2` time) with a shape-preserving cubic curve and a continuous entry from
+  the no-compensation range. Replaced several step-like or over-broad public
+  models with audited smooth node curves.
 - Added a General viewfinder-frame-rate preference. Low remains the default
   and preserves the existing 30 fps ceiling; High can try advertised regular
   session ranges up to 60 fps when current stream durations permit it. FPS

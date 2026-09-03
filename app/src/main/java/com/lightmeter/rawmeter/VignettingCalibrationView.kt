@@ -10,6 +10,7 @@ import android.graphics.RectF
 import android.graphics.Typeface
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
+import android.view.Surface
 import android.view.View
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -638,7 +639,7 @@ class VignettingCalibrationView(
             previewBounds = RectF(pad, headerHeight + gap, w - pad, h * 0.61f)
             controls = RectF(pad, h * 0.61f + gap, w - pad, h - pad)
         }
-        val preview = fitAspect(previewBounds, fullPreviewAspect(landscape))
+        val preview = fitAspect(previewBounds, fullPreviewAspect())
         val cameraWidth = minOf(preview.width() - 14f * density, 210f * density)
             .coerceAtLeast(96f * density)
         val camera = RectF(
@@ -667,15 +668,14 @@ class VignettingCalibrationView(
         return Geometry(preview, back, reset, camera, controls, historyRows, primary)
     }
 
-    private fun fullPreviewAspect(landscape: Boolean): Float {
-        val size = state.cameraInfo.previewSize
-        val longAspect = if (size != null && size.width > 0 && size.height > 0) {
-            max(size.width, size.height).toFloat() / min(size.width, size.height).toFloat()
-        } else {
-            4f / 3f
-        }
-        return if (landscape) longAspect else 1f / longAspect
-    }
+    private fun fullPreviewAspect(): Float = PreviewOutputGeometry.displayAspect(
+        landscapeAspect = state.currentPreviewLandscapeAspect(),
+        relativeRotationDegrees = CameraPreviewTransform.relativeRotationDegrees(
+            sensorOrientationDegrees = state.cameraInfo.sensorOrientationDegrees,
+            displayRotation = display?.rotation ?: Surface.ROTATION_0,
+            lensFacing = state.cameraInfo.lensFacing,
+        ),
+    )
 
     private fun fitAspect(bounds: RectF, aspect: Float): RectF {
         val boundsAspect = bounds.width() / bounds.height()

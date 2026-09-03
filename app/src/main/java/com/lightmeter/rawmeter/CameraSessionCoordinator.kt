@@ -7,6 +7,7 @@ import android.hardware.camera2.CameraAccessException
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
+import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.SessionConfiguration
 import android.media.ImageReader
@@ -44,6 +45,7 @@ internal class CameraSessionCoordinator(
     private val cameraManager: CameraManager,
     private val onRawImageAvailable: (ImageReader) -> Unit,
     private val onTrackingImageAvailable: (ImageReader) -> Unit,
+    private val sessionParametersProvider: (CameraDevice, Boolean) -> CaptureRequest?,
     private val listener: CameraSessionCoordinatorListener,
 ) {
     @Volatile
@@ -279,6 +281,9 @@ internal class CameraSessionCoordinator(
                 executor,
                 stateCallback,
             )
+            sessionParametersProvider(camera, preview != null)?.let {
+                configuration.setSessionParameters(it)
+            }
             val supported = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 try {
                     camera.isSessionConfigurationSupported(configuration)

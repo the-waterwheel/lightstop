@@ -64,11 +64,13 @@ code.
   at a time, reducing delay and motion error.
 - Single-frame preview metering: try up to three ISP-processed YUV frames for
   at most 250 ms, then try a strictly timestamp-paired displayed-preview sample.
-- `General` → `Viewfinder frame rate` defaults to Low, preserving the existing
-  advertised range at or below 30 fps. High tries an advertised regular-session
-  range up to 60 fps only when the active preview/YUV stream durations allow it;
-  rejection falls back through 30 fps, 24 fps, and the HAL default without
-  downgrading the selected RAW/YUV/ISP workflow.
+- `General` → `Viewfinder frame rate` defaults to Standard (up to 30 fps).
+  Smooth tries an advertised regular-session range up to 60 fps only when the
+  active preview/YUV stream durations allow it. Neutral AE metadata detects a
+  sustained low-light scene and prefers an advertised variable range such as
+  15–30 fps; brightness recovery uses a longer hysteresis window. Rejection
+  still falls back through 30 fps, 24 fps, and the HAL default without changing
+  the selected RAW/YUV/ISP workflow.
 - Manual exposure preview prioritizes a responsive shutter (normally at least
   1/30 s, no slower than 1/15 s in low light) and raises ISO first. Metering
   restores neutral AE before sampling so an exposure-preview frame is never
@@ -80,9 +82,11 @@ code.
 - Camera-session recovery and workflow search reduce stream pressure from RAW
   workflows to Stable YUV, Compatibility ISP, and finally a logical-camera route
   when appropriate.
-- Bounded preview-health detection for repeated periodic green/black-white
-  stripe failures. A recovered safe preview must pass three further samples;
-  this does not classify real green or dark scenes as camera failures.
+- Preview-health bitmap sampling is limited to six seconds after app/camera
+  start or replacement. It detects repeated periodic green/black-white stripe
+  failures without becoming a permanent UI-thread cost. A recovered safe
+  preview must pass three further samples; real green or dark scenes are not
+  classified as camera failures.
 - Spot and center-weighted metering.
 - Per-camera calibration separately displays **RAW sensor**, **YUV compatible stream**, and
   **ISP display preview** corrections. One run calibrates every source the hardware can
@@ -112,6 +116,11 @@ code.
 - The reciprocity calculator caps ordinary corrected results at 24 hours,
   retains a manufacturer-defined exact-data cutoff when that data explicitly
   extends further, and labels multi-part results with `h`, `min`, and `s`.
+- Discrete reciprocity nodes are fitted with a shape-preserving cubic curve in
+  `log2(metered time) -> log2(corrected/metered)` compensation-stop space. Built-in films can be
+  edited or supplemented with points, a power law, fixed EV, or a finite
+  no-compensation range; custom films can be added, and every user override can
+  be reset independently to the bundled definition.
 - Chinese and English menus, light and dark themes, and complete right- or
   left-handed layouts.
 - A bilingual About screen with the application version, AI-assisted
@@ -164,6 +173,9 @@ code.
 - Drag the `zone` handle into the page to enter Zone System mode.
 - Tap the gear for metering, general, camera-management, and calibration
   settings; Zone mode has the same gear at its viewfinder's bottom-left corner.
+- `More settings` is a nested entry at the bottom of Metering; preview-health
+  detection, the information bar, manual safe preview, and per-lens output
+  aspect overrides are grouped there.
 - In `Metering combination selection`, keep `System` for automatic matrix and
   health probing, or choose `Manual` to inspect candidate workflows yourself.
   If no candidate has finished preflight yet, wait for the camera to become
@@ -177,9 +189,10 @@ code.
   tools are complete.
 - Open `General` → `About` for the metering-result notice; the open-source
   license browser is available after the About text.
-- High viewfinder frame rate can increase power, heat, and YUV tracking work,
-  and may shorten AE exposure in low light. Low remains the compatibility-first
-  default; neither option changes metering math or calibration data.
+- Smooth viewfinder mode can increase power, heat, and YUV tracking work.
+  Standard remains the compatibility-first default, and both modes permit an
+  automatic advertised low-light range; neither changes metering math or
+  calibration data.
 
 ## Project structure
 
@@ -204,6 +217,7 @@ app/src/main/java/com/lightmeter/rawmeter
 ├─ CompatibleMeteringPolicy.kt       single-frame compatibility limits
 ├─ CameraCatalog.kt                  logical/physical camera discovery
 ├─ CameraStreamSelector.kt           preview, tracking stream, and FPS choice
+├─ PreviewFrameRateController.kt     FPS fallback and low-light hysteresis
 ├─ CameraPreviewTransform.kt         preview orientation and crop transform
 ├─ ScreenToSensorCoordinateTransform.kt  shared front-mirror/rotation mapping
 ├─ PreviewHealthAnalyzer.kt          bounded green/stripe/frozen-frame analysis
@@ -284,9 +298,9 @@ app/build/outputs/apk/release/app-release-unsigned.apk
 app/build/outputs/bundle/release/app-release.aab
 ```
 
-For version 0.2.2 with the slimmed r2 OpenCV runtime, the verified unsigned
-universal APK is 42,102,352 bytes (40.15 MiB), and the release AAB is
-18,660,835 bytes (17.80 MiB). Native libraries dominate the universal APK;
+For version 0.3.0 with the slimmed r2 OpenCV runtime, the verified unsigned
+universal APK is 42,154,080 bytes (40.20 MiB), and the release AAB is
+18,735,241 bytes (17.87 MiB). Native libraries dominate the universal APK;
 R8 reduces the compressed DEX payload to about 1.07 MiB. The same build with the
 previous r1 OpenCV runtime was 76,056,239 bytes (72.53 MiB) for the universal
 APK and 32,959,091 bytes (31.43 MiB) for the AAB.
@@ -308,15 +322,15 @@ $buildTools = (Get-ChildItem "$env:LOCALAPPDATA\Android\Sdk\build-tools" -Direct
 New-Item -ItemType Directory -Force dist | Out-Null
 & "$buildTools\zipalign.exe" -f -p 4 `
   app\build\outputs\apk\release\app-release-unsigned.apk `
-  dist\lightstop-v0.2.2-aligned.apk
+  dist\lightstop-v0.3.0-aligned.apk
 & "$buildTools\apksigner.bat" sign `
   --ks C:\secure\lightstop-release.jks `
   --ks-key-alias lightstop `
-  --out dist\lightstop-v0.2.2-universal.apk `
-  dist\lightstop-v0.2.2-aligned.apk
+  --out dist\lightstop-v0.3.0-universal.apk `
+  dist\lightstop-v0.3.0-aligned.apk
 & "$buildTools\apksigner.bat" verify --verbose --print-certs `
-  dist\lightstop-v0.2.2-universal.apk
-Get-FileHash dist\lightstop-v0.2.2-universal.apk -Algorithm SHA256 |
+  dist\lightstop-v0.3.0-universal.apk
+Get-FileHash dist\lightstop-v0.3.0-universal.apk -Algorithm SHA256 |
   Format-List Algorithm, Hash, Path
 ```
 
@@ -327,12 +341,12 @@ source, create an annotated tag, and push both commit and tag:
 
 ```powershell
 git status
-git tag -a v0.2.2 -m "lightstop 0.2.2"
+git tag -a v0.3.0 -m "lightstop 0.3.0"
 git push origin HEAD:main
-git push origin v0.2.2
+git push origin v0.3.0
 ```
 
-On GitHub, create a Release from `v0.2.2`, retain the generated source archives,
+On GitHub, create a Release from `v0.3.0`, retain the generated source archives,
 and upload the signed universal APK, a text file containing its SHA-256, plus
 `LICENSE`, `NOTICE`, and `THIRD_PARTY_NOTICES.md`. Verify the uploaded APK after
 downloading it once; a GitHub Release is a distribution record, while the

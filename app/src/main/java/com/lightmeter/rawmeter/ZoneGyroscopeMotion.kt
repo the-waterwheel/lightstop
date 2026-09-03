@@ -160,25 +160,31 @@ internal class ZoneGyroscopeMotion(
         val screenAspect = width.toDouble() / height.coerceAtLeast(1).toDouble()
         var horizontalFov = Math.toRadians(64.0)
         var verticalFov = 2.0 * atan(tan(horizontalFov / 2.0) / screenAspect)
-        if (info.focalLengthMm > 0f && info.sensorWidthMm > 0f && info.sensorHeightMm > 0f) {
+        val visibleSensor = meterState.previewVisibleSensorSizeMm()
+        if (info.focalLengthMm > 0f && visibleSensor != null) {
             val relativeRotation = (info.sensorOrientationDegrees - displayDegrees + 360) % 360
             val frameAspectInSensor = if (relativeRotation == 90 || relativeRotation == 270) {
                 1.0 / screenAspect
             } else {
                 screenAspect
             }
-            val sensorAspect = info.sensorWidthMm.toDouble() / info.sensorHeightMm.toDouble()
+            val sensorAspect = visibleSensor.width / visibleSensor.height
             val cropWidth: Double
             val cropHeight: Double
             if (sensorAspect > frameAspectInSensor) {
-                cropHeight = info.sensorHeightMm.toDouble()
+                cropHeight = visibleSensor.height
                 cropWidth = cropHeight * frameAspectInSensor
             } else {
-                cropWidth = info.sensorWidthMm.toDouble()
+                cropWidth = visibleSensor.width
                 cropHeight = cropWidth / frameAspectInSensor
             }
-            val physicalWidth = if (relativeRotation == 90 || relativeRotation == 270) cropHeight else cropWidth
-            val physicalHeight = if (relativeRotation == 90 || relativeRotation == 270) cropWidth else cropHeight
+            val displayZoom = meterState.zoom.toDouble().coerceAtLeast(1.0)
+            val physicalWidth = (
+                if (relativeRotation == 90 || relativeRotation == 270) cropHeight else cropWidth
+                ) / displayZoom
+            val physicalHeight = (
+                if (relativeRotation == 90 || relativeRotation == 270) cropWidth else cropHeight
+                ) / displayZoom
             horizontalFov = 2.0 * atan(physicalWidth / (2.0 * info.focalLengthMm))
             verticalFov = 2.0 * atan(physicalHeight / (2.0 * info.focalLengthMm))
         }

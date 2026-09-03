@@ -1,6 +1,7 @@
 package com.lightmeter.rawmeter
 
 import android.graphics.SurfaceTexture
+import android.os.SystemClock
 import android.util.Log
 import android.view.TextureView
 
@@ -10,6 +11,7 @@ internal class PreviewHealthSampler(
     private val onHealthyPreviewConfirmed: () -> Unit = {},
 ) {
     private val monitor = PreviewHealthMonitor()
+    private val samplingWindow = PreviewHealthSamplingWindow(HEALTH_CHECK_WINDOW_NS)
     private var sampledFrames = 0
     private var lastDecision: PreviewHealthDecision? = null
     private var healthyStreak = 0
@@ -20,6 +22,7 @@ internal class PreviewHealthSampler(
         surface: SurfaceTexture,
         cameraStarted: Boolean,
     ) {
+        if (!samplingWindow.isActive(SystemClock.elapsedRealtimeNanos())) return
         sampledFrames += 1
         if (sampledFrames % SAMPLE_INTERVAL != 0 || !cameraStarted) return
         val view = texture ?: return
@@ -50,6 +53,7 @@ internal class PreviewHealthSampler(
             )
         }
         if (decision.state == PreviewHealthState.FAILED) {
+            samplingWindow.stop()
             onFailure(decision.reason ?: return)
         } else if (!healthyPreviewReported && healthyStreak >= HEALTHY_CONFIRMATION_FRAMES) {
             healthyPreviewReported = true
@@ -57,7 +61,17 @@ internal class PreviewHealthSampler(
         }
     }
 
-    fun reset() {
+    fun restartMonitoringWindow() {
+        monitor.reset()
+        sampledFrames = 0
+        lastDecision = null
+        healthyStreak = 0
+        healthyPreviewReported = false
+        samplingWindow.restart(SystemClock.elapsedRealtimeNanos())
+    }
+
+    fun stopMonitoring() {
+        samplingWindow.stop()
         monitor.reset()
         sampledFrames = 0
         lastDecision = null
@@ -70,5 +84,28 @@ internal class PreviewHealthSampler(
         private const val SAMPLE_EDGE = 64
         private const val SAMPLE_INTERVAL = 4
         private const val HEALTHY_CONFIRMATION_FRAMES = 3
+        private const val HEALTH_CHECK_WINDOW_NS = 6_000_000_000L
+    }
+}
+
+/** Pure bounded window so health bitmap sampling cannot become a permanent background cost. */
+internal class PreviewHealthSamplingWindow(
+    private val durationNs: Long,
+) {
+    private var deadlineNs: Long? = null
+
+    fun restart(nowNs: Long) {
+        deadlineNs = nowNs + durationNs.coerceAtLeast(0L)
+    }
+
+    fun stop() {
+        deadlineNs = null
+    }
+
+    fun isActive(nowNs: Long): Boolean {
+        val deadline = deadlineNs ?: return false
+        if (nowNs < deadline) return true
+        deadlineNs = null
+        return false
     }
 }

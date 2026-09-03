@@ -47,20 +47,35 @@ internal object CameraStreamSelector {
     fun chooseTrackingSize(map: StreamConfigurationMap, preview: Size): Size? {
         val sizes = map.getOutputSizes(ImageFormat.YUV_420_888)?.toList().orEmpty()
         if (sizes.isEmpty()) return null
-        val previewAspect = preview.width.toDouble() / preview.height.coerceAtLeast(1)
         val compact = sizes.filter { size ->
             max(size.width, size.height) <= TRACKING_MAX_LONG_EDGE &&
                 min(size.width, size.height) >= TRACKING_MIN_SHORT_EDGE
         }.ifEmpty {
             sizes.filter { max(it.width, it.height) <= 1280 }.ifEmpty { sizes }
         }
-        return compact.minWithOrNull(
-            compareBy<Size> {
-                abs(it.width.toDouble() / it.height.coerceAtLeast(1) - previewAspect)
-            }.thenBy {
-                abs(max(it.width, it.height) - TRACKING_TARGET_LONG_EDGE)
-            }.thenBy { it.width.toLong() * it.height.toLong() },
-        )
+        val selected = chooseTrackingDimensions(
+            sizes = compact.map { it.width to it.height },
+            preview = preview.width to preview.height,
+        ) ?: return null
+        return compact.firstOrNull { it.width == selected.first && it.height == selected.second }
+    }
+
+    /** A differently shaped YUV stream cannot safely proxy preview touch coordinates. */
+    fun chooseTrackingDimensions(
+        sizes: List<Pair<Int, Int>>,
+        preview: Pair<Int, Int>,
+    ): Pair<Int, Int>? {
+        val previewAspect = preview.first.toDouble() / preview.second.coerceAtLeast(1)
+        return sizes
+            .filter { (width, height) ->
+                width > 0 && height > 0 &&
+                    abs(width.toDouble() / height - previewAspect) <= MAX_TRACKING_ASPECT_ERROR
+            }
+            .minWithOrNull(
+                compareBy<Pair<Int, Int>> {
+                    abs(max(it.first, it.second) - TRACKING_TARGET_LONG_EDGE)
+                }.thenBy { it.first.toLong() * it.second.toLong() },
+            )
     }
 
     fun chooseFpsRange(
@@ -68,6 +83,7 @@ internal object CameraStreamSelector {
         previewSize: Size,
         trackingSize: Size?,
         requestedCeiling: Int,
+        lowLight: Boolean = false,
     ): Range<Int>? {
         val ranges = characteristics
             .get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
@@ -89,30 +105,28 @@ internal object CameraStreamSelector {
         } ?: requestedCeiling
         return selectFpsRange(
             ranges = ranges,
-            requestedCeiling = min(
-                MAX_REGULAR_PREVIEW_FPS,
-                min(requestedCeiling, streamCeiling),
+            requestedCeiling = CameraFrameRatePolicy.effectiveCeiling(
+                requestedCeiling,
+                streamCeiling,
             ),
+            lowLight = lowLight,
         )
     }
 
     /** Keeps an FPS rejection independent from RAW/YUV/ISP workflow fallback. */
-    fun nextFallbackFpsCeiling(currentCeiling: Int?): Int? = when {
-        currentCeiling == null -> null
-        currentCeiling > LOW_PREVIEW_FPS_CEILING -> LOW_PREVIEW_FPS_CEILING
-        currentCeiling > CONSERVATIVE_PREVIEW_FPS_CEILING ->
-            CONSERVATIVE_PREVIEW_FPS_CEILING
-        else -> null
-    }
+    fun nextFallbackFpsCeiling(currentCeiling: Int?): Int? =
+        currentCeiling?.let(CameraFrameRatePolicy::nextFallbackCeiling)
 
     /** Selects an advertised AE range without synthesizing a range the HAL may reject. */
     fun selectFpsRange(
         ranges: List<Range<Int>>,
         requestedCeiling: Int,
+        lowLight: Boolean = false,
     ): Range<Int>? {
         val selected = selectFpsRangeBounds(
             ranges = ranges.map { it.lower to it.upper },
             requestedCeiling = requestedCeiling,
+            lowLight = lowLight,
         ) ?: return null
         return ranges.firstOrNull { it.lower == selected.first && it.upper == selected.second }
     }
@@ -121,13 +135,12 @@ internal object CameraStreamSelector {
     fun selectFpsRangeBounds(
         ranges: List<Pair<Int, Int>>,
         requestedCeiling: Int,
-    ): Pair<Int, Int>? {
-        if (ranges.isEmpty()) return null
-        val target = requestedCeiling.coerceAtLeast(1)
-        return ranges
-            .filter { it.first <= target && it.second <= target }
-            .maxWithOrNull(compareBy<Pair<Int, Int>> { it.second }.thenBy { it.first })
-    }
+        lowLight: Boolean = false,
+    ): Pair<Int, Int>? = CameraFrameRatePolicy.selectRangeBounds(
+        ranges = ranges,
+        requestedCeiling = requestedCeiling,
+        lowLight = lowLight,
+    )
 
     /**
      * Keeps logical and explicitly routed physical cameras on the same common preview shape.
@@ -170,8 +183,6 @@ internal object CameraStreamSelector {
     private const val TRACKING_TARGET_LONG_EDGE = 640
     private const val TRACKING_MAX_LONG_EDGE = 720
     private const val TRACKING_MIN_SHORT_EDGE = 240
+    private const val MAX_TRACKING_ASPECT_ERROR = 0.025
     private const val ASPECT_TOLERANCE = 0.03
-    private const val MAX_REGULAR_PREVIEW_FPS = 60
-    private const val LOW_PREVIEW_FPS_CEILING = 30
-    private const val CONSERVATIVE_PREVIEW_FPS_CEILING = 24
 }

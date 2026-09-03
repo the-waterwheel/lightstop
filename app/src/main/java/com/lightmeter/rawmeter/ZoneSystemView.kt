@@ -253,6 +253,30 @@ class ZoneSystemView(
         drawZoneScale(canvas, g)
         drawMarkerRail(canvas, g)
         drawRecords(canvas, g)
+        drawInformationLine(canvas)
+    }
+
+    private fun drawInformationLine(canvas: Canvas) {
+        val message = PreviewInformationLine.text(state)
+        if (message.isBlank()) return
+        paint.style = Paint.Style.FILL
+        paint.color = if (state.transientMessage != null) red else dividerColor
+        paint.textSize = 8f * density
+        paint.typeface = Typeface.DEFAULT
+        val availableWidth = width - 16f * density
+        val display = if (paint.measureText(message) <= availableWidth) {
+            message
+        } else {
+            val suffix = "…"
+            val count = paint.breakText(
+                message,
+                true,
+                (availableWidth - paint.measureText(suffix)).coerceAtLeast(0f),
+                null,
+            )
+            message.take(count.coerceAtLeast(0)) + suffix
+        }
+        drawCenteredText(canvas, display, width / 2f, height - 5f * density, paint)
     }
 
     private fun drawSurfaceOutsidePreview(canvas: Canvas, frame: RectF) {
@@ -527,11 +551,12 @@ class ZoneSystemView(
 
         val content = RectF(rect)
         if (state.isLeftHanded) content.left = lockTrack.right else content.right = lockTrack.left
-        val titleWidth = 40f * density
+        val titleWidth = EXPOSURE_TITLE_WIDTH_DP * density
         val scaleLeft = content.left + titleWidth
         val scaleRight = content.right - 5f * density
         val centerX = (scaleLeft + scaleRight) / 2f
-        val pixelsPerStop = max(25f * density, (scaleRight - scaleLeft) / 5.4f)
+        val pixelsPerStop = max(25f * density, (scaleRight - scaleLeft) / 5.4f) *
+            EXPOSURE_SCALE_SPACING_FACTOR
         val baselineY = rect.centerY() + rect.height() * 0.18f
 
         paint.style = Paint.Style.STROKE
@@ -574,15 +599,17 @@ class ZoneSystemView(
             ExposureMath.formatShutter(shutterSeconds!!)
         }
         paint.color = scaleForeground
-        paint.textSize = 9.8f * density
+        paint.textSize = 11.5f * density
         paint.typeface = Typeface.DEFAULT_BOLD
-        canvas.drawText(title, content.left + 7f * density, rect.centerY() + 3f * density, paint)
+        val titleX = content.left + 9f * density
+        val valueX = content.left + 40f * density
+        drawCenteredText(canvas, title, titleX, rect.centerY(), paint)
         // Keep the current value more prominent than the neighboring scale labels.
-        paint.textSize = 9.8f * density
-        canvas.drawText(value, content.left + 18f * density, rect.centerY() + 3f * density, paint)
+        paint.textSize = 14f * density
+        drawCenteredText(canvas, value, valueX, rect.centerY(), paint)
         val reciprocity = shutterSeconds?.let { ReciprocityMath.calculate(appliedReciprocityMethod, it) }
         if (reciprocity?.needsCorrection == true) {
-            val readoutX = content.left + 25f * density
+            val readoutX = valueX
             drawReciprocityBadge(canvas, readoutX, rect.centerY() - 11f * density)
             paint.color = red
             paint.typeface = Typeface.DEFAULT
@@ -1429,7 +1456,8 @@ class ZoneSystemView(
 
     private fun exposurePixelsPerStop(row: RectF, lock: RectF): Float {
         val available = if (state.isLeftHanded) row.right - lock.right else lock.left - row.left
-        return max(25f * density, (available - 45f * density) / 5.4f)
+        val scaleWidth = available - (EXPOSURE_TITLE_WIDTH_DP + EXPOSURE_SCALE_END_INSET_DP) * density
+        return max(25f * density, scaleWidth / 5.4f) * EXPOSURE_SCALE_SPACING_FACTOR
     }
 
     private fun zoneCell(rect: RectF, zone: Int, landscape: Boolean): RectF = if (landscape) {
@@ -1561,6 +1589,9 @@ class ZoneSystemView(
     )
 
     private companion object {
+        private const val EXPOSURE_TITLE_WIDTH_DP = 64f
+        private const val EXPOSURE_SCALE_END_INSET_DP = 5f
+        private const val EXPOSURE_SCALE_SPACING_FACTOR = 2f / 3f
         private const val MAX_FORMAT_MENU_ROWS = 6
         private const val MIN_MARKER_INTERPOLATION_MS = 12L
         private const val DEFAULT_MARKER_INTERPOLATION_MS = 33L

@@ -1,7 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const [pointsInput, databaseInput, filmCatalogInput, output] = process.argv.slice(2);
+const defaultOverridesInput = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "film_reciprocity_audited_overrides_2026_09_01.json",
+);
+const [pointsInput, databaseInput, filmCatalogInput, output, overridesInput = defaultOverridesInput] =
+  process.argv.slice(2);
 if (!pointsInput || !databaseInput || !filmCatalogInput || !output) {
   throw new Error(
     "Usage: node tools/build_film_reciprocity_asset_v2.mjs " +
@@ -12,6 +18,7 @@ if (!pointsInput || !databaseInput || !filmCatalogInput || !output) {
 const csvText = fs.readFileSync(pointsInput, "utf8");
 const databaseText = fs.readFileSync(databaseInput, "utf8");
 const filmCatalog = JSON.parse(fs.readFileSync(filmCatalogInput, "utf8"));
+const auditedOverrides = JSON.parse(fs.readFileSync(overridesInput, "utf8"));
 
 const text = (value) => (value == null ? "" : String(value).trim());
 const markdownText = (value) => text(value)
@@ -99,13 +106,13 @@ const pointRows = parseCsv(csvText);
 const pointRowsByMethod = Map.groupBy(pointRows, (row) => text(row.MethodID));
 
 const methodRows = markdownTable(/^### 2\.1 总表/m, /^### 2\.2 /m, "方法ID");
-const validTypes = new Set(["NONE", "RANGE", "TABLE", "FIXED_EV", "POWER"]);
+const validTypes = new Set(["NONE", "RANGE", "BOUNDED_UNCHANGED", "TABLE", "FIXED_EV", "POWER"]);
 const methods = methodRows.map((row) => {
   const id = text(row["方法ID"]);
   const type = text(row["类型"]);
   if (!id || !validTypes.has(type)) throw new Error(`Invalid reciprocity method: ${id}/${type}`);
   const sourceRows = pointRowsByMethod.get(id) ?? [];
-  if (type !== "NONE" && sourceRows.length === 0) {
+  if (type !== "NONE" && type !== "BOUNDED_UNCHANGED" && sourceRows.length === 0) {
     throw new Error(`Method ${id} has no CSV rows`);
   }
   sourceRows.forEach((source) => {
@@ -132,8 +139,8 @@ const methods = methodRows.map((row) => {
   if (type === "POWER") {
     const fitRows = validSourceRows.filter((source) => Number(source["Tm(s)"]) > noCompensationSeconds + 1e-9);
     const sums = fitRows.reduce((result, source) => {
-      const x = Math.log(Number(source["Tm(s)"]));
-      const y = Math.log(Number(source["Tc(s)"]));
+      const x = Math.log2(Number(source["Tm(s)"]));
+      const y = Math.log2(Number(source["Tc(s)"]));
       return { xx: result.xx + x * x, xy: result.xy + x * y };
     }, { xx: 0, xy: 0 });
     const fittedParameter = sums.xx > 0 ? sums.xy / sums.xx : null;
@@ -221,29 +228,147 @@ if (films.length !== filmCatalog.length) {
 const filmIds = new Set(films.map((film) => film.filmId));
 if (filmIds.size !== films.length) throw new Error("Duplicate film IDs");
 
-/** Mirrors the app's runtime calculation so every generated curve can be reconciled to the CSV. */
+const auditedMethodIds = new Set([
+  ...auditedOverrides.methods.map((method) => method.id),
+  ...Object.keys(auditedOverrides.methodPatches ?? {}),
+]);
+for (const override of auditedOverrides.methods) {
+  const index = methods.findIndex((method) => method.id === override.id);
+  if (index >= 0) methods[index] = override;
+  else methods.push(override);
+}
+for (const [methodId, patch] of Object.entries(auditedOverrides.methodPatches ?? {})) {
+  const method = methods.find((candidate) => candidate.id === methodId);
+  if (!method) throw new Error(`Cannot patch missing reciprocity method ${methodId}`);
+  Object.assign(method, patch);
+}
+for (const film of films) {
+  film.methodId = auditedOverrides.filmMethodOverrides[String(film.filmId)] ?? film.methodId;
+}
+const finalMethodIds = new Set(methods.map((method) => method.id));
+if (finalMethodIds.size !== methods.length) throw new Error("Duplicate final reciprocity method IDs");
+for (const film of films) {
+  if (!finalMethodIds.has(film.methodId)) {
+    throw new Error(`Film ${film.filmId} references missing final method ${film.methodId}`);
+  }
+}
+for (const method of methods) {
+  if (method.type !== "TABLE") continue;
+  for (const point of method.points) {
+    if (point.correctedSeconds + 1e-9 < point.meteredSeconds) {
+      throw new Error(
+        `TABLE method ${method.id} shortens exposure at ${point.meteredSeconds}s: ${point.correctedSeconds}s`,
+      );
+    }
+  }
+  for (let index = 1; index < method.points.length; index += 1) {
+    const before = method.points[index - 1];
+    const after = method.points[index];
+    const beforeStops = Math.log2(before.correctedSeconds / before.meteredSeconds);
+    const afterStops = Math.log2(after.correctedSeconds / after.meteredSeconds);
+    if (afterStops + 1e-9 < beforeStops) {
+      throw new Error(
+        `TABLE method ${method.id} has a dipping compensation node: ` +
+          `${before.meteredSeconds}s (${beforeStops} EV) -> ${after.meteredSeconds}s (${afterStops} EV)`,
+      );
+    }
+  }
+  const lastPoint = method.points.at(-1);
+  if (
+    lastPoint && method.officialMaximumSeconds != null &&
+    method.officialMaximumSeconds + 1e-9 < lastPoint.meteredSeconds
+  ) {
+    throw new Error(
+      `TABLE method ${method.id} has a published node beyond its official maximum: ` +
+        `${lastPoint.meteredSeconds}s > ${method.officialMaximumSeconds}s`,
+    );
+  }
+}
+
+function endpointTangent(adjacentWidth, nextWidth, adjacentSlope, nextSlope) {
+  let tangent = (
+    (2 * adjacentWidth + nextWidth) * adjacentSlope - adjacentWidth * nextSlope
+  ) / (adjacentWidth + nextWidth);
+  if (Math.sign(tangent) !== Math.sign(adjacentSlope)) tangent = 0;
+  else if (
+    Math.sign(adjacentSlope) !== Math.sign(nextSlope) &&
+    Math.abs(tangent) > Math.abs(3 * adjacentSlope)
+  ) tangent = 3 * adjacentSlope;
+  return tangent;
+}
+
+/** Mirrors the app's shape-preserving cubic fit of correction EV in exposure-stop space. */
+function fitTable(points, input) {
+  const samples = points
+    .filter((point) => point.meteredSeconds > 0 && point.correctedSeconds > 0)
+    .sort((left, right) => left.meteredSeconds - right.meteredSeconds)
+    .filter((point, index, all) => index === all.length - 1 || point.meteredSeconds !== all[index + 1].meteredSeconds);
+  if (samples.length < 2 || input <= 0) return null;
+  const exact = samples.find((point) => Math.abs(point.meteredSeconds - input) <= 1e-9);
+  if (exact) return exact.correctedSeconds;
+
+  const x = samples.map((point) => Math.log2(point.meteredSeconds));
+  const correctionStops = samples.map((point) =>
+    Math.log2(point.correctedSeconds / point.meteredSeconds));
+  const widths = x.slice(1).map((value, index) => value - x[index]);
+  const slopes = widths.map((width, index) =>
+    (correctionStops[index + 1] - correctionStops[index]) / width);
+  const tangents = Array(samples.length).fill(0);
+  if (samples.length === 2) {
+    tangents[0] = slopes[0];
+    tangents[1] = slopes[0];
+  } else {
+    tangents[0] = endpointTangent(widths[0], widths[1], slopes[0], slopes[1]);
+    for (let index = 1; index < samples.length - 1; index += 1) {
+      const before = slopes[index - 1];
+      const after = slopes[index];
+      if (before !== 0 && after !== 0 && Math.sign(before) === Math.sign(after)) {
+        const beforeWeight = 2 * widths[index] + widths[index - 1];
+        const afterWeight = widths[index] + 2 * widths[index - 1];
+        tangents[index] = (beforeWeight + afterWeight) /
+          (beforeWeight / before + afterWeight / after);
+      }
+    }
+    const last = samples.length - 1;
+    tangents[last] = endpointTangent(
+      widths[last - 1], widths[last - 2], slopes[last - 1], slopes[last - 2],
+    );
+  }
+  // The preceding no-compensation section is a constant 0 EV.
+  tangents[0] = 0;
+
+  const target = Math.log2(input);
+  if (target < x[0]) {
+    return Math.max(input, input * 2 ** (correctionStops[0] + tangents[0] * (target - x[0])));
+  }
+  if (target > x.at(-1)) {
+    return Math.max(input, input * 2 ** (correctionStops.at(-1) + tangents.at(-1) * (target - x.at(-1))));
+  }
+  const segment = x.findIndex((value) => value > target) - 1;
+  const width = widths[segment];
+  const ratio = (target - x[segment]) / width;
+  const ratio2 = ratio * ratio;
+  const ratio3 = ratio2 * ratio;
+  const fittedStops = (2 * ratio3 - 3 * ratio2 + 1) * correctionStops[segment] +
+    (ratio3 - 2 * ratio2 + ratio) * width * tangents[segment] +
+    (-2 * ratio3 + 3 * ratio2) * correctionStops[segment + 1] +
+    (ratio3 - ratio2) * width * tangents[segment + 1];
+  return Math.max(input, input * 2 ** fittedStops);
+}
+
+/** Mirrors the app's runtime calculation so published nodes can be reconciled to the source CSV. */
 function calculateCorrectedSeconds(method, meteredSeconds) {
   const input = Number(meteredSeconds);
   if (input <= method.noCompensationSeconds + 1e-9) return input;
-  if (method.type === "POWER") return input ** method.parameter;
+  if (method.type === "POWER") return Math.max(input, input ** method.parameter);
   if (method.type === "FIXED_EV") return input * (2 ** method.parameter);
   if (method.type !== "TABLE") return null;
 
-  const exact = method.points.find((point) => Math.abs(point.meteredSeconds - input) <= 1e-9);
-  if (exact) return exact.correctedSeconds;
-  const upperIndex = method.points.findIndex((point) => point.meteredSeconds > input);
   const boundary = {
     meteredSeconds: method.noCompensationSeconds,
     correctedSeconds: method.noCompensationSeconds,
   };
-  const upper = upperIndex < 0 ? method.points.at(-1) : method.points[upperIndex];
-  const lower = upperIndex < 0
-    ? (method.points.at(-2) ?? boundary)
-    : (upperIndex === 0 ? boundary : method.points[upperIndex - 1]);
-  if (!upper || lower.meteredSeconds >= upper.meteredSeconds) return null;
-  const exponent = Math.log(upper.correctedSeconds / lower.correctedSeconds) /
-    Math.log(upper.meteredSeconds / lower.meteredSeconds);
-  return lower.correctedSeconds * ((input / lower.meteredSeconds) ** exponent);
+  return fitTable([boundary, ...method.points], input);
 }
 
 const methodById = new Map(methods.map((method) => [method.id, method]));
@@ -253,8 +378,17 @@ let transitionBoundaryRows = 0;
 for (const source of pointRows) {
   const method = methodById.get(text(source.MethodID));
   const meteredSeconds = optionalNumber(source["Tm(s)"], `Tm row ${source.__row}`);
-  const expectedSeconds = optionalNumber(source["Tc(s)"], `Tc row ${source.__row}`);
-  if (!method || meteredSeconds == null || expectedSeconds == null) continue;
+  const sourceExpectedSeconds = optionalNumber(source["Tc(s)"], `Tc row ${source.__row}`);
+  if (!method || meteredSeconds == null || sourceExpectedSeconds == null || auditedMethodIds.has(method.id)) continue;
+  // A fitted reciprocity curve is never allowed to shorten the metered exposure. Some legacy
+  // POWER grid rows below one second contain Tm^P < Tm; normalize those derived rows to the
+  // runtime invariant rather than preserving a physically invalid negative compensation.
+  const expectedSeconds = method.type === "POWER"
+    ? Math.max(meteredSeconds, sourceExpectedSeconds)
+    : sourceExpectedSeconds;
+  // TABLE grid rows are derived from the previous piecewise interpolation. Only published nodes
+  // are authoritative now that runtime uses a smooth, shape-preserving curve fit.
+  if (method.type === "TABLE" && text(source.Source) !== "node") continue;
   // ACROS encodes the first corrected 120 s sample as 119.999 s so the preceding interval
   // can remain strictly "<120 s". The app exposes a nominal 120 s tick, not 119.999 s.
   if (
@@ -265,7 +399,8 @@ for (const source of pointRows) {
     continue;
   }
   const calculatedSeconds = calculateCorrectedSeconds(method, meteredSeconds);
-  // RANGE rows intentionally become unavailable after their published no-compensation limit.
+  // RANGE rows and bounded unchanged methods intentionally become unavailable after
+  // their published no-compensation limit.
   if (calculatedSeconds == null) continue;
   const evError = Math.abs(Math.log2(calculatedSeconds / expectedSeconds));
   maximumCsvEvError = Math.max(maximumCsvEvError, evError);
@@ -281,7 +416,7 @@ for (const source of pointRows) {
 
 const result = {
   schemaVersion: 2,
-  sourceFiles: [path.basename(pointsInput), path.basename(databaseInput)],
+  sourceFiles: [path.basename(pointsInput), path.basename(databaseInput), path.basename(overridesInput)],
   methods,
   films,
 };

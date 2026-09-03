@@ -3,6 +3,7 @@ package com.lightmeter.rawmeter
 enum class SettingsSectionKey {
     METERING,
     GENERAL,
+    MORE,
     CALIBRATION,
 }
 
@@ -16,6 +17,7 @@ enum class SettingKey {
     EXPOSURE_PREVIEW,
     PREVIEW_HEALTH_DETECTION,
     PREVIEW_FRAME_RATE,
+    PREVIEW_INFORMATION_BAR,
     ZONE_MARKING_METHOD,
     LANGUAGE,
     THEME,
@@ -24,6 +26,8 @@ enum class SettingKey {
 
 enum class SettingActionKey {
     MANAGE_CAMERAS,
+    MANAGE_OUTPUT_ASPECTS,
+    SHOW_MORE_SETTINGS,
     USE_SAFE_PREVIEW,
     SHOW_ABOUT,
     START_METERING_CALIBRATION,
@@ -54,6 +58,8 @@ data class SettingsSectionSpec(
     val label: LocalizedLabel,
     val items: List<SettingItemSpec>,
     val actions: List<SettingActionSpec> = emptyList(),
+    /** Actions inserted after the given one-based item count. */
+    val inlineActions: Map<Int, List<SettingActionSpec>> = emptyMap(),
     val enabled: Boolean = true,
 )
 
@@ -143,14 +149,6 @@ object SettingsCatalog {
                     ),
                 ),
                 SettingItemSpec(
-                    key = SettingKey.PREVIEW_HEALTH_DETECTION,
-                    label = LocalizedLabel("预览异常检测", "Preview health detection"),
-                    options = listOf(
-                        option(PreviewHealthDetectionMode.ON, "开启（推荐）", "On (recommended)"),
-                        option(PreviewHealthDetectionMode.OFF, "关闭", "Off"),
-                    ),
-                ),
-                SettingItemSpec(
                     key = SettingKey.ZONE_MARKING_METHOD,
                     label = LocalizedLabel("标点方式", "Marking method"),
                     options = listOf(
@@ -159,21 +157,61 @@ object SettingsCatalog {
                     ),
                 ),
             ),
+            inlineActions = mapOf(
+                3 to listOf(
+                    SettingActionSpec(
+                        key = SettingActionKey.MANAGE_CAMERAS,
+                        label = LocalizedLabel("选择与管理摄像头", "Select and manage cameras"),
+                        description = LocalizedLabel(
+                            "选择测光摄像头、添加备注或隐藏不用的摄像头",
+                            "Select a metering camera, add notes, or hide unused cameras",
+                        ),
+                    ),
+                ),
+            ),
             actions = listOf(
+                SettingActionSpec(
+                    key = SettingActionKey.SHOW_MORE_SETTINGS,
+                    label = LocalizedLabel("更多设置", "More settings"),
+                ),
+            ),
+        ),
+        SettingsSectionSpec(
+            key = SettingsSectionKey.MORE,
+            label = LocalizedLabel("更多设置", "More"),
+            items = listOf(
+                SettingItemSpec(
+                    key = SettingKey.PREVIEW_HEALTH_DETECTION,
+                    label = LocalizedLabel("预览异常检测", "Preview health detection"),
+                    options = listOf(
+                        option(PreviewHealthDetectionMode.ON, "开启（推荐）", "On (recommended)"),
+                        option(PreviewHealthDetectionMode.OFF, "关闭", "Off"),
+                    ),
+                ),
+                SettingItemSpec(
+                    key = SettingKey.PREVIEW_INFORMATION_BAR,
+                    label = LocalizedLabel("信息栏", "Information bar"),
+                    options = listOf(
+                        option(PreviewInformationBarMode.OFF, "关闭（默认）", "Off (default)"),
+                        option(PreviewInformationBarMode.ON, "开启", "On"),
+                    ),
+                ),
+            ),
+            actions = listOf(
+                SettingActionSpec(
+                    key = SettingActionKey.MANAGE_OUTPUT_ASPECTS,
+                    label = LocalizedLabel("设置传感器输出画面", "Set sensor output aspect"),
+                    description = LocalizedLabel(
+                        "按镜头修正被拉伸的取景画面",
+                        "Correct a stretched viewfinder separately for each lens",
+                    ),
+                ),
                 SettingActionSpec(
                     key = SettingActionKey.USE_SAFE_PREVIEW,
                     label = LocalizedLabel("手动切换到安全预览", "Switch to safe preview"),
                     description = LocalizedLabel(
                         "本次运行仅保留显示预览；重新选择摄像头或重启后恢复自动流配置",
                         "Use display preview only for this run; selecting a camera or restarting restores automatic stream setup",
-                    ),
-                ),
-                SettingActionSpec(
-                    key = SettingActionKey.MANAGE_CAMERAS,
-                    label = LocalizedLabel("选择与管理摄像头", "Select and manage cameras"),
-                    description = LocalizedLabel(
-                        "选择测光摄像头、添加备注或隐藏不用的摄像头",
-                        "Select a metering camera, add notes, or hide unused cameras",
                     ),
                 ),
             ),
@@ -186,8 +224,8 @@ object SettingsCatalog {
                     key = SettingKey.PREVIEW_FRAME_RATE,
                     label = LocalizedLabel("取景帧率", "Viewfinder frame rate"),
                     options = listOf(
-                        option(PreviewFrameRateMode.LOW, "低帧率", "Low frame rate"),
-                        option(PreviewFrameRateMode.HIGH, "高帧率", "High frame rate"),
+                        option(PreviewFrameRateMode.LOW, "标准（最高 30 fps）", "Standard (up to 30 fps)"),
+                        option(PreviewFrameRateMode.HIGH, "流畅（最高 60 fps）", "Smooth (up to 60 fps)"),
                     ),
                 ),
                 SettingItemSpec(

@@ -124,6 +124,22 @@ internal class ReciprocityView(
         invalidate()
     }
 
+    fun onFilmReciprocityChanged(profile: FilmLatitudeProfile) {
+        if (selectedFilmId != profile.id) return
+        val method = repository.methodForFilm(profile.id)
+        if (applied) {
+            if (method?.hasCalculationData == true) {
+                listener?.onAppliedReciprocityChanged(method)
+            } else {
+                applied = false
+                repository.clearApplied()
+                listener?.onAppliedReciprocityChanged(null)
+            }
+        }
+        clampDisplayedCoordinate()
+        invalidate()
+    }
+
     override fun onSizeChanged(width: Int, height: Int, oldWidth: Int, oldHeight: Int) {
         geometry = ReciprocityGeometryCalculator.calculate(width, height, density)
     }
@@ -257,6 +273,11 @@ internal class ReciprocityView(
         val x = geometry.filmCard.left + 9f * density
         val available = (geometry.filmCard.width() - 18f * density).coerceAtLeast(1f)
         val centerY = geometry.filmCard.centerY()
+        val details = when {
+            selected == null -> localized("未选择", "Not selected")
+            method?.hasCalculationData != true -> localized("无倒易率数据", "No reciprocity data")
+            else -> selected.iso?.let { "ISO $it" }.orEmpty()
+        }
         boldPaint.textAlign = Paint.Align.LEFT
         boldPaint.textSize = 12.5f * scaledDensity
         boldPaint.color = if (selected == null) muted else foreground
@@ -264,23 +285,20 @@ internal class ReciprocityView(
         canvas.drawText(
             TextUtils.ellipsize(name, boldPaint, available, TextUtils.TruncateAt.END).toString(),
             x,
-            centerY - 3f * density,
+            if (details.isBlank()) centerY + 4f * density else centerY - 3f * density,
             boldPaint,
         )
         textPaint.textAlign = Paint.Align.LEFT
         textPaint.textSize = 9f * scaledDensity
         textPaint.color = if (selected == null) muted else foreground
-        val details = when {
-            selected == null -> localized("未选择", "Not selected")
-            method == null || method.type == ReciprocityMethodType.NONE -> localized("无倒易率数据", "No reciprocity data")
-            else -> listOfNotNull(selected.iso?.let { "ISO $it" }, methodTypeLabel(method.type)).joinToString(" · ")
+        if (details.isNotBlank()) {
+            canvas.drawText(
+                TextUtils.ellipsize(details, textPaint, available, TextUtils.TruncateAt.END).toString(),
+                x,
+                centerY + 15f * density,
+                textPaint,
+            )
         }
-        canvas.drawText(
-            TextUtils.ellipsize(details, textPaint, available, TextUtils.TruncateAt.END).toString(),
-            x,
-            centerY + 15f * density,
-            textPaint,
-        )
         drawNeutralButton(geometry.selectFilm, localized("选择胶片", "Select film"), canvas)
     }
 
@@ -351,9 +369,9 @@ internal class ReciprocityView(
         boldPaint.color = actionText
         boldPaint.textSize = min(13f * scaledDensity, rect.height() * 0.23f)
         val label = if (applied) {
-            localized("取消应用到测光", "Cancel metering application")
+            localized("取消测光补偿显示", "Hide compensation on meter")
         } else {
-            localized("应用倒易率计算到测光", "Apply reciprocity to meter")
+            localized("补偿显示到测光", "Show compensation on meter")
         }
         drawWrappedCenteredText(canvas, label, rect, boldPaint)
     }
@@ -443,7 +461,7 @@ internal class ReciprocityView(
         } else {
             val filmId = selectedFilmId
             val method = repository.methodForFilm(filmId)
-            if (filmId == null || method == null || method.type == ReciprocityMethodType.NONE) {
+            if (filmId == null || method?.hasCalculationData != true) {
                 Toast.makeText(
                     context,
                     localized("所选胶片没有可靠倒易率数据。", "The selected film has no reliable reciprocity data."),
@@ -509,14 +527,6 @@ internal class ReciprocityView(
         .let { ticks ->
             ticks.indices.minByOrNull { abs(ticks[it].coordinate - coordinate) } ?: 0
         }
-
-    private fun methodTypeLabel(type: ReciprocityMethodType): String = when (type) {
-        ReciprocityMethodType.TABLE -> localized("厂商节点", "Manufacturer table")
-        ReciprocityMethodType.POWER -> localized("幂函数", "Power curve")
-        ReciprocityMethodType.FIXED_EV -> localized("固定补偿", "Fixed compensation")
-        ReciprocityMethodType.RANGE -> localized("官方范围", "Official range")
-        ReciprocityMethodType.NONE -> localized("无数据", "No data")
-    }
 
     private fun drawWrappedCenteredText(canvas: Canvas, label: String, rect: RectF, textPaint: TextPaint) {
         val available = (rect.width() - 10f * density).coerceAtLeast(1f)
@@ -598,6 +608,7 @@ internal class ReciprocityView(
             ReciprocityMethodType.TABLE,
             ReciprocityMethodType.POWER,
             ReciprocityMethodType.FIXED_EV,
+            ReciprocityMethodType.BOUNDED_UNCHANGED,
         )
     }
 }
