@@ -10,9 +10,22 @@ internal class FilmReciprocityCatalog(context: Context) {
         .open("film_reciprocity_2026_08_24.json")
         .bufferedReader()
         .use { JSONObject(it.readText()) }
+    private val updates = context.assets
+        .open(FILM_DATABASE_UPDATES_ASSET)
+        .bufferedReader()
+        .use { JSONObject(it.readText()) }
 
     val methods: Map<String, ReciprocityMethod> = buildMap {
-        val array = root.getJSONArray("methods")
+        parseMethods(root.getJSONArray("methods")).forEach { method -> put(method.id, method) }
+        parseMethods(updates.optJSONArray("methods") ?: JSONArray()).forEach { method -> put(method.id, method) }
+    }
+
+    val methodIdByFilmId: Map<String, String> = buildMap {
+        putMappings(root.getJSONArray("films"))
+        putMappings(updates.optJSONArray("films") ?: JSONArray())
+    }
+
+    private fun parseMethods(array: JSONArray): List<ReciprocityMethod> = buildList(array.length()) {
         for (index in 0 until array.length()) {
             val item = array.getJSONObject(index)
             val pointsArray = item.getJSONArray("points")
@@ -28,27 +41,27 @@ internal class FilmReciprocityCatalog(context: Context) {
                     )
                 }
             }
-            val method = ReciprocityMethod(
-                id = item.getString("id"),
-                type = runCatching {
-                    ReciprocityMethodType.valueOf(item.getString("type"))
-                }.getOrDefault(ReciprocityMethodType.NONE),
-                parameter = item.nullableDouble("parameter"),
-                noCompensationSeconds = item.nullableDouble("noCompensationSeconds") ?: 1.0,
-                officialMaximumSeconds = item.nullableDouble("officialMaximumSeconds"),
-                evidence = item.optString("evidence"),
-                longExposureFilter = item.optString("longExposureFilter"),
-                filterRule = item.optString("filterRule"),
-                warning = item.optString("warning"),
-                sourceUrl = item.optString("sourceUrl"),
-                points = points,
+            add(
+                ReciprocityMethod(
+                    id = item.getString("id"),
+                    type = runCatching {
+                        ReciprocityMethodType.valueOf(item.getString("type"))
+                    }.getOrDefault(ReciprocityMethodType.NONE),
+                    parameter = item.nullableDouble("parameter"),
+                    noCompensationSeconds = item.nullableDouble("noCompensationSeconds") ?: 1.0,
+                    officialMaximumSeconds = item.nullableDouble("officialMaximumSeconds"),
+                    evidence = item.optString("evidence"),
+                    longExposureFilter = item.optString("longExposureFilter"),
+                    filterRule = item.optString("filterRule"),
+                    warning = item.optString("warning"),
+                    sourceUrl = item.optString("sourceUrl"),
+                    points = points,
+                ),
             )
-            put(method.id, method)
         }
     }
 
-    val methodIdByFilmId: Map<String, String> = buildMap {
-        val array = root.getJSONArray("films")
+    private fun MutableMap<String, String>.putMappings(array: JSONArray) {
         for (index in 0 until array.length()) {
             val item = array.getJSONObject(index)
             put("builtin-${item.getInt("filmId")}", item.getString("methodId"))
@@ -57,6 +70,10 @@ internal class FilmReciprocityCatalog(context: Context) {
 
     private fun JSONObject.nullableDouble(key: String): Double? =
         if (isNull(key)) null else optDouble(key).takeIf(Double::isFinite)
+
+    private companion object {
+        const val FILM_DATABASE_UPDATES_ASSET = "film_database_updates_2026_09_08.json"
+    }
 }
 
 /** Keeps calculator selection and metering application independent from editable latitude data. */

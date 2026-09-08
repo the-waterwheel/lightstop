@@ -84,6 +84,7 @@ class MeterLayout @JvmOverloads constructor(
     val toolsView = ToolsView(context, state)
     private val filmLatitudeRepository = FilmLatitudeRepository(context)
     private val filmReciprocityRepository = FilmReciprocityRepository(context)
+    private val flashExposureRepository = FlashExposureRepository(context)
     val depthOfFieldView = DepthOfFieldView(context, state)
     private val latitudeView = LatitudeView(context, state, filmLatitudeRepository)
     private val reciprocityView = ReciprocityView(
@@ -92,6 +93,7 @@ class MeterLayout @JvmOverloads constructor(
         filmLatitudeRepository,
         filmReciprocityRepository,
     )
+    private val flashExposureView = FlashExposureView(context, state, flashExposureRepository)
     private val filmSelectorView = FilmSelectorView(
         context,
         state,
@@ -105,6 +107,7 @@ class MeterLayout @JvmOverloads constructor(
     private val colorTemperatureView = ColorTemperatureView(context, state)
     private val grayCardGuideView = GrayCardGuideView(context, state)
     private val angleMeteringDialView = AngleMeteringDialView(context, state)
+    private val flashDistanceDialView = FlashDistanceDialView(context, state)
     private val recordCaptureSliderView = RecordCaptureSliderView(context, state)
     private val toolsHost = FrameLayout(context)
     private val zoneMarkerTracker: ZoneMarkerTracker = DeferredZoneMarkerTracker {
@@ -476,6 +479,14 @@ class MeterLayout @JvmOverloads constructor(
                 FrameLayout.LayoutParams.MATCH_PARENT,
             ),
         )
+        flashExposureView.visibility = View.GONE
+        toolsHost.addView(
+            flashExposureView,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
         parameterRecordToolView.visibility = View.GONE
         toolsHost.addView(
             parameterRecordToolView,
@@ -495,6 +506,8 @@ class MeterLayout @JvmOverloads constructor(
         addView(toolsHost)
         angleMeteringDialView.visibility = View.GONE
         addView(angleMeteringDialView)
+        flashDistanceDialView.visibility = View.GONE
+        addView(flashDistanceDialView)
         recordCaptureSliderView.visibility = View.GONE
         addView(recordCaptureSliderView)
         parameterRecordEditorView.visibility = View.GONE
@@ -508,9 +521,15 @@ class MeterLayout @JvmOverloads constructor(
         zoneView.setAppliedLatitude(filmLatitudeRepository.loadApplied()?.range)
         instrumentView.setAppliedReciprocity(filmReciprocityRepository.appliedMethod())
         zoneView.setAppliedReciprocity(filmReciprocityRepository.appliedMethod())
+        state.setAppliedFlashConfiguration(flashExposureRepository.applied(state.iso))
         angleMeteringDialView.onAngleChanged = {
             instrumentView.invalidate()
             zoneView.invalidate()
+        }
+        flashDistanceDialView.onDistanceChanged = { distance ->
+            val base = state.appliedFlashConfiguration ?: flashExposureRepository.selected(state.iso)
+            flashExposureView.updateConfiguration(base.copy(distanceMeters = distance))
+            updateFlashPresentation()
         }
         toolsView.listener = object : ToolsView.Listener {
             override fun onCloseRequested() {
@@ -522,6 +541,7 @@ class MeterLayout @JvmOverloads constructor(
                     ToolId.DEPTH_OF_FIELD -> showDepthOfField()
                     ToolId.LATITUDE -> showLatitude()
                     ToolId.RECIPROCITY -> showReciprocity()
+                    ToolId.FLASH_INDEX -> showFlashExposure()
                     ToolId.PARAMETER_LOG -> showParameterRecord()
                     ToolId.COLOR_TEMPERATURE -> showColorTemperature()
                     else -> Log.i("lightstop", "Tool requested: ${spec.id}")
@@ -579,6 +599,34 @@ class MeterLayout @JvmOverloads constructor(
             override fun onAppliedReciprocityChanged(method: ReciprocityMethod?) {
                 instrumentView.setAppliedReciprocity(method)
                 zoneView.setAppliedReciprocity(method)
+            }
+        }
+        flashExposureView.listener = object : FlashExposureView.Listener {
+            override fun onBackToToolsRequested() {
+                activeToolId = null
+                flashExposureView.visibility = View.GONE
+                toolsView.visibility = View.VISIBLE
+                toolsView.bringToFront()
+            }
+
+            override fun onCloseRequested() {
+                closeTools()
+            }
+
+            override fun onSettingsRequested(configuration: FlashConfiguration) {
+                FlashSettingsDialog.show(context, state, configuration) { updated ->
+                    flashExposureView.updateConfiguration(updated)
+                    updateFlashPresentation()
+                }
+            }
+
+            override fun onAppliedFlashChanged(configuration: FlashConfiguration?) {
+                configuration?.let { selected ->
+                    state.isoValues.indexOf(selected.iso).takeIf { it >= 0 }?.let { state.isoIndex = it }
+                }
+                state.setAppliedFlashConfiguration(configuration)
+                updateFlashPresentation()
+                listener?.onControlsChanged(false)
             }
         }
         parameterRecordToolView.listener = object : ParameterRecordToolView.Listener {
@@ -752,6 +800,10 @@ class MeterLayout @JvmOverloads constructor(
             MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
             MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
         )
+        flashDistanceDialView.measure(
+            MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
+        )
         parameterHistoryView.measure(
             MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
             MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
@@ -876,6 +928,7 @@ class MeterLayout @JvmOverloads constructor(
         )
         layoutToolsPanel()
         angleMeteringDialView.layout(0, 0, width, height)
+        flashDistanceDialView.layout(0, 0, width, height)
         recordCaptureSliderView.layout(0, 0, width, height)
         val parameterPanel = toolsPanelRect(width, height)
         parameterRecordEditorView.layout(
@@ -944,6 +997,7 @@ class MeterLayout @JvmOverloads constructor(
         depthOfFieldView.invalidate()
         latitudeView.invalidate()
         reciprocityView.invalidate()
+        flashExposureView.invalidate()
         parameterRecordToolView.resumePage()
         colorTemperatureView.updateRawSupport(state.cameraInfo.rawAvailable)
         parameterRecordEditorView.invalidate()
@@ -1018,6 +1072,7 @@ class MeterLayout @JvmOverloads constructor(
                 reciprocityView.visibility = View.GONE
                 parameterRecordToolView.visibility = View.GONE
                 colorTemperatureView.visibility = View.GONE
+                flashExposureView.visibility = View.GONE
                 depthOfFieldView.visibility = View.VISIBLE
                 depthOfFieldView.resumePage()
                 depthOfFieldView.bringToFront()
@@ -1028,6 +1083,7 @@ class MeterLayout @JvmOverloads constructor(
                 reciprocityView.visibility = View.GONE
                 parameterRecordToolView.visibility = View.GONE
                 colorTemperatureView.visibility = View.GONE
+                flashExposureView.visibility = View.GONE
                 latitudeView.visibility = View.VISIBLE
                 latitudeView.resumePage()
                 latitudeView.bringToFront()
@@ -1038,6 +1094,7 @@ class MeterLayout @JvmOverloads constructor(
                 latitudeView.visibility = View.GONE
                 parameterRecordToolView.visibility = View.GONE
                 colorTemperatureView.visibility = View.GONE
+                flashExposureView.visibility = View.GONE
                 reciprocityView.visibility = View.VISIBLE
                 reciprocityView.resumePage()
                 reciprocityView.bringToFront()
@@ -1048,6 +1105,7 @@ class MeterLayout @JvmOverloads constructor(
                 latitudeView.visibility = View.GONE
                 reciprocityView.visibility = View.GONE
                 colorTemperatureView.visibility = View.GONE
+                flashExposureView.visibility = View.GONE
                 parameterRecordToolView.visibility = View.VISIBLE
                 parameterRecordToolView.resumePage()
                 parameterRecordToolView.bringToFront()
@@ -1058,9 +1116,21 @@ class MeterLayout @JvmOverloads constructor(
                 latitudeView.visibility = View.GONE
                 reciprocityView.visibility = View.GONE
                 parameterRecordToolView.visibility = View.GONE
+                flashExposureView.visibility = View.GONE
                 colorTemperatureView.visibility = View.VISIBLE
                 colorTemperatureView.updateRawSupport(state.cameraInfo.rawAvailable)
                 colorTemperatureView.bringToFront()
+            }
+            ToolId.FLASH_INDEX -> {
+                toolsView.visibility = View.GONE
+                depthOfFieldView.visibility = View.GONE
+                latitudeView.visibility = View.GONE
+                reciprocityView.visibility = View.GONE
+                parameterRecordToolView.visibility = View.GONE
+                colorTemperatureView.visibility = View.GONE
+                flashExposureView.visibility = View.VISIBLE
+                flashExposureView.resumePage()
+                flashExposureView.bringToFront()
             }
             else -> {
                 depthOfFieldView.visibility = View.GONE
@@ -1068,6 +1138,7 @@ class MeterLayout @JvmOverloads constructor(
                 reciprocityView.visibility = View.GONE
                 parameterRecordToolView.visibility = View.GONE
                 colorTemperatureView.visibility = View.GONE
+                flashExposureView.visibility = View.GONE
                 toolsView.visibility = View.VISIBLE
                 toolsView.bringToFront()
             }
@@ -1177,6 +1248,7 @@ class MeterLayout @JvmOverloads constructor(
         reciprocityView.visibility = View.GONE
         parameterRecordToolView.visibility = View.GONE
         colorTemperatureView.visibility = View.GONE
+        flashExposureView.visibility = View.GONE
         depthOfFieldView.visibility = View.VISIBLE
         depthOfFieldView.bringToFront()
         Log.i("lightstop", "Depth-of-field tool opened")
@@ -1190,6 +1262,7 @@ class MeterLayout @JvmOverloads constructor(
         reciprocityView.visibility = View.GONE
         parameterRecordToolView.visibility = View.GONE
         colorTemperatureView.visibility = View.GONE
+        flashExposureView.visibility = View.GONE
         latitudeView.visibility = View.VISIBLE
         latitudeView.bringToFront()
         Log.i("lightstop", "Latitude tool opened")
@@ -1208,9 +1281,24 @@ class MeterLayout @JvmOverloads constructor(
         latitudeView.visibility = View.GONE
         parameterRecordToolView.visibility = View.GONE
         colorTemperatureView.visibility = View.GONE
+        flashExposureView.visibility = View.GONE
         reciprocityView.visibility = View.VISIBLE
         reciprocityView.bringToFront()
         Log.i("lightstop", "Reciprocity tool opened")
+    }
+
+    private fun showFlashExposure() {
+        activeToolId = ToolId.FLASH_INDEX
+        flashExposureView.openPage()
+        toolsView.visibility = View.GONE
+        depthOfFieldView.visibility = View.GONE
+        latitudeView.visibility = View.GONE
+        reciprocityView.visibility = View.GONE
+        parameterRecordToolView.visibility = View.GONE
+        colorTemperatureView.visibility = View.GONE
+        flashExposureView.visibility = View.VISIBLE
+        flashExposureView.bringToFront()
+        Log.i("lightstop", "Flash-exposure tool opened")
     }
 
     private fun showParameterRecord() {
@@ -1221,6 +1309,7 @@ class MeterLayout @JvmOverloads constructor(
         latitudeView.visibility = View.GONE
         reciprocityView.visibility = View.GONE
         colorTemperatureView.visibility = View.GONE
+        flashExposureView.visibility = View.GONE
         parameterRecordToolView.visibility = View.VISIBLE
         parameterRecordToolView.bringToFront()
         Log.i("lightstop", "Parameter-record tool opened")
@@ -1234,6 +1323,7 @@ class MeterLayout @JvmOverloads constructor(
         latitudeView.visibility = View.GONE
         reciprocityView.visibility = View.GONE
         parameterRecordToolView.visibility = View.GONE
+        flashExposureView.visibility = View.GONE
         colorTemperatureView.visibility = View.VISIBLE
         colorTemperatureView.bringToFront()
         requestLayout()
@@ -1568,15 +1658,24 @@ class MeterLayout @JvmOverloads constructor(
     }
 
     private fun updateAngleMeteringControl(fadeIn: Boolean = false) {
-        if (angleControlSuppressedForModeTransition) return
+        if (angleControlSuppressedForModeTransition) {
+            flashDistanceDialView.visibility = View.GONE
+            flashDistanceDialView.collapse()
+            return
+        }
         val transitionSettled = zoneTransitionFraction <= 0f || zoneTransitionFraction >= 1f
-        val visible = state.meteringMode == MeteringMode.ANGLE &&
-            state.meteringPipelineMode != MeteringPipelineMode.FAST &&
-            transitionSettled &&
+        val unobstructed = transitionSettled &&
             !isCalibrationOpen && !isVignettingCalibrationOpen &&
             !isCameraManagementOpen && !isCombinationSelectionOpen && !isInformationOpen &&
             !isSettingsOpen && !isToolsOpen && !isFilmSelectorOpen &&
             !isParameterEditorOpen && !isParameterHistoryOpen
+        val flashVisible = state.appliedFlashConfiguration != null && unobstructed
+        val visible = state.meteringMode == MeteringMode.ANGLE &&
+            state.meteringPipelineMode != MeteringPipelineMode.FAST &&
+            unobstructed
+        val anchor = if (isZoneMode) zoneView.recordButtonRect() else instrumentView.recordButtonRect()
+        val pairedOffset = if (visible && flashVisible) 22f * resources.displayMetrics.density else 0f
+        updateFlashDistanceControl(flashVisible, anchor, if (pairedOffset > 0f) pairedOffset else 0f)
         if (!visible) {
             angleMeteringDialView.animate().cancel()
             angleControlFadeInAnimating = false
@@ -1586,7 +1685,8 @@ class MeterLayout @JvmOverloads constructor(
             return
         }
         angleMeteringDialView.setAnchor(
-            if (isZoneMode) zoneView.recordButtonRect() else instrumentView.recordButtonRect(),
+            anchor,
+            if (pairedOffset > 0f) -pairedOffset else 0f,
         )
         angleMeteringDialView.refreshSupport()
         if (fadeIn) {
@@ -1613,6 +1713,32 @@ class MeterLayout @JvmOverloads constructor(
         }
     }
 
+    private fun updateFlashDistanceControl(visible: Boolean, anchor: RectF, offsetX: Float) {
+        if (!visible) {
+            flashDistanceDialView.visibility = View.GONE
+            flashDistanceDialView.collapse()
+            return
+        }
+        flashDistanceDialView.setConfiguration(
+            state.appliedFlashConfiguration,
+            state.cameraInfo.focusDistanceMeters,
+        )
+        flashDistanceDialView.setAnchor(anchor, offsetX)
+        flashDistanceDialView.visibility = View.VISIBLE
+        flashDistanceDialView.bringToFront()
+    }
+
+    private fun updateFlashPresentation() {
+        flashDistanceDialView.setConfiguration(
+            state.appliedFlashConfiguration,
+            state.cameraInfo.focusDistanceMeters,
+        )
+        instrumentView.invalidate()
+        zoneView.invalidate()
+        flashExposureView.invalidate()
+        updateAngleMeteringControl()
+    }
+
     private fun suppressAngleControlForModeTransition() {
         angleControlFadeInRunnable?.let(::removeCallbacks)
         angleControlFadeInRunnable = null
@@ -1620,6 +1746,8 @@ class MeterLayout @JvmOverloads constructor(
         angleControlSuppressedForModeTransition = true
         angleControlFadeInAnimating = false
         angleMeteringDialView.animate().cancel()
+        flashDistanceDialView.visibility = View.GONE
+        flashDistanceDialView.collapse()
         if (angleMeteringDialView.visibility == View.VISIBLE && angleMeteringDialView.alpha > 0f) {
             angleMeteringDialView.animate()
                 .alpha(0f)

@@ -102,7 +102,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             // queried. An incomplete pre-permission catalog must not overwrite a physical lens.
             state.selectedCameraId.ifBlank { null }
         }
-        selectedCamera?.let(cameraController::selectCamera)
+        selectedCamera?.let(::activateCameraRoute)
         cameraController.attach(meterLayout.textureView)
         meterLayout.listener = object : MeterLayout.Listener {
             override fun onMeasureRequested() {
@@ -238,10 +238,7 @@ class MainActivity : Activity(), CameraControllerCallback {
                 if (state.selectCamera(cameraId)) {
                     state.transientMessage = localized("正在切换摄像头", "Switching camera")
                     meterLayout.refresh(frameChanged = true)
-                    cameraController.setPreviewOutputAspectOverride(
-                        state.currentCameraOutputAspect(),
-                    )
-                    cameraController.selectCamera(cameraId)
+                    activateCameraRoute(cameraId)
                 }
             }
 
@@ -265,8 +262,9 @@ class MainActivity : Activity(), CameraControllerCallback {
                 if (hidden && cameraId == state.selectedCameraId) {
                     state.availableCameras.firstOrNull { !state.isCameraHidden(it.cameraId) }
                         ?.let { replacement ->
-                            state.selectCamera(replacement.cameraId)
-                            cameraController.selectCamera(replacement.cameraId)
+                            if (state.selectCamera(replacement.cameraId)) {
+                                activateCameraRoute(replacement.cameraId)
+                            }
                         }
                 }
                 meterLayout.refresh(frameChanged = true)
@@ -393,7 +391,7 @@ class MainActivity : Activity(), CameraControllerCallback {
         meterLayout.resumeZoneTracking()
         cameraController.setTrackingFramesEnabled(meterLayout.isZoneMode)
         if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-            refreshCameraCatalog()?.let(cameraController::selectCamera)
+            refreshCameraCatalog()?.let(::activateCameraRoute)
             cameraController.start()
             maybeShowCalibrationEnvironmentChange()
         } else {
@@ -673,7 +671,7 @@ class MainActivity : Activity(), CameraControllerCallback {
         if (requestCode != CAMERA_PERMISSION_REQUEST) return
         cameraPermissionRequestInFlight = false
         if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
-            refreshCameraCatalog()?.let(cameraController::selectCamera)
+            refreshCameraCatalog()?.let(::activateCameraRoute)
             if (activityResumed) cameraController.start()
             maybeShowCalibrationEnvironmentChange()
         } else {
@@ -698,12 +696,15 @@ class MainActivity : Activity(), CameraControllerCallback {
             state.selectCamera(info.cameraId)
         }
         state.cameraInfo = info
-        cameraController.setPreviewOutputAspectOverride(state.currentCameraOutputAspect())
         val geometryChanged = oldInfo.previewSize != info.previewSize ||
+            oldInfo.previewStreamGeneration != info.previewStreamGeneration ||
             oldInfo.sensorOrientationDegrees != info.sensorOrientationDegrees ||
             oldInfo.lensFacing != info.lensFacing ||
             oldInfo.activePhysicalCameraId != info.activePhysicalCameraId ||
             kotlin.math.abs(oldAspect - state.currentPreviewLandscapeAspect()) > 0.001f
+        if (geometryChanged) {
+            cameraController.setPreviewOutputAspectOverride(state.currentCameraOutputAspect())
+        }
         val switchingMessage = localized("正在切换摄像头", "Switching camera")
         if (state.transientMessage == switchingMessage &&
             info.cameraId == state.selectedCameraId &&
@@ -1070,6 +1071,12 @@ class MainActivity : Activity(), CameraControllerCallback {
         )
         if (::meterLayout.isInitialized) meterLayout.refresh(frameChanged = true)
         return selectedCamera
+    }
+
+    /** Keeps per-route preview geometry ordered ahead of the asynchronous Camera2 selection. */
+    private fun activateCameraRoute(cameraId: String) {
+        cameraController.setPreviewOutputAspectOverride(state.currentCameraOutputAspect())
+        cameraController.selectCamera(cameraId)
     }
 
     private fun ensureCameraPermission() {

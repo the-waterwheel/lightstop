@@ -25,6 +25,7 @@ object ToolsCatalog {
         ToolSpec(ToolId.LATITUDE, LocalizedLabel("宽容度", "Latitude")),
         ToolSpec(ToolId.PARAMETER_LOG, LocalizedLabel("参数记录", "Parameter log")),
         ToolSpec(ToolId.RECIPROCITY, LocalizedLabel("倒易率计算", "Reciprocity")),
+        ToolSpec(ToolId.FLASH_INDEX, LocalizedLabel("闪光曝光", "Flash exposure")),
         ToolSpec(ToolId.COLOR_TEMPERATURE, LocalizedLabel("色温估算", "Color temperature")),
     )
 }

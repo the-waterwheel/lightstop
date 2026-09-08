@@ -6,7 +6,7 @@ import org.junit.Test
 
 class ToolsCatalogTest {
     @Test
-    fun futureToolsKeepIdsButAreHiddenFromCurrentGrid() {
+    fun currentToolsExposeFlashButKeepFutureExposureCorrectionHidden() {
         val visibleIds = ToolsCatalog.tools.map(ToolSpec::id)
 
         assertEquals(
@@ -15,11 +15,11 @@ class ToolsCatalogTest {
                 ToolId.LATITUDE,
                 ToolId.PARAMETER_LOG,
                 ToolId.RECIPROCITY,
+                ToolId.FLASH_INDEX,
                 ToolId.COLOR_TEMPERATURE,
             ),
             visibleIds,
         )
-        assertFalse(ToolId.FLASH_INDEX in visibleIds)
         assertFalse(ToolId.EXPOSURE_CORRECTION in visibleIds)
     }
 }

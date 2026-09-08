@@ -775,6 +775,13 @@ class ZoneSystemView(
 
         drawClearSlider(canvas, g)
         ev100BadgeRenderer.draw(canvas, g.ev100Badge, Ev100Readouts.zone(session), state.isDarkMode, red)
+        ev100BadgeRenderer.drawFlashIndicator(
+            canvas,
+            g.ev100Badge,
+            state.appliedFlashConfiguration,
+            state.isDarkMode,
+            Color.rgb(38, 112, 184),
+        )
         drawMarkButton(canvas, g.markButton)
 
         val rowHeight = 34f * density

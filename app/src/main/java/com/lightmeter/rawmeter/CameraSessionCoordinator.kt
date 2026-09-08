@@ -17,6 +17,7 @@ import android.util.Log
 import android.util.Size
 import android.view.Surface
 import java.util.concurrent.Executor
+import java.util.concurrent.TimeoutException
 
 internal interface CameraSessionCoordinatorListener {
     fun onCameraOpened(generation: Int)
@@ -69,6 +70,9 @@ internal class CameraSessionCoordinator(
 
     private var activeGeneration: Int? = null
     private var sessionRevision = 0L
+    private var configurationTimeoutHandler: Handler? = null
+    private var configurationTimeoutRevision: Long? = null
+    private var configurationTimeoutTask: Runnable? = null
 
     fun configureOutputs(
         surfaceTexture: SurfaceTexture,
@@ -169,6 +173,7 @@ internal class CameraSessionCoordinator(
     fun close() {
         activeGeneration = null
         sessionRevision += 1L
+        cancelSessionConfigurationTimeout()
         isOpening = false
         try {
             session?.close()
@@ -219,6 +224,7 @@ internal class CameraSessionCoordinator(
                 camera.close()
                 return
             }
+            invalidateCurrentSession()
             camera.close()
             if (device === camera) device = null
             isOpening = false
@@ -230,6 +236,7 @@ internal class CameraSessionCoordinator(
                 camera.close()
                 return
             }
+            invalidateCurrentSession()
             camera.close()
             if (device === camera) device = null
             isOpening = false
@@ -257,15 +264,14 @@ internal class CameraSessionCoordinator(
                     configuredSession.close()
                     return
                 }
+                cancelSessionConfigurationTimeout(revision)
                 session = configuredSession
                 listener.onSessionConfigured(camera, configuredSession, preview, generation)
             }
 
             override fun onConfigureFailed(failedSession: CameraCaptureSession) {
                 failedSession.close()
-                if (isSessionActive(generation, revision)) {
-                    listener.onSessionConfigurationFailed(generation)
-                }
+                reportSessionConfigurationFailure(generation, revision, null)
             }
         }
         try {
@@ -311,14 +317,14 @@ internal class CameraSessionCoordinator(
                 )
             }
             camera.createCaptureSession(configuration)
+            armSessionConfigurationTimeout(handler, generation, revision)
         } catch (error: Exception) {
-            if (isSessionActive(generation, revision)) {
-                listener.onSessionConfigurationFailed(generation, error)
-            }
+            reportSessionConfigurationFailure(generation, revision, error)
         }
     }
 
     private fun invalidateCurrentSession() {
+        cancelSessionConfigurationTimeout()
         sessionRevision += 1L
         val current = session
         session = null
@@ -327,6 +333,59 @@ internal class CameraSessionCoordinator(
             runCatching { current.abortCaptures() }
             runCatching { current.close() }
         }
+    }
+
+    private fun armSessionConfigurationTimeout(
+        handler: Handler,
+        generation: Int,
+        revision: Long,
+    ) {
+        cancelSessionConfigurationTimeout()
+        val timeout = Runnable {
+            reportSessionConfigurationFailure(
+                generation = generation,
+                revision = revision,
+                error = TimeoutException(
+                    "Camera session configuration timed out after " +
+                        "$SESSION_CONFIGURATION_TIMEOUT_MS ms",
+                ),
+            )
+        }
+        configurationTimeoutHandler = handler
+        configurationTimeoutRevision = revision
+        configurationTimeoutTask = timeout
+        if (!handler.postDelayed(timeout, SESSION_CONFIGURATION_TIMEOUT_MS)) {
+            reportSessionConfigurationFailure(
+                generation,
+                revision,
+                IllegalStateException("Camera handler rejected the session timeout task"),
+            )
+        }
+    }
+
+    private fun reportSessionConfigurationFailure(
+        generation: Int,
+        revision: Long,
+        error: Exception?,
+    ) {
+        if (!isSessionActive(generation, revision)) return
+        cancelSessionConfigurationTimeout(revision)
+        // Reject every later callback from this configure operation before recovery starts.
+        sessionRevision += 1L
+        if (error is TimeoutException) {
+            Log.e(TAG, "Camera session configure callback timed out generation=$generation revision=$revision")
+        }
+        listener.onSessionConfigurationFailed(generation, error)
+    }
+
+    private fun cancelSessionConfigurationTimeout(revision: Long? = null) {
+        if (revision != null && configurationTimeoutRevision != revision) return
+        val handler = configurationTimeoutHandler
+        val task = configurationTimeoutTask
+        if (handler != null && task != null) handler.removeCallbacks(task)
+        configurationTimeoutHandler = null
+        configurationTimeoutRevision = null
+        configurationTimeoutTask = null
     }
 
     private fun replaceReaders(
@@ -366,5 +425,6 @@ internal class CameraSessionCoordinator(
     private companion object {
         private const val TAG = "CameraSession"
         private const val RAW_READER_MAX_IMAGES = 1
+        private const val SESSION_CONFIGURATION_TIMEOUT_MS = 8_000L
     }
 }

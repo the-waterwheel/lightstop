@@ -69,11 +69,17 @@ data class CameraUiInfo(
     val absoluteExposureMetadataAvailable: Boolean = false,
     val focalLengthMm: Float = 0f,
     val aperture: Float = 0f,
+    /** Camera2 focus distance converted from diopters; null means unavailable, +∞ means infinity. */
+    val focusDistanceMeters: Float? = null,
+    val minimumFocusDistanceDiopters: Float = 0f,
+    val focusDistanceCalibration: Int? = null,
     val sensorWidthMm: Float = 0f,
     val sensorHeightMm: Float = 0f,
     val sensorOrientationDegrees: Int = 90,
     val maxDisplayZoom: Float = 5f,
     val previewSize: Size? = null,
+    /** Changes whenever a preview-producing CameraCaptureSession starts, even at the same size. */
+    val previewStreamGeneration: Long = 0L,
     val previewFps: Int = 0,
     val previewFpsLower: Int = previewFps,
     val previewFpsUpper: Int = previewFps,
@@ -89,6 +95,12 @@ data class CameraUiInfo(
      */
     val calibrationCameraId: String
         get() = activePhysicalCameraId?.let { "$logicalCameraId@$it" } ?: runtimeCameraId
+
+    /** Uncalibrated Camera2 focus units cannot safely drive a physical flash-distance formula. */
+    val metricFocusDistanceAvailable: Boolean
+        get() = minimumFocusDistanceDiopters > 0f &&
+            focusDistanceCalibration !=
+            CameraCharacteristics.LENS_INFO_FOCUS_DISTANCE_CALIBRATION_UNCALIBRATED
 }
 
 data class MeterReading(
@@ -410,6 +422,8 @@ class MeterState(context: Context) {
     var lastReading: MeterReading? = null
     var lastNormalReading: MeterReading? = null
     var measuring: Boolean = false
+    internal var appliedFlashConfiguration: FlashConfiguration? = null
+        private set
     var cameraInfo: CameraUiInfo = CameraUiInfo(
         status = if (menuLanguage == MenuLanguage.ENGLISH) {
             "Preparing camera"
@@ -423,8 +437,13 @@ class MeterState(context: Context) {
         private set
     var transientMessage: String? = null
 
-    val effectiveEv100: Double?
+    val ambientEffectiveEv100: Double?
         get() = sceneEv100?.minus(exposureCompEv)
+
+    val effectiveEv100: Double?
+        get() = ambientEffectiveEv100?.let { ambient ->
+            ambient + currentFlashAdjustment().compensationStops
+        }
 
     init {
         // Older builds stored coordinates derived from rounded display labels (for example
@@ -442,6 +461,25 @@ class MeterState(context: Context) {
             meteringPipelineMode,
         )
         persist()
+    }
+
+    internal fun setAppliedFlashConfiguration(value: FlashConfiguration?) {
+        appliedFlashConfiguration = value?.normalized()
+    }
+
+    internal fun currentFlashAdjustment(): FlashAdjustment {
+        val configuration = appliedFlashConfiguration
+            ?: return FlashAdjustment(0.0, null, null, FlashAdjustmentStatus.INVALID)
+        return FlashExposureMath.adjustment(
+            configuration = configuration,
+            autofocusDistanceMeters = cameraInfo.focusDistanceMeters?.toDouble(),
+            meteringIso = iso,
+            ambientEv100 = ambientEffectiveEv100,
+            exposureCompensationEv = exposureCompEv,
+            lockMode = exposureLockMode,
+            lockedApertureStop = lockedApertureStop,
+            lockedShutterLogSeconds = lockedShutterLogSeconds,
+        )
     }
 
     fun selectFrame(index: Int) {
@@ -645,14 +683,14 @@ class MeterState(context: Context) {
 
     fun aspectStorageCameraId(cameraId: String): String {
         val descriptor = availableCameras.firstOrNull { it.cameraId == cameraId }
-        return if (cameraId == selectedCameraId &&
-            descriptor?.lensRole == CameraLensRole.AUTOMATIC &&
-            cameraInfo.activePhysicalCameraId != null
-        ) {
-            cameraInfo.calibrationCameraId
-        } else {
-            cameraId
-        }
+        return CameraOutputAspectIdentity.resolve(
+            cameraId = cameraId,
+            selectedCameraId = selectedCameraId,
+            lensRole = descriptor?.lensRole,
+            runtimeCameraId = cameraInfo.cameraId,
+            activePhysicalCameraId = cameraInfo.activePhysicalCameraId,
+            runtimeCalibrationCameraId = cameraInfo.calibrationCameraId,
+        )
     }
 
     fun currentCameraOutputAspect(): Float? = cameraOutputAspect(

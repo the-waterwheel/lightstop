@@ -47,6 +47,7 @@ class InstrumentView(
     private val black: Int get() = if (state.isDarkMode) nightForeground else lightBlack
     private val surfaceColor: Int get() = if (state.isDarkMode) Color.BLACK else Color.WHITE
     private val red = Color.rgb(166, 27, 36)
+    private val flashBlue = Color.rgb(38, 112, 184)
     private val paleGray: Int
         get() = if (state.isDarkMode) Color.rgb(38, 38, 36) else Color.rgb(232, 232, 229)
     private val middleGray = Color.rgb(130, 130, 126)
@@ -125,6 +126,13 @@ class InstrumentView(
         drawExposureRows(canvas, g)
         drawDial(canvas, g)
         ev100BadgeRenderer.draw(canvas, g.ev100Badge, Ev100Readouts.normal(state), state.isDarkMode, red)
+        ev100BadgeRenderer.drawFlashIndicator(
+            canvas,
+            g.ev100Badge,
+            state.appliedFlashConfiguration,
+            state.isDarkMode,
+            flashBlue,
+        )
         drawMeterButton(canvas, g)
         drawStatus(canvas, g)
     }
