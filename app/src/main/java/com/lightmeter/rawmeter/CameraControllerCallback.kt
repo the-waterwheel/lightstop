@@ -12,6 +12,8 @@ interface CameraControllerCallback {
     fun onMeteringStarted(source: MeteringSource, frameCount: Int)
     fun onMeterReading(reading: MeterReading)
     fun onMeteringError(message: String)
+    /** Zone RAW can have a usable reading while the mutually-exclusive resident session restores. */
+    fun onMeteringRestoreStateChanged(restoring: Boolean) = Unit
     fun onMeteringBaselineRestoring() = Unit
     fun onExposurePreviewUnavailable() = Unit
     fun onVignettingCalibrationStarted()

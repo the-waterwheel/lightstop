@@ -119,6 +119,7 @@ class CameraController(
                     activeSessionProfile == CameraSessionProfile.RAW_ISOLATED
                 ) {
                     if (!transaction.sessionState.markRawSessionConfigured()) return
+                    transaction.rawSessionConfiguredAtNs = System.nanoTime()
                     postInfo(
                         cameraInfo.copy(
                             rawAvailable = true,
@@ -275,6 +276,7 @@ class CameraController(
                         )
                     } else {
                         transaction.reading = reading
+                        deliverZoneRawResult(transaction, reading)
                     }
                     restoreZoneResidentSession(transaction)
                     return
@@ -1143,6 +1145,7 @@ class CameraController(
     private fun restoreZoneResidentSession(transaction: ZoneRawTransaction) {
         if (!zoneRawTransactions.isActive(transaction)) return
         if (!transaction.sessionState.beginRestore()) return
+        transaction.restoreStartedAtNs = System.nanoTime()
         previewPausedForRawCapture = false
         val residentProfile = desiredResidentSessionProfile()
         characteristics = transaction.residentCharacteristics
@@ -1160,11 +1163,13 @@ class CameraController(
     private fun completeZoneRawTransaction(transaction: ZoneRawTransaction) {
         if (!zoneRawTransactions.isActive(transaction)) return
         if (!transaction.sessionState.markResidentSessionConfigured()) return
+        transaction.restoreCompletedAtNs = System.nanoTime()
         if (!zoneRawTransactions.clear(transaction)) return
-        transaction.reading?.let { reading ->
+        if (transaction.resultDelivered) {
             meteringOperationActive = false
             recoveryState.recordRawMeasurementSucceeded()
-            mainHandler.post { callback.onMeterReading(reading) }
+            logZoneRawLatency(transaction)
+            mainHandler.post { callback.onMeteringRestoreStateChanged(false) }
             return
         }
         val failure = transaction.failure ?: ZoneRawFailure(
@@ -1214,6 +1219,10 @@ class CameraController(
         if (!zoneRawTransactions.clear(transaction)) return
         pendingResidentSessionProfile = null
         meteringOperationActive = false
+        if (transaction.resultDelivered) {
+            logZoneRawLatency(transaction)
+            mainHandler.post { callback.onMeteringRestoreStateChanged(false) }
+        }
         postMeterError(
             transaction.failure?.message
                 ?: localized("无法恢复相机预览，本次测光已中止", "Unable to restore preview; metering stopped"),
@@ -1225,6 +1234,36 @@ class CameraController(
                 delayMs = 0L,
             )
         }
+    }
+
+    /** Delivers one reliable Zone point before restoring preview/YUV; the operation remains locked. */
+    private fun deliverZoneRawResult(transaction: ZoneRawTransaction, reading: MeterReading) {
+        if (transaction.resultDelivered || !zoneRawTransactions.isActive(transaction)) return
+        transaction.resultDelivered = true
+        transaction.resultReadyAtNs = System.nanoTime()
+        mainHandler.post {
+            callback.onMeteringRestoreStateChanged(true)
+            callback.onMeterReading(reading)
+        }
+    }
+
+    private fun logZoneRawLatency(transaction: ZoneRawTransaction) {
+        val requested = transaction.plan.requestedAtNs
+        val rawConfigured = transaction.rawSessionConfiguredAtNs
+        val resultReady = transaction.resultReadyAtNs
+        val restoreStarted = transaction.restoreStartedAtNs
+        val restoreCompleted = transaction.restoreCompletedAtNs
+        fun elapsed(from: Long?, to: Long?): Long? =
+            if (from == null || to == null || to < from) null else (to - from) / 1_000_000L
+        Log.i(
+            TAG,
+            "Zone RAW latency tapToRawConfigMs=${elapsed(requested, rawConfigured)} " +
+                "tapToResultMs=${elapsed(requested, resultReady)} " +
+                "rawResultToRestoreMs=${elapsed(resultReady, restoreStarted)} " +
+                "restoreMs=${elapsed(restoreStarted, restoreCompleted)} " +
+                "tapToReadyMs=${elapsed(requested, restoreCompleted)} " +
+                "resultDelivered=${transaction.resultDelivered}",
+        )
     }
 
     private fun handleResidentSessionFailure(error: Exception?): Boolean {

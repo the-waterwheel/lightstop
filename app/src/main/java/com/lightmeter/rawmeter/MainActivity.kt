@@ -49,6 +49,8 @@ class MainActivity : Activity(), CameraControllerCallback {
     private var vignettingCalibrationPending = false
     private val calibrationCoordinator = MeteringCalibrationCoordinator()
     private var zoneMeasurementPending = false
+    /** A Zone value may be visible while Camera2 rebuilds the resident preview/YUV session. */
+    private var zoneCameraRestorePending = false
     private var activityResumed = false
     private var appliedPipelineMode: MeteringPipelineMode? = null
     private var cameraPermissionDialogVisible = false
@@ -428,6 +430,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             state.measuring = false
             meterLayout.failZoneMeasurement()
         }
+        zoneCameraRestorePending = false
         if (calibrationCoordinator.isActive) {
             clearCalibrationRun()
             meterLayout.calibrationView.showError(
@@ -830,6 +833,19 @@ class MainActivity : Activity(), CameraControllerCallback {
         }
     }
 
+    override fun onMeteringRestoreStateChanged(restoring: Boolean) {
+        if (!activityResumed) return
+        zoneCameraRestorePending = restoring
+        if (restoring) {
+            state.measuring = true
+            state.transientMessage = localized("正在恢复预览", "Restoring preview")
+        } else if (!zoneMeasurementPending) {
+            state.measuring = false
+            state.transientMessage = null
+        }
+        meterLayout.refresh()
+    }
+
     override fun onMeterReading(reading: MeterReading) {
         if (!activityResumed) return
         if (calibrationCoordinator.isActive) {
@@ -838,7 +854,9 @@ class MainActivity : Activity(), CameraControllerCallback {
         }
         if (zoneMeasurementPending) {
             zoneMeasurementPending = false
-            state.measuring = false
+            // The marker is complete now; keep the controller lock visible until the resident
+            // preview/YUV session reports that it has recovered.
+            state.measuring = zoneCameraRestorePending
             state.lastReading = reading
             meterLayout.completeZoneMeasurement(reading)
             meterLayout.refresh()

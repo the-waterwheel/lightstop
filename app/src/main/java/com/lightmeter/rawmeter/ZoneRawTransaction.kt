@@ -15,6 +15,8 @@ internal data class MeteringPlan(
     val sensorFrameAspect: Float,
     val meteringRoiFraction: Float?,
     val displayedPreviewReference: PreviewLumaReference?,
+    /** Monotonic request time used only for phase-by-phase latency diagnostics. */
+    val requestedAtNs: Long = System.nanoTime(),
 )
 
 internal data class ZoneRawFailure(
@@ -34,6 +36,11 @@ internal data class ZoneRawTransaction(
     var reading: MeterReading? = null,
     var failure: ZoneRawFailure? = null,
     var physicalCameraChanged: Boolean = false,
+    var resultDelivered: Boolean = false,
+    var rawSessionConfiguredAtNs: Long? = null,
+    var resultReadyAtNs: Long? = null,
+    var restoreStartedAtNs: Long? = null,
+    var restoreCompletedAtNs: Long? = null,
 )
 
 /** Owns transaction identity so a late callback cannot clear a newer Zone operation. */
