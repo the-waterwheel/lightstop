@@ -3,6 +3,7 @@ package com.lightmeter.rawmeter
 interface CameraControllerCallback {
     fun localized(chinese: String, english: String): String
     fun onCameraInfo(info: CameraUiInfo)
+    fun onDistanceMeasurementState(state: DistanceMeasurementState) = Unit
     fun onCombinationSelectionFallbackToSystem() = Unit
     fun onRawUnavailable()
     fun tryReserveZoneTrackingFrame(): Boolean

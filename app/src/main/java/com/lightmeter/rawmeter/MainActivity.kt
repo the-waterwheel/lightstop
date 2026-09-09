@@ -169,6 +169,14 @@ class MainActivity : Activity(), CameraControllerCallback {
                 updateExposurePreviewFromMeter()
             }
 
+            override fun onAutomaticDistanceRequested() {
+                cameraController.requestAutomaticDistance()
+            }
+
+            override fun onAutomaticDistanceStopped() {
+                cameraController.stopAutomaticDistance()
+            }
+
             override fun onSettingRejected(key: SettingKey, value: String) {
                 if (key == SettingKey.METERING_MODE && value == MeteringMode.ANGLE.name) {
                     showAngleCompatibilityWarning()
@@ -696,6 +704,14 @@ class MainActivity : Activity(), CameraControllerCallback {
             state.selectCamera(info.cameraId)
         }
         state.cameraInfo = info
+        if (state.appliedFlashConfiguration?.isAutoDistance == true &&
+            info.previewStreamGeneration > 0L && (
+                info.previewStreamGeneration != oldInfo.previewStreamGeneration ||
+                    info.activePhysicalCameraId != oldInfo.activePhysicalCameraId
+                )
+        ) {
+            cameraController.requestAutomaticDistance()
+        }
         val geometryChanged = oldInfo.previewSize != info.previewSize ||
             oldInfo.previewStreamGeneration != info.previewStreamGeneration ||
             oldInfo.sensorOrientationDegrees != info.sensorOrientationDegrees ||
@@ -719,6 +735,12 @@ class MainActivity : Activity(), CameraControllerCallback {
         meterLayout.refresh(
             frameChanged = geometryChanged || meterLayout.isVignettingCalibrationOpen,
         )
+        updateExposurePreviewFromMeter()
+    }
+
+    override fun onDistanceMeasurementState(state: DistanceMeasurementState) {
+        this.state.distanceMeasurementState = state
+        meterLayout.refresh()
         updateExposurePreviewFromMeter()
     }
 

@@ -73,6 +73,10 @@ data class CameraUiInfo(
     val focusDistanceMeters: Float? = null,
     val minimumFocusDistanceDiopters: Float = 0f,
     val focusDistanceCalibration: Int? = null,
+    /** Static key availability; a non-null calibration field alone is not sufficient. */
+    val focusDistanceResultAvailable: Boolean = false,
+    /** Logical multi-camera routes require a confirmed active physical result for AF distance. */
+    val isLogicalMultiCamera: Boolean = false,
     val sensorWidthMm: Float = 0f,
     val sensorHeightMm: Float = 0f,
     val sensorOrientationDegrees: Int = 90,
@@ -96,11 +100,16 @@ data class CameraUiInfo(
     val calibrationCameraId: String
         get() = activePhysicalCameraId?.let { "$logicalCameraId@$it" } ?: runtimeCameraId
 
-    /** Uncalibrated Camera2 focus units cannot safely drive a physical flash-distance formula. */
+    val physicalCameraIdentityKnown: Boolean
+        get() = physicalCameraId != null || activePhysicalCameraId != null || !isLogicalMultiCamera
+
+    /** Uncalibrated or unspecified Camera2 focus units cannot drive a physical distance formula. */
     val metricFocusDistanceAvailable: Boolean
         get() = minimumFocusDistanceDiopters > 0f &&
-            focusDistanceCalibration !=
-            CameraCharacteristics.LENS_INFO_FOCUS_DISTANCE_CALIBRATION_UNCALIBRATED
+            focusDistanceCalibration in setOf(
+                CameraCharacteristics.LENS_INFO_FOCUS_DISTANCE_CALIBRATION_CALIBRATED,
+                CameraCharacteristics.LENS_INFO_FOCUS_DISTANCE_CALIBRATION_APPROXIMATE,
+            ) && focusDistanceResultAvailable && physicalCameraIdentityKnown
 }
 
 data class MeterReading(
@@ -424,6 +433,7 @@ class MeterState(context: Context) {
     var measuring: Boolean = false
     internal var appliedFlashConfiguration: FlashConfiguration? = null
         private set
+    internal var distanceMeasurementState: DistanceMeasurementState = DistanceMeasurementState()
     var cameraInfo: CameraUiInfo = CameraUiInfo(
         status = if (menuLanguage == MenuLanguage.ENGLISH) {
             "Preparing camera"
@@ -472,7 +482,7 @@ class MeterState(context: Context) {
             ?: return FlashAdjustment(0.0, null, null, FlashAdjustmentStatus.INVALID)
         return FlashExposureMath.adjustment(
             configuration = configuration,
-            autofocusDistanceMeters = cameraInfo.focusDistanceMeters?.toDouble(),
+            autofocusDistanceMeters = distanceMeasurementState.effectiveMetersForFlash,
             meteringIso = iso,
             ambientEv100 = ambientEffectiveEv100,
             exposureCompensationEv = exposureCompEv,

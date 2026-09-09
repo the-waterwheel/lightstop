@@ -194,6 +194,11 @@ class CameraController(
         },
     )
     private val cameraCatalog = CameraCatalog(cameraManager)
+    private val distanceCoordinator = DistanceCoordinator { state ->
+        // Camera results arrive on the camera thread. Keep the legacy field diagnostic-only.
+        cameraInfo = cameraInfo.copy(focusDistanceMeters = state.estimate?.meters?.toFloat())
+        mainHandler.post { callback.onDistanceMeasurementState(state) }
+    }
     private val combinationSelectionStore = CameraCombinationSelectionStore(context)
     private val calibrationStore = CameraCalibrationStore(context)
     private val vignettingCalibrationStore = VignettingCalibrationStore(context)
@@ -408,7 +413,6 @@ class CameraController(
     private var previewOutputAspectOverride: Float? = null
     private var actualFpsWindowStartNs = 0L
     private var actualFpsFrameCount = 0
-    private var lastFocusDistancePublishAtMs = 0L
     private val frameRateController = PreviewFrameRateController()
     @Volatile
     private var latestResult: CaptureResult? = null
@@ -660,6 +664,23 @@ class CameraController(
             )
         }
         cameraHandler?.post(update) ?: update()
+    }
+
+    /** Starts a fresh Camera2 AF sampling run for the flash Auto distance control. */
+    fun requestAutomaticDistance() {
+        cameraHandler?.post {
+            if (!started) return@post
+            val context = currentDistanceContext() ?: run {
+                distanceCoordinator.invalidate("Active physical camera is unknown")
+                return@post
+            }
+            distanceCoordinator.startFocusDistance(context, currentFocusDistanceCapability())
+            triggerDistanceAutoFocus()
+        }
+    }
+
+    fun stopAutomaticDistance() {
+        cameraHandler?.post { distanceCoordinator.stop() }
     }
 
     /** Uses only the display SurfaceTexture for this controller run; camera selection resets it. */
@@ -2104,6 +2125,11 @@ class CameraController(
                 focusDistanceCalibration = chars.get(
                     CameraCharacteristics.LENS_INFO_FOCUS_DISTANCE_CALIBRATION,
                 ),
+                focusDistanceResultAvailable = runCatching { chars.availableCaptureResultKeys }
+                    .getOrDefault(emptyList()).contains(CaptureResult.LENS_FOCUS_DISTANCE),
+                isLogicalMultiCamera = (logicalCharacteristics ?: chars).get(
+                    CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES,
+                )?.contains(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA) == true,
                 sensorWidthMm = physicalSize?.width ?: 0f,
                 sensorHeightMm = physicalSize?.height ?: 0f,
                 sensorOrientationDegrees =
@@ -2926,6 +2952,9 @@ class CameraController(
             observeActualPreviewFps(timestamp)
             observePreviewSensorViewport(effectiveResult)
             updateDynamicLensInfo(effectiveResult)
+            currentDistanceContext()?.let { context ->
+                distanceCoordinator.onCaptureResult(context, effectiveResult, timestamp)
+            }
             onPreviewBaselineResult(request, effectiveResult)
             observePreviewLighting(effectiveResult, timestamp)
             // A few physical-camera HALs omit SENSOR_TIMESTAMP from the physical result even
@@ -3049,6 +3078,8 @@ class CameraController(
                 focusDistanceCalibration = chars.get(
                     CameraCharacteristics.LENS_INFO_FOCUS_DISTANCE_CALIBRATION,
                 ),
+                focusDistanceResultAvailable = runCatching { chars.availableCaptureResultKeys }
+                    .getOrDefault(emptyList()).contains(CaptureResult.LENS_FOCUS_DISTANCE),
                 sensorWidthMm = physicalSize?.width ?: cameraInfo.sensorWidthMm,
                 sensorHeightMm = physicalSize?.height ?: cameraInfo.sensorHeightMm,
                 sensorOrientationDegrees = chars.get(CameraCharacteristics.SENSOR_ORIENTATION)
@@ -3057,39 +3088,21 @@ class CameraController(
                 previewSensorViewport = NormalizedSensorViewport.FULL,
             ),
         )
+        distanceCoordinator.invalidate("Active physical camera changed")
     }
 
     private fun updateDynamicLensInfo(result: CaptureResult) {
         val focal = result.get(CaptureResult.LENS_FOCAL_LENGTH) ?: cameraInfo.focalLengthMm
         val aperture = result.get(CaptureResult.LENS_APERTURE) ?: cameraInfo.aperture
-        val focusDiopters = result.get(CaptureResult.LENS_FOCUS_DISTANCE)
-            .takeIf { cameraInfo.metricFocusDistanceAvailable }
-        val focusDistance = when {
-            focusDiopters == null -> cameraInfo.focusDistanceMeters
-            focusDiopters <= 0.0001f -> Float.POSITIVE_INFINITY
-            else -> 1f / focusDiopters
-        }
         val lensChanged = focal > 0f && (
             abs(focal - cameraInfo.focalLengthMm) >= 0.01f ||
                 abs(aperture - cameraInfo.aperture) >= 0.01f
             )
-        val oldFocus = cameraInfo.focusDistanceMeters
-        val focusChanged = when {
-            oldFocus == null -> focusDistance != null
-            focusDistance == null -> false
-            oldFocus == Float.POSITIVE_INFINITY -> focusDistance != Float.POSITIVE_INFINITY
-            focusDistance == Float.POSITIVE_INFINITY -> true
-            else -> abs(focusDistance - oldFocus) >= maxOf(0.02f, oldFocus * 0.02f)
-        }
-        val now = SystemClock.elapsedRealtime()
-        val publishFocus = focusChanged && now - lastFocusDistancePublishAtMs >= 200L
-        if (!lensChanged && !publishFocus) return
-        if (publishFocus) lastFocusDistancePublishAtMs = now
+        if (!lensChanged) return
         postRuntimeInfo(
             cameraInfo.copy(
                 focalLengthMm = focal.takeIf { it > 0f } ?: cameraInfo.focalLengthMm,
                 aperture = aperture,
-                focusDistanceMeters = if (publishFocus) focusDistance else cameraInfo.focusDistanceMeters,
             ),
         )
     }
@@ -3204,6 +3217,39 @@ class CameraController(
             else ->
                 builder.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
         }
+    }
+
+    private fun triggerDistanceAutoFocus(): Boolean {
+        val device = cameraDevice ?: return false
+        val session = captureSession ?: return false
+        val preview = sessionCoordinator.previewSurface ?: return false
+        return runCatching {
+            val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+                addTarget(preview)
+                set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
+                setSupportedAutoFocus(this)
+                set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_START)
+            }
+            session.capture(builder.build(), previewCaptureCallback, cameraHandler)
+            true
+        }.getOrElse {
+            Log.w(TAG, "Unable to trigger autofocus for automatic distance", it)
+            false
+        }
+    }
+
+    private fun currentFocusDistanceCapability() = FocusDistanceCapability(
+        minimumDiopters = cameraInfo.minimumFocusDistanceDiopters,
+        calibration = cameraInfo.focusDistanceCalibration,
+        resultKeyAvailable = cameraInfo.focusDistanceResultAvailable,
+        physicalIdentityKnown = cameraInfo.physicalCameraIdentityKnown,
+    )
+
+    private fun currentDistanceContext(): DistanceContext? {
+        if (!cameraInfo.physicalCameraIdentityKnown) return null
+        val identity = cameraInfo.activePhysicalCameraId ?: cameraInfo.physicalCameraId
+            ?: cameraInfo.runtimeCameraId.takeIf { it.isNotBlank() } ?: return null
+        return DistanceContext(cameraGeneration, identity, physicalIdentityKnown = true)
     }
 
     private fun onTrackingImageAvailable(reader: ImageReader) {
@@ -3460,7 +3506,7 @@ class CameraController(
         previewFpsRange = null
         actualFpsWindowStartNs = 0L
         actualFpsFrameCount = 0
-        lastFocusDistancePublishAtMs = 0L
+        distanceCoordinator.invalidate("Camera closed")
         activeSessionProfile = null
         characteristics = null
         logicalCharacteristics = null

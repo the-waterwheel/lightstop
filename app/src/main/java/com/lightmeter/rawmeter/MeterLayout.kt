@@ -40,6 +40,8 @@ class MeterLayout @JvmOverloads constructor(
         fun onOrientationToggle()
         fun onPreviewGeometryChanged(width: Int, height: Int)
         fun onControlsChanged(frameChanged: Boolean)
+        fun onAutomaticDistanceRequested()
+        fun onAutomaticDistanceStopped()
         fun onSettingRejected(key: SettingKey, value: String)
         fun onCombinationSelectionModeChanged(mode: MeteringCombinationSelectionMode)
         fun onManualCombinationLooksNormal()
@@ -625,6 +627,11 @@ class MeterLayout @JvmOverloads constructor(
                     state.isoValues.indexOf(selected.iso).takeIf { it >= 0 }?.let { state.isoIndex = it }
                 }
                 state.setAppliedFlashConfiguration(configuration)
+                if (configuration?.isAutoDistance == true) {
+                    listener?.onAutomaticDistanceRequested()
+                } else {
+                    listener?.onAutomaticDistanceStopped()
+                }
                 updateFlashPresentation()
                 listener?.onControlsChanged(false)
             }
@@ -1721,7 +1728,7 @@ class MeterLayout @JvmOverloads constructor(
         }
         flashDistanceDialView.setConfiguration(
             state.appliedFlashConfiguration,
-            state.cameraInfo.focusDistanceMeters,
+            state.distanceMeasurementState,
         )
         flashDistanceDialView.setAnchor(anchor, offsetX)
         flashDistanceDialView.visibility = View.VISIBLE
@@ -1731,7 +1738,7 @@ class MeterLayout @JvmOverloads constructor(
     private fun updateFlashPresentation() {
         flashDistanceDialView.setConfiguration(
             state.appliedFlashConfiguration,
-            state.cameraInfo.focusDistanceMeters,
+            state.distanceMeasurementState,
         )
         instrumentView.invalidate()
         zoneView.invalidate()

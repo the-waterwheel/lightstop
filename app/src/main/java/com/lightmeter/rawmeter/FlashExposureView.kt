@@ -227,7 +227,8 @@ internal class FlashExposureView(
 
         val adjustment = previewAdjustment()
         val detail = when (adjustment.status) {
-            FlashAdjustmentStatus.DISTANCE_UNAVAILABLE -> localized("等待相机对焦距离", "Waiting for camera focus distance")
+            FlashAdjustmentStatus.DISTANCE_UNAVAILABLE -> state.distanceMeasurementState.diagnosticReason
+                ?: localized("等待相机对焦距离", "Waiting for camera focus distance")
             FlashAdjustmentStatus.FLASH_DOMINATES -> localized("闪光已覆盖所需曝光", "Flash alone covers the exposure")
             FlashAdjustmentStatus.APPLIED -> localized(
                 "总光量补偿 −%.2f 档",
@@ -338,7 +339,7 @@ internal class FlashExposureView(
 
     private fun previewAdjustment(): FlashAdjustment = FlashExposureMath.adjustment(
         configuration = configuration,
-        autofocusDistanceMeters = state.cameraInfo.focusDistanceMeters?.toDouble(),
+        autofocusDistanceMeters = state.distanceMeasurementState.effectiveMetersForFlash,
         meteringIso = configuration.iso,
         ambientEv100 = state.ambientEffectiveEv100,
         exposureCompensationEv = state.exposureCompEv,
@@ -349,12 +350,18 @@ internal class FlashExposureView(
 
     private fun currentDistanceLabel(): String {
         if (!configuration.isAutoDistance) return FlashDistanceScale.label(configuration.distanceMeters)
-        val auto = state.cameraInfo.focusDistanceMeters
-        return when {
-            auto == null -> "Auto"
-            auto == Float.POSITIVE_INFINITY -> "Auto · ∞"
-            else -> "Auto · ${FlashDistanceScale.label(auto.toDouble())}"
+        val estimate = state.distanceMeasurementState.estimate?.takeIf { it.isFresh } ?: return "Auto"
+        val source = when (estimate.source) {
+            DistanceSource.FOCUS_CALIBRATED -> localized("AF", "AF")
+            DistanceSource.FOCUS_APPROXIMATE -> localized("AF近似", "AF approx")
+            DistanceSource.MANUAL -> localized("手动", "Manual")
         }
+        val quality = when (estimate.quality) {
+            DistanceQuality.HIGH -> localized("高", "high")
+            DistanceQuality.MEDIUM -> localized("中", "med")
+            DistanceQuality.LOW -> localized("低", "low")
+        }
+        return "${FlashDistanceScale.label(estimate.meters)} · $source · $quality"
     }
 
     private fun scaleContentWidth(): Float {

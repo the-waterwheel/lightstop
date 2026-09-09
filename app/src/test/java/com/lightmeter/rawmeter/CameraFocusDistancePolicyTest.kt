@@ -12,6 +12,12 @@ class CameraFocusDistancePolicyTest {
         assertFalse(
             CameraUiInfo(
                 minimumFocusDistanceDiopters = 5f,
+                focusDistanceResultAvailable = true,
+            ).metricFocusDistanceAvailable,
+        )
+        assertFalse(
+            CameraUiInfo(
+                minimumFocusDistanceDiopters = 5f,
                 focusDistanceCalibration =
                     CameraCharacteristics.LENS_INFO_FOCUS_DISTANCE_CALIBRATION_UNCALIBRATED,
             ).metricFocusDistanceAvailable,
@@ -25,6 +31,7 @@ class CameraFocusDistancePolicyTest {
                 minimumFocusDistanceDiopters = 5f,
                 focusDistanceCalibration =
                     CameraCharacteristics.LENS_INFO_FOCUS_DISTANCE_CALIBRATION_APPROXIMATE,
+                focusDistanceResultAvailable = true,
             ).metricFocusDistanceAvailable,
         )
         assertTrue(
@@ -32,6 +39,7 @@ class CameraFocusDistancePolicyTest {
                 minimumFocusDistanceDiopters = 5f,
                 focusDistanceCalibration =
                     CameraCharacteristics.LENS_INFO_FOCUS_DISTANCE_CALIBRATION_CALIBRATED,
+                focusDistanceResultAvailable = true,
             ).metricFocusDistanceAvailable,
         )
     }

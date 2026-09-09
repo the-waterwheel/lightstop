@@ -46,7 +46,7 @@ internal class FlashDistanceDialView(
     private val blue = Color.rgb(38, 112, 184)
 
     private var configuration: FlashConfiguration? = null
-    private var autofocusDistanceMeters: Float? = null
+    private var distanceState = DistanceMeasurementState()
     private var anchor = RectF()
     private var compactCenterOffsetX = 0f
     private var compactBounds = RectF()
@@ -71,9 +71,9 @@ internal class FlashDistanceDialView(
         invalidate()
     }
 
-    fun setConfiguration(value: FlashConfiguration?, autofocusDistanceMeters: Float?) {
+    fun setConfiguration(value: FlashConfiguration?, distanceState: DistanceMeasurementState) {
         configuration = value
-        this.autofocusDistanceMeters = autofocusDistanceMeters
+        this.distanceState = distanceState
         invalidate()
     }
 
@@ -146,10 +146,9 @@ internal class FlashDistanceDialView(
             boldPaint.textSize = 8.5f * scaledDensity
             centeredText(canvas, "Auto", centerX, centerY - 5f * density, boldPaint)
             boldPaint.textSize = 7f * scaledDensity
-            val measured = when (val value = autofocusDistanceMeters) {
+            val measured = when (val value = distanceState.estimate?.takeIf { it.isFresh }?.meters) {
                 null -> "--"
-                Float.POSITIVE_INFINITY -> "∞"
-                else -> compactLabel(value.toDouble())
+                else -> compactLabel(value)
             }
             centeredText(canvas, measured, centerX, centerY + 6f * density, boldPaint)
         } else {
