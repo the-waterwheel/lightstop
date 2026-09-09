@@ -3,6 +3,20 @@
 All notable user-facing changes are recorded here. The project follows
 [Semantic Versioning](https://semver.org/) for public releases.
 
+## Unreleased - 2026-09-09
+
+- Added the Flash Index tool with guide number, ISO, fractional power, loss
+  stops, manual non-linear distance selection, and physically correct combined
+  ambient-plus-flash exposure compensation.
+- Added a source-aware automatic-distance foundation for flash calculations.
+  Camera2 AF distance now requires valid calibrated/approximate metadata, an
+  available result key, a known physical route, focused/stationary frames, and
+  stable multi-frame dioptre-space filtering. Results carry source, quality,
+  range, timestamp, sample count, and freshness state.
+- Automatic-distance estimates are invalidated for camera/session/physical-lens
+  changes and TTL expiry. Every metering pass begins a new AF-distance
+  acquisition; stale or unavailable Auto distance does not alter flash exposure.
+
 ## 0.3.0 - 2026-09-03
 
 - Moved sensor-output aspect overrides into a nested More Settings page reached

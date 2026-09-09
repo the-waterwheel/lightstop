@@ -104,6 +104,15 @@ code.
 - Electronic preview crop and matching metering ROI without requesting Camera2
   digital zoom or silently switching lenses. Front-camera preview mirroring is
   inverted again before RAW touch metering or saved RAW-grid lookup.
+- The Flash Index tool calculates the combined ambient-plus-flash exposure in
+  the linear domain. It supports guide number, ISO, fractional power and loss
+  stops, plus a manual non-linear distance dial or Camera2 AF Auto distance.
+- Auto distance is deliberately conservative: it accepts only calibrated or
+  approximate Camera2 focus metadata from a known physical camera, requires a
+  stable AF/lens state, filters 5–10 samples in dioptre space using median and
+  MAD, labels source/quality, and expires stale results. Every metering pass
+  starts a fresh AF-distance acquisition; an unavailable or expired result
+  never silently changes flash compensation.
 
 ### Exposure instrument
 
@@ -183,10 +192,8 @@ code.
 - Tap Tools and choose Depth of field to calculate animated near/focus/far
   limits from the current frame, field of view, and metering aperture; frame
   size and circle of confusion can also be selected or entered manually.
-- The current Tools grid contains depth of field, latitude, parameter log,
-  reciprocity, and color-temperature estimation. Flash-index and exposure-
-  correction identifiers remain reserved internally but are hidden until those
-  tools are complete.
+- The Tools grid contains depth of field, latitude, parameter log, reciprocity,
+  flash index, and color-temperature estimation.
 - Open `General` → `About` for the metering-result notice; the open-source
   license browser is available after the About text.
 - Smooth viewfinder mode can increase power, heat, and YUV tracking work.
@@ -219,6 +226,9 @@ app/src/main/java/com/lightmeter/rawmeter
 ├─ CameraStreamSelector.kt           preview, tracking stream, and FPS choice
 ├─ PreviewFrameRateController.kt     FPS fallback and low-light hysteresis
 ├─ CameraPreviewTransform.kt         preview orientation and crop transform
+├─ DistanceModels.kt                 source-aware, freshness-aware distance state
+├─ DistanceCoordinator.kt            distance-provider state forwarding
+├─ Camera2FocusDistanceProvider.kt   robust Camera2 AF distance sampling
 ├─ ScreenToSensorCoordinateTransform.kt  shared front-mirror/rotation mapping
 ├─ PreviewHealthAnalyzer.kt          bounded green/stripe/frozen-frame analysis
 ├─ PreviewHealthSampler.kt           UI-thread preview health sampling
