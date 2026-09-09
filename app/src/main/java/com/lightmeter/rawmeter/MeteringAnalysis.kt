@@ -187,6 +187,7 @@ internal object MeteringAnalysis {
             zoom = zoom,
             roiFraction = spotRoiFraction(meteringMode, meteringRoiFraction),
             rawMeterPoint = rawMeterPoint,
+            preservePhysicalAngle = meteringMode == MeteringMode.ANGLE,
         )
         val values = if (meteringMode == MeteringMode.CENTER_WEIGHTED) {
             blendRawRegions(
@@ -202,6 +203,7 @@ internal object MeteringAnalysis {
                     zoom = zoom,
                     roiFraction = CENTER_WEIGHTED_ROI_FRACTION,
                     rawMeterPoint = rawMeterPoint,
+                    preservePhysicalAngle = false,
                 ),
             )
         } else {
@@ -732,6 +734,7 @@ internal object MeteringAnalysis {
         zoom: Float,
         roiFraction: Float,
         rawMeterPoint: RawMeterPoint?,
+        preservePhysicalAngle: Boolean = false,
     ): DoubleArray {
         val plane = image.planes[0]
         val roi = rawMeterRoi(
@@ -739,9 +742,10 @@ internal object MeteringAnalysis {
             image.height,
             activeArray,
             frameAspect,
-            zoom,
+            if (preservePhysicalAngle) 1f else zoom,
             roiFraction,
             rawMeterPoint,
+            preservePhysicalAngle,
         )
         return RawMeterBridge.analyzeRaw(
             buffer = plane.buffer,
@@ -786,6 +790,7 @@ internal object MeteringAnalysis {
         zoom: Float,
         roiFraction: Float,
         rawMeterPoint: RawMeterPoint?,
+        preservePhysicalAngle: Boolean,
     ): Rect {
         val pointCrop = rawMeterPoint?.let {
             RectF(it.visibleCropLeft, it.visibleCropTop, it.visibleCropRight, it.visibleCropBottom)
@@ -793,7 +798,15 @@ internal object MeteringAnalysis {
             it.left.isFinite() && it.top.isFinite() && it.right.isFinite() &&
                 it.bottom.isFinite() && it.width() > 1f && it.height() > 1f
         }
-        val crop = pointCrop ?: rawMeterCrop(
+        val crop = if (preservePhysicalAngle) {
+            rawMeterCrop(
+                imageWidth,
+                imageHeight,
+                reportedActiveArray,
+                frameAspect,
+                zoom = 1f,
+            )
+        } else pointCrop ?: rawMeterCrop(
             imageWidth,
             imageHeight,
             reportedActiveArray,

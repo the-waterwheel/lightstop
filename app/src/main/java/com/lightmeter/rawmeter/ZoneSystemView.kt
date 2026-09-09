@@ -309,13 +309,16 @@ class ZoneSystemView(
 
     private fun drawCameraOverlay(canvas: Canvas, g: Geometry) {
         val roiFraction = if (state.meteringMode == MeteringMode.ANGLE) {
-            state.angleMeteringRoiFraction() ?: DEFAULT_SPOT_DIAMETER_FRACTION
+            state.angleMeteringIndicatorFraction() ?: DEFAULT_SPOT_DIAMETER_FRACTION
         } else {
             DEFAULT_SPOT_DIAMETER_FRACTION
         }
         val spotRadius = (
             min(g.cameraFrame.width(), g.cameraFrame.height()) * roiFraction / 2f
             ).coerceAtLeast(4f * density)
+        canvas.save()
+        // Clip the fixed-angle guide rather than shrinking it when display crop zoom increases.
+        canvas.clipRect(g.cameraFrame)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 2f * density
         paint.color = surface
@@ -347,6 +350,7 @@ class ZoneSystemView(
             drawMeteringSpinner(canvas, centerX, centerY, spotRadius)
             postInvalidateOnAnimation()
         }
+        canvas.restore()
         drawOutlinedButton(
             canvas,
             g.formatButton,

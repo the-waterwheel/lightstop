@@ -46,6 +46,22 @@ class AngleMeteringMathTest {
     }
 
     @Test
+    fun `physical angle limit and raw roi ignore electronic display zoom`() {
+        val physicalMaximum = requireNotNull(
+            AngleMeteringMath.maximumPhysicalSupportedDegrees(50.0, 36.0, 24.0, 1.5),
+        )
+        val physicalFraction = requireNotNull(
+            AngleMeteringMath.physicalRoiFraction(11, 50.0, 36.0, 24.0, 1.5),
+        )
+        val displayedAtTwoTimes = requireNotNull(
+            AngleMeteringMath.roiFraction(11, 50.0, 36.0, 24.0, 1.5, 2.0),
+        )
+
+        assertEquals(26.99, physicalMaximum, 0.02)
+        assertEquals(physicalFraction * 2f, displayedAtTwoTimes, 0.0001f)
+    }
+
+    @Test
     fun `invalid optical metadata cannot produce a crop`() {
         assertNull(AngleMeteringMath.maximumSupportedDegrees(0.0, 36.0, 24.0, 1.5, 1.0))
         assertNull(AngleMeteringMath.roiFraction(1, 5.0, 0.0, 4.0, 1.5, 1.0))

@@ -167,13 +167,16 @@ class InstrumentView(
 
     private fun drawCameraOverlay(canvas: Canvas, g: LayoutGeometry) {
         val roiFraction = if (state.meteringMode == MeteringMode.ANGLE) {
-            state.angleMeteringRoiFraction() ?: DEFAULT_SPOT_DIAMETER_FRACTION
+            state.angleMeteringIndicatorFraction() ?: DEFAULT_SPOT_DIAMETER_FRACTION
         } else {
             DEFAULT_SPOT_DIAMETER_FRACTION
         }
         val spotRadius = (
             min(g.cameraFrame.width(), g.cameraFrame.height()) * roiFraction / 2f
             ).coerceAtLeast(4f * density)
+        canvas.save()
+        // A fixed physical angle can extend outside an electronically cropped viewfinder.
+        canvas.clipRect(g.cameraFrame)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1.1f * density
         paint.color = surfaceColor
@@ -187,6 +190,7 @@ class InstrumentView(
             drawMeteringSpinner(canvas, g.cameraFrame, spotRadius)
             postInvalidateOnAnimation()
         }
+        canvas.restore()
 
         drawOutlinedButton(
             canvas,

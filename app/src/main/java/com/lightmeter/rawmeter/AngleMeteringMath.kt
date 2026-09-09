@@ -33,6 +33,20 @@ internal object AngleMeteringMath {
         return Math.toDegrees(2.0 * atan(shortSide / (2.0 * focalLengthMm)))
     }
 
+    /** Physical lens limit, deliberately independent from electronic display crop zoom. */
+    fun maximumPhysicalSupportedDegrees(
+        focalLengthMm: Double,
+        sensorWidthMm: Double,
+        sensorHeightMm: Double,
+        sensorFrameAspect: Double,
+    ): Double? = maximumSupportedDegrees(
+        focalLengthMm = focalLengthMm,
+        sensorWidthMm = sensorWidthMm,
+        sensorHeightMm = sensorHeightMm,
+        sensorFrameAspect = sensorFrameAspect,
+        zoom = 1.0,
+    )
+
     fun roiFraction(
         angleDegrees: Int,
         focalLengthMm: Double,
@@ -52,6 +66,22 @@ internal object AngleMeteringMath {
         val projectedDiameter = 2.0 * focalLengthMm * tan(Math.toRadians(angle / 2.0))
         return (projectedDiameter / shortSide).toFloat().coerceIn(0f, 1f)
     }
+
+    /** Fraction of the uncropped physical sensor frame used by an angle-metering request. */
+    fun physicalRoiFraction(
+        angleDegrees: Int,
+        focalLengthMm: Double,
+        sensorWidthMm: Double,
+        sensorHeightMm: Double,
+        sensorFrameAspect: Double,
+    ): Float? = roiFraction(
+        angleDegrees = angleDegrees,
+        focalLengthMm = focalLengthMm,
+        sensorWidthMm = sensorWidthMm,
+        sensorHeightMm = sensorHeightMm,
+        sensorFrameAspect = sensorFrameAspect,
+        zoom = 1.0,
+    )
 
     fun maximumSupportedIndex(maximumDegrees: Double?): Int {
         if (maximumDegrees == null || !maximumDegrees.isFinite()) return selectableDegrees.lastIndex

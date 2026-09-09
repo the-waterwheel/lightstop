@@ -871,13 +871,12 @@ class CameraController(
             lensFacing = cameraInfo.lensFacing,
         )
         val meteringRoiFraction = if (meteringMode == MeteringMode.ANGLE) {
-            AngleMeteringMath.roiFraction(
+            AngleMeteringMath.physicalRoiFraction(
                 angleDegrees = meteringAngleDegrees,
                 focalLengthMm = cameraInfo.focalLengthMm.toDouble(),
                 sensorWidthMm = cameraInfo.sensorWidthMm.toDouble(),
                 sensorHeightMm = cameraInfo.sensorHeightMm.toDouble(),
                 sensorFrameAspect = sensorFrameAspect.toDouble(),
-                zoom = displayZoom.toDouble(),
             )
         } else {
             null

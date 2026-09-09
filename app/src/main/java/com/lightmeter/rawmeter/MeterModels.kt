@@ -839,12 +839,11 @@ class MeterState(context: Context) {
         val info = cameraInfo
         if (selectedCameraId.isNotBlank() && info.cameraId != selectedCameraId) return null
         val previewVisible = previewVisibleSensorSizeMm() ?: return null
-        return AngleMeteringMath.maximumSupportedDegrees(
+        return AngleMeteringMath.maximumPhysicalSupportedDegrees(
             focalLengthMm = info.focalLengthMm.toDouble(),
             sensorWidthMm = previewVisible.width,
             sensorHeightMm = previewVisible.height,
             sensorFrameAspect = currentSensorFrameAspect(),
-            zoom = zoom.toDouble(),
         )
     }
 
@@ -852,15 +851,18 @@ class MeterState(context: Context) {
         val info = cameraInfo
         if (selectedCameraId.isNotBlank() && info.cameraId != selectedCameraId) return null
         val previewVisible = previewVisibleSensorSizeMm() ?: return null
-        return AngleMeteringMath.roiFraction(
+        return AngleMeteringMath.physicalRoiFraction(
             angleDegrees = angleMeteringDegrees,
             focalLengthMm = info.focalLengthMm.toDouble(),
             sensorWidthMm = previewVisible.width,
             sensorHeightMm = previewVisible.height,
             sensorFrameAspect = currentSensorFrameAspect(),
-            zoom = zoom.toDouble(),
         )
     }
+
+    /** Display-only size: the fixed physical circle grows as the viewfinder is electronically cropped. */
+    fun angleMeteringIndicatorFraction(): Float? = angleMeteringRoiFraction()
+        ?.times(zoom.coerceAtLeast(1f))
 
     internal fun previewVisibleSensorSizeMm(): PreviewOutputGeometry.VisibleSensorSizeMm? {
         val info = cameraInfo
