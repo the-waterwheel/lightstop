@@ -19,6 +19,42 @@ data class RecordedZonePoint(
     val source: MeteringSource,
 )
 
+enum class RecordedFlashDistanceMode { MANUAL, AUTO }
+
+enum class RecordedFlashAdjustmentStatus { APPLIED, DISTANCE_UNAVAILABLE, FLASH_DOMINATES, INVALID }
+
+/** Frozen at capture start; it is never recomputed from later flash-tool state. */
+data class RecordedFlashSnapshot(
+    val guideNumberIso100: Double,
+    val configuredIso: Int,
+    val powerDenominator: Int,
+    val lossStops: Double,
+    val distanceMode: RecordedFlashDistanceMode,
+    val configuredDistanceMeters: Double?,
+    val effectiveDistanceMeters: Double?,
+    val effectiveGuideNumber: Double?,
+    val compensationStops: Double,
+    val adjustmentStatus: RecordedFlashAdjustmentStatus,
+)
+
+/** Frozen diagnostic state of the active automatic-distance provider at capture start. */
+data class RecordedDistanceSnapshot(
+    val status: DistanceMeasurementStatus,
+    val meters: Double?,
+    val lowerMeters: Double?,
+    val upperMeters: Double?,
+    val confidence: Double?,
+    val quality: DistanceQuality?,
+    val source: DistanceSource?,
+    val isFreshAtCapture: Boolean,
+    /** Null because Camera2 sensor timestamps are not comparable with wall-clock capture time. */
+    val ageMsAtCapture: Long?,
+    val cameraIdentity: String?,
+    val targetX: Float?,
+    val targetY: Float?,
+    val sampleCount: Int?,
+)
+
 data class RecordedRawGrid(
     val width: Int,
     val height: Int,
@@ -72,6 +108,8 @@ data class ParameterMeterSnapshot(
     val ei: Int,
     val ev100: Double?,
     val zonePoints: List<RecordedZonePoint>,
+    val flash: RecordedFlashSnapshot? = null,
+    val distance: RecordedDistanceSnapshot? = null,
 )
 
 data class ParameterRecordOptions(
@@ -116,6 +154,8 @@ data class ParameterRecordEntry(
     val location: RecordedLocation?,
     val zonePoints: List<RecordedZonePoint>,
     val rawGrid: RecordedRawGrid?,
+    val flash: RecordedFlashSnapshot? = null,
+    val distance: RecordedDistanceSnapshot? = null,
 ) {
     fun selectedExposureEv100(): Double =
         apertureCoordinate - shutterCoordinate - ExposureMath.log2(ei / 100.0)
@@ -128,6 +168,60 @@ data class ParameterRecordEntry(
 
     fun resolvedZonePointEv100(point: RecordedZonePoint): Double? =
         point.ev100 ?: rawEv100At(point.normalizedX, point.normalizedY)
+}
+
+/** Pure conversion kept beside persistence models so the capture boundary is explicit and testable. */
+internal object ParameterRecordCaptureSnapshot {
+    fun flash(state: MeterState): RecordedFlashSnapshot? {
+        val configuration = state.appliedFlashConfiguration ?: return null
+        val adjustment = state.currentFlashAdjustment()
+        val effectiveDistance = when {
+            adjustment.status != FlashAdjustmentStatus.APPLIED -> null
+            configuration.distanceMeters != null -> configuration.distanceMeters
+            else -> state.distanceMeasurementState.effectiveMetersForFlash
+        }
+        return RecordedFlashSnapshot(
+            guideNumberIso100 = configuration.guideNumber,
+            configuredIso = configuration.iso,
+            powerDenominator = configuration.powerDenominator,
+            lossStops = configuration.lossStops,
+            distanceMode = if (configuration.isAutoDistance) {
+                RecordedFlashDistanceMode.AUTO
+            } else {
+                RecordedFlashDistanceMode.MANUAL
+            },
+            configuredDistanceMeters = configuration.distanceMeters,
+            effectiveDistanceMeters = effectiveDistance,
+            effectiveGuideNumber = adjustment.effectiveGuideNumber,
+            compensationStops = adjustment.compensationStops,
+            adjustmentStatus = when (adjustment.status) {
+                FlashAdjustmentStatus.APPLIED -> RecordedFlashAdjustmentStatus.APPLIED
+                FlashAdjustmentStatus.DISTANCE_UNAVAILABLE -> RecordedFlashAdjustmentStatus.DISTANCE_UNAVAILABLE
+                FlashAdjustmentStatus.FLASH_DOMINATES -> RecordedFlashAdjustmentStatus.FLASH_DOMINATES
+                FlashAdjustmentStatus.INVALID -> RecordedFlashAdjustmentStatus.INVALID
+            },
+        )
+    }
+
+    fun distance(state: DistanceMeasurementState): RecordedDistanceSnapshot? {
+        val estimate = state.estimate
+        if (estimate == null && state.status == DistanceMeasurementStatus.IDLE) return null
+        return RecordedDistanceSnapshot(
+            status = state.status,
+            meters = estimate?.meters,
+            lowerMeters = estimate?.lowerMeters,
+            upperMeters = estimate?.upperMeters,
+            confidence = estimate?.confidence,
+            quality = estimate?.quality,
+            source = estimate?.source,
+            isFreshAtCapture = estimate?.isFresh == true,
+            ageMsAtCapture = null,
+            cameraIdentity = estimate?.cameraIdentity,
+            targetX = estimate?.target?.x,
+            targetY = estimate?.target?.y,
+            sampleCount = estimate?.sampleCount,
+        )
+    }
 }
 
 data class ParameterRecordCategory(

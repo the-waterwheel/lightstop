@@ -157,6 +157,8 @@ internal class ParameterRecordRepository(context: Context) {
                 location = draft.location,
                 zonePoints = draft.snapshot.zonePoints,
                 rawGrid = draft.rawGrid,
+                flash = draft.snapshot.flash,
+                distance = draft.snapshot.distance,
             )
             val latestCategory = category(category.id) ?: category
             replaceCategory(latestCategory.copy(records = latestCategory.records + entry))
@@ -300,7 +302,7 @@ internal class ParameterRecordRepository(context: Context) {
             val writer = output.bufferedWriter()
             val array = JSONArray()
             categories.forEach { array.put(it.toJson()) }
-            writer.write(JSONObject().put("version", 2).put("categories", array).toString())
+            writer.write(JSONObject().put("version", 3).put("categories", array).toString())
             writer.flush()
             index.finishWrite(output)
         } catch (error: Exception) {
@@ -334,6 +336,35 @@ internal class ParameterRecordRepository(context: Context) {
         .put("location", location?.toJson())
         .put("zonePoints", JSONArray().also { values -> zonePoints.forEach { values.put(it.toJson()) } })
         .put("rawGrid", rawGrid?.toJson())
+        .put("flash", flash?.toJson())
+        .put("distance", distance?.toJson())
+
+    private fun RecordedFlashSnapshot.toJson(): JSONObject = JSONObject()
+        .put("guideNumberIso100", guideNumberIso100)
+        .put("configuredIso", configuredIso)
+        .put("powerDenominator", powerDenominator)
+        .put("lossStops", lossStops)
+        .put("distanceMode", distanceMode.name)
+        .put("configuredDistanceMeters", configuredDistanceMeters)
+        .put("effectiveDistanceMeters", effectiveDistanceMeters)
+        .put("effectiveGuideNumber", effectiveGuideNumber)
+        .put("compensationStops", compensationStops)
+        .put("adjustmentStatus", adjustmentStatus.name)
+
+    private fun RecordedDistanceSnapshot.toJson(): JSONObject = JSONObject()
+        .put("status", status.name)
+        .put("meters", meters)
+        .put("lowerMeters", lowerMeters)
+        .put("upperMeters", upperMeters)
+        .put("confidence", confidence)
+        .put("quality", quality?.name)
+        .put("source", source?.name)
+        .put("isFreshAtCapture", isFreshAtCapture)
+        .put("ageMsAtCapture", ageMsAtCapture)
+        .put("cameraIdentity", cameraIdentity)
+        .put("targetX", targetX)
+        .put("targetY", targetY)
+        .put("sampleCount", sampleCount)
 
     private fun RecordedLocation.toJson(): JSONObject = JSONObject()
         .put("latitude", latitude)
@@ -397,6 +428,64 @@ internal class ParameterRecordRepository(context: Context) {
             location = optJSONObject("location")?.toLocation(),
             zonePoints = optJSONArray("zonePoints").zonePoints(),
             rawGrid = optJSONObject("rawGrid")?.toRawGrid(),
+            flash = optJSONObject("flash")?.toFlashSnapshot(),
+            distance = optJSONObject("distance")?.toDistanceSnapshot(),
+        )
+    }
+
+    private fun JSONObject.toFlashSnapshot(): RecordedFlashSnapshot? {
+        val guide = nullableDouble("guideNumberIso100")?.takeIf { it > 0.0 } ?: return null
+        val configuredIso = optInt("configuredIso").takeIf { it > 0 } ?: return null
+        val power = optInt("powerDenominator").takeIf { it > 0 } ?: return null
+        val loss = nullableDouble("lossStops")?.takeIf { it >= 0.0 } ?: return null
+        val mode = enumOrNull<RecordedFlashDistanceMode>("distanceMode") ?: return null
+        val status = enumOrNull<RecordedFlashAdjustmentStatus>("adjustmentStatus") ?: return null
+        val configuredDistance = nullablePositiveDouble("configuredDistanceMeters")
+        if (mode == RecordedFlashDistanceMode.MANUAL && configuredDistance == null) return null
+        if (mode == RecordedFlashDistanceMode.AUTO && configuredDistance != null) return null
+        val effectiveDistance = nullablePositiveDouble("effectiveDistanceMeters")
+        val effectiveGuide = nullablePositiveDouble("effectiveGuideNumber")
+        val compensation = nullableDouble("compensationStops")?.takeIf { it >= 0.0 } ?: return null
+        if (status != RecordedFlashAdjustmentStatus.APPLIED && effectiveDistance != null) return null
+        return RecordedFlashSnapshot(
+            guideNumberIso100 = guide,
+            configuredIso = configuredIso,
+            powerDenominator = power,
+            lossStops = loss,
+            distanceMode = mode,
+            configuredDistanceMeters = configuredDistance,
+            effectiveDistanceMeters = effectiveDistance,
+            effectiveGuideNumber = effectiveGuide,
+            compensationStops = compensation,
+            adjustmentStatus = status,
+        )
+    }
+
+    private fun JSONObject.toDistanceSnapshot(): RecordedDistanceSnapshot? {
+        val status = enumOrNull<DistanceMeasurementStatus>("status") ?: return null
+        val meters = nullablePositiveDouble("meters")
+        val lower = nullablePositiveDouble("lowerMeters")
+        val upper = nullablePositiveDouble("upperMeters")
+        if (lower != null && upper != null && lower > upper) return null
+        if (meters != null && ((lower != null && lower > meters) || (upper != null && upper < meters))) return null
+        val confidence = nullableDouble("confidence")?.takeIf { it in 0.0..1.0 }
+        val targetX = nullableDouble("targetX")?.takeIf { it in 0.0..1.0 }?.toFloat()
+        val targetY = nullableDouble("targetY")?.takeIf { it in 0.0..1.0 }?.toFloat()
+        val sampleCount = nullableInt("sampleCount")
+        return RecordedDistanceSnapshot(
+            status = status,
+            meters = meters,
+            lowerMeters = lower,
+            upperMeters = upper,
+            confidence = confidence,
+            quality = enumOrNull<DistanceQuality>("quality"),
+            source = enumOrNull<DistanceSource>("source"),
+            isFreshAtCapture = optBoolean("isFreshAtCapture", false),
+            ageMsAtCapture = nullableLong("ageMsAtCapture")?.takeIf { it >= 0L },
+            cameraIdentity = nullableString("cameraIdentity"),
+            targetX = targetX,
+            targetY = targetY,
+            sampleCount = sampleCount,
         )
     }
 
@@ -450,6 +539,12 @@ internal class ParameterRecordRepository(context: Context) {
     private fun JSONObject.nullableDouble(key: String): Double? =
         if (isNull(key) || !has(key)) null else optDouble(key).takeIf(Double::isFinite)
 
+    private fun JSONObject.nullablePositiveDouble(key: String): Double? =
+        nullableDouble(key)?.takeIf { it > 0.0 }
+
+    private inline fun <reified T : Enum<T>> JSONObject.enumOrNull(key: String): T? =
+        nullableString(key)?.let { value -> runCatching { enumValueOf<T>(value) }.getOrNull() }
+
     private fun JSONObject.nullableLong(key: String): Long? =
         if (isNull(key) || !has(key)) null else optLong(key)
 
@@ -465,6 +560,6 @@ internal class ParameterRecordRepository(context: Context) {
         const val KEY_TIME = "record_time"
         const val KEY_RAW = "record_raw"
         const val KEY_RAW_WARNING = "suppress_raw_warning"
-        const val PRIVACY_NOTICE_VERSION = 1
+        const val PRIVACY_NOTICE_VERSION = 2
     }
 }

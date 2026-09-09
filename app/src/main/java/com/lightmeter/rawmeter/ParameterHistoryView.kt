@@ -319,6 +319,16 @@ internal class ParameterHistoryView(
             record.ev100?.let { add("EV100 ${"%.2f".format(it)}") }
             record.filmName?.let { add(localized("胶片  $it", "Film  $it")) }
             record.location?.let { add(formatLocation(it)) }
+            record.flash?.let { flash ->
+                val mode = if (flash.distanceMode == RecordedFlashDistanceMode.AUTO) "Auto" else localized("手动", "Manual")
+                add(
+                    localized("闪光", "Flash") + "  GN ${"%.1f".format(flash.guideNumberIso100)} · " +
+                        "${FlashPowerScale.label(flash.powerDenominator)} · " +
+                        localized("损失", "loss") + " ${"%.2f".format(flash.lossStops)} · $mode",
+                )
+                add(formatRecordedFlashAdjustment(flash))
+            }
+            record.distance?.let { distance -> add(formatRecordedDistance(distance)) }
         }
         var contentHeight = 8f * density + parameterLines.size * lineHeight
         if (record.notes.isNotEmpty()) {
@@ -413,6 +423,42 @@ internal class ParameterHistoryView(
             "GPS $latitudeSide ${"%.5f".format(latitude)}° · $longitudeSide ${"%.5f".format(longitude)}°"
         }
         return location.accuracyMeters?.let { "$coordinates  ±${it.roundToInt()} m" } ?: coordinates
+    }
+
+    private fun formatRecordedFlashAdjustment(flash: RecordedFlashSnapshot): String = when (flash.adjustmentStatus) {
+        RecordedFlashAdjustmentStatus.APPLIED -> localized(
+            "闪光补偿  −${"%.2f".format(flash.compensationStops)} 档 · ${flash.effectiveDistanceMeters?.let(::formatDistance).orEmpty()}",
+            "Flash adjustment  −${"%.2f".format(flash.compensationStops)} stops · ${flash.effectiveDistanceMeters?.let(::formatDistance).orEmpty()}",
+        )
+        RecordedFlashAdjustmentStatus.DISTANCE_UNAVAILABLE -> localized("闪光补偿  距离不可用", "Flash adjustment  distance unavailable")
+        RecordedFlashAdjustmentStatus.FLASH_DOMINATES -> localized("闪光补偿  闪光已主导曝光", "Flash adjustment  flash dominates")
+        RecordedFlashAdjustmentStatus.INVALID -> localized("闪光补偿  保存时无效", "Flash adjustment  invalid at capture")
+    }
+
+    private fun formatRecordedDistance(distance: RecordedDistanceSnapshot): String {
+        if (!distance.isFreshAtCapture) {
+            return localized("距离  保存时已过期", "Distance  stale at capture")
+        }
+        val meters = distance.meters ?: return localized("距离  未记录有效估值", "Distance  no valid estimate recorded")
+        val source = when (distance.source) {
+            DistanceSource.FOCUS_CALIBRATED -> "AF"
+            DistanceSource.FOCUS_APPROXIMATE -> localized("AF近似", "AF approx")
+            DistanceSource.MANUAL -> localized("手动", "Manual")
+            null -> localized("未知来源", "unknown source")
+        }
+        val quality = when (distance.quality) {
+            DistanceQuality.HIGH -> localized("高", "high")
+            DistanceQuality.MEDIUM -> localized("中", "medium")
+            DistanceQuality.LOW -> localized("低", "low")
+            null -> localized("未评级", "unrated")
+        }
+        return localized("距离", "Distance") + "  ${formatDistance(meters)} · $source · $quality"
+    }
+
+    private fun formatDistance(meters: Double): String = when {
+        meters < 1.0 -> "%.2f m".format(meters)
+        meters < 10.0 -> "%.1f m".format(meters)
+        else -> "%.0f m".format(meters)
     }
 
     private fun drawRecordedPoints(canvas: Canvas, rect: RectF, points: List<RecordedZonePoint>) {
