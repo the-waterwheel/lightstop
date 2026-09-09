@@ -670,12 +670,7 @@ class CameraController(
     fun requestAutomaticDistance() {
         cameraHandler?.post {
             if (!started) return@post
-            val context = currentDistanceContext() ?: run {
-                distanceCoordinator.invalidate("Active physical camera is unknown")
-                return@post
-            }
-            distanceCoordinator.startFocusDistance(context, currentFocusDistanceCapability())
-            triggerDistanceAutoFocus()
+            beginAutomaticDistanceSampling()
         }
     }
 
@@ -905,6 +900,9 @@ class CameraController(
             return true
         }
         handler.post {
+            // Each metering pass gets a new AF distance acquisition. It is intentionally
+            // independent of flash Auto so future distance consumers share the same result.
+            beginAutomaticDistanceSampling()
             startMeteringPlan(plan)
         }
         return true
@@ -3236,6 +3234,16 @@ class CameraController(
             Log.w(TAG, "Unable to trigger autofocus for automatic distance", it)
             false
         }
+    }
+
+    /** Must run on the camera handler so the trigger and following capture plan stay ordered. */
+    private fun beginAutomaticDistanceSampling() {
+        val context = currentDistanceContext() ?: run {
+            distanceCoordinator.invalidate("Active physical camera is unknown")
+            return
+        }
+        distanceCoordinator.startFocusDistance(context, currentFocusDistanceCapability())
+        triggerDistanceAutoFocus()
     }
 
     private fun currentFocusDistanceCapability() = FocusDistanceCapability(
