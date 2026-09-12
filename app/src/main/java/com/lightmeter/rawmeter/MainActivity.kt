@@ -58,8 +58,7 @@ class MainActivity : Activity(), CameraControllerCallback {
     private var pendingCalibrationEnvironmentChange: CalibrationEnvironmentChange? = null
     private var calibrationDisplayCameraId: String? = null
     private var calibrationDisplaySelectionId: String? = null
-    private val foregroundCameraStartToken = Any()
-    private var foregroundCameraStartRevision = 0
+    private lateinit var foregroundCameraStartCoordinator: ForegroundCameraStartCoordinator
     private var backInvokedCallback: OnBackInvokedCallback? = null
     private var lastOverlayBackHandledAtMs = 0L
     private var parameterLocation: RecordedLocation? = null
@@ -108,6 +107,36 @@ class MainActivity : Activity(), CameraControllerCallback {
         }
         selectedCamera?.let(::activateCameraRoute)
         cameraController.attach(meterLayout.textureView)
+        foregroundCameraStartCoordinator = ForegroundCameraStartCoordinator(
+            mainHandler = mainHandler,
+            isEligible = {
+                activityResumed &&
+                    checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+            },
+            sampleGeometry = {
+                val preview = meterLayout.textureView
+                val focused = hasWindowFocus()
+                val width = preview.width
+                val height = preview.height
+                ForegroundPreviewGeometry(
+                    width = width,
+                    height = height,
+                    displayRotation = preview.display?.rotation ?: Surface.ROTATION_0,
+                    ready = focused && preview.isAttachedToWindow && width > 0 && height > 0,
+                    keepSampling = focused,
+                )
+            },
+            onReady = { geometry ->
+                val zoom = if (meterLayout.isVignettingCalibrationOpen) 1f else state.zoom
+                cameraController.prepareForForegroundPreview(
+                    geometry.width,
+                    geometry.height,
+                    geometry.displayRotation,
+                    zoom,
+                )
+                cameraController.start()
+            },
+        )
         meterLayout.listener = object : MeterLayout.Listener {
             override fun onMeasureRequested() {
                 cameraController.measure(
@@ -425,8 +454,7 @@ class MainActivity : Activity(), CameraControllerCallback {
 
     override fun onPause() {
         activityResumed = false
-        foregroundCameraStartRevision += 1
-        mainHandler.removeCallbacksAndMessages(foregroundCameraStartToken)
+        foregroundCameraStartCoordinator.cancel()
         (getSystemService(DISPLAY_SERVICE) as DisplayManager)
             .unregisterDisplayListener(displayListener)
         parameterLocationListener?.let { listener ->
@@ -1720,64 +1748,8 @@ class MainActivity : Activity(), CameraControllerCallback {
         cameraController.updatePreviewTransform(width, height, rotation, zoom)
     }
 
-    /**
-     * A resumed Activity can receive onResume before the vendor window manager has restored the
-     * TextureView layer, hidden system bars and final rotation. Opening Camera2 during that gap can
-     * bind the new producer to stale layer geometry until the next camera/session switch.
-     *
-     * Require two matching foreground geometry samples before opening. This delays a normal resume
-     * by only a few frames and leaves CameraController's process/session and HAL fallback ownership
-     * unchanged.
-     */
     private fun scheduleCameraStartAfterForegroundLayout() {
-        val revision = ++foregroundCameraStartRevision
-        mainHandler.removeCallbacksAndMessages(foregroundCameraStartToken)
-        var previousWidth = -1
-        var previousHeight = -1
-        var previousRotation = -1
-        var stableSamples = 0
-        var attempts = 0
-        lateinit var sample: Runnable
-        sample = Runnable {
-            if (revision != foregroundCameraStartRevision || !activityResumed) return@Runnable
-            if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-                return@Runnable
-            }
-            val preview = meterLayout.textureView
-            val width = preview.width
-            val height = preview.height
-            val rotation = preview.display?.rotation ?: Surface.ROTATION_0
-            val ready = hasWindowFocus() && preview.isAttachedToWindow && width > 0 && height > 0
-            if (ready && width == previousWidth && height == previousHeight && rotation == previousRotation) {
-                stableSamples += 1
-            } else {
-                stableSamples = 0
-            }
-            previousWidth = width
-            previousHeight = height
-            previousRotation = rotation
-            attempts += 1
-            if (ready && (stableSamples >= FOREGROUND_LAYOUT_STABLE_SAMPLES ||
-                    attempts >= FOREGROUND_LAYOUT_MAX_SAMPLES)
-            ) {
-                val zoom = if (meterLayout.isVignettingCalibrationOpen) 1f else state.zoom
-                cameraController.prepareForForegroundPreview(width, height, rotation, zoom)
-                cameraController.start()
-                return@Runnable
-            }
-            if (hasWindowFocus() && attempts < FOREGROUND_LAYOUT_MAX_SAMPLES) {
-                mainHandler.postAtTime(
-                    sample,
-                    foregroundCameraStartToken,
-                    SystemClock.uptimeMillis() + FOREGROUND_LAYOUT_SAMPLE_INTERVAL_MS,
-                )
-            }
-        }
-        mainHandler.postAtTime(
-            sample,
-            foregroundCameraStartToken,
-            SystemClock.uptimeMillis() + FOREGROUND_LAYOUT_SAMPLE_INTERVAL_MS,
-        )
+        foregroundCameraStartCoordinator.schedule()
     }
 
     private fun clearTransientMessageLater() {
@@ -1828,9 +1800,6 @@ class MainActivity : Activity(), CameraControllerCallback {
     }
 
     companion object {
-        private const val FOREGROUND_LAYOUT_STABLE_SAMPLES = 2
-        private const val FOREGROUND_LAYOUT_MAX_SAMPLES = 16
-        private const val FOREGROUND_LAYOUT_SAMPLE_INTERVAL_MS = 32L
         private const val CAMERA_PERMISSION_REQUEST = 41
         private const val LOCATION_PERMISSION_REQUEST = 42
         private val LOCATION_PERMISSIONS = arrayOf(

@@ -17,7 +17,7 @@
 - 支持 Android 9（API 28）及以上，使用 Camera2、`TextureView` 和 `ImageReader`。
 - 枚举可用的逻辑相机和物理镜头；默认优先选择声明 RAW 且提供 `RAW_SENSOR` 尺寸的后置相机（自动 RAW、主摄 RAW、其他 RAW），不支持 RAW 时再使用自动/主摄兼容路径；单色、红外等非普通成像传感器不会列入选择器。
 - 预览优先选择不超过 1080 级别的通用 4:3 输出；缺少 4:3 时才接近传感器比例选择。这样自动逻辑相机和固定物理镜头不会因元数据比例不同而改变画面比例。“通用设置 → 取景帧率”默认低帧率并沿用设备声明的最高 30 fps 策略；高帧率只在当前预览/YUV 最小帧时长允许时尝试设备声明的最高 60 fps 范围，失败后依次回退 30 fps、24 fps 和系统默认，不会降级 RAW/YUV/ISP 测光组合。
-- 预览始终按相机输出比例中心裁切，不主动对相机缓冲区做非等比拉伸。应用从后台恢复时，会等待 `TextureView` 的窗口尺寸与旋转连续稳定，再重开相机；首个新帧会重新提交缓冲尺寸和显示矩阵，并由低频矩阵校验补偿部分厂商合成器丢失的图层状态。
+- 预览始终按相机输出比例中心裁切，不主动对相机缓冲区做非等比拉伸。显示矩阵同时读取传感器安装方向与当前屏幕方向，不再假设所有设备都是常见的手机传感器角度。应用从后台恢复时，会等待 `TextureView` 的窗口尺寸与旋转连续稳定，再重开相机；首个新帧会重新提交缓冲尺寸和显示矩阵，并由低频矩阵校验补偿部分厂商合成器丢失的图层状态。
 - 电子变焦只改变显示裁切和测光 ROI，不向 Camera2 提交数码变焦或镜头切换请求。
 - 支持 135、半格、6×4.5、6×6、6×7、6×9、6×12、6×17、65:24、4×5、5×7 和 8×10 画幅；长边始终沿屏幕水平轴放置。
 - 根据传感器方向、屏幕方向、画幅和变焦同步计算 RAW 裁切范围；焦距提示按所选胶片画幅的代表性成像对角线换算，不再把大画幅误标为 135 等效焦距。
@@ -27,6 +27,7 @@
 
 - 设置按每个摄像头的工作流矩阵提供三档：**高精度（推荐）**按精度和流压力依次尝试 RAW 组合，全部失败后自动转入稳定 YUV、再转入兼容 ISP；**稳定模式**使用预览 + YUV，不使用 RAW；**兼容模式**只使用屏幕显示的 ISP 预览。旧版本保存的“兼容”设置会迁移到当前兼容模式，保持升级前行为。LEGACY 或 RAW CFA 布局不受支持的设备按不支持 RAW 处理；固定物理镜头不因逻辑相机声明 APPROXIMATE 同步而被禁止，API 29+ 自动逻辑路由还会逐帧记录实际 active physical ID。
 - “测光组合选择”可保持“系统设置”，由程序自动完成矩阵初筛、真实会话配置和健康检测；也可选择“手动选择”，按精度从高到低用真实工作流逐个显示预览，由用户确认是否存在闪烁、卡顿、黑屏、绿屏或条纹。人工确认结果只对同一相机路由和同一系统版本有效。
+- 自动 RAW 工作流只有在收到真实 `RAW_SENSOR` 图像、与捕获结果严格按时间戳配对，并确认尺寸、缓冲布局、曝光元数据、Bayer 排列及黑白电平可用后才通过。该检查为常数开销，不扫描像素，也不会因为真实暗场或无关高光饱和而误判失败。
 - Android 强制流组合表和输出数量上限只用于保守初筛；未被表格保证的组合仍会进入真实 Camera2 配置。部分 vivo/MediaTek HAL 会在查询时返回不支持，但随后能成功创建同一会话，因此查询的否定结果只作提示，真实配置回调才是最终判据。
 
 - RAW 测光按实际捕获 ISO 调整采样量：ISO 低于 500 使用 1 张，ISO 500–1199 使用 2 张，ISO 1200 及以上使用 3 张。这样优先减少等待和手持晃动带来的误差。
@@ -122,8 +123,11 @@
 ```text
 app/src/main/java/com/lightmeter/rawmeter
 ├─ MainActivity.kt                  生命周期、权限和模块协调
+├─ ForegroundCameraStartCoordinator.kt 前台窗口几何稳定采样
 ├─ CameraController.kt              生命周期与相机操作门面
 ├─ CameraSessionCoordinator.kt      Camera2 资源、会话与开关顺序
+├─ CameraCombinationWorkflowProbe.kt 多阶段真实工作流验证
+├─ RawProbeFrameHealth.kt           常数开销 RAW 探测判定
 ├─ RawLightMeter.kt                 有界 RAW 采集与测光
 ├─ CompatibleLightMeter.kt          YUV/显示预览测光
 ├─ TimestampedResultPairer.kt       图像/结果配对与所有权
@@ -136,11 +140,13 @@ app/src/main/java/com/lightmeter/rawmeter
 ├─ CameraCatalog.kt                 逻辑/物理镜头发现与选择策略
 ├─ CameraStreamSelector.kt          预览、YUV 跟踪流和帧率选择
 ├─ CameraPreviewTransform.kt        TextureView 方向、裁切与变焦矩阵
+├─ PreviewSurfaceCoordinator.kt     预览几何恢复与低频校验
 ├─ DistanceModels.kt                 带来源与时效性的统一距离状态
 ├─ DistanceCoordinator.kt            测距 Provider 状态转发
 ├─ Camera2FocusDistanceProvider.kt   Camera2 AF 稳健测距采样
 ├─ MeterModels.kt                   状态、曝光刻度和持久化入口
-├─ MeteringAnalysis.kt              RAW/ISP 分析、ROI 和 EV 换算
+├─ MeteringAnalysis.kt              RAW/ISP 采样、ROI 和 EV 换算
+├─ RawPreviewRegistration.kt        预览标点到 RAW 坐标配准
 ├─ MeteringFusion.kt                RAW 多帧稳健融合
 ├─ RawMeterBridge.kt                JNI 边界
 ├─ MeterLayout.kt                   页面和相机预览组合

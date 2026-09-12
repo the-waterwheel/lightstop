@@ -34,7 +34,9 @@ code.
   automatic/main non-RAW routes retained as fallbacks.
 - A common advertised 4:3 preview is preferred for logical and physical routes,
   avoiding viewport aspect changes when Automatic camera and Main camera use the same lens.
-- The preview is center-cropped without intentional non-uniform buffer scaling. On foreground
+- The preview is center-cropped without intentional non-uniform buffer scaling. Its transform uses
+  both the reported sensor orientation and the active display rotation, including devices whose
+  sensor is not mounted at the common phone-camera angle. On foreground
   return, camera startup waits for two stable `TextureView` size/rotation samples, then
   re-submits the buffer size and display matrix on the first new frame. A low-frequency matrix
   watchdog also repairs layer state lost by affected vendor compositors.
@@ -52,6 +54,10 @@ code.
   in precision order and asks the user to confirm that each real preview flow is
   free from flicker, stalls, black/green frames, and stripes. A confirmed result
   is scoped to the same camera route and OS build.
+- An automatic RAW workflow probe passes only after a real `RAW_SENSOR` image is exactly paired
+  with its capture result and its dimensions, buffer layout, exposure metadata, Bayer layout,
+  and black/white levels are usable. The check is constant-cost and does not scan pixels or reject
+  a valid frame merely because the scene is dark or contains clipped highlights.
 - Stream-combination tables and output-count limits are used only for conservative
   prefiltering. Unknown combinations still reach a real Camera2 configuration;
   a vendor HAL's negative preflight answer is advisory because some vivo/MediaTek
@@ -223,8 +229,11 @@ code.
 ```text
 app/src/main/java/com/lightmeter/rawmeter
 ├─ MainActivity.kt                   lifecycle, permissions, coordination
+├─ ForegroundCameraStartCoordinator.kt stable resumed-window sampling
 ├─ CameraController.kt               lifecycle and camera-operation facade
 ├─ CameraSessionCoordinator.kt       Camera2 resources, sessions, open/close
+├─ CameraCombinationWorkflowProbe.kt real multi-stage workflow validation
+├─ RawProbeFrameHealth.kt            constant-cost RAW probe acceptance
 ├─ RawLightMeter.kt                  bounded RAW capture and metering
 ├─ CompatibleLightMeter.kt           YUV/displayed-preview metering
 ├─ TimestampedResultPairer.kt        image/result ownership and pairing
@@ -238,6 +247,7 @@ app/src/main/java/com/lightmeter/rawmeter
 ├─ CameraStreamSelector.kt           preview, tracking stream, and FPS choice
 ├─ PreviewFrameRateController.kt     FPS fallback and low-light hysteresis
 ├─ CameraPreviewTransform.kt         preview orientation and crop transform
+├─ PreviewSurfaceCoordinator.kt      TextureView geometry recovery/watchdog
 ├─ DistanceModels.kt                 source-aware, freshness-aware distance state
 ├─ DistanceCoordinator.kt            distance-provider state forwarding
 ├─ Camera2FocusDistanceProvider.kt   robust Camera2 AF distance sampling
@@ -246,7 +256,8 @@ app/src/main/java/com/lightmeter/rawmeter
 ├─ PreviewHealthSampler.kt           UI-thread preview health sampling
 ├─ ParameterRecordTransaction.kt     crash-recovery journal for record commits
 ├─ MeterModels.kt                    state, exposure scales, persistence
-├─ MeteringAnalysis.kt               RAW/ISP analysis, ROI, EV conversion
+├─ MeteringAnalysis.kt               RAW/ISP sampling, ROI, EV conversion
+├─ RawPreviewRegistration.kt         preview-to-RAW marker registration
 ├─ MeteringFusion.kt                 robust multi-frame fusion
 ├─ MeterLayout.kt                    main page and camera-preview composition
 ├─ LayoutGeometry.kt                 normal-mode geometry

@@ -5,7 +5,6 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.ImageFormat
-import android.graphics.Matrix
 import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraAccessException
 import android.hardware.camera2.CameraCaptureSession
@@ -369,6 +368,8 @@ class CameraController(
         currentGeneration = { cameraGeneration },
         currentProfile = { activeSessionProfile },
         rawSurface = { rawReader?.surface },
+        rawCharacteristics = { characteristics },
+        expectedRawSize = { rawOutputSize },
         configureAutoFocus = ::setSupportedAutoFocus,
         startPreview = ::startPreview,
         reconfigure = ::reconfigureSession,
@@ -450,17 +451,17 @@ class CameraController(
         deliverToTracker = callback::onZoneTrackingFrame,
     )
 
-    @Volatile private var lastViewWidth = 0
-    @Volatile private var lastViewHeight = 0
-    @Volatile private var lastDisplayRotation = Surface.ROTATION_0
-    @Volatile private var lastDisplayZoom = 1f
-    private val previewTransformRevision = AtomicInteger(0)
-    private val previewTransformSyncToken = Any()
-    @Volatile
-    private var previewTransformConfirmationFramesRemaining = 0
-    @Volatile
-    private var forcePreviewTransformOnNextFrame = false
-    private var lastPreviewTransformWatchdogAtMs = 0L
+    private val previewSurfaceCoordinator = PreviewSurfaceCoordinator(
+        mainHandler = mainHandler,
+        textureView = { textureView },
+        previewSize = { previewSize },
+        sensorOrientationDegrees = { cameraInfo.sensorOrientationDegrees },
+        lensFacing = { cameraInfo.lensFacing },
+    )
+    private val lastViewWidth: Int get() = previewSurfaceCoordinator.viewWidth
+    private val lastViewHeight: Int get() = previewSurfaceCoordinator.viewHeight
+    private val lastDisplayRotation: Int get() = previewSurfaceCoordinator.displayRotation
+    private val lastDisplayZoom: Float get() = previewSurfaceCoordinator.displayZoom
     private val previewHealthSampler = PreviewHealthSampler(
         onFailure = ::requestPreviewHealthRecovery,
         onHealthyPreviewConfirmed = ::confirmPreviewHealthRecovery,
@@ -772,7 +773,7 @@ class CameraController(
         // The foreground request may have arrived while the previous camera thread was still
         // closing. Arm this again on the actual fresh start so that race cannot consume the
         // SurfaceTexture recommit request.
-        forcePreviewTransformOnNextFrame = true
+        previewSurfaceCoordinator.armForFreshStart()
         started = true
         mainHandler.post(::resetPreviewHealthMonitoring)
         // A new foreground lifecycle is a fresh capability probe. Session downgrades remain
@@ -821,24 +822,7 @@ class CameraController(
         displayRotation: Int,
         displayZoom: Float,
     ) {
-        lastViewWidth = viewWidth
-        lastViewHeight = viewHeight
-        lastDisplayRotation = displayRotation
-        lastDisplayZoom = displayZoom
-        val revision = previewTransformRevision.incrementAndGet()
-        mainHandler.removeCallbacksAndMessages(previewTransformSyncToken)
-        val now = SystemClock.uptimeMillis()
-        // Some vendor window managers publish the final TextureView bounds and Display.rotation
-        // well after the first few camera frames. Re-read live state over a short convergence
-        // window instead of trusting the geometry that triggered this call. This is UI-only and
-        // deliberately does not rebuild or merge Camera2 sessions, preserving HAL isolation.
-        PREVIEW_TRANSFORM_CONVERGENCE_DELAYS_MS.forEach { delayMs ->
-            mainHandler.postAtTime(
-                { applyPreviewTransform(revision) },
-                previewTransformSyncToken,
-                now + delayMs,
-            )
-        }
+        previewSurfaceCoordinator.update(viewWidth, viewHeight, displayRotation, displayZoom)
     }
 
     /**
@@ -852,42 +836,12 @@ class CameraController(
         displayRotation: Int,
         displayZoom: Float,
     ) {
-        forcePreviewTransformOnNextFrame = true
-        previewTransformConfirmationFramesRemaining = PREVIEW_TRANSFORM_CONFIRMATION_FRAMES
-        updatePreviewTransform(viewWidth, viewHeight, displayRotation, displayZoom)
-        cameraHandler?.post {
-            val texture = textureView ?: return@post
-            val size = previewSize ?: return@post
-            if (!texture.isAvailable) return@post
-            runCatching {
-                texture.surfaceTexture?.setDefaultBufferSize(size.width, size.height)
-            }.onFailure { error ->
-                Log.w(TAG, "Unable to resynchronize foreground preview buffer size", error)
-            }
-        }
-    }
-
-    private fun applyPreviewTransform(revision: Int) {
-        if (revision != previewTransformRevision.get()) return
-        val texture = textureView ?: return
-        val size = previewSize ?: return
-        val actualWidth = texture.width.takeIf { it > 0 } ?: lastViewWidth
-        val actualHeight = texture.height.takeIf { it > 0 } ?: lastViewHeight
-        if (actualWidth <= 0 || actualHeight <= 0) return
-        val actualRotation = texture.display?.rotation ?: lastDisplayRotation
-        val actualZoom = lastDisplayZoom
-        lastViewWidth = actualWidth
-        lastViewHeight = actualHeight
-        lastDisplayRotation = actualRotation
-        texture.setTransform(
-            CameraPreviewTransform.create(
-                viewWidth = actualWidth,
-                viewHeight = actualHeight,
-                displayRotation = actualRotation,
-                displayZoom = actualZoom,
-                bufferSize = size,
-                lensFacing = cameraInfo.lensFacing,
-            ),
+        previewSurfaceCoordinator.prepareForForeground(
+            viewWidth = viewWidth,
+            viewHeight = viewHeight,
+            displayRotation = displayRotation,
+            displayZoom = displayZoom,
+            cameraHandler = cameraHandler,
         )
     }
 
@@ -1941,9 +1895,7 @@ class CameraController(
     }
 
     override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {
-        previewTransformConfirmationFramesRemaining = PREVIEW_TRANSFORM_CONFIRMATION_FRAMES
-        val currentRotation = textureView?.display?.rotation ?: lastDisplayRotation
-        updatePreviewTransform(width, height, currentRotation, lastDisplayZoom)
+        previewSurfaceCoordinator.onSurfaceSizeChanged(width, height)
     }
 
     override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
@@ -1952,43 +1904,7 @@ class CameraController(
     }
 
     override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {
-        val forceRecommitScheduled = forcePreviewTransformOnNextFrame
-        if (forceRecommitScheduled) {
-            forcePreviewTransformOnNextFrame = false
-            // A few vendor compositors retain the Java-side matrix but lose the corresponding
-            // native layer transaction while the app is backgrounded. Commit identity for one
-            // traversal, then publish the live matrix again so the transaction cannot be elided
-            // as an apparently unchanged value.
-            val revision = previewTransformRevision.incrementAndGet()
-            textureView?.setTransform(Matrix())
-            lastPreviewTransformWatchdogAtMs = SystemClock.uptimeMillis()
-            mainHandler.removeCallbacksAndMessages(previewTransformSyncToken)
-            mainHandler.postAtTime(
-                { applyPreviewTransform(revision) },
-                previewTransformSyncToken,
-                SystemClock.uptimeMillis() + FORCE_TRANSFORM_RECOMMIT_DELAY_MS,
-            )
-        }
-        if (!forceRecommitScheduled && previewTransformConfirmationFramesRemaining > 0) {
-            previewTransformConfirmationFramesRemaining -= 1
-            val texture = textureView
-            updatePreviewTransform(
-                texture?.width ?: lastViewWidth,
-                texture?.height ?: lastViewHeight,
-                texture?.display?.rotation ?: lastDisplayRotation,
-                lastDisplayZoom,
-            )
-        }
-        val now = SystemClock.uptimeMillis()
-        if (!forceRecommitScheduled &&
-            now - lastPreviewTransformWatchdogAtMs >= PREVIEW_TRANSFORM_WATCHDOG_INTERVAL_MS
-        ) {
-            lastPreviewTransformWatchdogAtMs = now
-            // TextureView matrices can be reset by a vendor compositor without a matching
-            // size/configuration callback. A low-frequency idempotent reapply makes that state
-            // self-healing while remaining completely outside Camera2/HAL session management.
-            applyPreviewTransform(previewTransformRevision.get())
-        }
+        previewSurfaceCoordinator.onFrameAvailable()
         if (previewHealthDetectionEnabled && !combinationWorkflowProbe.isActive &&
             combinationSelectionMode != MeteringCombinationSelectionMode.MANUAL
         ) {
@@ -2077,7 +1993,7 @@ class CameraController(
                 )
             // Invalidate a queued matrix from the previous route before this SurfaceTexture is
             // rebound with a potentially different vendor stream size.
-            previewTransformRevision.incrementAndGet()
+            previewSurfaceCoordinator.invalidateForStreamChange()
             previewSize = chosenPreview
             val trackingSize = CameraStreamSelector.chooseTrackingSize(map, chosenPreview)
             trackingHardwareAvailable = trackingSize != null
@@ -2601,7 +2517,7 @@ class CameraController(
                 previewHealthConfirmationGeneration = generation
             }
             submitPreviewRepeatingRequest(device, session, preview)
-            previewTransformConfirmationFramesRemaining = PREVIEW_TRANSFORM_CONFIRMATION_FRAMES
+            previewSurfaceCoordinator.onPreviewStarted()
             previewStreamGeneration += 1L
             val readyInfo = cameraInfo.copy(
                 previewStreamGeneration = previewStreamGeneration,
@@ -3384,6 +3300,7 @@ class CameraController(
     }
 
     private fun onRawImageAvailable(reader: ImageReader) {
+        if (combinationWorkflowProbe.onRawImageAvailable(reader)) return
         val rawRecord = activeRawRecordCapture
         if (rawRecord != null) {
             val image = try {
@@ -3582,11 +3499,7 @@ class CameraController(
 
     private fun closeCamera(preserveExposurePreview: Boolean = false) {
         cameraGeneration += 1
-        previewTransformRevision.incrementAndGet()
-        mainHandler.removeCallbacksAndMessages(previewTransformSyncToken)
-        previewTransformConfirmationFramesRemaining = 0
-        forcePreviewTransformOnNextFrame = false
-        lastPreviewTransformWatchdogAtMs = 0L
+        previewSurfaceCoordinator.reset()
         cameraFailureStage = CameraFailureStage.OPENING
         cancelMeteringPreviewBaseline()
         if (!preserveExposurePreview) {
@@ -3767,18 +3680,5 @@ class CameraController(
         private const val MAX_TOTAL_RECOVERY_ATTEMPTS = 6
         private const val RAW_FAILURES_BEFORE_DOWNGRADE = 2
         private const val MAX_PREVIEW_HEALTH_RECOVERY_ATTEMPTS = 1
-        private const val PREVIEW_TRANSFORM_CONFIRMATION_FRAMES = 4
-        private const val PREVIEW_TRANSFORM_WATCHDOG_INTERVAL_MS = 500L
-        private const val FORCE_TRANSFORM_RECOMMIT_DELAY_MS = 16L
-        private val PREVIEW_TRANSFORM_CONVERGENCE_DELAYS_MS = longArrayOf(
-            0L,
-            16L,
-            50L,
-            120L,
-            250L,
-            500L,
-            1_000L,
-            2_000L,
-        )
     }
 }

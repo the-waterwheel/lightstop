@@ -65,4 +65,48 @@ class CameraPreviewTransformTest {
         assertEquals(1f, transform.map(1f, 0f).second, 0.0001f)
         assertEquals(false, CameraPreviewTransform.shouldMirrorPreview(CameraCharacteristics.LENS_FACING_BACK))
     }
+
+    @Test
+    fun `scaling axes follow sensor orientation instead of assuming a phone camera`() {
+        val phoneSensor = CameraPreviewTransform.geometry(
+            viewWidth = 1_000,
+            viewHeight = 1_000,
+            displayRotation = Surface.ROTATION_0,
+            displayZoom = 1f,
+            bufferWidth = 1_440,
+            bufferHeight = 1_080,
+            sensorOrientationDegrees = 90,
+        )
+        val unrotatedSensor = CameraPreviewTransform.geometry(
+            viewWidth = 1_000,
+            viewHeight = 1_000,
+            displayRotation = Surface.ROTATION_0,
+            displayZoom = 1f,
+            bufferWidth = 1_440,
+            bufferHeight = 1_080,
+            sensorOrientationDegrees = 0,
+        )
+
+        assertEquals(1f, phoneSensor.scaleX, 0.0001f)
+        assertEquals(4f / 3f, phoneSensor.scaleY, 0.0001f)
+        assertEquals(4f / 3f, unrotatedSensor.scaleX, 0.0001f)
+        assertEquals(1f, unrotatedSensor.scaleY, 0.0001f)
+    }
+
+    @Test
+    fun `display rotation remains separate from TextureView sensor compensation`() {
+        val geometry = CameraPreviewTransform.geometry(
+            viewWidth = 2_000,
+            viewHeight = 1_000,
+            displayRotation = Surface.ROTATION_90,
+            displayZoom = 1f,
+            bufferWidth = 1_440,
+            bufferHeight = 1_080,
+            sensorOrientationDegrees = 90,
+        )
+
+        assertEquals(0.75f, geometry.scaleX, 0.0001f)
+        assertEquals(2f, geometry.scaleY, 0.0001f)
+        assertEquals(-90f, geometry.displayRotationDegrees, 0.0001f)
+    }
 }

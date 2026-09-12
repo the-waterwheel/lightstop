@@ -3,7 +3,18 @@
 All notable user-facing changes are recorded here. The project follows
 [Semantic Versioning](https://semver.org/) for public releases.
 
-## Unreleased - 2026-09-09
+## Unreleased - 2026-09-12
+
+- Closed the automatic RAW workflow-probe loop: configuration and capture
+  completion are no longer enough. A candidate now requires a real RAW image,
+  an exact sensor-timestamp result pair, a readable buffer layout, and the hard
+  metadata required by metering, under a bounded timeout and without a pixel scan.
+- Made preview crop geometry sensor-orientation aware while keeping display
+  rotation separate from the orientation already supplied by `TextureView`.
+  Extracted foreground-start sampling and preview matrix recovery so neither
+  path can mutate Camera2 session/HAL fallback policy.
+- Split preview-to-RAW registration out of the former thousand-line metering
+  analysis object, preserving the public analysis entry points and algorithms.
 
 - Reworked the Flash Index controls: guide-number value and reference ISO are
   separate, metering ISO can diverge from the main dial, and unapplied sessions

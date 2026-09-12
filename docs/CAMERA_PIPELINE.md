@@ -54,6 +54,13 @@ stage, then shows the real preview and asks the user to mark flicker, stalls,
 black/green frames, or stripes as normal or abnormal. A manual acceptance is
 also scoped to the camera route and OS build.
 
+A system RAW stage is not accepted from session configuration or
+`onCaptureCompleted()` alone. It waits at most three seconds for the actual
+`RAW_SENSOR` `Image`, pairs it to the result by the exact sensor timestamp, and
+checks only hard transport/metering prerequisites: configured dimensions,
+plane/stride/capacity, exposure, ISO, aperture, Bayer CFA, and black/white
+levels. It does not scan pixels or classify scene brightness/highlights.
+
 Runtime camera errors are classified before retry or downgrade. A fixed-lens
 selection advances through its available transport routes before finally
 falling back to the logical camera. Permission denial,
@@ -299,7 +306,7 @@ RAW 分离 -> RAW 完全瞬时隔离 -> FULL -> 稳定 YUV -> 兼容 ISP
 
 输出格式、输出数量上限以及 Android 10（API 29）以上的强制流组合表只会保守排除明确不可能的候选；不在强制表中的组合标为“未知”，仍进入真实会话测试。`isSessionConfigurationSupported()` 的否定结果也只作提示：实测部分 vivo/MediaTek 软件在瞬时 RAW 后重建相同处理流时会返回 `false`，实际创建却成功。所有 API 版本都以异步真实配置回调为最终判据。
 
-“测光组合选择”的“系统设置”和“手动选择”使用同一组候选。系统设置执行真实配置/工作流探测，并按相机路由、用户模式和系统版本缓存成功方案；手动选择先运行组合要求的每个真实阶段，再显示预览，让用户把闪烁、卡顿、黑屏、绿屏或条纹判为正常/不正常。人工确认也只对同一相机路由和系统版本有效。
+“测光组合选择”的“系统设置”和“手动选择”使用同一组候选。系统设置执行真实配置/工作流探测，并按相机路由、用户模式和系统版本缓存成功方案；其中 RAW 阶段不能只凭会话配置或捕获完成回调通过，必须在三秒内收到真实 `RAW_SENSOR` 图像，与结果按传感器时间戳严格配对，并以常数开销确认尺寸、平面/步幅/容量、曝光、ISO、光圈、Bayer 排列和黑白电平可供测光；不扫描像素，也不判断场景亮度或高光。手动选择先运行组合要求的每个真实阶段，再显示预览，让用户把闪烁、卡顿、黑屏、绿屏或条纹判为正常/不正常。人工确认也只对同一相机路由和系统版本有效。
 
 运行错误会先分类，再决定重试或降级；固定镜头最终还能退回逻辑相机。多摄设备会列出自动逻辑相机和各固定物理镜头；默认选择先按“自动 RAW、主摄 RAW、其他 RAW”排序，再考虑不支持 RAW 的自动/主摄，因此厂商声明且实际提供 `RAW_SENSOR` 尺寸时优先 RAW。同一物理镜头若也出现在公开 `cameraIdList` 中，界面仍只保留一个镜头条目，内部按“公开 ID 直连 → 逻辑相机固定物理输出 → 逻辑相机回退”依次验证；隐藏物理镜头则从固定物理输出开始。固定物理路由会在 CALIBRATED、APPROXIMATE 和未声明同步类型的设备上都实际尝试；同步类型只影响多个传感器同时工作的时间关系，不能用来阻止单个物理输出。硬件 RAW 能力与当前会话是否真的带 RAW 输出分开记录：降级只在本次控制器运行内保持，重新选择镜头、切换测光模式或从后台返回时重新探测高能力档位，同一次稳定运行中不自动升级，避免在绿屏/条纹设备上反复重开。API 29+ 的自动逻辑路由会记录每帧报告的 active physical ID；逻辑回退后的测光和校准采用实际运行 identity，不写入原副摄 key。API 28 保持逻辑复合相机身份，绝不猜测物理镜头。单色和红外物理传感器不会加入普通镜头列表。逻辑与物理路由优先使用两者都常见的 4:3 预览，即使逻辑相机元数据声明为 16:9，也不会在自动主摄与固定主摄之间切换时改变比例或看起来被拉伸；没有 4:3 输出时才退回最接近传感器元数据的比例。权限被拒、系统隐私策略、其他应用长期占用相机，或厂商连基础预览都实现异常时，仍可能无法打开任何档位。
 
@@ -370,13 +377,16 @@ Camera2 统一了 API，但没有统一所有 HAL 的稳定性和性能。不同
 
 ### 控制器组件边界
 
-`CameraController` 保持供 `MainActivity` 使用的公开接口，作为生命周期与校准门面；可变资源和操作状态已经拆到五个内部组件：
+`CameraController` 保持供 `MainActivity` 使用的公开接口，作为生命周期与校准门面；可变资源和操作状态分属下列内部组件：
 
 1. **会话协调器**：拥有设备、会话、输出 surface/reader、打开代次与关闭清理。
 2. **RAW 测光器**：拥有 RAW 请求、单图像捕获窗口、超时、统计累积和最终结果。
 3. **预览流测光器**：拥有 YUV 尝试、亮度缓冲、预览保底、单帧结果和会话级 YUV 健康状态。
 4. **结果配对器**：拥有按时间戳索引的图像/结果，取消时统一关闭未配对图像。
 5. **恢复状态机**：拥有会话档位、失败计数、重试上限、候选连接路线和确定性降级决策。
+6. **组合工作流探测器**：逐阶段验证真实预览与 RAW 图像健康，并统一处理超时和图像释放。
+7. **预览 Surface 协调器**：只管理 `TextureView` 尺寸、传感器/屏幕方向矩阵、前台重提交与低频校验，不触碰 Camera2 会话策略。
+8. **RAW/预览配准器**：拥有预览参考特征和 RAW 坐标匹配；`MeteringAnalysis` 只保留稳定门面与测光计算。
 
 RAW Bayer 测光只接受 RGGB、GRBG、GBRG、BGGR 四种单样本 CFA。`CFA_RGB`、MONO、NIR、
 未知 CFA 或 LEGACY HAL 即使声明 RAW 输出，也只能进入预览/YUV 兼容路径；不得把它们传给
@@ -402,7 +412,7 @@ Bayer/native 统计器，更不得以 RGGB 作为默认猜测。
 才清除标记。应用启动时，已存在于索引的记录保留其文件并清除残留标记；未提交标记只会清理它
 精确对应的 JPEG/DNG。正常异常路径同时回滚内存索引和已移动文件，避免产生无索引记录。
 
-预览变换读取 `TextureView` 所在 Display 的 rotation，而非默认屏幕；Activity 注册 DisplayListener，
+预览变换同时读取镜头的 `SENSOR_ORIENTATION` 与 `TextureView` 所在 Display 的 rotation，而非假设传感器固定旋转或读取默认屏幕；Activity 注册 DisplayListener，
 因而 180° 旋转即使没有 configuration change 也会重新计算矩阵。前摄预览作水平镜像；独立的
 `ScreenToSensorCoordinateTransform` 在触点、RAW 特征匹配和已保存 RAW 网格中统一先撤销镜像、
 再按 Camera2 front/back facing 相对旋转映射到传感器坐标。记录 JSON 同时保存该镜像标志，旧记录

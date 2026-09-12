@@ -1,11 +1,9 @@
 package com.lightmeter.rawmeter
 
 import android.graphics.Bitmap
-import android.graphics.Color
 import android.graphics.Rect
 import android.graphics.RectF
 import android.hardware.camera2.CameraCharacteristics
-import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureResult
 import android.media.Image
 import android.util.Log
@@ -13,7 +11,6 @@ import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
-import kotlin.math.sqrt
 
 internal data class MeteringFrameStat(
     val ev100: Double,
@@ -345,79 +342,17 @@ internal object MeteringAnalysis {
         frameAspect: Float,
         zoom: Float,
         target: ZoneMeteringTarget,
-    ): PreviewLumaReference? {
-        if (frame.width <= 1 || frame.height <= 1 ||
-            frame.luma.size < frame.width * frame.height
-        ) return null
-        val rotation = normalizedRotation(frame.clockwiseRotationDegrees)
-        val rotated = rotation == 90 || rotation == 270
-        val orientedWidth = if (rotated) frame.height else frame.width
-        val orientedHeight = if (rotated) frame.width else frame.height
-        val crop = centeredCrop(
-            RectF(0f, 0f, orientedWidth.toFloat(), orientedHeight.toFloat()),
-            frameAspect,
-            zoom,
-        )
-        val gridSize = RAW_MATCH_GRID_SIZE
-        val halfSpan = referenceHalfSpan(target.frameX, target.frameY)
-        val samples = FloatArray(gridSize * gridSize)
-        for (row in 0 until gridSize) {
-            val offsetY = normalizedGridOffset(row, gridSize) * halfSpan
-            for (column in 0 until gridSize) {
-                val offsetX = normalizedGridOffset(column, gridSize) * halfSpan
-                val screenX = (target.frameX + offsetX).coerceIn(0f, 1f)
-                val screenY = (target.frameY + offsetY).coerceIn(0f, 1f)
-                val orientedX = crop.left + screenX * crop.width()
-                val orientedY = crop.top + screenY * crop.height()
-                samples[row * gridSize + column] = sampleRotatedLuma(
-                    frame,
-                    orientedX,
-                    orientedY,
-                    orientedWidth,
-                    orientedHeight,
-                    rotation,
-                )
-            }
-        }
-        return if (standardDeviation(samples) >= MIN_ISP_REFERENCE_STD_DEV) {
-            PreviewLumaReference(samples, gridSize, halfSpan)
-        } else {
-            null
-        }
-    }
+    ): PreviewLumaReference? = RawPreviewRegistration.createReference(
+        frame = frame,
+        frameAspect = frameAspect,
+        zoom = zoom,
+        target = target,
+    )
 
     fun createPreviewReference(
         bitmap: Bitmap,
         target: ZoneMeteringTarget,
-    ): PreviewLumaReference? {
-        if (bitmap.width <= 1 || bitmap.height <= 1) return null
-        val gridSize = RAW_MATCH_GRID_SIZE
-        val halfSpan = referenceHalfSpan(target.frameX, target.frameY)
-        val samples = FloatArray(gridSize * gridSize)
-        for (row in 0 until gridSize) {
-            val frameOffsetY = normalizedGridOffset(row, gridSize) * halfSpan
-            for (column in 0 until gridSize) {
-                val frameOffsetX = normalizedGridOffset(column, gridSize) * halfSpan
-                val previewX = (target.previewX +
-                    frameOffsetX * target.previewFrameWidthFraction).coerceIn(0f, 1f)
-                val previewY = (target.previewY +
-                    frameOffsetY * target.previewFrameHeightFraction).coerceIn(0f, 1f)
-                val pixel = bitmap.getPixel(
-                    (previewX * (bitmap.width - 1)).roundToInt(),
-                    (previewY * (bitmap.height - 1)).roundToInt(),
-                )
-                samples[row * gridSize + column] =
-                    Color.red(pixel) * 0.2126f +
-                    Color.green(pixel) * 0.7152f +
-                    Color.blue(pixel) * 0.0722f
-            }
-        }
-        return if (standardDeviation(samples) >= MIN_ISP_REFERENCE_STD_DEV) {
-            PreviewLumaReference(samples, gridSize, halfSpan)
-        } else {
-            null
-        }
-    }
+    ): PreviewLumaReference? = RawPreviewRegistration.createReference(bitmap, target)
 
     fun resolveRawMeteringPoint(
         image: Image,
@@ -429,110 +364,16 @@ internal object MeteringAnalysis {
         target: ZoneMeteringTarget,
         reference: PreviewLumaReference?,
         screenToSensorTransform: ScreenToSensorCoordinateTransform,
-    ): RawMeterPoint {
-        val plane = image.planes.firstOrNull()
-        val active = RectF(validatedActiveRect(image.width, image.height, cameraInfo.activeArray))
-        val visibleCrop = rawVisiblePreviewCrop(
-            active = active,
-            target = target,
-            zoom = zoom,
-            transform = screenToSensorTransform,
-        )
-        val approximate = rawPointForFrameCoordinate(
-            target.frameX,
-            target.frameY,
-            active,
-            visibleCrop,
-            target,
-            zoom,
-            screenToSensorTransform,
-        )
-        if (plane == null || reference == null ||
-            reference.gridSize <= 1 ||
-            reference.samples.size != reference.gridSize * reference.gridSize
-        ) {
-            return approximate
-        }
-        val black = result.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)
-            ?: fixedBlackLevels(characteristics)
-            ?: return approximate
-        val white = result.get(CaptureResult.SENSOR_DYNAMIC_WHITE_LEVEL)
-            ?: characteristics.get(CameraCharacteristics.SENSOR_INFO_WHITE_LEVEL)
-            ?: return approximate
-        val cfa = characteristics.get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT)
-            ?.takeIf(RawSensorFormatPolicy::isBayerCfa)
-            ?: return approximate
-        val sampler = RawGreenSampler(
-            image = image,
-            bufferOffset = plane.buffer.position(),
-            cfa = cfa,
-            black = black,
-            white = white,
-        )
-
-        var bestX = target.frameX
-        var bestY = target.frameY
-        var bestCorrelation = Double.NEGATIVE_INFINITY
-        var bestAdjusted = Double.NEGATIVE_INFINITY
-
-        fun consider(candidateX: Float, candidateY: Float) {
-            if (candidateX !in 0f..1f || candidateY !in 0f..1f) return
-            val rawSamples = sampleRawFeature(
-                sampler,
-                active,
-                candidateX,
-                candidateY,
-                reference,
-                target,
-                zoom,
-                screenToSensorTransform,
-            ) ?: return
-            val correlation = normalizedCorrelation(reference.samples, rawSamples)
-            if (!correlation.isFinite()) return
-            val distanceX = candidateX - target.frameX
-            val distanceY = candidateY - target.frameY
-            val normalizedDistanceSquared =
-                (distanceX * distanceX + distanceY * distanceY) /
-                    (RAW_MATCH_SEARCH_RADIUS * RAW_MATCH_SEARCH_RADIUS)
-            val adjusted = correlation - RAW_MATCH_DISTANCE_PENALTY * normalizedDistanceSquared
-            if (adjusted > bestAdjusted) {
-                bestAdjusted = adjusted
-                bestCorrelation = correlation
-                bestX = candidateX
-                bestY = candidateY
-            }
-        }
-
-        for (row in -RAW_MATCH_COARSE_STEPS..RAW_MATCH_COARSE_STEPS) {
-            for (column in -RAW_MATCH_COARSE_STEPS..RAW_MATCH_COARSE_STEPS) {
-                consider(
-                    target.frameX + column * RAW_MATCH_COARSE_STEP,
-                    target.frameY + row * RAW_MATCH_COARSE_STEP,
-                )
-            }
-        }
-        val coarseX = bestX
-        val coarseY = bestY
-        for (row in -RAW_MATCH_FINE_STEPS..RAW_MATCH_FINE_STEPS) {
-            for (column in -RAW_MATCH_FINE_STEPS..RAW_MATCH_FINE_STEPS) {
-                consider(
-                    coarseX + column * RAW_MATCH_FINE_STEP,
-                    coarseY + row * RAW_MATCH_FINE_STEP,
-                )
-            }
-        }
-        if (bestCorrelation < MIN_RAW_MATCH_CORRELATION) return approximate
-        val resolved = rawPointForFrameCoordinate(
-            bestX,
-            bestY,
-            active,
-            visibleCrop,
-            target,
-            zoom,
-            screenToSensorTransform,
-        )
-        return resolved.copy(matchScore = bestCorrelation)
-    }
+    ): RawMeterPoint = RawPreviewRegistration.resolve(
+        image = image,
+        result = result,
+        characteristics = characteristics,
+        cameraInfo = cameraInfo,
+        zoom = zoom,
+        target = target,
+        reference = reference,
+        screenToSensorTransform = screenToSensorTransform,
+    )
 
     fun createVignettingCalibrationMap(
         image: Image,
@@ -927,243 +768,6 @@ internal object MeteringAnalysis {
         )
     }
 
-    private fun rawPointForFrameCoordinate(
-        frameX: Float,
-        frameY: Float,
-        active: RectF,
-        visibleCrop: RectF,
-        target: ZoneMeteringTarget,
-        zoom: Float,
-        transform: ScreenToSensorCoordinateTransform,
-    ): RawMeterPoint {
-        val (previewX, previewY) = frameToPreviewCoordinate(frameX, frameY, target, zoom)
-        val (sensorX, sensorY) = transform.map(previewX, previewY)
-        return RawMeterPoint(
-            sensorX = active.left + sensorX * active.width(),
-            sensorY = active.top + sensorY * active.height(),
-            matchScore = Double.NaN,
-            visibleCropLeft = visibleCrop.left,
-            visibleCropTop = visibleCrop.top,
-            visibleCropRight = visibleCrop.right,
-            visibleCropBottom = visibleCrop.bottom,
-        )
-    }
-
-    private fun rawVisiblePreviewCrop(
-        active: RectF,
-        target: ZoneMeteringTarget,
-        zoom: Float,
-        transform: ScreenToSensorCoordinateTransform,
-    ): RectF {
-        val corners = listOf(0f to 0f, 1f to 0f, 0f to 1f, 1f to 1f).map { (x, y) ->
-            val (previewX, previewY) = frameToPreviewCoordinate(x, y, target, zoom)
-            transform.map(previewX, previewY)
-        }
-        val left = corners.minOf { it.first }
-        val top = corners.minOf { it.second }
-        val right = corners.maxOf { it.first }
-        val bottom = corners.maxOf { it.second }
-        return RectF(
-            active.left + left * active.width(),
-            active.top + top * active.height(),
-            active.left + right * active.width(),
-            active.top + bottom * active.height(),
-        )
-    }
-
-    private fun frameToPreviewCoordinate(
-        frameX: Float,
-        frameY: Float,
-        target: ZoneMeteringTarget,
-        zoom: Float,
-    ): Pair<Float, Float> {
-        val geometricX = target.previewX +
-            (frameX - target.frameX) * target.previewFrameWidthFraction
-        val geometricY = target.previewY +
-            (frameY - target.frameY) * target.previewFrameHeightFraction
-        val safeZoom = zoom.coerceAtLeast(1f)
-        return (0.5f + (geometricX - 0.5f) / safeZoom).coerceIn(0f, 1f) to
-            (0.5f + (geometricY - 0.5f) / safeZoom).coerceIn(0f, 1f)
-    }
-
-    private fun sampleRawFeature(
-        sampler: RawGreenSampler,
-        active: RectF,
-        centerX: Float,
-        centerY: Float,
-        reference: PreviewLumaReference,
-        target: ZoneMeteringTarget,
-        zoom: Float,
-        transform: ScreenToSensorCoordinateTransform,
-    ): FloatArray? {
-        val samples = FloatArray(reference.samples.size)
-        for (row in 0 until reference.gridSize) {
-            val offsetY = normalizedGridOffset(row, reference.gridSize) * reference.halfSpan
-            for (column in 0 until reference.gridSize) {
-                val offsetX = normalizedGridOffset(column, reference.gridSize) * reference.halfSpan
-                val screenX = (centerX + offsetX).coerceIn(0f, 1f)
-                val screenY = (centerY + offsetY).coerceIn(0f, 1f)
-                val point = rawPointForFrameCoordinate(
-                    screenX,
-                    screenY,
-                    active,
-                    active,
-                    target,
-                    zoom,
-                    transform,
-                )
-                samples[row * reference.gridSize + column] =
-                    sampler.sample(point.sensorX, point.sensorY) ?: return null
-            }
-        }
-        return samples
-    }
-
-    private class RawGreenSampler(
-        image: Image,
-        private val bufferOffset: Int,
-        private val cfa: Int,
-        private val black: FloatArray,
-        private val white: Int,
-    ) {
-        private val plane = image.planes[0]
-        private val buffer = plane.buffer
-        private val imageWidth = image.width
-        private val imageHeight = image.height
-
-        fun sample(sensorX: Float, sensorY: Float): Float? {
-            if (plane.pixelStride < 2 || imageWidth < 2 || imageHeight < 2) return null
-            val cellX = sensorX.roundToInt().coerceIn(0, imageWidth - 2) and -2
-            val cellY = sensorY.roundToInt().coerceIn(0, imageHeight - 2) and -2
-            var total = 0f
-            var count = 0
-            for (dy in 0..1) {
-                for (dx in 0..1) {
-                    val x = cellX + dx
-                    val y = cellY + dy
-                    val position = ((y and 1) shl 1) or (x and 1)
-                    val channel = rawChannel(cfa, position)
-                    if (channel != 1 && channel != 2) continue
-                    val offset = bufferOffset + y * plane.rowStride + x * plane.pixelStride
-                    if (offset < 0 || offset + 1 >= buffer.limit()) continue
-                    val raw = (buffer.get(offset).toInt() and 0xff) or
-                        ((buffer.get(offset + 1).toInt() and 0xff) shl 8)
-                    val blackLevel = black.getOrElse(position) { 0f }
-                    val denominator = max(1f, white - blackLevel)
-                    total += ((raw - blackLevel) / denominator).coerceIn(0f, 1f)
-                    count += 1
-                }
-            }
-            return if (count > 0) total / count else null
-        }
-    }
-
-    private fun rawChannel(cfa: Int, position: Int): Int = when (cfa) {
-        CameraMetadata.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_RGGB ->
-            position
-        CameraMetadata.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_GRBG ->
-            when (position) {
-                0 -> 1
-                1 -> 0
-                2 -> 3
-                else -> 2
-            }
-        CameraMetadata.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_GBRG ->
-            when (position) {
-                0 -> 1
-                1 -> 3
-                2 -> 0
-                else -> 2
-            }
-        CameraMetadata.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_BGGR ->
-            when (position) {
-                0 -> 3
-                1 -> 1
-                2 -> 2
-                else -> 0
-            }
-        else -> -1
-    }
-
-    private fun sampleRotatedLuma(
-        frame: ZoneTrackingFrame,
-        orientedX: Float,
-        orientedY: Float,
-        orientedWidth: Int,
-        orientedHeight: Int,
-        rotationDegrees: Int,
-    ): Float {
-        val x = orientedX.coerceIn(0f, (orientedWidth - 1).toFloat()) /
-            (orientedWidth - 1).coerceAtLeast(1)
-        val y = orientedY.coerceIn(0f, (orientedHeight - 1).toFloat()) /
-            (orientedHeight - 1).coerceAtLeast(1)
-        val (sourceX, sourceY) = when (rotationDegrees) {
-            90 -> y to (1f - x)
-            180 -> (1f - x) to (1f - y)
-            270 -> (1f - y) to x
-            else -> x to y
-        }
-        return bilinearLuma(
-            frame,
-            sourceX * (frame.width - 1),
-            sourceY * (frame.height - 1),
-        )
-    }
-
-    private fun bilinearLuma(frame: ZoneTrackingFrame, x: Float, y: Float): Float {
-        val left = x.toInt().coerceIn(0, frame.width - 1)
-        val top = y.toInt().coerceIn(0, frame.height - 1)
-        val right = min(left + 1, frame.width - 1)
-        val bottom = min(top + 1, frame.height - 1)
-        val fractionX = (x - left).coerceIn(0f, 1f)
-        val fractionY = (y - top).coerceIn(0f, 1f)
-        fun value(column: Int, row: Int): Float =
-            (frame.luma[row * frame.width + column].toInt() and 0xff).toFloat()
-        val topValue = value(left, top) * (1f - fractionX) + value(right, top) * fractionX
-        val bottomValue =
-            value(left, bottom) * (1f - fractionX) + value(right, bottom) * fractionX
-        return topValue * (1f - fractionY) + bottomValue * fractionY
-    }
-
-    private fun normalizedCorrelation(first: FloatArray, second: FloatArray): Double {
-        if (first.size != second.size || first.isEmpty()) return Double.NaN
-        val firstMean = first.average()
-        val secondMean = second.average()
-        var numerator = 0.0
-        var firstEnergy = 0.0
-        var secondEnergy = 0.0
-        for (index in first.indices) {
-            val firstCentered = first[index] - firstMean
-            val secondCentered = second[index] - secondMean
-            numerator += firstCentered * secondCentered
-            firstEnergy += firstCentered * firstCentered
-            secondEnergy += secondCentered * secondCentered
-        }
-        val denominator = sqrt(firstEnergy * secondEnergy)
-        return if (denominator > 1e-9) numerator / denominator else Double.NaN
-    }
-
-    private fun standardDeviation(values: FloatArray): Double {
-        if (values.isEmpty()) return 0.0
-        val mean = values.average()
-        val variance = values.sumOf { value ->
-            val difference = value - mean
-            difference * difference
-        } / values.size
-        return sqrt(variance)
-    }
-
-    private fun normalizedGridOffset(index: Int, size: Int): Float =
-        index.toFloat() / (size - 1).coerceAtLeast(1) * 2f - 1f
-
-    private fun referenceHalfSpan(x: Float, y: Float): Float {
-        val edgeDistance = min(min(x, 1f - x), min(y, 1f - y)).coerceAtLeast(0f)
-        return min(RAW_MATCH_PATCH_HALF_SPAN, max(MIN_RAW_MATCH_PATCH_HALF_SPAN, edgeDistance * 0.8f))
-    }
-
-    private fun normalizedRotation(rotationDegrees: Int): Int =
-        ((rotationDegrees % 360) + 360) % 360
-
     private fun fixedBlackLevels(characteristics: CameraCharacteristics): FloatArray? {
         val pattern = characteristics.get(CameraCharacteristics.SENSOR_BLACK_LEVEL_PATTERN)
             ?: return null
@@ -1184,17 +788,6 @@ internal object MeteringAnalysis {
     private const val CENTER_WEIGHTED_ROI_FRACTION = 0.30f
     private const val CENTER_SPOT_WEIGHT = 0.7
     private const val CENTER_WIDE_WEIGHT = 0.3
-    private const val RAW_MATCH_GRID_SIZE = 11
-    private const val RAW_MATCH_PATCH_HALF_SPAN = 0.026f
-    private const val MIN_RAW_MATCH_PATCH_HALF_SPAN = 0.006f
-    private const val MIN_ISP_REFERENCE_STD_DEV = 2.5
-    private const val RAW_MATCH_SEARCH_RADIUS = 0.085f
-    private const val RAW_MATCH_COARSE_STEPS = 6
-    private const val RAW_MATCH_COARSE_STEP = 0.014f
-    private const val RAW_MATCH_FINE_STEPS = 3
-    private const val RAW_MATCH_FINE_STEP = 0.003f
-    private const val RAW_MATCH_DISTANCE_PENALTY = 0.06
-    private const val MIN_RAW_MATCH_CORRELATION = 0.12
     private const val VIGNETTING_GRID_LONG_EDGE = 64
     private const val VIGNETTING_GRID_MIN_SHORT_EDGE = 32
     private const val VIGNETTING_CELL_SAMPLES = 7
