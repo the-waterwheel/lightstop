@@ -322,7 +322,8 @@ internal class ParameterHistoryView(
             record.flash?.let { flash ->
                 val mode = if (flash.distanceMode == RecordedFlashDistanceMode.AUTO) "Auto" else localized("手动", "Manual")
                 add(
-                    localized("闪光", "Flash") + "  GN ${"%.1f".format(flash.guideNumberIso100)} · " +
+                    localized("闪光", "Flash") + "  ${"%.1f".format(flash.configuredGuideNumber)} " +
+                        "(GN${flash.guideNumberReferenceIso}) · ISO ${flash.configuredIso} · " +
                         "${FlashPowerScale.label(flash.powerDenominator)} · " +
                         localized("损失", "loss") + " ${"%.2f".format(flash.lossStops)} · $mode",
                 )

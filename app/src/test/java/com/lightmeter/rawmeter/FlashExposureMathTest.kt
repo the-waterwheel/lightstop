@@ -20,6 +20,17 @@ class FlashExposureMathTest {
     }
 
     @Test
+    fun guideNumberReferenceIsoIsIndependentFromMeteringIso() {
+        val configuration = FlashConfiguration(
+            guideNumber = 80.0,
+            guideNumberReferenceIso = 400,
+            iso = 100,
+        )
+
+        assertEquals(40.0, FlashExposureMath.effectiveGuideNumber(configuration, configuration.iso), 1e-9)
+    }
+
+    @Test
     fun lockedShutterAddsAmbientAndFlashBeforeConvertingToStops() {
         val result = FlashExposureMath.adjustment(
             configuration = FlashConfiguration(guideNumber = 100.0, distanceMeters = 10.0),
@@ -105,6 +116,17 @@ class FlashExposureMathTest {
 
         assertTrue(values.zipWithNext().all { (left, right) -> right > left })
         assertTrue(values[1] - values[0] < values.last() - values[values.lastIndex - 1])
+        assertEquals(FlashDistanceScale.minimumMeters, values.first(), 0.0)
+        assertEquals(FlashDistanceScale.maximumMeters, values.last(), 0.0)
+        assertTrue(values.count { it <= 10.0 } >= 30)
+    }
+
+    @Test
+    fun distanceLabelsUseMetersAtEveryRange() {
+        assertEquals("0.20m", FlashDistanceScale.label(0.20))
+        assertEquals("1.0m", FlashDistanceScale.label(1.0))
+        assertEquals("10m", FlashDistanceScale.label(10.0))
+        assertEquals("Auto", FlashDistanceScale.label(null))
     }
 
     @Test

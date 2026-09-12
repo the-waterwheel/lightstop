@@ -34,6 +34,10 @@ code.
   automatic/main non-RAW routes retained as fallbacks.
 - A common advertised 4:3 preview is preferred for logical and physical routes,
   avoiding viewport aspect changes when Automatic camera and Main camera use the same lens.
+- The preview is center-cropped without intentional non-uniform buffer scaling. On foreground
+  return, camera startup waits for two stable `TextureView` size/rotation samples, then
+  re-submits the buffer size and display matrix on the first new frame. A low-frequency matrix
+  watchdog also repairs layer state lost by affected vendor compositors.
 - RAW-first metering with a capability-driven ISP-preview fallback. LEGACY and
   unsupported RAW CFA devices are treated as non-RAW. A fixed physical lens is
   attempted independently of a logical camera's `APPROXIMATE` sync declaration;
@@ -105,8 +109,13 @@ code.
   digital zoom or silently switching lenses. Front-camera preview mirroring is
   inverted again before RAW touch metering or saved RAW-grid lookup.
 - The Flash Index tool calculates the combined ambient-plus-flash exposure in
-  the linear domain. It supports guide number, ISO, fractional power and loss
-  stops, plus a manual non-linear distance dial or Camera2 AF Auto distance.
+  the linear domain. Guide-number value, its reference ISO (GN100/GN200, and so
+  on), and metering ISO are independent inputs, alongside fractional power and
+  loss stops. An unapplied tool session starts from the main ISO dial, but later
+  edits do not modify that dial.
+- Flash distance uses a faster graduated radial dial with metre-only labels and
+  Auto in the same scale. Auto retains a visible current distance, and the flash
+  distance and metering-angle dials cannot be expanded at the same time.
 - Auto distance is deliberately conservative: it accepts only calibrated or
   approximate Camera2 focus metadata from a known physical camera, requires a
   stable AF/lens state, filters 5–10 samples in dioptre space using median and
@@ -153,6 +162,9 @@ code.
 - Independent EV values and Zone 0–X placement for multiple points.
 - Marker dots ignore preview taps; points are removed from the record list
   with a horizontal swipe or the clear control.
+- Each marker adds a segmented square target frame whose middle third is open
+  on every side. Camera and output-aspect management opened from Zone preserve
+  the Zone host and selected route instead of returning through Normal/Automatic.
 - Low-resolution YUV luminance tracking with preview-screenshot fallback.
 - Pyramidal Lucas–Kanade optical flow, forward/backward validation, RANSAC
   affine motion, local feature correction, gyroscope prediction, and ORB
@@ -410,6 +422,11 @@ reproducible application builds.
 - No analytics or advertising SDK.
 - User-requested parameter records can retain a viewfinder JPEG, optional DNG,
   exposure data, notes, and an optional authorized location in app-private storage.
+- Flash snapshots preserve the entered guide number, GN reference ISO, metering
+  ISO, power, loss, manual/Auto distance, distance source, and quality while
+  remaining backwards-compatible with older ISO-100-normalized records.
+- All six Tools entries use the supplied fixed-white bitmap artwork in both
+  themes, with larger labels below deliberately inset icons.
 - System backup or device-transfer services may copy final records and calibration
   data according to the user's settings; large DNG files are not guaranteed to fit.
 - Zone points are session-only and are not persisted.

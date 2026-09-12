@@ -2,6 +2,7 @@ package com.lightmeter.rawmeter
 
 import kotlin.math.ln
 import kotlin.math.exp
+import kotlin.math.sqrt
 
 enum class ParameterRecordMode { NORMAL, ZONE }
 
@@ -25,6 +26,7 @@ enum class RecordedFlashAdjustmentStatus { APPLIED, DISTANCE_UNAVAILABLE, FLASH_
 
 /** Frozen at capture start; it is never recomputed from later flash-tool state. */
 data class RecordedFlashSnapshot(
+    /** Normalized ISO-100 value retained for backwards-compatible record calculations. */
     val guideNumberIso100: Double,
     val configuredIso: Int,
     val powerDenominator: Int,
@@ -35,6 +37,9 @@ data class RecordedFlashSnapshot(
     val effectiveGuideNumber: Double?,
     val compensationStops: Double,
     val adjustmentStatus: RecordedFlashAdjustmentStatus,
+    /** Value and reference standard exactly as entered in the flash tool. */
+    val configuredGuideNumber: Double = guideNumberIso100,
+    val guideNumberReferenceIso: Int = 100,
 )
 
 /** Frozen diagnostic state of the active automatic-distance provider at capture start. */
@@ -181,7 +186,9 @@ internal object ParameterRecordCaptureSnapshot {
             else -> state.distanceMeasurementState.effectiveMetersForFlash
         }
         return RecordedFlashSnapshot(
-            guideNumberIso100 = configuration.guideNumber,
+            guideNumberIso100 = configuration.guideNumber * sqrt(
+                100.0 / configuration.guideNumberReferenceIso.coerceAtLeast(1).toDouble(),
+            ),
             configuredIso = configuration.iso,
             powerDenominator = configuration.powerDenominator,
             lossStops = configuration.lossStops,
@@ -200,6 +207,8 @@ internal object ParameterRecordCaptureSnapshot {
                 FlashAdjustmentStatus.FLASH_DOMINATES -> RecordedFlashAdjustmentStatus.FLASH_DOMINATES
                 FlashAdjustmentStatus.INVALID -> RecordedFlashAdjustmentStatus.INVALID
             },
+            configuredGuideNumber = configuration.guideNumber,
+            guideNumberReferenceIso = configuration.guideNumberReferenceIso,
         )
     }
 

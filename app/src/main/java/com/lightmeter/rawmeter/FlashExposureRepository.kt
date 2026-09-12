@@ -32,6 +32,7 @@ internal class FlashExposureRepository(context: Context) {
         val auto = preferences.getBoolean("${prefix}auto_distance", true)
         return FlashConfiguration(
             guideNumber = preferences.getFloat("${prefix}guide_number", 100f).toDouble(),
+            guideNumberReferenceIso = preferences.getInt("${prefix}guide_number_reference_iso", 100),
             iso = preferences.getInt("${prefix}iso", normalIso),
             powerDenominator = preferences.getInt("${prefix}power_denominator", 1),
             lossStops = preferences.getFloat("${prefix}loss_stops", 0f).toDouble(),
@@ -44,6 +45,7 @@ internal class FlashExposureRepository(context: Context) {
     private fun write(prefix: String, value: FlashConfiguration) {
         preferences.edit()
             .putFloat("${prefix}guide_number", value.guideNumber.toFloat())
+            .putInt("${prefix}guide_number_reference_iso", value.guideNumberReferenceIso)
             .putInt("${prefix}iso", value.iso)
             .putInt("${prefix}power_denominator", value.powerDenominator)
             .putFloat("${prefix}loss_stops", value.lossStops.toFloat())

@@ -483,7 +483,7 @@ class MeterState(context: Context) {
         return FlashExposureMath.adjustment(
             configuration = configuration,
             autofocusDistanceMeters = distanceMeasurementState.effectiveMetersForFlash,
-            meteringIso = iso,
+            meteringIso = configuration.iso,
             ambientEv100 = ambientEffectiveEv100,
             exposureCompensationEv = exposureCompEv,
             lockMode = exposureLockMode,

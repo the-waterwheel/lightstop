@@ -341,6 +341,8 @@ internal class ParameterRecordRepository(context: Context) {
 
     private fun RecordedFlashSnapshot.toJson(): JSONObject = JSONObject()
         .put("guideNumberIso100", guideNumberIso100)
+        .put("configuredGuideNumber", configuredGuideNumber)
+        .put("guideNumberReferenceIso", guideNumberReferenceIso)
         .put("configuredIso", configuredIso)
         .put("powerDenominator", powerDenominator)
         .put("lossStops", lossStops)
@@ -435,6 +437,8 @@ internal class ParameterRecordRepository(context: Context) {
 
     private fun JSONObject.toFlashSnapshot(): RecordedFlashSnapshot? {
         val guide = nullableDouble("guideNumberIso100")?.takeIf { it > 0.0 } ?: return null
+        val configuredGuide = nullableDouble("configuredGuideNumber")?.takeIf { it > 0.0 } ?: guide
+        val referenceIso = optInt("guideNumberReferenceIso", 100).takeIf { it > 0 } ?: 100
         val configuredIso = optInt("configuredIso").takeIf { it > 0 } ?: return null
         val power = optInt("powerDenominator").takeIf { it > 0 } ?: return null
         val loss = nullableDouble("lossStops")?.takeIf { it >= 0.0 } ?: return null
@@ -458,6 +462,8 @@ internal class ParameterRecordRepository(context: Context) {
             effectiveGuideNumber = effectiveGuide,
             compensationStops = compensation,
             adjustmentStatus = status,
+            configuredGuideNumber = configuredGuide,
+            guideNumberReferenceIso = referenceIso,
         )
     }
 

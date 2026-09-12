@@ -2,9 +2,12 @@ package com.lightmeter.rawmeter
 
 import android.content.Context
 import android.annotation.SuppressLint
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.util.TypedValue
@@ -60,6 +63,29 @@ class ToolsView(
     }
     private val boldPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         typeface = Typeface.create("sans", Typeface.BOLD)
+    }
+    private val iconPaint = Paint(
+        Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG,
+    )
+    /**
+     * These icons intentionally keep their authored white fill in both themes. The Tools cells
+     * remain mid-gray, so tinting them with the normal foreground color would make the supplied
+     * artwork less legible and would also discard its antialiased edge treatment.
+     */
+    private data class ToolIcon(
+        val bitmap: Bitmap,
+        val contentBounds: Rect,
+    )
+
+    private val toolIcons: Map<ToolId, ToolIcon> by lazy(LazyThreadSafetyMode.NONE) {
+        mapOf(
+            ToolId.LATITUDE to decodeToolIcon(R.drawable.tool_icon_latitude),
+            ToolId.FLASH_INDEX to decodeToolIcon(R.drawable.tool_icon_flash_exposure),
+            ToolId.PARAMETER_LOG to decodeToolIcon(R.drawable.tool_icon_parameter_record),
+            ToolId.RECIPROCITY to decodeToolIcon(R.drawable.tool_icon_reciprocity),
+            ToolId.COLOR_TEMPERATURE to decodeToolIcon(R.drawable.tool_icon_color_temperature),
+            ToolId.DEPTH_OF_FIELD to decodeToolIcon(R.drawable.tool_icon_depth_of_field),
+        )
     }
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
 
@@ -150,10 +176,20 @@ class ToolsView(
             paint.color = cellColor
             canvas.drawRoundRect(cell, 6f * density, 6f * density, paint)
             boldPaint.color = foreground
-            boldPaint.textSize = 11f * scaledDensity
+            boldPaint.textSize = TOOL_LABEL_TEXT_SP * scaledDensity
             val label = spec.label.resolve(state.menuLanguage)
             val labelWidth = boldPaint.measureText(label)
-            val lines = if (labelWidth > cell.width() - 12f * density) 2 else 1
+            val lines = if (labelWidth > cell.width() - 16f * density) 2 else 1
+            val textBlockHeight = boldPaint.textSize * if (lines == 1) 1.25f else 2.45f
+            val iconBox = RectF(
+                cell.left + 9f * density,
+                cell.top + 8f * density,
+                cell.right - 9f * density,
+                cell.bottom - textBlockHeight - 13f * density,
+            )
+            toolIcons[spec.id]?.let { icon ->
+                drawIconFitCenter(canvas, icon, iconBox)
+            }
             drawCellLabel(canvas, label, cell, lines)
         }
         canvas.restore()
@@ -163,23 +199,90 @@ class ToolsView(
     }
 
     private fun drawCellLabel(canvas: Canvas, label: String, cell: RectF, lines: Int) {
-        val textSize = 11f * scaledDensity
+        val textSize = TOOL_LABEL_TEXT_SP * scaledDensity
         val half = label.length / 2
         if (lines == 1) {
             val x = cell.centerX() - boldPaint.measureText(label) / 2f
-            val y = cell.centerY() - (boldPaint.ascent() + boldPaint.descent()) / 2f
+            val y = cell.bottom - 9f * density - boldPaint.descent()
             canvas.drawText(label, x, y, boldPaint)
         } else {
             val first = label.substring(0, half)
             val second = label.substring(half)
             val firstWidth = boldPaint.measureText(first)
             val secondWidth = boldPaint.measureText(second)
-            val lineHeight = textSize * 1.25f
+            val lineHeight = textSize * 1.12f
             val firstX = cell.centerX() - firstWidth / 2f
             val secondX = cell.centerX() - secondWidth / 2f
-            val baseline = cell.centerY() - lineHeight / 2f
-            canvas.drawText(first, firstX, baseline, boldPaint)
-            canvas.drawText(second, secondX, baseline + lineHeight, boldPaint)
+            val secondBaseline = cell.bottom - 7f * density - boldPaint.descent()
+            canvas.drawText(first, firstX, secondBaseline - lineHeight, boldPaint)
+            canvas.drawText(second, secondX, secondBaseline, boldPaint)
+        }
+    }
+
+    private fun drawIconFitCenter(canvas: Canvas, icon: ToolIcon, box: RectF) {
+        if (box.width() <= 0f || box.height() <= 0f) return
+        val source = icon.contentBounds
+        val scale = min(box.width() / source.width(), box.height() / source.height()) *
+            TOOL_ICON_VISIBLE_SCALE
+        val width = source.width() * scale
+        val height = source.height() * scale
+        val destination = RectF(
+            box.centerX() - width / 2f,
+            box.centerY() - height / 2f,
+            box.centerX() + width / 2f,
+            box.centerY() + height / 2f,
+        )
+        canvas.drawBitmap(
+            icon.bitmap,
+            source,
+            destination,
+            iconPaint,
+        )
+    }
+
+    private fun decodeToolIcon(resourceId: Int): ToolIcon {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeResource(resources, resourceId, bounds)
+        var sampleSize = 1
+        while (bounds.outWidth / (sampleSize * 2) >= TOOL_ICON_DECODE_TARGET_PX &&
+            bounds.outHeight / (sampleSize * 2) >= TOOL_ICON_DECODE_TARGET_PX
+        ) {
+            sampleSize *= 2
+        }
+        val bitmap = requireNotNull(
+            BitmapFactory.decodeResource(
+                resources,
+                resourceId,
+                BitmapFactory.Options().apply {
+                    inSampleSize = sampleSize
+                    inPreferredConfig = Bitmap.Config.ARGB_8888
+                },
+            ),
+        ) { "Unable to decode Tools icon resource $resourceId" }
+        return ToolIcon(bitmap, findVisibleBounds(bitmap))
+    }
+
+    /** Crops only transparent padding at draw time; the supplied pixels remain unchanged. */
+    private fun findVisibleBounds(bitmap: Bitmap): Rect {
+        var minX = bitmap.width
+        var minY = bitmap.height
+        var maxX = -1
+        var maxY = -1
+        val row = IntArray(bitmap.width)
+        for (y in 0 until bitmap.height) {
+            bitmap.getPixels(row, 0, bitmap.width, 0, y, bitmap.width, 1)
+            for (x in row.indices) {
+                if (row[x] ushr 24 <= MIN_VISIBLE_ALPHA) continue
+                minX = min(minX, x)
+                minY = min(minY, y)
+                maxX = max(maxX, x)
+                maxY = max(maxY, y)
+            }
+        }
+        return if (maxX >= minX && maxY >= minY) {
+            Rect(minX, minY, maxX + 1, maxY + 1)
+        } else {
+            Rect(0, 0, bitmap.width, bitmap.height)
         }
     }
 
@@ -260,5 +363,12 @@ class ToolsView(
     override fun performClick(): Boolean {
         super.performClick()
         return true
+    }
+
+    private companion object {
+        const val TOOL_LABEL_TEXT_SP = 13.5f
+        const val TOOL_ICON_DECODE_TARGET_PX = 288
+        const val TOOL_ICON_VISIBLE_SCALE = 0.66f
+        const val MIN_VISIBLE_ALPHA = 8
     }
 }

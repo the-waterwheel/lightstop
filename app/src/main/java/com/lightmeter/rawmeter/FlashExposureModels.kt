@@ -6,9 +6,11 @@ import kotlin.math.pow
 import kotlin.math.sqrt
 
 internal data class FlashConfiguration(
-    /** Guide number in metres at ISO 100 and full power. */
+    /** Guide-number value at [guideNumberReferenceIso] and full power. */
     val guideNumber: Double = 100.0,
-    /** Editing/default ISO. Applied metering follows the Normal-mode ISO dial. */
+    /** ISO at which the entered guide number is specified (for example GN100 or GN200). */
+    val guideNumberReferenceIso: Int = 100,
+    /** ISO used by the flash calculation; independent from the Normal-mode ISO dial after entry. */
     val iso: Int = 100,
     val powerDenominator: Int = 1,
     val lossStops: Double = 0.0,
@@ -19,6 +21,7 @@ internal data class FlashConfiguration(
 
     fun normalized(): FlashConfiguration = copy(
         guideNumber = guideNumber.takeIf { it.isFinite() }?.coerceIn(1.0, 1000.0) ?: 100.0,
+        guideNumberReferenceIso = guideNumberReferenceIso.coerceIn(1, 102400),
         iso = iso.coerceIn(1, 102400),
         powerDenominator = powerDenominator.takeIf { it in FlashPowerScale.denominators } ?: 1,
         lossStops = lossStops.takeIf { it.isFinite() }?.coerceIn(0.0, 20.0) ?: 0.0,
@@ -34,21 +37,34 @@ internal object FlashPowerScale {
     fun label(denominator: Int): String = if (denominator <= 1) "1/1" else "1/$denominator"
 }
 
-/** Equal detents with deliberately non-linear values: fine close-up control, broad far range. */
+/** One-third-exposure-stop distance detents from 0.2 m to 100 m, plus automatic distance. */
 internal object FlashDistanceScale {
-    val meters: List<Double?> = listOf(
-        null,
-        0.20, 0.25, 0.30, 0.35, 0.40, 0.50, 0.60, 0.70, 0.80, 1.0,
-        1.2, 1.5, 1.8, 2.0, 2.5, 3.0, 4.0, 5.0, 7.0, 10.0,
-        15.0, 20.0, 30.0, 50.0, 75.0, 100.0,
-    )
     const val minimumMeters = 0.20
     const val maximumMeters = 100.0
+    private const val STEPS_PER_DISTANCE_DOUBLING = 6
+
+    val meters: List<Double?> = listOf<Double?>(null) + buildList {
+        var step = 0
+        while (true) {
+            val value = minimumMeters * 2.0.pow(step.toDouble() / STEPS_PER_DISTANCE_DOUBLING)
+            if (value >= maximumMeters) break
+            add(value)
+            step += 1
+        }
+        add(maximumMeters)
+    }
 
     fun nearestIndex(value: Double?): Int {
         if (value == null) return 0
-        return meters.indices.drop(1).minByOrNull { index -> abs(meters[index]!! - value) } ?: 1
+        val safe = value.coerceIn(minimumMeters, maximumMeters)
+        return meters.indices.drop(1).minByOrNull { index ->
+            abs(log2(meters[index]!! / safe))
+        } ?: 1
     }
+
+    fun isMajorIndex(index: Int): Boolean =
+        index == 0 || index == meters.lastIndex ||
+            index > 0 && (index - 1) % STEPS_PER_DISTANCE_DOUBLING == 0
 
     fun label(value: Double?): String = when {
         value == null -> "Auto"
@@ -81,7 +97,10 @@ internal data class FlashAdjustment(
 internal object FlashExposureMath {
     fun effectiveGuideNumber(configuration: FlashConfiguration, meteringIso: Int): Double {
         val value = configuration.guideNumber *
-            sqrt(meteringIso.coerceAtLeast(1) / 100.0) /
+            sqrt(
+                meteringIso.coerceAtLeast(1).toDouble() /
+                    configuration.guideNumberReferenceIso.coerceAtLeast(1).toDouble(),
+            ) /
             sqrt(configuration.powerDenominator.coerceAtLeast(1).toDouble()) *
             2.0.pow(-configuration.lossStops / 2.0)
         return value.takeIf { it.isFinite() && it > 0.0 } ?: 0.0

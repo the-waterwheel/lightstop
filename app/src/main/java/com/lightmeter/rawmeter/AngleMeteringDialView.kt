@@ -17,6 +17,7 @@ import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.min
+import kotlin.math.roundToInt
 import kotlin.math.sin
 
 /** Compact angle badge that expands into a bounded radial detent dial. */
@@ -26,6 +27,7 @@ internal class AngleMeteringDialView(
     private val state: MeterState,
 ) : View(context) {
     var onAngleChanged: (() -> Unit)? = null
+    var onExpandedChanged: ((Boolean) -> Unit)? = null
 
     private enum class Gesture { NONE, TOGGLE, DIAL }
 
@@ -89,6 +91,8 @@ internal class AngleMeteringDialView(
         if (expanded || expansion > 0f) setExpanded(false)
     }
 
+    fun isExpanded(): Boolean = expanded
+
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         calculateGeometry()
     }
@@ -110,6 +114,7 @@ internal class AngleMeteringDialView(
 
         if (expansion > 0.02f) drawDialFace(canvas, centerX, centerY, radius)
         drawValue(canvas, centerX, centerY)
+        drawCompactLabel(canvas)
     }
 
     private fun drawDialFace(canvas: Canvas, centerX: Float, centerY: Float, radius: Float) {
@@ -165,13 +170,27 @@ internal class AngleMeteringDialView(
 
     private fun drawValue(canvas: Canvas, centerX: Float, centerY: Float) {
         boldPaint.color = foreground
-        // Intentionally constant: opening the wheel never changes the center number's size.
-        boldPaint.textSize = COMPACT_TEXT_SP * scaledDensity
+        boldPaint.textSize = lerp(COMPACT_TEXT_SP, EXPANDED_TEXT_SP, expansion) * scaledDensity
         val metrics = boldPaint.fontMetrics
         canvas.drawText(
             "${state.angleMeteringDegrees}°",
             centerX,
             centerY - (metrics.ascent + metrics.descent) / 2f,
+            boldPaint,
+        )
+    }
+
+    private fun drawCompactLabel(canvas: Canvas) {
+        if (expansion >= 0.98f) return
+        val alpha = (255 * (1f - expansion)).roundToInt().coerceIn(0, 255)
+        boldPaint.color = withAlpha(foreground, alpha)
+        boldPaint.textSize = 9.5f * scaledDensity
+        val label = if (state.menuLanguage == MenuLanguage.ENGLISH) "Metering angle" else "测光角度"
+        val metrics = boldPaint.fontMetrics
+        canvas.drawText(
+            label,
+            compactBounds.centerX(),
+            compactBounds.bottom + 7f * density - (metrics.ascent + metrics.descent) / 2f,
             boldPaint,
         )
     }
@@ -299,6 +318,7 @@ internal class AngleMeteringDialView(
     private fun setExpanded(value: Boolean) {
         if (expanded == value && (value == (expansion >= 1f))) return
         expanded = value
+        onExpandedChanged?.invoke(value)
         expansionAnimator?.cancel()
         expansionAnimator = ValueAnimator.ofFloat(expansion, if (value) 1f else 0f).apply {
             duration = 230L
@@ -318,13 +338,17 @@ internal class AngleMeteringDialView(
 
     private fun calculateGeometry() {
         if (width <= 0 || height <= 0 || anchor.isEmpty) return
-        val margin = 10f * density
-        val compactSize = 30f * density
-        val gap = 5f * density
-        var compactTop = anchor.bottom + gap
-        if (compactTop + compactSize > height - margin) {
-            compactTop = anchor.top - gap - compactSize
-        }
+        val margin = 2f * density
+        val compactSize = 34f * density
+        val gap = 2f * density
+        // The angle selector belongs below the meter button. Do not fall back above it on
+        // short portrait layouts: that position is reserved for the flash-distance selector.
+        // The compact label only needs its actual line height, so the previous 18 dp reserve
+        // unnecessarily forced both controls into the same location on tall phones.
+        val labelReserve = 13f * density
+        val compactTop = (anchor.bottom + gap).coerceAtMost(
+            (height - margin - labelReserve - compactSize).coerceAtLeast(anchor.bottom),
+        )
         val compactLeft = (anchor.centerX() + compactCenterOffsetX - compactSize / 2f)
             .coerceIn(margin, (width - margin - compactSize).coerceAtLeast(margin))
         compactBounds = RectF(
@@ -334,14 +358,14 @@ internal class AngleMeteringDialView(
             compactTop + compactSize,
         )
         expandedRadius = min(
-            82f * density,
+            88f * density,
             min(width * 0.22f, height * 0.23f),
         ).coerceAtLeast(compactSize / 2f)
-        expandedCenterX = compactBounds.centerX().coerceIn(
+        expandedCenterX = anchor.centerX().coerceIn(
             margin + expandedRadius,
             (width - margin - expandedRadius).coerceAtLeast(margin + expandedRadius),
         )
-        expandedCenterY = compactBounds.centerY().coerceIn(
+        expandedCenterY = anchor.centerY().coerceIn(
             margin + expandedRadius,
             (height - margin - expandedRadius).coerceAtLeast(margin + expandedRadius),
         )
@@ -374,5 +398,6 @@ internal class AngleMeteringDialView(
     private companion object {
         private const val TICK_ANGLE_DEGREES = 18f
         private const val COMPACT_TEXT_SP = 11f
+        private const val EXPANDED_TEXT_SP = 18f
     }
 }

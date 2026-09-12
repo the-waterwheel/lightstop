@@ -17,6 +17,7 @@ import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.min
+import kotlin.math.roundToInt
 import kotlin.math.sin
 
 /** Compact distance badge; equal-angle detents select the non-linear [FlashDistanceScale]. */
@@ -26,6 +27,7 @@ internal class FlashDistanceDialView(
     private val state: MeterState,
 ) : View(context) {
     var onDistanceChanged: ((Double?) -> Unit)? = null
+    var onExpandedChanged: ((Boolean) -> Unit)? = null
 
     private enum class Gesture { NONE, TOGGLE, DIAL }
 
@@ -81,6 +83,8 @@ internal class FlashDistanceDialView(
         if (expanded || expansion > 0f) setExpanded(false)
     }
 
+    fun isExpanded(): Boolean = expanded
+
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) = calculateGeometry()
 
     override fun onDraw(canvas: Canvas) {
@@ -98,6 +102,7 @@ internal class FlashDistanceDialView(
         canvas.drawCircle(centerX, centerY, radius, paint)
         if (expansion > 0.02f) drawDialFace(canvas, centerX, centerY, radius)
         drawValue(canvas, centerX, centerY)
+        drawCompactLabel(canvas)
     }
 
     private fun drawDialFace(canvas: Canvas, centerX: Float, centerY: Float, radius: Float) {
@@ -119,10 +124,15 @@ internal class FlashDistanceDialView(
                 centerY + sin(radians).toFloat() * outer,
                 paint,
             )
-            if (index == selected || index == 0 || index % 3 == 1) {
+            val angleFromPointer = signedAngleDistance(angleDegrees, -90f)
+            val nearSelectedPointer = index != selected && abs(angleFromPointer) < LABEL_CLEARANCE_DEGREES
+            val duplicateAutomaticNeighbor = index == 1 && selected != 1
+            if ((index == selected || FlashDistanceScale.isMajorIndex(index)) &&
+                !nearSelectedPointer && !duplicateAutomaticNeighbor
+            ) {
                 paint.style = Paint.Style.FILL
                 paint.textAlign = Paint.Align.CENTER
-                paint.textSize = 7f * scaledDensity
+                paint.textSize = 7.8f * scaledDensity
                 paint.color = withAlpha(foreground, alpha)
                 val labelRadius = radius * 0.63f
                 val metrics = paint.fontMetrics
@@ -134,27 +144,49 @@ internal class FlashDistanceDialView(
                 )
             }
         }
-        paint.style = Paint.Style.FILL
+        // The fixed blue pointer overlays the selected scale tick when a detent settles.
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 2.4f * density
         paint.color = withAlpha(blue, alpha)
-        canvas.drawCircle(centerX, centerY - radius * 0.92f, 2.2f * density, paint)
+        canvas.drawLine(
+            centerX,
+            centerY - radius * 0.73f,
+            centerX,
+            centerY - radius * 0.94f,
+            paint,
+        )
     }
 
     private fun drawValue(canvas: Canvas, centerX: Float, centerY: Float) {
         boldPaint.color = foreground
         val configuration = configuration ?: return
         if (configuration.isAutoDistance) {
-            boldPaint.textSize = 8.5f * scaledDensity
-            centeredText(canvas, "Auto", centerX, centerY - 5f * density, boldPaint)
-            boldPaint.textSize = 7f * scaledDensity
+            boldPaint.textSize = lerp(9f, 15.5f, expansion) * scaledDensity
+            centeredText(canvas, "Auto", centerX, centerY - lerp(5f, 10f, expansion) * density, boldPaint)
+            boldPaint.textSize = lerp(7.5f, 12.5f, expansion) * scaledDensity
             val measured = when (val value = distanceState.estimate?.takeIf { it.isFresh }?.meters) {
                 null -> "--"
                 else -> compactLabel(value)
             }
-            centeredText(canvas, measured, centerX, centerY + 6f * density, boldPaint)
+            centeredText(canvas, measured, centerX, centerY + lerp(6f, 12f, expansion) * density, boldPaint)
         } else {
-            boldPaint.textSize = 9f * scaledDensity
+            boldPaint.textSize = lerp(9f, 18f, expansion) * scaledDensity
             centeredText(canvas, compactLabel(configuration.distanceMeters), centerX, centerY, boldPaint)
         }
+    }
+
+    private fun drawCompactLabel(canvas: Canvas) {
+        if (expansion >= 0.98f) return
+        val alpha = (255 * (1f - expansion)).roundToInt().coerceIn(0, 255)
+        boldPaint.color = withAlpha(foreground, alpha)
+        boldPaint.textSize = 9.5f * scaledDensity
+        centeredText(
+            canvas,
+            if (state.menuLanguage == MenuLanguage.ENGLISH) "Flash distance" else "闪光距离",
+            compactBounds.centerX(),
+            compactBounds.top - 8f * density,
+            boldPaint,
+        )
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -246,7 +278,9 @@ internal class FlashDistanceDialView(
     }
 
     private fun setExpanded(value: Boolean) {
+        if (expanded == value && value == (expansion >= 1f)) return
         expanded = value
+        onExpandedChanged?.invoke(value)
         expansionAnimator?.cancel()
         expansionAnimator = ValueAnimator.ofFloat(expansion, if (value) 1f else 0f).apply {
             duration = 230L
@@ -264,17 +298,18 @@ internal class FlashDistanceDialView(
         val margin = 10f * density
         val compactSize = 34f * density
         val gap = 5f * density
-        var compactTop = anchor.bottom + gap
-        if (compactTop + compactSize > height - margin) compactTop = anchor.top - gap - compactSize
+        val labelReserve = 18f * density
+        var compactTop = anchor.top - gap - compactSize
+        if (compactTop - labelReserve < margin) compactTop = anchor.bottom + gap + labelReserve
         val compactLeft = (anchor.centerX() + compactCenterOffsetX - compactSize / 2f)
             .coerceIn(margin, (width - margin - compactSize).coerceAtLeast(margin))
         compactBounds = RectF(compactLeft, compactTop, compactLeft + compactSize, compactTop + compactSize)
-        expandedRadius = min(86f * density, min(width * 0.22f, height * 0.23f)).coerceAtLeast(compactSize / 2f)
-        expandedCenterX = compactBounds.centerX().coerceIn(
+        expandedRadius = min(88f * density, min(width * 0.22f, height * 0.23f)).coerceAtLeast(compactSize / 2f)
+        expandedCenterX = anchor.centerX().coerceIn(
             margin + expandedRadius,
             (width - margin - expandedRadius).coerceAtLeast(margin + expandedRadius),
         )
-        expandedCenterY = compactBounds.centerY().coerceIn(
+        expandedCenterY = anchor.centerY().coerceIn(
             margin + expandedRadius,
             (height - margin - expandedRadius).coerceAtLeast(margin + expandedRadius),
         )
@@ -284,9 +319,16 @@ internal class FlashDistanceDialView(
 
     private fun compactLabel(value: Double?): String = when {
         value == null -> "A"
-        value < 1.0 -> "${(value * 100).toInt()}c"
+        value < 1.0 -> "%.2fm".format(java.util.Locale.US, value)
         value < 10.0 -> "%.1fm".format(java.util.Locale.US, value)
         else -> "%.0fm".format(java.util.Locale.US, value)
+    }
+
+    private fun signedAngleDistance(value: Float, target: Float): Float {
+        var delta = (value - target) % 360f
+        if (delta > 180f) delta -= 360f
+        if (delta < -180f) delta += 360f
+        return delta
     }
 
     private fun centeredText(canvas: Canvas, text: String, x: Float, y: Float, textPaint: Paint) {
@@ -317,6 +359,7 @@ internal class FlashDistanceDialView(
     }
 
     private companion object {
-        const val TICK_ANGLE_DEGREES = 12f
+        const val TICK_ANGLE_DEGREES = 6f
+        const val LABEL_CLEARANCE_DEGREES = 25f
     }
 }

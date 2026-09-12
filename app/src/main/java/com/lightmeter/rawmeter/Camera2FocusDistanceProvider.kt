@@ -52,14 +52,32 @@ internal class Camera2FocusDistanceProvider(
     private var lastTimestampNs = Long.MIN_VALUE
 
     fun start(context: DistanceContext, capability: FocusDistanceCapability): DistanceMeasurementState {
+        val unsupportedReason = Camera2FocusDistancePolicy.supportReason(capability)
+        val reusableEstimate = locked?.takeIf {
+            unsupportedReason == null &&
+                this.context == context &&
+                this.capability == capability &&
+                it.isFresh
+        }
+        val previousTimestampNs = lastTimestampNs
         this.context = context
         this.capability = capability
         samples.clear()
-        locked = null
-        lastTimestampNs = Long.MIN_VALUE
-        return Camera2FocusDistancePolicy.supportReason(capability)?.let {
-            DistanceMeasurementState(status = DistanceMeasurementStatus.UNSUPPORTED, diagnosticReason = it)
-        } ?: DistanceMeasurementState(status = DistanceMeasurementStatus.WAITING_FOR_FOCUS)
+        locked = reusableEstimate
+        lastTimestampNs = if (reusableEstimate != null) previousTimestampNs else Long.MIN_VALUE
+        return when {
+            unsupportedReason != null -> DistanceMeasurementState(
+                status = DistanceMeasurementStatus.UNSUPPORTED,
+                diagnosticReason = unsupportedReason,
+            )
+
+            reusableEstimate != null -> DistanceMeasurementState(
+                estimate = reusableEstimate,
+                status = DistanceMeasurementStatus.AVAILABLE,
+            )
+
+            else -> DistanceMeasurementState(status = DistanceMeasurementStatus.WAITING_FOR_FOCUS)
+        }
     }
 
     fun stop(): DistanceMeasurementState {

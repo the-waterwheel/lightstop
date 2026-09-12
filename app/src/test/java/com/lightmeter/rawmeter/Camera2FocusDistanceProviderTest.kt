@@ -64,6 +64,47 @@ class Camera2FocusDistanceProviderTest {
     }
 
     @Test
+    fun restartingSamePhysicalCameraKeepsFreshEstimateWhileNewAfSamplesArrive() {
+        val provider = Camera2FocusDistanceProvider()
+        provider.start(context, capability)
+        var measured: DistanceMeasurementState? = null
+        repeat(5) { index ->
+            measured = provider.onFrame(
+                context,
+                100_000_000L + index * 100_000_000L,
+                CameraMetadata.CONTROL_AF_STATE_FOCUSED_LOCKED,
+                CameraMetadata.LENS_STATE_STATIONARY,
+                0.5f,
+            )
+        }
+
+        val restarted = provider.start(context, capability)
+
+        assertEquals(DistanceMeasurementStatus.AVAILABLE, restarted.status)
+        assertEquals(measured?.estimate, restarted.estimate)
+    }
+
+    @Test
+    fun restartingDifferentPhysicalCameraNeverReusesDistance() {
+        val provider = Camera2FocusDistanceProvider()
+        provider.start(context, capability)
+        repeat(5) { index ->
+            provider.onFrame(
+                context,
+                100_000_000L + index * 100_000_000L,
+                CameraMetadata.CONTROL_AF_STATE_FOCUSED_LOCKED,
+                CameraMetadata.LENS_STATE_STATIONARY,
+                0.5f,
+            )
+        }
+
+        val restarted = provider.start(context.copy(cameraIdentity = "2"), capability)
+
+        assertEquals(DistanceMeasurementStatus.WAITING_FOR_FOCUS, restarted.status)
+        assertNull(restarted.estimate)
+    }
+
+    @Test
     fun missingCalibrationOrResultKeyIsUnsupported() {
         val provider = Camera2FocusDistanceProvider()
         val state = provider.start(context, capability.copy(calibration = null, resultKeyAvailable = false))

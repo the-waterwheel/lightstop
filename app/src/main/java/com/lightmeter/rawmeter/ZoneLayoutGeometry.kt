@@ -156,8 +156,8 @@ internal object ZoneLayoutCalculator {
             val recordContentRight =
                 recordPanel.left + recordPanel.width() * RECORD_CONTENT_FRACTION
             val markSize = min(
-                72f * density,
-                min(recordPanel.width() * 0.20f, recordPanel.height() * 0.34f),
+                84f * density,
+                min(recordPanel.width() * 0.24f, recordPanel.height() * 0.40f),
             )
             val badgeGap = 5f * density
             val badgeHeight = min(markSize, 52f * density)
@@ -332,8 +332,8 @@ internal object ZoneLayoutCalculator {
             val recordContentRight =
                 recordPanel.left + recordPanel.width() * RECORD_CONTENT_FRACTION
             val markSize = min(
-                68f * density,
-                min(recordPanel.width() * 0.18f, recordPanel.height() * 0.42f),
+                80f * density,
+                min(recordPanel.width() * 0.22f, recordPanel.height() * 0.46f),
             )
             val badgeGap = 5f * density
             val badgeHeight = min(markSize, 52f * density)

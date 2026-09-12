@@ -508,11 +508,38 @@ class ZoneSystemView(
             paint.strokeWidth = 1f * density
             paint.color = if (outsideLatitude || selected) red else foreground
             canvas.drawCircle(x, y, radius, paint)
+            drawSegmentedMarkerFrame(canvas, x, y, radius + 4f * density, paint.color)
             boldPaint.color = if ((outsideLatitude || selected) && !state.isDarkMode) Color.WHITE else foreground
             boldPaint.textSize = 7f * density
             drawCenteredText(canvas, marker.id.toString(), x, y, boldPaint)
         }
         if (animationPending) postInvalidateOnAnimation()
+    }
+
+    /** Square targeting frame whose middle third is omitted from every side. */
+    private fun drawSegmentedMarkerFrame(
+        canvas: Canvas,
+        centerX: Float,
+        centerY: Float,
+        halfSize: Float,
+        color: Int,
+    ) {
+        val left = centerX - halfSize
+        val top = centerY - halfSize
+        val right = centerX + halfSize
+        val bottom = centerY + halfSize
+        val segment = halfSize * 2f / 3f
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 1f * density
+        paint.color = color
+        canvas.drawLine(left, top, left + segment, top, paint)
+        canvas.drawLine(right - segment, top, right, top, paint)
+        canvas.drawLine(left, bottom, left + segment, bottom, paint)
+        canvas.drawLine(right - segment, bottom, right, bottom, paint)
+        canvas.drawLine(left, top, left, top + segment, paint)
+        canvas.drawLine(left, bottom - segment, left, bottom, paint)
+        canvas.drawLine(right, top, right, top + segment, paint)
+        canvas.drawLine(right, bottom - segment, right, bottom, paint)
     }
 
     private fun MarkerDisplayMotion.sampleAt(nowMs: Long): MarkerDisplaySample {

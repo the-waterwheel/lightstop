@@ -1,5 +1,6 @@
 package com.lightmeter.rawmeter
 
+import android.animation.ValueAnimator
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Canvas
@@ -15,8 +16,10 @@ import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
+import android.view.animation.DecelerateInterpolator
 import kotlin.math.abs
 import kotlin.math.min
+import kotlin.math.roundToInt
 
 /** Flash/ambient exposure calculator, deliberately sharing Reciprocity's compact tool geometry. */
 @SuppressLint("ViewConstructor")
@@ -29,12 +32,14 @@ internal class FlashExposureView(
         fun onBackToToolsRequested()
         fun onCloseRequested()
         fun onSettingsRequested(configuration: FlashConfiguration)
+        fun onGuideNumberRequested(configuration: FlashConfiguration)
+        fun onMeteringIsoRequested(configuration: FlashConfiguration)
         fun onAppliedFlashChanged(configuration: FlashConfiguration?)
     }
 
     var listener: Listener? = null
 
-    private enum class TouchTarget { BACK, CLOSE, SCALE, SETTINGS, APPLY, NONE }
+    private enum class TouchTarget { BACK, CLOSE, SCALE, AUTO_DISTANCE, SETTINGS, GUIDE_NUMBER, METERING_ISO, APPLY, NONE }
 
     private val density = resources.displayMetrics.density
     private val scaledDensity = TypedValue.applyDimension(
@@ -65,14 +70,16 @@ internal class FlashExposureView(
     private var geometry = ReciprocityGeometry.EMPTY
     private var configuration = FlashConfiguration(iso = state.iso)
     private var selectedDistanceIndex = 0
+    private var displayedDistancePosition = 0f
     private var applied = false
     private var initialized = false
     private var touchTarget = TouchTarget.NONE
     private var touchStartX = 0f
     private var touchStartY = 0f
-    private var touchStartIndex = 0
+    private var touchStartDistancePosition = 0f
     private var moved = false
     private var lastHapticAt = 0L
+    private var distanceAnimator: ValueAnimator? = null
 
     init {
         isClickable = true
@@ -82,9 +89,19 @@ internal class FlashExposureView(
 
     fun openPage() {
         val appliedConfiguration = repository.applied(state.iso)
-        configuration = appliedConfiguration ?: repository.selected(state.iso)
         applied = appliedConfiguration != null
+        configuration = if (appliedConfiguration != null) {
+            // An active flash correction must remain stable while it is applied.
+            appliedConfiguration
+        } else {
+            // A fresh, unapplied visit always starts from the Normal meter dial ISO.
+            repository.selected(state.iso)
+                .copy(iso = state.iso)
+                .normalized()
+        }
         selectedDistanceIndex = FlashDistanceScale.nearestIndex(configuration.distanceMeters)
+        displayedDistancePosition = selectedDistanceIndex.toFloat()
+        if (!applied) repository.saveSelected(configuration)
         initialized = true
         invalidate()
     }
@@ -96,6 +113,7 @@ internal class FlashExposureView(
     fun updateConfiguration(value: FlashConfiguration) {
         configuration = value.normalized()
         selectedDistanceIndex = FlashDistanceScale.nearestIndex(configuration.distanceMeters)
+        displayedDistancePosition = selectedDistanceIndex.toFloat()
         repository.saveSelected(configuration)
         if (applied) repository.apply(configuration)
         listener?.onAppliedFlashChanged(configuration.takeIf { applied })
@@ -105,6 +123,7 @@ internal class FlashExposureView(
     fun updateDistance(value: Double?) {
         configuration = configuration.copy(distanceMeters = value).normalized()
         selectedDistanceIndex = FlashDistanceScale.nearestIndex(configuration.distanceMeters)
+        displayedDistancePosition = selectedDistanceIndex.toFloat()
         repository.saveSelected(configuration)
         if (applied) repository.apply(configuration)
         invalidate()
@@ -154,7 +173,7 @@ internal class FlashExposureView(
         paint.color = foreground
         canvas.drawRect(rect, paint)
 
-        val titleWidth = min(82f * density, rect.width() * 0.26f)
+        val titleWidth = distanceTitleWidth(rect)
         val content = if (state.isLeftHanded) {
             RectF(rect.left + 5f * density, rect.top, rect.right - titleWidth, rect.bottom)
         } else {
@@ -163,19 +182,35 @@ internal class FlashExposureView(
         val titleLeft = if (state.isLeftHanded) rect.right - titleWidth else rect.left
         boldPaint.textAlign = Paint.Align.CENTER
         boldPaint.color = foreground
+        boldPaint.textSize = 11f * scaledDensity
+        centered(canvas, localized("距离", "Distance"), titleLeft + titleWidth * 0.50f, rect.centerY() - 21f * density, boldPaint)
+        boldPaint.textSize = 15.5f * scaledDensity
+        centered(canvas, distanceValueLabel(), titleLeft + titleWidth * 0.50f, rect.centerY(), boldPaint)
+
+        val autoButton = distanceAutoButtonRect()
+        paint.style = Paint.Style.FILL
+        paint.color = if (configuration.isAutoDistance) actionActiveSurface else background
+        canvas.drawCircle(autoButton.centerX(), autoButton.centerY(), autoButton.width() / 2f, paint)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 1.3f * density
+        paint.color = if (configuration.isAutoDistance) blue else foreground
+        canvas.drawCircle(autoButton.centerX(), autoButton.centerY(), autoButton.width() / 2f, paint)
         boldPaint.textSize = 10f * scaledDensity
-        centered(canvas, localized("距离", "Distance"), titleLeft + titleWidth * 0.50f, rect.centerY() - 12f * density, boldPaint)
-        boldPaint.textSize = 12.5f * scaledDensity
-        centered(canvas, currentDistanceLabel(), titleLeft + titleWidth * 0.50f, rect.centerY() + 10f * density, boldPaint)
+        boldPaint.color = if (configuration.isAutoDistance) blue else foreground
+        centered(canvas, "A", autoButton.centerX(), autoButton.centerY(), boldPaint)
 
         val baseline = rect.centerY() + 14f * density
-        val spacing = maxOf(30f * density, content.width() / 6f)
+        val spacing = distanceTickSpacing(content)
         canvas.save()
         canvas.clipRect(content)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 0.9f * density
+        paint.color = foreground
+        canvas.drawLine(content.left, baseline, content.right, baseline, paint)
         FlashDistanceScale.meters.indices.forEach { index ->
-            val x = content.centerX() + (index - selectedDistanceIndex) * spacing
+            val x = content.centerX() + (index - displayedDistancePosition) * spacing
             if (x !in (content.left - spacing)..(content.right + spacing)) return@forEach
-            val major = index == 0 || index == selectedDistanceIndex || index % 3 == 1
+            val major = index == selectedDistanceIndex || FlashDistanceScale.isMajorIndex(index)
             paint.style = Paint.Style.STROKE
             paint.strokeWidth = if (index == selectedDistanceIndex) 2f * density else density
             paint.color = if (index == selectedDistanceIndex) blue else foreground
@@ -208,22 +243,55 @@ internal class FlashExposureView(
         val available = geometry.filmCard.width() - 18f * density
         boldPaint.textAlign = Paint.Align.LEFT
         boldPaint.color = foreground
-        boldPaint.textSize = 12f * scaledDensity
-        val title = "GN${formatGn(configuration.guideNumber)} · ISO ${configuration.iso} · ${FlashPowerScale.label(configuration.powerDenominator)}"
+        boldPaint.textSize = 13f * scaledDensity
+        val title = localized(
+            "ISO ${configuration.iso} · 点击修改",
+            "ISO ${configuration.iso} · tap to edit",
+        )
         canvas.drawText(TextUtils.ellipsize(title, boldPaint, available, TextUtils.TruncateAt.END).toString(), x, geometry.filmCard.centerY() - 3f * density, boldPaint)
         textPaint.textAlign = Paint.Align.LEFT
         textPaint.color = foreground
         textPaint.textSize = 9f * scaledDensity
-        canvas.drawText(localized("损失 %.2f 档", "Loss %.2f stops").format(java.util.Locale.US, configuration.lossStops), x, geometry.filmCard.centerY() + 15f * density, textPaint)
+        val details = "GN${configuration.guideNumberReferenceIso} · " +
+            "${FlashPowerScale.label(configuration.powerDenominator)} · " +
+            localized("损失 %.2f 档", "Loss %.2f stops")
+                .format(java.util.Locale.US, configuration.lossStops)
+        canvas.drawText(
+            TextUtils.ellipsize(details, textPaint, available, TextUtils.TruncateAt.END).toString(),
+            x,
+            geometry.filmCard.centerY() + 15f * density,
+            textPaint,
+        )
         drawNeutralButton(geometry.selectFilm, localized("闪光设置", "Flash settings"), canvas)
     }
 
     private fun drawResult(canvas: Canvas) {
         val rect = geometry.result
+        paint.style = Paint.Style.FILL
+        paint.color = actionSurface
+        canvas.drawRoundRect(rect, 7f * density, 7f * density, paint)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 1.4f * density
+        paint.color = blue
+        canvas.drawRoundRect(rect, 7f * density, 7f * density, paint)
+
+        textPaint.textAlign = Paint.Align.CENTER
+        textPaint.color = foreground
+        textPaint.textSize = 9f * scaledDensity
+        centered(
+            canvas,
+            localized(
+                "闪光指数数值 · GN${configuration.guideNumberReferenceIso}",
+                "Guide number value · GN${configuration.guideNumberReferenceIso}",
+            ),
+            rect.centerX(),
+            rect.top + 15f * density,
+            textPaint,
+        )
         boldPaint.textAlign = Paint.Align.CENTER
         boldPaint.color = foreground
         boldPaint.textSize = min(30f * scaledDensity, rect.height() * 0.34f)
-        centered(canvas, "GN ${formatGn(configuration.guideNumber)}", rect.centerX(), rect.centerY() - 11f * density, boldPaint)
+        centered(canvas, formatGn(configuration.guideNumber), rect.centerX(), rect.centerY() - 5f * density, boldPaint)
 
         val adjustment = previewAdjustment()
         val detail = when (adjustment.status) {
@@ -240,7 +308,7 @@ internal class FlashExposureView(
         textPaint.color = if (adjustment.status == FlashAdjustmentStatus.DISTANCE_UNAVAILABLE) blue else foreground
         textPaint.textSize = 9f * scaledDensity
         val fitted = TextUtils.ellipsize(detail, textPaint, rect.width() - 8f * density, TextUtils.TruncateAt.END)
-        centered(canvas, fitted.toString(), rect.centerX(), rect.centerY() + 24f * density, textPaint)
+        centered(canvas, fitted.toString(), rect.centerX(), rect.bottom - 15f * density, textPaint)
     }
 
     private fun drawApplyButton(canvas: Canvas) {
@@ -266,30 +334,43 @@ internal class FlashExposureView(
                 if (touchTarget == TouchTarget.NONE) return false
                 touchStartX = event.x
                 touchStartY = event.y
-                touchStartIndex = selectedDistanceIndex
+                touchStartDistancePosition = displayedDistancePosition
                 moved = false
-                if (touchTarget == TouchTarget.SCALE) parent?.requestDisallowInterceptTouchEvent(true)
+                if (touchTarget == TouchTarget.SCALE) {
+                    distanceAnimator?.cancel()
+                    parent?.requestDisallowInterceptTouchEvent(true)
+                }
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
                 if (touchTarget == TouchTarget.NONE) return false
                 if (abs(event.x - touchStartX) > touchSlop || abs(event.y - touchStartY) > touchSlop) moved = true
                 if (touchTarget == TouchTarget.SCALE && moved) {
-                    val spacing = maxOf(30f * density, scaleContentWidth() / 6f)
-                    val index = (touchStartIndex - ((event.x - touchStartX) / spacing).toInt())
-                        .coerceIn(0, FlashDistanceScale.meters.lastIndex)
-                    selectDistanceIndex(index)
+                    val spacing = distanceTickSpacing(scaleContent())
+                    displayedDistancePosition = (
+                        touchStartDistancePosition -
+                            (event.x - touchStartX) / spacing * DISTANCE_DRAG_INDEX_GAIN
+                        ).coerceIn(0f, FlashDistanceScale.meters.lastIndex.toFloat())
+                    selectDistanceIndex(displayedDistancePosition.roundToInt())
+                    invalidate()
                 }
                 return true
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 val cancelled = event.actionMasked == MotionEvent.ACTION_CANCEL
-                if (!cancelled && !moved) {
+                if (touchTarget == TouchTarget.SCALE) {
+                    if (!cancelled && !moved) selectDistanceAt(event.x)
+                    commitDistanceSelection()
+                    settleDistanceScale()
+                } else if (!cancelled && !moved) {
                     performClick()
                     when (touchTarget) {
                         TouchTarget.BACK -> listener?.onBackToToolsRequested()
                         TouchTarget.CLOSE -> listener?.onCloseRequested()
+                        TouchTarget.AUTO_DISTANCE -> selectAutomaticDistance()
                         TouchTarget.SETTINGS -> listener?.onSettingsRequested(configuration)
+                        TouchTarget.GUIDE_NUMBER -> listener?.onGuideNumberRequested(configuration)
+                        TouchTarget.METERING_ISO -> listener?.onMeteringIsoRequested(configuration)
                         TouchTarget.APPLY -> toggleApplied()
                         else -> Unit
                     }
@@ -305,23 +386,40 @@ internal class FlashExposureView(
     private fun targetAt(x: Float, y: Float): TouchTarget = when {
         geometry.back.contains(x, y) -> TouchTarget.BACK
         geometry.close.contains(x, y) -> TouchTarget.CLOSE
+        distanceAutoButtonRect().contains(x, y) -> TouchTarget.AUTO_DISTANCE
         geometry.scale.contains(x, y) -> TouchTarget.SCALE
         geometry.selectFilm.contains(x, y) -> TouchTarget.SETTINGS
+        geometry.result.contains(x, y) -> TouchTarget.GUIDE_NUMBER
+        geometry.filmCard.contains(x, y) -> TouchTarget.METERING_ISO
         geometry.apply.contains(x, y) -> TouchTarget.APPLY
         else -> TouchTarget.NONE
     }
 
     private fun selectDistanceIndex(index: Int) {
-        if (index == selectedDistanceIndex) return
-        selectedDistanceIndex = index
-        configuration = configuration.copy(distanceMeters = FlashDistanceScale.meters[index]).normalized()
+        val safeIndex = index.coerceIn(0, FlashDistanceScale.meters.lastIndex)
+        if (safeIndex == selectedDistanceIndex) return
+        selectedDistanceIndex = safeIndex
+        configuration = configuration.copy(distanceMeters = FlashDistanceScale.meters[safeIndex]).normalized()
+        haptic()
+        invalidate()
+    }
+
+    /** Persist and notify once after a gesture; SharedPreferences/UI work must not run per move. */
+    private fun commitDistanceSelection() {
         repository.saveSelected(configuration)
         if (applied) {
             repository.apply(configuration)
             listener?.onAppliedFlashChanged(configuration)
         }
-        haptic()
-        invalidate()
+    }
+
+    private fun selectAutomaticDistance() {
+        distanceAnimator?.cancel()
+        selectDistanceIndex(0)
+        displayedDistancePosition = 0f
+        commitDistanceSelection()
+        settleDistanceScale()
+        performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
     }
 
     private fun toggleApplied() {
@@ -331,6 +429,8 @@ internal class FlashExposureView(
             listener?.onAppliedFlashChanged(configuration)
         } else {
             repository.clearApplied()
+            configuration = configuration.copy(iso = state.iso).normalized()
+            repository.saveSelected(configuration)
             listener?.onAppliedFlashChanged(null)
         }
         haptic()
@@ -364,9 +464,68 @@ internal class FlashExposureView(
         return "${FlashDistanceScale.label(estimate.meters)} · $source · $quality"
     }
 
-    private fun scaleContentWidth(): Float {
-        val titleWidth = min(82f * density, geometry.scale.width() * 0.26f)
-        return geometry.scale.width() - titleWidth - 5f * density
+    private fun distanceValueLabel(): String {
+        val meters = configuration.distanceMeters
+            ?: state.distanceMeasurementState.estimate?.takeIf { it.isFresh }?.meters
+            ?: return "-- m"
+        return when {
+            meters < 1.0 -> "%.2f m".format(java.util.Locale.US, meters)
+            meters < 10.0 -> "%.1f m".format(java.util.Locale.US, meters)
+            else -> "%.0f m".format(java.util.Locale.US, meters)
+        }
+    }
+
+    private fun distanceTitleWidth(rect: RectF): Float = min(94f * density, rect.width() * 0.29f)
+
+    private fun distanceAutoButtonRect(): RectF {
+        val rect = geometry.scale
+        if (rect.isEmpty) return RectF()
+        val titleWidth = distanceTitleWidth(rect)
+        val centerX = if (state.isLeftHanded) {
+            rect.right - titleWidth * 0.5f
+        } else {
+            rect.left + titleWidth * 0.5f
+        }
+        val radius = 9f * density
+        val centerY = rect.centerY() + 23f * density
+        return RectF(centerX - radius, centerY - radius, centerX + radius, centerY + radius)
+    }
+
+    private fun scaleContent(): RectF {
+        val rect = geometry.scale
+        val titleWidth = distanceTitleWidth(rect)
+        return if (state.isLeftHanded) {
+            RectF(rect.left + 5f * density, rect.top, rect.right - titleWidth, rect.bottom)
+        } else {
+            RectF(rect.left + titleWidth, rect.top, rect.right - 5f * density, rect.bottom)
+        }
+    }
+
+    private fun distanceTickSpacing(content: RectF): Float =
+        maxOf(22f * density, content.width() / 8f)
+
+    private fun selectDistanceAt(x: Float) {
+        val content = scaleContent()
+        val index = (
+            displayedDistancePosition + (x - content.centerX()) / distanceTickSpacing(content)
+            ).roundToInt().coerceIn(0, FlashDistanceScale.meters.lastIndex)
+        selectDistanceIndex(index)
+        displayedDistancePosition = index.toFloat()
+    }
+
+    private fun settleDistanceScale() {
+        val start = displayedDistancePosition
+        val end = selectedDistanceIndex.toFloat()
+        distanceAnimator?.cancel()
+        distanceAnimator = ValueAnimator.ofFloat(start, end).apply {
+            duration = 160L
+            interpolator = DecelerateInterpolator()
+            addUpdateListener {
+                displayedDistancePosition = it.animatedValue as Float
+                invalidate()
+            }
+            start()
+        }
     }
 
     private fun drawNeutralButton(rect: RectF, label: String, canvas: Canvas) {
@@ -410,7 +569,9 @@ internal class FlashExposureView(
     }
 
     private fun updateContentDescription() {
-        contentDescription = "GN${formatGn(configuration.guideNumber)}, ${currentDistanceLabel()}, ${FlashPowerScale.label(configuration.powerDenominator)}"
+        contentDescription = "${formatGn(configuration.guideNumber)} at " +
+            "GN${configuration.guideNumberReferenceIso}, ISO ${configuration.iso}, " +
+            "${currentDistanceLabel()}, ${FlashPowerScale.label(configuration.powerDenominator)}"
     }
 
     private fun formatGn(value: Double): String = if (value % 1.0 == 0.0) value.toInt().toString() else "%.1f".format(java.util.Locale.US, value)
@@ -421,5 +582,15 @@ internal class FlashExposureView(
     override fun performClick(): Boolean {
         super.performClick()
         return true
+    }
+
+    override fun onDetachedFromWindow() {
+        distanceAnimator?.cancel()
+        distanceAnimator = null
+        super.onDetachedFromWindow()
+    }
+
+    private companion object {
+        const val DISTANCE_DRAG_INDEX_GAIN = 1.8f
     }
 }

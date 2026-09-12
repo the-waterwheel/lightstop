@@ -5,6 +5,25 @@ All notable user-facing changes are recorded here. The project follows
 
 ## Unreleased - 2026-09-09
 
+- Reworked the Flash Index controls: guide-number value and reference ISO are
+  separate, metering ISO can diverge from the main dial, and unapplied sessions
+  refresh their default ISO when reopened. Enlarged and corrected the input and
+  settings dialogs.
+- Rebuilt the flash-distance selector as a faster graduated metre-only radial
+  dial with Auto and a visible live estimate. Flash-distance and metering-angle
+  dials are now positioned above/below the meter button and expand exclusively.
+- Parameter records now preserve the entered guide number, GN reference ISO,
+  metering ISO, flash settings, distance source and distance quality while
+  retaining backwards compatibility with older records.
+- Added six supplied bitmap icons to the Tools grid with theme-independent white
+  artwork and larger labels beneath smaller, consistently inset symbols.
+- Zone camera management now preserves Zone mode and the selected route. Zone
+  markers gained segmented square targeting frames, and the mark button was
+  enlarged where layout space allows.
+- Added foreground preview recovery for vendor window/compositor races: camera
+  start waits for stable TextureView geometry, the first resumed frame reasserts
+  buffer size and matrix state, and a bounded convergence/watchdog path keeps
+  preview correction outside Camera2 session and HAL fallback logic.
 - Added the Flash Index tool with guide number, ISO, fractional power, loss
   stops, manual non-linear distance selection, and physically correct combined
   ambient-plus-flash exposure compensation.

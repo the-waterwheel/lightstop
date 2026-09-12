@@ -228,6 +228,15 @@ class MeterLayout @JvmOverloads constructor(
 
                 override fun onActionRequested(key: SettingActionKey) {
                     if (settingsOpenedFromZone && key != SettingActionKey.SHOW_ABOUT) {
+                        if (key == SettingActionKey.MANAGE_CAMERAS ||
+                            key == SettingActionKey.MANAGE_OUTPUT_ASPECTS
+                        ) {
+                            // Camera selection and per-camera output geometry are safe while the
+                            // Zone host remains active. Keeping the host alive also avoids an
+                            // unnecessary resident-session switch through Normal mode.
+                            showCameraManagement(CameraManagementOrigin.SETTINGS)
+                            return
+                        }
                         exitZoneForAction {
                             when (key) {
                                 SettingActionKey.USE_SAFE_PREVIEW -> {
@@ -528,10 +537,28 @@ class MeterLayout @JvmOverloads constructor(
             instrumentView.invalidate()
             zoneView.invalidate()
         }
+        angleMeteringDialView.onExpandedChanged = { expanded ->
+            if (expanded) {
+                flashDistanceDialView.collapse()
+                flashDistanceDialView.visibility = View.INVISIBLE
+                angleMeteringDialView.bringToFront()
+            } else {
+                post { updateAngleMeteringControl() }
+            }
+        }
         flashDistanceDialView.onDistanceChanged = { distance ->
             val base = state.appliedFlashConfiguration ?: flashExposureRepository.selected(state.iso)
             flashExposureView.updateConfiguration(base.copy(distanceMeters = distance))
             updateFlashPresentation()
+        }
+        flashDistanceDialView.onExpandedChanged = { expanded ->
+            if (expanded) {
+                angleMeteringDialView.collapse()
+                angleMeteringDialView.visibility = View.INVISIBLE
+                flashDistanceDialView.bringToFront()
+            } else {
+                post { updateAngleMeteringControl() }
+            }
         }
         toolsView.listener = object : ToolsView.Listener {
             override fun onCloseRequested() {
@@ -622,10 +649,23 @@ class MeterLayout @JvmOverloads constructor(
                 }
             }
 
-            override fun onAppliedFlashChanged(configuration: FlashConfiguration?) {
-                configuration?.let { selected ->
-                    state.isoValues.indexOf(selected.iso).takeIf { it >= 0 }?.let { state.isoIndex = it }
+            override fun onGuideNumberRequested(configuration: FlashConfiguration) {
+                FlashSettingsDialog.showGuideNumberInput(context, state, configuration) { guideNumber ->
+                    flashExposureView.updateConfiguration(
+                        configuration.copy(guideNumber = guideNumber),
+                    )
+                    updateFlashPresentation()
                 }
+            }
+
+            override fun onMeteringIsoRequested(configuration: FlashConfiguration) {
+                FlashSettingsDialog.showMeteringIsoInput(context, state, configuration) { iso ->
+                    flashExposureView.updateConfiguration(configuration.copy(iso = iso))
+                    updateFlashPresentation()
+                }
+            }
+
+            override fun onAppliedFlashChanged(configuration: FlashConfiguration?) {
                 state.setAppliedFlashConfiguration(configuration)
                 if (configuration?.isAutoDistance == true) {
                     listener?.onAutomaticDistanceRequested()
@@ -1685,8 +1725,7 @@ class MeterLayout @JvmOverloads constructor(
             state.meteringPipelineMode != MeteringPipelineMode.FAST &&
             unobstructed
         val anchor = if (isZoneMode) zoneView.recordButtonRect() else instrumentView.recordButtonRect()
-        val pairedOffset = if (visible && flashVisible) 22f * resources.displayMetrics.density else 0f
-        updateFlashDistanceControl(flashVisible, anchor, if (pairedOffset > 0f) pairedOffset else 0f)
+        updateFlashDistanceControl(flashVisible, anchor)
         if (!visible) {
             angleMeteringDialView.animate().cancel()
             angleControlFadeInAnimating = false
@@ -1695,10 +1734,7 @@ class MeterLayout @JvmOverloads constructor(
             angleMeteringDialView.collapse()
             return
         }
-        angleMeteringDialView.setAnchor(
-            anchor,
-            if (pairedOffset > 0f) -pairedOffset else 0f,
-        )
+        angleMeteringDialView.setAnchor(anchor)
         angleMeteringDialView.refreshSupport()
         if (fadeIn) {
             angleMeteringDialView.animate().cancel()
@@ -1718,13 +1754,27 @@ class MeterLayout @JvmOverloads constructor(
             angleMeteringDialView.alpha = 1f
             angleMeteringDialView.visibility = View.VISIBLE
         }
-        angleMeteringDialView.bringToFront()
+        when {
+            flashDistanceDialView.isExpanded() -> {
+                angleMeteringDialView.visibility = View.INVISIBLE
+                flashDistanceDialView.visibility = View.VISIBLE
+                flashDistanceDialView.bringToFront()
+            }
+
+            angleMeteringDialView.isExpanded() -> {
+                flashDistanceDialView.visibility = View.INVISIBLE
+                angleMeteringDialView.visibility = View.VISIBLE
+                angleMeteringDialView.bringToFront()
+            }
+
+            else -> angleMeteringDialView.bringToFront()
+        }
         if (recordCaptureSliderView.visibility == View.VISIBLE) {
             recordCaptureSliderView.bringToFront()
         }
     }
 
-    private fun updateFlashDistanceControl(visible: Boolean, anchor: RectF, offsetX: Float) {
+    private fun updateFlashDistanceControl(visible: Boolean, anchor: RectF) {
         if (!visible) {
             flashDistanceDialView.visibility = View.GONE
             flashDistanceDialView.collapse()
@@ -1734,7 +1784,7 @@ class MeterLayout @JvmOverloads constructor(
             state.appliedFlashConfiguration,
             state.distanceMeasurementState,
         )
-        flashDistanceDialView.setAnchor(anchor, offsetX)
+        flashDistanceDialView.setAnchor(anchor)
         flashDistanceDialView.visibility = View.VISIBLE
         flashDistanceDialView.bringToFront()
     }
@@ -1908,7 +1958,11 @@ class MeterLayout @JvmOverloads constructor(
     }
 
     private fun showCameraManagement(origin: CameraManagementOrigin) {
-        if (isCameraManagementOpen || isZoneMode || zoneTransitionFraction > 0f) return
+        val allowedOverZoneSettings = origin == CameraManagementOrigin.SETTINGS &&
+            settingsOpenedFromZone && isZoneMode && zoneTransitionFraction >= 1f
+        if (isCameraManagementOpen ||
+            (isZoneMode || zoneTransitionFraction > 0f) && !allowedOverZoneSettings
+        ) return
         cameraManagementOrigin = origin
         isCameraManagementOpen = true
         when (origin) {
