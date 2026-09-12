@@ -3,7 +3,10 @@
 All notable user-facing changes are recorded here. The project follows
 [Semantic Versioning](https://semver.org/) for public releases.
 
-## Unreleased - 2026-09-12
+## 0.3.1 - 2026-09-12
+
+- Disabled Android Gradle Plugin VCS metadata in release APKs so distributed
+  artifacts no longer include the source commit hash.
 
 - Closed the automatic RAW workflow-probe loop: configuration and capture
   completion are no longer enough. A candidate now requires a real RAW image,

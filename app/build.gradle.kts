@@ -16,8 +16,8 @@ android {
         applicationId = "com.lightmeter.rawmeter"
         minSdk = 28
         targetSdk = 36
-        versionCode = 7
-        versionName = "0.3.0"
+        versionCode = 8
+        versionName = "0.3.1"
 
         externalNativeBuild {
             cmake {
@@ -34,6 +34,9 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
+            vcsInfo {
+                include = false
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
