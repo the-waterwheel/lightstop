@@ -22,6 +22,11 @@ internal data class MotionPrediction(
     val rollRadians: Float,
     val screenXRotation: Float,
     val screenYRotation: Float,
+    val displayHorizontalScale: Float,
+    val displayVerticalScale: Float,
+    /** Physical FOV-derived scales reserved for long off-screen angular integration. */
+    val angularHorizontalScale: Float,
+    val angularVerticalScale: Float,
     val displayOriented: Boolean,
     val xTranslationTrusted: Boolean,
     val yTranslationTrusted: Boolean,
@@ -48,6 +53,13 @@ internal data class GyroCalibrationSnapshot(
     val horizontalSamples: Int,
     val verticalScale: Double?,
     val verticalSamples: Int,
+)
+
+/** Camera-space direction retained while a marker is outside the projected image. */
+internal data class OffscreenRay(
+    var x: Double,
+    var y: Double,
+    var z: Double,
 )
 
 /**
@@ -227,6 +239,10 @@ internal class ZoneGyroscopeMotion(
             rollRadians = screenZRotation.coerceIn(-0.35f, 0.35f),
             screenXRotation = screenXRotation,
             screenYRotation = screenYRotation,
+            displayHorizontalScale = horizontalScale.toFloat(),
+            displayVerticalScale = verticalScale.toFloat(),
+            angularHorizontalScale = metadataHorizontalScale.toFloat(),
+            angularVerticalScale = metadataVerticalScale.toFloat(),
             displayOriented = displayOriented,
             xTranslationTrusted = xTrusted,
             yTranslationTrusted = yTrusted,
@@ -260,6 +276,139 @@ internal class ZoneGyroscopeMotion(
 
     fun map(point: Point, prediction: MotionPrediction, width: Int, height: Int): Point =
         affine(prediction, width, height, trustedTranslationOnly = false).map(point)
+
+    /**
+     * Project an off-screen ray in angular space instead of repeatedly applying a planar pixel
+     * translation. The latter is accurate near the optical axis but accumulates large error once
+     * a marker has moved beyond the frame boundary.
+     */
+    fun mapAngular(
+        point: Point,
+        prediction: MotionPrediction,
+        width: Int,
+        height: Int,
+    ): Point {
+        val displayPoint = ZoneCoordinateMapper.analysisPointToDisplayNormalized(
+            point,
+            width,
+            height,
+            prediction.displayOriented,
+            displayRotationDegrees(),
+        )
+        val horizontalScale = prediction.angularHorizontalScale.toDouble().coerceAtLeast(0.05)
+        val verticalScale = prediction.angularVerticalScale.toDouble().coerceAtLeast(0.05)
+        val horizontalAngle = atan((displayPoint.x - 0.5) / horizontalScale)
+        val verticalAngle = atan((displayPoint.y - 0.5) / verticalScale)
+        val projectedX = 0.5 + tan(
+            (horizontalAngle + prediction.screenYRotation)
+                .coerceIn(-MAX_PROJECTED_RAY_ANGLE, MAX_PROJECTED_RAY_ANGLE),
+        ) * horizontalScale
+        val projectedY = 0.5 + tan(
+            (verticalAngle + prediction.screenXRotation)
+                .coerceIn(-MAX_PROJECTED_RAY_ANGLE, MAX_PROJECTED_RAY_ANGLE),
+        ) * verticalScale
+        val roll = prediction.rollRadians.toDouble()
+        val rollCos = cos(roll)
+        val rollSin = sin(roll)
+        val centeredX = projectedX - 0.5
+        val centeredY = projectedY - 0.5
+        val rolledDisplay = Point(
+            0.5 + rollCos * centeredX - rollSin * centeredY,
+            0.5 + rollSin * centeredX + rollCos * centeredY,
+        )
+        return ZoneCoordinateMapper.displayNormalizedToAnalysisPoint(
+            rolledDisplay,
+            width,
+            height,
+            prediction.displayOriented,
+            displayRotationDegrees(),
+        )
+    }
+
+    fun rayFromAnalysisPoint(
+        point: Point,
+        prediction: MotionPrediction,
+        width: Int,
+        height: Int,
+    ): OffscreenRay {
+        val displayPoint = ZoneCoordinateMapper.analysisPointToDisplayNormalized(
+            point,
+            width,
+            height,
+            prediction.displayOriented,
+            displayRotationDegrees(),
+        )
+        val horizontalScale = prediction.angularHorizontalScale.toDouble().coerceAtLeast(0.05)
+        val verticalScale = prediction.angularVerticalScale.toDouble().coerceAtLeast(0.05)
+        return normalizeRay(
+            OffscreenRay(
+                x = (displayPoint.x - 0.5) / horizontalScale,
+                y = (displayPoint.y - 0.5) / verticalScale,
+                z = 1.0,
+            ),
+        )
+    }
+
+    /** Apply one common orthonormal camera rotation; angular spacing between rays is preserved. */
+    fun advanceRay(ray: OffscreenRay, prediction: MotionPrediction) {
+        val yaw = prediction.screenYRotation.toDouble()
+        val pitch = -prediction.screenXRotation.toDouble()
+        val roll = prediction.rollRadians.toDouble()
+
+        val yawCos = cos(yaw)
+        val yawSin = sin(yaw)
+        val yawX = yawCos * ray.x + yawSin * ray.z
+        val yawZ = -yawSin * ray.x + yawCos * ray.z
+
+        val pitchCos = cos(pitch)
+        val pitchSin = sin(pitch)
+        val pitchY = pitchCos * ray.y - pitchSin * yawZ
+        val pitchZ = pitchSin * ray.y + pitchCos * yawZ
+
+        val rollCos = cos(roll)
+        val rollSin = sin(roll)
+        ray.x = rollCos * yawX - rollSin * pitchY
+        ray.y = rollSin * yawX + rollCos * pitchY
+        ray.z = pitchZ
+        normalizeRay(ray)
+    }
+
+    fun analysisPointFromRay(
+        ray: OffscreenRay,
+        prediction: MotionPrediction,
+        width: Int,
+        height: Int,
+    ): Point {
+        val horizontalScale = prediction.angularHorizontalScale.toDouble().coerceAtLeast(0.05)
+        val verticalScale = prediction.angularVerticalScale.toDouble().coerceAtLeast(0.05)
+        val safeZ = when {
+            ray.z >= MIN_PROJECTABLE_RAY_Z -> ray.z
+            ray.z <= -MIN_PROJECTABLE_RAY_Z -> ray.z
+            else -> if (ray.z >= 0.0) MIN_PROJECTABLE_RAY_Z else -MIN_PROJECTABLE_RAY_Z
+        }
+        val displayPoint = Point(
+            0.5 + (ray.x / safeZ).coerceIn(-MAX_PROJECTED_TANGENT, MAX_PROJECTED_TANGENT) *
+                horizontalScale,
+            0.5 + (ray.y / safeZ).coerceIn(-MAX_PROJECTED_TANGENT, MAX_PROJECTED_TANGENT) *
+                verticalScale,
+        )
+        return ZoneCoordinateMapper.displayNormalizedToAnalysisPoint(
+            displayPoint,
+            width,
+            height,
+            prediction.displayOriented,
+            displayRotationDegrees(),
+        )
+    }
+
+    private fun normalizeRay(ray: OffscreenRay): OffscreenRay {
+        val length = kotlin.math.sqrt(ray.x * ray.x + ray.y * ray.y + ray.z * ray.z)
+            .coerceAtLeast(1e-9)
+        ray.x /= length
+        ray.y /= length
+        ray.z /= length
+        return ray
+    }
 
     fun updateCalibration(
         visualMotion: AffineMotion,
@@ -323,9 +472,15 @@ internal class ZoneGyroscopeMotion(
 
     private fun blendedScale(metadata: Double, learned: Double?, sampleCount: Int): Double {
         if (learned == null || sampleCount < MIN_BLEND_SAMPLES) return metadata
+        // Motion blur, parallax and moving subjects can all produce a visually plausible affine
+        // transform with the wrong gyro ratio. Never let those samples redefine the lens FOV.
+        val boundedLearned = learned.coerceIn(
+            metadata * MIN_LEARNED_TO_METADATA_RATIO,
+            metadata * MAX_LEARNED_TO_METADATA_RATIO,
+        )
         val learnedWeight = ((sampleCount - MIN_BLEND_SAMPLES + 1).toDouble() /
             BLEND_FULL_CONFIDENCE_SAMPLES).coerceIn(0.0, 1.0)
-        return metadata * (1.0 - learnedWeight) + learned * learnedWeight
+        return metadata * (1.0 - learnedWeight) + boundedLearned * learnedWeight
     }
 
     private fun displayTrustToAnalysisTrust(
@@ -364,7 +519,12 @@ internal class ZoneGyroscopeMotion(
         const val MIN_BLEND_SAMPLES = 3
         const val MIN_TRUSTED_SAMPLES = 6
         const val BLEND_FULL_CONFIDENCE_SAMPLES = 8.0
+        const val MIN_LEARNED_TO_METADATA_RATIO = 0.55
+        const val MAX_LEARNED_TO_METADATA_RATIO = 1.8
         const val MAX_SEED_FRAME_FRACTION = 0.16
         const val MAX_TRUSTED_FRAME_FRACTION = 0.42
+        const val MAX_PROJECTED_RAY_ANGLE = 1.45
+        const val MIN_PROJECTABLE_RAY_Z = 0.08
+        const val MAX_PROJECTED_TANGENT = 12.0
     }
 }

@@ -33,6 +33,7 @@ internal interface RawLightMeterListener {
     fun onRawCaptureResult(result: CaptureResult, totalResult: TotalCaptureResult)
     fun onRawMeteringStarted(frameCount: Int)
     fun onRawMeteringReading(reading: MeterReading)
+    fun onRawZoneBatchReading(results: List<ZoneMeteringResult>)
     fun onRawMeteringError(
         message: String,
         meteringMode: MeteringMode,
@@ -40,6 +41,12 @@ internal interface RawLightMeterListener {
         meteringRoiFraction: Float?,
     )
 }
+
+private data class BatchTargetAccumulator(
+    val request: ZoneRawBatchTarget,
+    val stats: MutableList<MeteringFrameStat> = mutableListOf(),
+    var rawMeterPoint: RawMeterPoint? = null,
+)
 
 /** Device-independent RAW burst size limits. */
 internal object RawMeteringPolicy {
@@ -68,6 +75,7 @@ private data class MeasurementAccumulator(
     val meteringRoiFraction: Float? = null,
     val target: ZoneMeteringTarget? = null,
     val previewReference: PreviewLumaReference? = null,
+    val batchTargets: List<BatchTargetAccumulator> = emptyList(),
     val screenToSensorTransform: ScreenToSensorCoordinateTransform =
         ScreenToSensorCoordinateTransform(0, mirrored = false),
     val startedAtNs: Long = System.nanoTime(),
@@ -153,6 +161,60 @@ internal class RawLightMeter(
         } catch (error: Exception) {
             finishWithError(
                 localized("无法开始测光，请重试", "Unable to start metering. Please try again"),
+            )
+            true
+        }
+    }
+
+    /**
+     * Measures every frozen Zone target from the same RAW frame or noise-reduction burst.
+     * The capture count remains governed by [RawMeteringPolicy], but it no longer multiplies by
+     * the number of points.
+     */
+    fun startBatch(
+        context: RawMeteringContext,
+        frameAspect: Float,
+        zoom: Float,
+        meteringMode: MeteringMode,
+        meteringRoiFraction: Float?,
+        targets: List<ZoneRawBatchTarget>,
+        screenToSensorTransform: ScreenToSensorCoordinateTransform,
+    ): Boolean {
+        if (isMeasuring || targets.isEmpty()) return false
+        val count = RawMeteringPolicy.frameCount(
+            context.latestResult?.get(CaptureResult.SENSOR_SENSITIVITY),
+        )
+        val accumulator = MeasurementAccumulator(
+            id = ++nextMeasurementId,
+            expectedFrames = count,
+            highlightProtectionStage = 0,
+            frameAspect = frameAspect,
+            zoom = zoom.coerceAtLeast(1f),
+            meteringMode = meteringMode,
+            meteringRoiFraction = meteringRoiFraction,
+            batchTargets = targets.map(::BatchTargetAccumulator),
+            screenToSensorTransform = screenToSensorTransform,
+            pairingToleranceNs = 0L,
+        )
+        activeMeasurement = accumulator
+        activeContext = context
+        isMeasuring = true
+        Log.i(
+            TAG,
+            "RAW Zone batch started: points=${targets.size} frames=$count " +
+                "captureIso=${context.latestResult?.get(CaptureResult.SENSOR_SENSITIVITY) ?: "unknown"} " +
+                "zoom=${accumulator.zoom} sensorAspect=$frameAspect mode=$meteringMode " +
+                "references=${targets.count { it.previewReference != null }}",
+        )
+        listener.onRawMeteringStarted(count)
+        return try {
+            activeRequest = buildCaptureRequest(context)
+            scheduleTimeout(accumulator, context.handler)
+            fillPipeline(accumulator)
+            true
+        } catch (error: Exception) {
+            finishWithError(
+                localized("无法开始批量测光，请重试", "Unable to start batch metering. Please try again"),
             )
             true
         }
@@ -322,6 +384,10 @@ internal class RawLightMeter(
         active: MeasurementAccumulator,
         pair: TimestampedResultPair<Image, CaptureResult>,
     ) {
+        if (active.batchTargets.isNotEmpty()) {
+            processBatchPair(active, pair)
+            return
+        }
         val context = activeContext
         var stat: MeteringFrameStat? = null
         try {
@@ -376,6 +442,65 @@ internal class RawLightMeter(
         }
     }
 
+    private fun processBatchPair(
+        active: MeasurementAccumulator,
+        pair: TimestampedResultPair<Image, CaptureResult>,
+    ) {
+        val context = activeContext
+        val frameStats = mutableListOf<Pair<BatchTargetAccumulator, MeteringFrameStat>>()
+        try {
+            if (context != null) {
+                active.batchTargets.forEach { batchTarget ->
+                    if (batchTarget.rawMeterPoint == null) {
+                        batchTarget.rawMeterPoint = MeteringAnalysis.resolveRawMeteringPoint(
+                            pair.image,
+                            pair.result,
+                            context.characteristics,
+                            context.cameraInfo,
+                            active.frameAspect,
+                            active.zoom,
+                            batchTarget.request.target,
+                            batchTarget.request.previewReference,
+                            active.screenToSensorTransform,
+                        ).also { point ->
+                            Log.i(
+                                TAG,
+                                "RAW Zone point=${batchTarget.request.markerId} sensor=(" +
+                                    "${"%.1f".format(point.sensorX)},${"%.1f".format(point.sensorY)}) " +
+                                    "match=${if (point.matchScore.isFinite()) "%.3f".format(point.matchScore) else "geometry"}",
+                            )
+                        }
+                    }
+                    MeteringAnalysis.analyzeRaw(
+                        pair.image,
+                        pair.result,
+                        context.characteristics,
+                        context.cameraInfo,
+                        active.frameAspect,
+                        active.zoom,
+                        active.meteringMode,
+                        calibrationStore,
+                        batchTarget.rawMeterPoint,
+                        vignettingCalibrationStore,
+                        applyVignettingCalibration = true,
+                        meteringRoiFraction = active.meteringRoiFraction,
+                    )?.let { frameStats += batchTarget to it }
+                }
+            }
+        } finally {
+            pair.image.close()
+            active.completedFrames += 1
+        }
+        val mostClipped = frameStats.maxByOrNull { it.second.clipped }?.second
+        if (mostClipped != null && retryForClippedHighlights(active, mostClipped)) return
+        frameStats.forEach { (target, stat) -> target.stats += stat }
+        if (active.completedFrames >= active.expectedFrames) {
+            finishWithBatchReadings(active)
+        } else {
+            fillPipeline(active)
+        }
+    }
+
     private fun retryForClippedHighlights(
         active: MeasurementAccumulator,
         stat: MeteringFrameStat,
@@ -398,6 +523,12 @@ internal class RawLightMeter(
             meteringRoiFraction = active.meteringRoiFraction,
             target = active.target,
             previewReference = active.previewReference,
+            batchTargets = active.batchTargets.map { previous ->
+                BatchTargetAccumulator(
+                    request = previous.request,
+                    rawMeterPoint = previous.rawMeterPoint,
+                )
+            },
             screenToSensorTransform = active.screenToSensorTransform,
             startedAtNs = active.startedAtNs,
             pairingToleranceNs = active.pairingToleranceNs,
@@ -483,6 +614,38 @@ internal class RawLightMeter(
                 "elapsedMs=${"%.1f".format(elapsedMs)} pipelineDepth=$PIPELINE_DEPTH",
         )
         listener.onRawMeteringReading(reading)
+    }
+
+    private fun finishWithBatchReadings(active: MeasurementAccumulator) {
+        if (activeMeasurement?.id != active.id) return
+        val results = active.batchTargets.mapNotNull { target ->
+            if (target.stats.size < active.expectedFrames) return@mapNotNull null
+            MeteringFusion.fuse(target.stats, MeteringSource.RAW)?.let { reading ->
+                ZoneMeteringResult(target.request.markerId, reading)
+            }
+        }
+        if (results.isEmpty()) {
+            finishWithError(
+                localized("批量测光数据无效，请重试", "Batch metering data was invalid. Please try again"),
+            )
+            return
+        }
+        val handler = activeContext?.handler
+        cancelTimeout(handler)
+        activeMeasurement = null
+        activeRequest = null
+        activeContext = null
+        isMeasuring = false
+        active.framePairer.clear()
+        val elapsedMs = (System.nanoTime() - active.startedAtNs) / 1_000_000.0
+        Log.i(
+            TAG,
+            "RAW Zone batch completed: requested=${active.batchTargets.size} " +
+                "completed=${results.size} frames=${active.expectedFrames} " +
+                "highlightStage=${active.highlightProtectionStage} " +
+                "elapsedMs=${"%.1f".format(elapsedMs)}",
+        )
+        listener.onRawZoneBatchReading(results)
     }
 
     private fun finishWithError(message: String) {

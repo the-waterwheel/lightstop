@@ -133,6 +133,18 @@ data class ZoneMeteringTarget(
     val previewFrameHeightFraction: Float,
 )
 
+/** One visible Zone marker frozen at the instant a batch remeasurement begins. */
+data class ZoneMeteringRequest(
+    val markerId: Int,
+    val target: ZoneMeteringTarget,
+)
+
+/** A reading produced for one marker from a RAW burst shared by the whole Zone batch. */
+data class ZoneMeteringResult(
+    val markerId: Int,
+    val reading: MeterReading,
+)
+
 internal data class PreviewLumaReference(
     val samples: FloatArray,
     val gridSize: Int,
@@ -665,10 +677,15 @@ class MeterState(context: Context) {
         angleMeteringDegrees = AngleMeteringMath.nearestSelectableDegrees(
             preferences.getInt(angleMeteringKey(cameraId), AngleMeteringMath.DEFAULT_DEGREES),
         )
+        invalidateMeteringResults()
+        return true
+    }
+
+    /** Cached readings belong to the calibration revision that produced them. */
+    fun invalidateMeteringResults() {
         sceneEv100 = null
         lastReading = null
         lastNormalReading = null
-        return true
     }
 
     fun currentCamera(): CameraDescriptor? =
@@ -734,6 +751,12 @@ class MeterState(context: Context) {
     fun previewCameraCorrectionEv(): Double {
         val cameraId = cameraInfo.calibrationCameraId.ifBlank { selectedCameraId }.ifBlank { "0" }
         return cameraCalibrationStore.totalCorrection(cameraId, MeteringSource.ISP_PREVIEW)
+    }
+
+    fun exposurePreviewExecutionCorrectionEv(cameraId: String? = null): Double {
+        val resolvedCameraId = cameraId
+            ?: cameraInfo.calibrationCameraId.ifBlank { selectedCameraId }.ifBlank { "0" }
+        return cameraCalibrationStore.exposurePreviewCorrection(resolvedCameraId)
     }
 
     fun cameraCalibrationHistory(cameraId: String): List<CameraCalibrationRecord> =

@@ -13,7 +13,7 @@ import android.view.View
 import android.view.animation.DecelerateInterpolator
 import kotlin.math.min
 
-/** Deliberate slide-to-capture control shown above Normal's meter or Zone's mark button. */
+/** Deliberate slide-to-capture control shown below Normal's meter or Zone's mark button. */
 @SuppressLint("ViewConstructor")
 internal class RecordCaptureSliderView(
     context: Context,
@@ -54,8 +54,11 @@ internal class RecordCaptureSliderView(
             .coerceAtMost(min(132f * density, width - margin * 2f))
         val trackHeight = 38f * density
         val left = (anchor.centerX() - desiredWidth / 2f).coerceIn(margin, (width - margin - desiredWidth).coerceAtLeast(margin))
-        var top = anchor.top - trackHeight - 10f * density
-        if (top < margin) top = (anchor.bottom + 10f * density).coerceAtMost(height - margin - trackHeight)
+        // Recording is a secondary action. Keep it on the same, predictable side of the primary
+        // meter button in Normal and Zone instead of flipping above the button on roomy layouts.
+        val top = (anchor.bottom + 10f * density).coerceAtMost(
+            (height - margin - trackHeight).coerceAtLeast(anchor.bottom),
+        )
         track = RectF(left, top, left + desiredWidth, top + trackHeight)
     }
 

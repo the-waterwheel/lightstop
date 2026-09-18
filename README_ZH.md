@@ -18,6 +18,7 @@
 - 枚举可用的逻辑相机和物理镜头；默认优先选择声明 RAW 且提供 `RAW_SENSOR` 尺寸的后置相机（自动 RAW、主摄 RAW、其他 RAW），不支持 RAW 时再使用自动/主摄兼容路径；单色、红外等非普通成像传感器不会列入选择器。
 - 预览优先选择不超过 1080 级别的通用 4:3 输出；缺少 4:3 时才接近传感器比例选择。这样自动逻辑相机和固定物理镜头不会因元数据比例不同而改变画面比例。“通用设置 → 取景帧率”默认低帧率并沿用设备声明的最高 30 fps 策略；高帧率只在当前预览/YUV 最小帧时长允许时尝试设备声明的最高 60 fps 范围，失败后依次回退 30 fps、24 fps 和系统默认，不会降级 RAW/YUV/ISP 测光组合。
 - 预览始终按相机输出比例中心裁切，不主动对相机缓冲区做非等比拉伸。显示矩阵同时读取传感器安装方向与当前屏幕方向，不再假设所有设备都是常见的手机传感器角度。应用从后台恢复时，会等待 `TextureView` 的窗口尺寸与旋转连续稳定，再重开相机；首个新帧会重新提交缓冲尺寸和显示矩阵，并由低频矩阵校验补偿部分厂商合成器丢失的图层状态。
+- Normal 与 Zone 共用一个稳定的原生预览传输矩形，各自取景框只在其上层完成裁切；模式切换不会重设 `SurfaceTexture` 图层尺寸，避免部分厂商合成器沿用旧采样几何后拉伸画面。
 - 电子变焦只改变显示裁切和测光 ROI，不向 Camera2 提交数码变焦或镜头切换请求。
 - 支持 135、半格、6×4.5、6×6、6×7、6×9、6×12、6×17、65:24、4×5、5×7 和 8×10 画幅；长边始终沿屏幕水平轴放置。
 - 根据传感器方向、屏幕方向、画幅和变焦同步计算 RAW 裁切范围；焦距提示按所选胶片画幅的代表性成像对角线换算，不再把大画幅误标为 135 等效焦距。
@@ -38,7 +39,7 @@
 - EV 以 18% 线性亮度为参考，并叠加设备/镜头基线和用户校准偏移。
 - 支持点测光和中央重点测光：点测光读取中心小区域；中央重点按小区域 70%、较大中心区域 30% 融合。
 - 预览流测光不做多帧降噪：优先读取 1 个 ISP 处理后的有效帧；最多尝试 3 个 YUV 帧且总等待不超过 250 ms，随后尝试一帧严格时间戳配对的显示预览。
-- 高精度 Zone 跟踪常驻预览 + YUV，测光瞬间切到仅 RAW 会话采集 1–3 帧，随后恢复预览 + YUV。对于无法常驻预览 + RAW 的受限 HAL，另一高精度组合也可在普通测光时使用同样的瞬时仅 RAW 窗口。
+- 高精度 Zone 跟踪常驻预览 + YUV，测光瞬间切到仅 RAW 会话采集 1–3 帧，随后恢复预览 + YUV。对于无法常驻预览 + RAW 的受限 HAL，另一高精度组合也可在普通测光时使用同样的瞬时仅 RAW 窗口。兼容的 RAW/YUV reader 会以未接入活动会话的休眠资源形式复用，减少重复分配；活动会话仍只连接当前档位的 surface，不改变厂商 HAL 隔离与降级边界。
 - 手动曝光预览优先保持流畅快门：通常不慢于 1/30s，低光最多放慢到 1/15s，并优先提高 ISO。正式测光会先恢复中性 AE，绝不把曝光预览帧误当作正式读数。
 - 相机工作流搜索与恢复会从 RAW 组合逐步降低为稳定 YUV、兼容 ISP；物理镜头仍不可用时可退回逻辑主摄。
 - 预览健康检测会有限识别持续的周期性绿色/黑白条纹；安全预览恢复后还必须连续通过 3 次取样才被接受。真实绿色或黑暗场景只会被标为可疑，不会自动判定相机故障。
@@ -50,6 +51,7 @@
 ### 曝光仪表
 
 - 黑白机械仪表式界面，只使用少量红色表示基准线、测光按钮和锁止状态。
+- 测光角度与闪光距离在测光按钮上方紧凑平行排列，参数记录滑块在 Normal 与 Zone 中都固定到按钮下方；任一拨盘展开时会临时置顶，避免与记录控件遮挡。
 - 大拨盘默认以 1/6 EV 调整曝光补偿，也可在测光设置中选择 1/3、1/2 或 1 EV 档位，或切换为 ISO 调整。
 - 光圈和快门分别支持一档、1/2 档和 1/3 档刻度。
 - 可锁定光圈或快门；锁定项只在当前档位网格上移动，另一项保持连续曝光关系。
@@ -67,12 +69,13 @@
 - 每个点保存独立 EV，并按 `Zone = V + 点位 EV100 - 当前曝光 EV100` 显示 0–X 分区。
 - 多点测光会维持场景点位之间的相对曝光关系；预览画面上的标点圆点对点击无反应，删除使用记录列表左滑或清空操作。
 - 画面标点在圆形外增加四边中段留空的分段方框；Zone 标点按钮在可用空间内放大。经 Zone 打开的镜头选择与输出比例管理会保留 Zone 页面和当前镜头，不先切回 Normal 或自动主摄。
+- 长按重新测光可更新已有可见点；支持的 RAW 工作流只采集一组共享 RAW，再对每个点独立完成预览到 RAW 的特征配准。已经离开有效画面的点会计入“未更新”，不会覆盖旧结果。
 - 触屏标点会从 ISP 预览取得局部亮度特征，再在几何估算位置附近搜索对应 RAW 绿色通道特征，减小畸变和裁切差异。
 - 点位跟踪优先使用低分辨率 YUV 亮度流，无法使用时退回显示预览截图。
-- 跟踪结合金字塔 LK 光流、前后向校验、RANSAC 全局仿射运动、局部特征修正、陀螺仪预测和 ORB 重识别。
+- 跟踪结合金字塔 LK 光流、前后向校验、RANSAC 全局仿射运动、局部特征修正、陀螺仪预测、ORB 重识别和针对单手抖动的快速运动恢复。
 - 横竖布局按钮只改变应用页面；切换瞬间会按设备固定坐标系反向映射点位，摄像头未移动时不会产生 90° 跳转，切换后的光流方向保持不变。
-- RAW 捕获和 ISP 曝光恢复期间会保护点位几何，避免低纹理点因亮度突变发生跳动。
-- 点位离开画面后保留虚拟坐标，镜头返回时可尝试重新识别。
+- 隔离 RAW 捕获期间，静止预览与可见标点会一起冻结；后台只用陀螺仪推进隐藏场景位置，直到第一帧真实预览/YUV 恢复后才重新显示视觉跟踪结果。
+- 点位离开画面后保留特征描述子，并用相机射线与陀螺仪角度传播。预计返回时先在预测位置附近搜索，必要时周期性全画面重识别；未经视觉确认的丢失点不会显示为可靠结果。
 - 历史记录只有在保存了紧凑 RAW 测光网格时才允许重新进入 Zone 交互；没有网格时旧标点仍可查看，但为只读。
 
 ### 测光校准
@@ -83,8 +86,8 @@
 - 每个镜头保留最近 3 次历史，可重置当前修正并从历史恢复。
 - 用户修正限制在 ±8 EV。
 - 校准页面分别显示“RAW 传感器”“YUV 兼容流”“ISP 显示预览”，并将旧版“共享预览修正”明确标为兼容回退值。一次校准不受当前测光模式限制，会完成设备实际支持的全部来源：三者都存在时依次 RAW → YUV → ISP，否则校准可用子集；各步骤顺序执行，绝不并发采集，并分别使用最小安全 Camera2 会话，结束后恢复用户原本的会话。一次校准会固定用户选择的相机路由和修正存储身份；逻辑相机在会话重开时短暂不报告实际物理镜头不会中止校准，但若先后明确报告两个不同的物理镜头仍会安全中止。不支持的来源不会显示为虚假的校准成功；尚未重新校准的 YUV/ISP 可暂时使用旧版共享值，避免升级后读数突变。
+- 曝光预览校准是按设备、按镜头保存的独立修正，只调整取景器对 0 EV 的视觉呈现，不改变也不叠加 RAW/YUV/ISP 正式测光校准。任一校准变化后会清除旧读数，避免用新修正重复处理旧结果。
 - 切换到兼容模式时会显示中英文提示，说明该模式不使用 RAW；可选择“确定”或用“不再提示”永久关闭。
-- Vivo V2405A 的 camera `0` 内置 `+1.074 EV` 基线；其他设备和镜头默认基线为 0，应使用灰卡、标准测光表或参考相机分别校准。
 
 ### 暗角矫正
 
@@ -126,6 +129,13 @@ app/src/main/java/com/lightmeter/rawmeter
 ├─ ForegroundCameraStartCoordinator.kt 前台窗口几何稳定采样
 ├─ CameraController.kt              生命周期与相机操作门面
 ├─ CameraSessionCoordinator.kt      Camera2 资源、会话与开关顺序
+├─ CameraOpenConfigurationResolver.kt 路由与流配置解析
+├─ CameraPreviewRequestCoordinator.kt 重复预览请求构建
+├─ CameraRuntimeMetadataCoordinator.kt 活动物理镜头元数据
+├─ CameraDistanceCaptureCoordinator.kt 对焦距离采集生命周期
+├─ CameraPreviewHealthCoordinator.kt 有界预览健康与恢复
+├─ RawRecordCaptureCoordinator.kt   参数记录 RAW/DNG 采集
+├─ VignettingCalibrationCaptureCoordinator.kt 暗角校准 RAW 采集
 ├─ CameraCombinationWorkflowProbe.kt 多阶段真实工作流验证
 ├─ RawProbeFrameHealth.kt           常数开销 RAW 探测判定
 ├─ RawLightMeter.kt                 有界 RAW 采集与测光
@@ -162,6 +172,10 @@ app/src/main/java/com/lightmeter/rawmeter
 ├─ MeteringCalibrationPlan.kt       全来源校准计划
 ├─ MeteringCalibrationCoordinator.kt 顺序校准状态机
 ├─ CameraCalibrationStore.kt        镜头级测光校准与历史
+├─ ExposurePreviewCalibrationCoordinator.kt 曝光预览校准状态
+├─ ExposurePreviewCalibrationPanel.kt 曝光预览校准界面
+├─ ExposurePreviewStateCoordinator.kt 曝光预览状态隔离
+├─ MeteringPreviewBaselineCoordinator.kt 中性测光预览基线
 ├─ CalibrationView.kt               测光校准界面
 ├─ VignettingCalibrationStore.kt    二维暗角增益图与历史
 ├─ VignettingCalibrationView.kt     暗角校准界面
@@ -260,28 +274,28 @@ $buildTools = (Get-ChildItem "$env:LOCALAPPDATA\Android\Sdk\build-tools" -Direct
 New-Item -ItemType Directory -Force dist | Out-Null
 & "$buildTools\zipalign.exe" -f -p 4 `
   app\build\outputs\apk\release\app-release-unsigned.apk `
-  dist\lightstop-v0.3.0-aligned.apk
+  dist\lightstop-v0.4.0-aligned.apk
 & "$buildTools\apksigner.bat" sign `
   --ks C:\secure\lightstop-release.jks `
   --ks-key-alias lightstop `
-  --out dist\lightstop-v0.3.0-universal.apk `
-  dist\lightstop-v0.3.0-aligned.apk
+  --out dist\lightstop-v0.4.0-universal.apk `
+  dist\lightstop-v0.4.0-aligned.apk
 & "$buildTools\apksigner.bat" verify --verbose --print-certs `
-  dist\lightstop-v0.3.0-universal.apk
-Get-FileHash dist\lightstop-v0.3.0-universal.apk -Algorithm SHA256 |
+  dist\lightstop-v0.4.0-universal.apk
+Get-FileHash dist\lightstop-v0.4.0-universal.apk -Algorithm SHA256 |
   Format-List Algorithm, Hash, Path
 ```
 
-第一次公开发布后绝对不能丢失或更换签名密钥，后续 APK 更新必须使用同一个密钥。请把密钥、别名与密码分别保存在两个安全位置。发布前先提交源码，建立带说明的标签并推送提交与标签：
+第一次公开发布后绝对不能丢失或更换签名密钥，后续 APK 更新必须使用同一个密钥。请把密钥、别名与密码分别保存在两个安全位置。0.3.0/0.3.1 的发布证书 SHA-256 指纹为 `94d693638fbb0a55bc1c11e81fa5916d67572ee8e298dd4b08b315787a7f7a7a`，每次更新都应核对一致。发布前先提交源码，建立带说明的标签并推送提交与标签：
 
 ```powershell
 git status
-git tag -a v0.3.0 -m "lightstop 0.3.0"
+git tag -a v0.4.0 -m "lightstop 0.4.0"
 git push origin HEAD:main
-git push origin v0.3.0
+git push origin v0.4.0
 ```
 
-然后在 GitHub 从 `v0.3.0` 创建 Release，保留 GitHub 自动生成的源码压缩包，并上传签名通用 APK、写有 SHA-256 的文本文件、`LICENSE`、`NOTICE` 与 `THIRD_PARTY_NOTICES.md`。上传后再下载一次 APK 并复验签名和哈希；GitHub Release 是可追溯的分发记录，签名 APK 与妥善保护的密钥则保证后续更新连续性。
+然后在 GitHub 从 `v0.4.0` 创建 Release，保留 GitHub 自动生成的源码压缩包，并上传签名通用 APK、写有 SHA-256 的文本文件、`LICENSE`、`NOTICE` 与 `THIRD_PARTY_NOTICES.md`。上传后再下载一次 APK 并复验签名和哈希；GitHub Release 是可追溯的分发记录，签名 APK 与妥善保护的密钥则保证后续更新连续性。
 
 ### 精简 OpenCV
 
@@ -295,7 +309,7 @@ git push origin v0.3.0
 
 ## Release 体积
 
-当前 release 已启用 R8 和资源收缩，并在一个通用 APK 中包含 `arm64-v8a`、`armeabi-v7a`、`x86_64` 三个 ABI。0.3.0 使用 r2 精简 OpenCV 后，实测 unsigned release 通用 APK 为 `42,154,080` bytes（约 40.20 MiB），release AAB 为 `18,735,241` bytes（约 17.87 MiB）。APK 内容按 ZIP 压缩后大小大致为：
+当前 release 已启用 R8 和资源收缩，并在一个通用 APK 中包含 `arm64-v8a`、`armeabi-v7a`、`x86_64` 三个 ABI。0.4.0 使用 r2 精简 OpenCV 后，实测 unsigned release 通用 APK 为 `44,379,873` bytes（约 42.32 MiB），release AAB 为 `20,996,140` bytes（约 20.02 MiB）。相较 0.3.0 的增长主要来自扩展后的跟踪、校准与相机协调代码。APK 内容按 ZIP 压缩后大小大致为：
 
 | 内容 | 大小 |
 |---|---:|

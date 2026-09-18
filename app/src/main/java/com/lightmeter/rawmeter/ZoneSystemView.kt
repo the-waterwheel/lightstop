@@ -35,6 +35,8 @@ class ZoneSystemView(
     interface Listener {
         fun onExitDrag(progress: Float, released: Boolean)
         fun onMarkRequested(marker: ZoneMarker)
+        fun onRemeasureHoldPrompt()
+        fun onRemeasureAllRequested(markerIds: List<Int>)
         fun onMarkerRemoved(markerId: Int)
         fun onMarkersCleared(markerIds: List<Int>)
         fun onOrientationToggle()
@@ -131,6 +133,9 @@ class ZoneSystemView(
     private var lockDragStartFraction = 0f
     private var lockDragMoved = false
     private var lockAnimator: ValueAnimator? = null
+    private var markButtonLongPressTriggered = false
+    private var markButtonHoldPromptRunnable: Runnable? = null
+    private var markButtonLongPressRunnable: Runnable? = null
     private val markerDisplayMotions = mutableMapOf<Int, MarkerDisplayMotion>()
 
     init {
@@ -176,6 +181,24 @@ class ZoneSystemView(
         return removed
     }
 
+    /** Marks an existing visible tracking point as pending while preserving it if capture fails. */
+    fun beginRemeasure(markerId: Int): ZoneMarker? {
+        val marker = session.beginRemeasure(markerId, session.iso) ?: return null
+        invalidate()
+        return marker
+    }
+
+    fun completeRemeasurements(results: List<ZoneMeteringResult>): List<ZoneMarker> {
+        val updated = session.completeRemeasurements(
+            results,
+            session.iso,
+            state.exposureLockMode,
+        )
+        session.syncLockedCoordinate(state)
+        invalidate()
+        return updated
+    }
+
     fun updateMarkerTracking(id: Int, x: Float, y: Float, trackingState: ZoneTrackingState) {
         val now = SystemClock.uptimeMillis()
         val markerBeforeUpdate = session.markers.firstOrNull { it.id == id }
@@ -188,19 +211,45 @@ class ZoneSystemView(
         session.updateTracking(id, x, y, trackingState)
         if (markerBeforeUpdate != null) {
             val updateInterval = existing?.let { now - it.lastTargetAtMs }
-                ?.coerceIn(MIN_MARKER_INTERPOLATION_MS, MAX_MARKER_INTERPOLATION_MS)
                 ?: DEFAULT_MARKER_INTERPOLATION_MS
+            // Span most of the observed tracking interval so a 60 Hz display receives more than
+            // one in-between frame, but still settle before the following tracking result. Long
+            // RAW gaps are capped separately so re-identification corrects without a hard jump.
+            val catchUpDuration = (updateInterval * MARKER_CATCH_UP_FRACTION).roundToInt().toLong()
+                .coerceIn(MIN_MARKER_INTERPOLATION_MS, MAX_MARKER_INTERPOLATION_MS)
             markerDisplayMotions[id] = MarkerDisplayMotion(
                 fromX = current.x,
                 fromY = current.y,
                 targetX = x,
                 targetY = y,
                 startedAtMs = now,
-                durationMs = updateInterval,
+                durationMs = catchUpDuration,
                 lastTargetAtMs = now,
             )
         }
         postInvalidateOnAnimation()
+    }
+
+    /** Keep overlays locked to the last rendered frozen-preview frame during isolated RAW. */
+    fun freezeMarkerDisplayPositions() {
+        val now = SystemClock.uptimeMillis()
+        session.markers.forEach { marker ->
+            val current = markerDisplayMotions[marker.id]?.sampleAt(now) ?: MarkerDisplaySample(
+                marker.normalizedX,
+                marker.normalizedY,
+                false,
+            )
+            markerDisplayMotions[marker.id] = MarkerDisplayMotion(
+                fromX = current.x,
+                fromY = current.y,
+                targetX = current.x,
+                targetY = current.y,
+                startedAtMs = now,
+                durationMs = 0L,
+                lastTargetAtMs = now,
+            )
+        }
+        invalidate()
     }
 
     /** Counter Android's forced app-orientation rotation while the physical camera stays still. */
@@ -483,6 +532,9 @@ class ZoneSystemView(
         markerDisplayMotions.keys.retainAll(markerIds)
         var animationPending = false
         session.markers.forEach { marker ->
+            // A LOST marker may have a gyro-only predicted coordinate inside the frame. Keep it
+            // hidden until descriptor/visual evidence confirms the object has actually returned.
+            if (marker.trackingState == ZoneTrackingState.LOST) return@forEach
             val display = markerDisplayMotions[marker.id]?.sampleAt(now)
                 ?: MarkerDisplaySample(marker.normalizedX, marker.normalizedY, false)
             animationPending = animationPending || display.animating
@@ -1198,6 +1250,7 @@ class ZoneSystemView(
                     TouchTarget.LOCK -> beginLockDrag(event.y)
                     TouchTarget.EXIT -> exitProgress = 0.02f
                     TouchTarget.ZOOM -> updateZoom(event.x, event.y, g.zoomTrack)
+                    TouchTarget.MARK_BUTTON -> scheduleMarkButtonLongPress()
                     else -> Unit
                 }
                 invalidate()
@@ -1207,6 +1260,12 @@ class ZoneSystemView(
             MotionEvent.ACTION_MOVE -> {
                 val dx = event.x - touchStartX
                 val dy = event.y - touchStartY
+                if (touchTarget == TouchTarget.MARK_BUTTON &&
+                    (abs(dx) > touchSlop || abs(dy) > touchSlop ||
+                        !g.markButton.contains(event.x, event.y))
+                ) {
+                    cancelMarkButtonLongPress(resetTriggered = false)
+                }
                 when (touchTarget) {
                     TouchTarget.EXIT -> {
                         exitProgress = if (g.landscape) {
@@ -1263,6 +1322,8 @@ class ZoneSystemView(
 
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 val cancelled = event.actionMasked == MotionEvent.ACTION_CANCEL
+                val longPressTriggered = markButtonLongPressTriggered
+                cancelMarkButtonLongPress(resetTriggered = false)
                 when (touchTarget) {
                     TouchTarget.EXIT -> {
                         val commit = !cancelled && exitProgress >= 0.55f
@@ -1282,7 +1343,11 @@ class ZoneSystemView(
                     TouchTarget.LOCK -> finishLockDrag(event.y, g.lockTrack, cancelled)
                     TouchTarget.LIST -> finishListGesture(g)
                     TouchTarget.CLEAR -> finishClear(g)
-                    TouchTarget.MARK_BUTTON -> if (!cancelled && g.markButton.contains(event.x, event.y)) beginMarker()
+                    TouchTarget.MARK_BUTTON -> if (!cancelled && !longPressTriggered &&
+                        g.markButton.contains(event.x, event.y)
+                    ) {
+                        beginMarker()
+                    }
                     TouchTarget.PREVIEW_MARK -> if (!cancelled &&
                         g.cameraFrame.contains(event.x, event.y) &&
                         abs(event.x - touchStartX) <= touchSlop * 2f &&
@@ -1299,6 +1364,7 @@ class ZoneSystemView(
                     TouchTarget.TOOLS -> if (!cancelled) listener?.onToolsRequested()
                     else -> Unit
                 }
+                markButtonLongPressTriggered = false
                 touchTarget = TouchTarget.NONE
                 performClick()
                 invalidate()
@@ -1314,6 +1380,7 @@ class ZoneSystemView(
     }
 
     override fun onDetachedFromWindow() {
+        cancelMarkButtonLongPress()
         lockAnimator?.cancel()
         lockAnimator = null
         markerDisplayMotions.clear()
@@ -1326,6 +1393,44 @@ class ZoneSystemView(
         haptic()
         listener?.onMarkRequested(marker)
     }
+
+    private fun scheduleMarkButtonLongPress() {
+        cancelMarkButtonLongPress()
+        if (state.measuring || remeasureCandidateMarkerIds().isEmpty()) return
+        val holdPromptTask = Runnable {
+            markButtonHoldPromptRunnable = null
+            if (touchTarget == TouchTarget.MARK_BUTTON && !state.measuring) {
+                listener?.onRemeasureHoldPrompt()
+            }
+        }
+        val triggerTask = Runnable {
+            markButtonLongPressRunnable = null
+            if (touchTarget != TouchTarget.MARK_BUTTON || state.measuring) return@Runnable
+            val markerIds = remeasureCandidateMarkerIds()
+            if (markerIds.isEmpty()) return@Runnable
+            markButtonLongPressTriggered = true
+            performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            listener?.onRemeasureAllRequested(markerIds)
+        }
+        markButtonHoldPromptRunnable = holdPromptTask
+        markButtonLongPressRunnable = triggerTask
+        postDelayed(holdPromptTask, REMEASURE_HOLD_PROMPT_MS)
+        postDelayed(triggerTask, REMEASURE_TRIGGER_MS)
+    }
+
+    private fun cancelMarkButtonLongPress(resetTriggered: Boolean = true) {
+        markButtonHoldPromptRunnable?.let(::removeCallbacks)
+        markButtonHoldPromptRunnable = null
+        markButtonLongPressRunnable?.let(::removeCallbacks)
+        markButtonLongPressRunnable = null
+        if (resetTriggered) markButtonLongPressTriggered = false
+    }
+
+    /** Visibility is deliberately checked later, immediately before each point is measured. */
+    private fun remeasureCandidateMarkerIds(): List<Int> = session.markers.asSequence()
+        .filter { marker -> marker.ev100 != null }
+        .map(ZoneMarker::id)
+        .toList()
 
     private fun beginMarkerAt(x: Float, y: Float, frame: RectF) {
         if (state.measuring || frame.width() <= 0f || frame.height() <= 0f) return
@@ -1631,9 +1736,12 @@ class ZoneSystemView(
         private const val EXPOSURE_SCALE_END_INSET_DP = 5f
         private const val EXPOSURE_SCALE_SPACING_FACTOR = 2f / 3f
         private const val MAX_FORMAT_MENU_ROWS = 6
-        private const val MIN_MARKER_INTERPOLATION_MS = 12L
+        private const val MIN_MARKER_INTERPOLATION_MS = 16L
         private const val DEFAULT_MARKER_INTERPOLATION_MS = 33L
-        private const val MAX_MARKER_INTERPOLATION_MS = 48L
+        private const val MAX_MARKER_INTERPOLATION_MS = 72L
+        private const val MARKER_CATCH_UP_FRACTION = 0.82f
+        private const val REMEASURE_HOLD_PROMPT_MS = 600L
+        private const val REMEASURE_TRIGGER_MS = 1_000L
         private const val METERING_SPINNER_PERIOD_MS = 820L
         private const val METERING_SPINNER_SWEEP_DEGREES = 108f
         private const val DEFAULT_SPOT_DIAMETER_FRACTION = 0.09f

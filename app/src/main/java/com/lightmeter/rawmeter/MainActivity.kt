@@ -33,6 +33,7 @@ import android.widget.FrameLayout
 import android.widget.TextView
 import android.widget.Toast
 import java.io.File
+import java.util.ArrayDeque
 
 class MainActivity : Activity(), CameraControllerCallback {
     private lateinit var state: MeterState
@@ -49,6 +50,9 @@ class MainActivity : Activity(), CameraControllerCallback {
     private var vignettingCalibrationPending = false
     private val calibrationCoordinator = MeteringCalibrationCoordinator()
     private var zoneMeasurementPending = false
+    private var zoneRemeasureActive = false
+    private var zoneRemeasureUpdated = 0
+    private var zoneRemeasureTotal = 0
     /** A Zone value may be visible while Camera2 rebuilds the resident preview/YUV session. */
     private var zoneCameraRestorePending = false
     private var activityResumed = false
@@ -320,13 +324,54 @@ class MainActivity : Activity(), CameraControllerCallback {
             }
 
             override fun onCalibrationHistoryRestoreRequested(updatedAtEpochMs: Long) {
+                val cameraId = calibrationDisplayCameraId
+                    ?: cameraController.currentCalibrationCameraId()
                 val restored = cameraController.restoreUserCalibration(
                     updatedAtEpochMs = updatedAtEpochMs,
-                    cameraId = calibrationDisplayCameraId
-                        ?: cameraController.currentCalibrationCameraId(),
+                    cameraId = cameraId,
                 ) ?: return
+                invalidateMeteringAfterCalibrationChange()
                 meterLayout.calibrationView.showHistoryRestored(restored)
                 meterLayout.refresh()
+            }
+
+            override fun onExposurePreviewCalibrationStarted() {
+                val accepted = cameraController.beginExposurePreviewCalibration { ready ->
+                    if (activityResumed) {
+                        if (!ready) cameraController.updateExposurePreview(null)
+                        meterLayout.calibrationView.setExposurePreviewCalibrationReady(ready)
+                    }
+                }
+                if (!accepted) {
+                    cameraController.updateExposurePreview(null)
+                    meterLayout.calibrationView.setExposurePreviewCalibrationReady(false)
+                }
+            }
+
+            override fun onExposurePreviewCalibrationComparisonRequested(
+                correctionEv: Double?,
+            ) {
+                cameraController.updateExposurePreviewCalibrationComparison(correctionEv)
+            }
+
+            override fun onExposurePreviewCalibrationSaveRequested(correctionEv: Double) {
+                val saved = cameraController.saveExposurePreviewCalibration(correctionEv)
+                cameraController.finishExposurePreviewCalibration()
+                meterLayout.calibrationView.showExposurePreviewCalibrationSaved(saved)
+                meterLayout.refresh()
+                updateExposurePreviewFromMeter()
+            }
+
+            override fun onExposurePreviewCalibrationResetRequested() {
+                val cameraId = calibrationDisplayCameraId
+                    ?: cameraController.currentCalibrationCameraId()
+                cameraController.resetExposurePreviewCalibration(cameraId)
+                meterLayout.calibrationView.showExposurePreviewCalibrationReset()
+            }
+
+            override fun onExposurePreviewCalibrationCancelled() {
+                cameraController.finishExposurePreviewCalibration()
+                if (activityResumed) updateExposurePreviewFromMeter()
             }
 
             override fun onVignettingCalibrationOpened() {
@@ -372,6 +417,7 @@ class MainActivity : Activity(), CameraControllerCallback {
                     zoneMeasurementPending = false
                     state.measuring = false
                     meterLayout.failZoneMeasurement()
+                    meterLayout.resumeZoneVisualTrackingAfterMetering()
                     state.transientMessage = localized(
                         "请等待当前测量完成",
                         "Wait for the current measurement to finish",
@@ -379,6 +425,75 @@ class MainActivity : Activity(), CameraControllerCallback {
                     meterLayout.refresh()
                     clearTransientMessageLater()
                 }
+            }
+
+            override fun onZoneRemeasureAllRequested(markerIds: List<Int>) {
+                if (zoneMeasurementPending || state.measuring || zoneRemeasureActive) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        localized("请等待当前测量完成", "Wait for the current measurement"),
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                    return
+                }
+                if (markerIds.isEmpty()) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        localized("没有可重新测光的跟踪点", "No tracked points can be remeasured"),
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                    return
+                }
+                val requests = meterLayout.beginZoneRemeasureBatch(markerIds)
+                if (requests.isEmpty()) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        localized(
+                            "跟踪点当前都在画面外，未进行重新测光",
+                            "All tracked points are outside the frame; nothing was remeasured",
+                        ),
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                    return
+                }
+                zoneRemeasureActive = true
+                zoneRemeasureUpdated = 0
+                zoneRemeasureTotal = markerIds.size
+                mainHandler.removeCallbacksAndMessages(TRANSIENT_TOKEN)
+                state.measuring = true
+                state.transientMessage = localized(
+                    "请稳住设备，正在用同一组 RAW 重新测量 ${requests.size} 个点",
+                    "Hold steady · remeasuring ${requests.size} points from one RAW burst",
+                )
+                meterLayout.refresh()
+                val accepted = cameraController.measureZoneBatch(
+                    state.frameFormat,
+                    state.frameLandscape,
+                    state.zoom,
+                    state.meteringMode,
+                    requests,
+                    meteringAngleDegrees = state.angleMeteringDegrees,
+                )
+                if (!accepted) {
+                    meterLayout.failZoneRemeasureBatch()
+                    meterLayout.resumeZoneVisualTrackingAfterMetering()
+                    finishZoneRemeasureBatch(interrupted = true)
+                }
+            }
+
+            override fun onZoneRemeasureHoldPrompt() {
+                if (zoneMeasurementPending || state.measuring || zoneRemeasureActive) return
+                state.transientMessage = localized(
+                    "请稳住设备，继续按住以重新测量全部跟踪点",
+                    "Hold the device steady; keep pressing to remeasure all points",
+                )
+                Toast.makeText(
+                    this@MainActivity,
+                    localized("请稳住设备", "Hold the device steady"),
+                    Toast.LENGTH_SHORT,
+                ).show()
+                meterLayout.refresh()
+                clearTransientMessageLater()
             }
 
             override fun onZoneTrackingActiveChanged(active: Boolean) {
@@ -468,7 +583,11 @@ class MainActivity : Activity(), CameraControllerCallback {
             state.measuring = false
             meterLayout.failZoneMeasurement()
         }
+        if (zoneRemeasureActive) meterLayout.failZoneRemeasureBatch()
+        clearZoneRemeasureState()
         zoneCameraRestorePending = false
+        // The auxiliary preview comparison is tied to live AE metadata and cannot survive pause.
+        meterLayout.calibrationView.closeExposurePreviewCalibration()
         if (calibrationCoordinator.isActive) {
             clearCalibrationRun()
             meterLayout.calibrationView.showError(
@@ -864,7 +983,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             )
             return
         }
-        if (zoneMeasurementPending) {
+        if (zoneMeasurementPending || zoneRemeasureActive) {
             state.measuring = true
             meterLayout.zoneView.invalidate()
             return
@@ -908,7 +1027,11 @@ class MainActivity : Activity(), CameraControllerCallback {
             state.measuring = false
             state.transientMessage = null
         }
+        if (!restoring) meterLayout.resumeZoneVisualTrackingAfterMetering()
         meterLayout.refresh()
+        if (!restoring && zoneRemeasureActive) {
+            finishZoneRemeasureBatch()
+        }
     }
 
     override fun onMeterReading(reading: MeterReading) {
@@ -924,6 +1047,9 @@ class MainActivity : Activity(), CameraControllerCallback {
             state.measuring = zoneCameraRestorePending
             state.lastReading = reading
             meterLayout.completeZoneMeasurement(reading)
+            if (!zoneCameraRestorePending) {
+                meterLayout.resumeZoneVisualTrackingAfterMetering()
+            }
             meterLayout.refresh()
             updateExposurePreviewFromMeter()
             return
@@ -959,6 +1085,24 @@ class MainActivity : Activity(), CameraControllerCallback {
         clearTransientMessageLater()
     }
 
+    override fun onZoneMeteringBatchResult(results: List<ZoneMeteringResult>) {
+        if (!activityResumed || !zoneRemeasureActive) return
+        zoneRemeasureUpdated = meterLayout.completeZoneRemeasureBatch(results)
+        if (!zoneCameraRestorePending) {
+            meterLayout.resumeZoneVisualTrackingAfterMetering()
+        }
+        results.lastOrNull()?.reading?.let { state.lastReading = it }
+        state.measuring = zoneCameraRestorePending
+        state.transientMessage = if (zoneCameraRestorePending) {
+            localized("正在恢复预览", "Restoring preview")
+        } else {
+            null
+        }
+        meterLayout.refresh()
+        updateExposurePreviewFromMeter()
+        if (!zoneCameraRestorePending) finishZoneRemeasureBatch()
+    }
+
     override fun onMeteringError(message: String) {
         if (!activityResumed) return
         if (calibrationCoordinator.isActive) {
@@ -969,10 +1113,26 @@ class MainActivity : Activity(), CameraControllerCallback {
             zoneMeasurementPending = false
             state.measuring = false
             meterLayout.failZoneMeasurement()
+            if (!zoneCameraRestorePending) {
+                meterLayout.resumeZoneVisualTrackingAfterMetering()
+            }
+            if (zoneRemeasureActive) {
+                finishZoneRemeasureBatch(interrupted = true)
+                return
+            }
             state.transientMessage = message
             meterLayout.refresh()
             updateExposurePreviewFromMeter()
             clearTransientMessageLater()
+            return
+        }
+        if (zoneRemeasureActive) {
+            state.measuring = false
+            meterLayout.failZoneRemeasureBatch()
+            if (!zoneCameraRestorePending) {
+                meterLayout.resumeZoneVisualTrackingAfterMetering()
+            }
+            finishZoneRemeasureBatch(interrupted = true)
             return
         }
         state.measuring = false
@@ -1112,6 +1272,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             referenceEv100 = result.referenceEv100,
             measurements = result.measurements,
         )
+        invalidateMeteringAfterCalibrationChange()
         clearCalibrationRun()
         if (result.terminalError == null && !result.hasFailures) {
             meterLayout.calibrationView.showResult(record)
@@ -1130,6 +1291,18 @@ class MainActivity : Activity(), CameraControllerCallback {
     private fun clearCalibrationRun() {
         calibrationCoordinator.cancel()
         cameraController.finishCalibrationSession()
+    }
+
+    /**
+     * Calibration is camera-specific, and cached readings already contain the correction that was
+     * active when they were captured. Never combine one of those readings with a newer correction:
+     * that would make exposure preview jump by exactly the device's calibration delta.
+     */
+    private fun invalidateMeteringAfterCalibrationChange() {
+        state.invalidateMeteringResults()
+        state.transientMessage = null
+        meterLayout.invalidateZoneMeasurementsAfterCalibration()
+        cameraController.updateExposurePreview(null)
     }
 
     private fun refreshCalibrationCorrections() {
@@ -1156,6 +1329,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             yuvCorrectionEv = record?.yuvCorrectionEv,
             ispPreviewCorrectionEv = record?.ispPreviewCorrectionEv,
             legacyCompatibleCorrectionEv = record?.legacyCompatibleCorrectionEv,
+            exposurePreviewCorrectionEv = state.exposurePreviewExecutionCorrectionEv(cameraId),
             showRawStream = showRawStream,
         )
     }
@@ -1405,10 +1579,12 @@ class MainActivity : Activity(), CameraControllerCallback {
             )
             .setNegativeButton(if (english) "Cancel" else "取消", null)
             .setPositiveButton(if (english) "Reset" else "重置") { _, _ ->
-                cameraController.resetUserCalibration(
-                    calibrationDisplayCameraId ?: cameraController.currentCalibrationCameraId(),
-                )
+                val cameraId = calibrationDisplayCameraId
+                    ?: cameraController.currentCalibrationCameraId()
+                cameraController.resetUserCalibration(cameraId)
+                invalidateMeteringAfterCalibrationChange()
                 meterLayout.calibrationView.showReset(shouldShowRawCalibration())
+                meterLayout.refresh()
             }
             .setOnDismissListener { calibrationResetDialogVisible = false }
             .show()
@@ -1746,6 +1922,34 @@ class MainActivity : Activity(), CameraControllerCallback {
         val rotation = meterLayout.textureView.display?.rotation ?: Surface.ROTATION_0
         val zoom = if (meterLayout.isVignettingCalibrationOpen) 1f else state.zoom
         cameraController.updatePreviewTransform(width, height, rotation, zoom)
+    }
+
+    private fun finishZoneRemeasureBatch(interrupted: Boolean = false) {
+        if (!zoneRemeasureActive) return
+        val completed = zoneRemeasureUpdated
+        val notCompleted = (zoneRemeasureTotal - completed).coerceAtLeast(0)
+        clearZoneRemeasureState()
+        state.measuring = false
+        state.transientMessage = if (interrupted) {
+            localized(
+                "重新测光中断：已更新 $completed 个，未更新 $notCompleted 个",
+                "Remeasuring stopped: $completed updated, $notCompleted not updated",
+            )
+        } else {
+            localized(
+                "重新测光完成：已更新 $completed 个，未更新 $notCompleted 个",
+                "Remeasuring complete: $completed updated, $notCompleted not updated",
+            )
+        }
+        meterLayout.refresh()
+        updateExposurePreviewFromMeter()
+        clearTransientMessageLater()
+    }
+
+    private fun clearZoneRemeasureState() {
+        zoneRemeasureActive = false
+        zoneRemeasureUpdated = 0
+        zoneRemeasureTotal = 0
     }
 
     private fun scheduleCameraStartAfterForegroundLayout() {

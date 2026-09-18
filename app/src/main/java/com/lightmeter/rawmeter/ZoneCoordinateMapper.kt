@@ -130,6 +130,62 @@ internal object ZoneCoordinateMapper {
         else -> Point(x, y)
     }
 
+    fun analysisPointToDisplayNormalized(
+        point: Point,
+        width: Int,
+        height: Int,
+        displayOriented: Boolean,
+        displayRotationDegrees: Int,
+    ): Point {
+        val analysisX = point.x / width.coerceAtLeast(1)
+        val analysisY = point.y / height.coerceAtLeast(1)
+        return if (displayOriented) {
+            Point(analysisX, analysisY)
+        } else {
+            analysisToDisplay(analysisX, analysisY, displayRotationDegrees)
+        }
+    }
+
+    fun displayNormalizedToAnalysisPoint(
+        point: Point,
+        width: Int,
+        height: Int,
+        displayOriented: Boolean,
+        displayRotationDegrees: Int,
+    ): Point {
+        val analysis = if (displayOriented) {
+            point
+        } else {
+            displayToAnalysis(point.x, point.y, displayRotationDegrees)
+        }
+        return Point(analysis.x * width, analysis.y * height)
+    }
+
+    /** Preserve reference-feature geometry when tracking changes between YUV and TextureView. */
+    fun remapAnalysisPoint(
+        point: Point,
+        fromWidth: Int,
+        fromHeight: Int,
+        fromDisplayOriented: Boolean,
+        fromDisplayRotationDegrees: Int,
+        toWidth: Int,
+        toHeight: Int,
+        toDisplayOriented: Boolean,
+        toDisplayRotationDegrees: Int,
+    ): Point = displayNormalizedToAnalysisPoint(
+        analysisPointToDisplayNormalized(
+            point,
+            fromWidth,
+            fromHeight,
+            fromDisplayOriented,
+            fromDisplayRotationDegrees,
+        ),
+        toWidth,
+        toHeight,
+        toDisplayOriented,
+        toDisplayRotationDegrees,
+    )
+
     private fun displayToAnalysis(x: Double, y: Double, rotation: Int): Point = when (rotation) {
         90 -> Point(1.0 - y, x)
         180 -> Point(1.0 - x, 1.0 - y)

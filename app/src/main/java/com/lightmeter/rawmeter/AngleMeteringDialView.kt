@@ -190,7 +190,7 @@ internal class AngleMeteringDialView(
         canvas.drawText(
             label,
             compactBounds.centerX(),
-            compactBounds.bottom + 7f * density - (metrics.ascent + metrics.descent) / 2f,
+            compactBounds.top - 8f * density - (metrics.ascent + metrics.descent) / 2f,
             boldPaint,
         )
     }
@@ -341,13 +341,11 @@ internal class AngleMeteringDialView(
         val margin = 2f * density
         val compactSize = 34f * density
         val gap = 2f * density
-        // The angle selector belongs below the meter button. Do not fall back above it on
-        // short portrait layouts: that position is reserved for the flash-distance selector.
-        // The compact label only needs its actual line height, so the previous 18 dp reserve
-        // unnecessarily forced both controls into the same location on tall phones.
+        // Angle and flash distance share one row above the primary meter button. MeterLayout
+        // supplies opposite horizontal offsets when both controls are visible.
         val labelReserve = 13f * density
-        val compactTop = (anchor.bottom + gap).coerceAtMost(
-            (height - margin - labelReserve - compactSize).coerceAtLeast(anchor.bottom),
+        val compactTop = (anchor.top - gap - compactSize).coerceAtLeast(
+            margin + labelReserve,
         )
         val compactLeft = (anchor.centerX() + compactCenterOffsetX - compactSize / 2f)
             .coerceIn(margin, (width - margin - compactSize).coerceAtLeast(margin))
@@ -365,7 +363,9 @@ internal class AngleMeteringDialView(
             margin + expandedRadius,
             (width - margin - expandedRadius).coerceAtLeast(margin + expandedRadius),
         )
-        expandedCenterY = anchor.centerY().coerceIn(
+        // Grow upward from the compact control row. Centering the expanded dial on the meter
+        // button made its lower half enter the parameter-record track below that button.
+        expandedCenterY = (anchor.top - gap - expandedRadius).coerceIn(
             margin + expandedRadius,
             (height - margin - expandedRadius).coerceAtLeast(margin + expandedRadius),
         )

@@ -40,6 +40,9 @@ code.
   return, camera startup waits for two stable `TextureView` size/rotation samples, then
   re-submits the buffer size and display matrix on the first new frame. A low-frequency matrix
   watchdog also repairs layer state lost by affected vendor compositors.
+- Normal and Zone share one stable native preview transport rectangle. Their
+  different viewports are clipped above that layer, so switching modes does not
+  resize the `SurfaceTexture` or leave a vendor compositor using stale sampling geometry.
 - RAW-first metering with a capability-driven ISP-preview fallback. LEGACY and
   unsupported RAW CFA devices are treated as non-RAW. A fixed physical lens is
   attempted independently of a logical camera's `APPROXIMATE` sync declaration;
@@ -89,6 +92,9 @@ code.
   an isolated RAW-only session for the 1–3 metering frames, and then restores
   preview + YUV. A second high-accuracy workflow can use the same isolated RAW
   window for ordinary metering on HALs that cannot keep preview + RAW resident.
+  Compatible dormant readers are retained to reduce repeated allocation, but
+  only the selected profile's surfaces are ever attached to the active session;
+  vendor-HAL isolation and fallback behavior are unchanged.
 - Camera-session recovery and workflow search reduce stream pressure from RAW
   workflows to Stable YUV, Compatibility ISP, and finally a logical-camera route
   when appropriate.
@@ -107,6 +113,10 @@ code.
   The selected camera route and calibration storage identity are pinned for the whole run. A logical
   camera may temporarily omit its active physical-camera ID while a new session opens; that transient
   omission does not abort calibration, but two different concrete physical IDs still do.
+- Exposure-preview calibration is a separate per-camera adjustment for how the
+  viewfinder renders visual 0 EV. It does not alter or duplicate formal
+  RAW/YUV/ISP metering corrections, and cached readings are invalidated after a
+  calibration change so corrections cannot be applied twice.
 - Switching to Compatibility mode shows a bilingual accuracy notice, with a permanent
   “Don't show again” choice.
 - Two-dimensional vignetting calibration for RAW-capable cameras, with an
@@ -133,6 +143,9 @@ code.
 
 - A custom-drawn black-and-white mechanical meter UI with restrained red
   accents.
+- The metering-angle and flash-distance controls share a compact row above the
+  meter button; the parameter-record slider stays below it in Normal and Zone.
+  An expanded dial temporarily takes the front layer to avoid overlap.
 - Exposure compensation in selectable 1/6, 1/3, 1/2, or 1 EV steps.
 - Aperture and shutter scales in full, half, or third stops.
 - Aperture or shutter locking while preserving the continuous exposure
@@ -171,14 +184,22 @@ code.
 - Each marker adds a segmented square target frame whose middle third is open
   on every side. Camera and output-aspect management opened from Zone preserve
   the Zone host and selected route instead of returning through Normal/Automatic.
+- Holding the remeasure control updates existing visible points from one shared
+  RAW capture where supported. Each point is registered independently against
+  that capture; points outside the valid view are counted as not updated.
 - Low-resolution YUV luminance tracking with preview-screenshot fallback.
 - Pyramidal Lucas–Kanade optical flow, forward/backward validation, RANSAC
-  affine motion, local feature correction, gyroscope prediction, and ORB
-  re-identification.
+  affine motion, local feature correction, gyroscope prediction, ORB
+  re-identification, and widened rapid-motion recovery for hand shake.
+- During an isolated RAW window, the frozen preview and visible markers remain
+  frozen together. A hidden gyroscope estimate advances scene positions, and
+  visual tracking resumes on the first real live frame instead of a timer.
 - Stable point coordinates when the portrait/landscape control changes only
   the page layout and does not rotate the camera stream.
-- Off-screen virtual coordinates so points can be recovered when the camera
-  returns to the scene.
+- Off-screen points preserve their feature descriptors and are propagated as
+  camera rays by gyroscope rotation. On predicted re-entry the tracker searches
+  locally first, with a periodic full-frame descriptor fallback; unconfirmed
+  lost predictions remain hidden.
 - Deferred OpenCV initialization: native tracking resources are created only
   when Zone mode is first entered.
 - Saved-record Zone replay is enabled only when its compact RAW metering grid
@@ -232,6 +253,13 @@ app/src/main/java/com/lightmeter/rawmeter
 ├─ ForegroundCameraStartCoordinator.kt stable resumed-window sampling
 ├─ CameraController.kt               lifecycle and camera-operation facade
 ├─ CameraSessionCoordinator.kt       Camera2 resources, sessions, open/close
+├─ CameraOpenConfigurationResolver.kt route and stream configuration resolution
+├─ CameraPreviewRequestCoordinator.kt repeating preview request construction
+├─ CameraRuntimeMetadataCoordinator.kt active physical-camera metadata
+├─ CameraDistanceCaptureCoordinator.kt focus-distance capture lifecycle
+├─ CameraPreviewHealthCoordinator.kt bounded preview health and recovery
+├─ RawRecordCaptureCoordinator.kt    parameter-record RAW/DNG capture
+├─ VignettingCalibrationCaptureCoordinator.kt calibration RAW capture
 ├─ CameraCombinationWorkflowProbe.kt real multi-stage workflow validation
 ├─ RawProbeFrameHealth.kt            constant-cost RAW probe acceptance
 ├─ RawLightMeter.kt                  bounded RAW capture and metering
@@ -270,6 +298,10 @@ app/src/main/java/com/lightmeter/rawmeter
 ├─ MeteringCalibrationPlan.kt        source-complete calibration plan
 ├─ MeteringCalibrationCoordinator.kt sequential calibration state machine
 ├─ CameraCalibrationStore.kt         per-camera calibration history
+├─ ExposurePreviewCalibrationCoordinator.kt preview-only calibration state
+├─ ExposurePreviewCalibrationPanel.kt preview calibration interface
+├─ ExposurePreviewStateCoordinator.kt preview exposure state isolation
+├─ MeteringPreviewBaselineCoordinator.kt neutral metering preview baseline
 ├─ VignettingCalibrationStore.kt     vignetting map persistence
 ├─ ZoneCoordinateMapper.kt           UI/preview/OpenCV coordinate mapping
 ├─ DeferredZoneMarkerTracker.kt      lazy native tracker creation
@@ -331,12 +363,11 @@ app/build/outputs/apk/release/app-release-unsigned.apk
 app/build/outputs/bundle/release/app-release.aab
 ```
 
-For version 0.3.0 with the slimmed r2 OpenCV runtime, the verified unsigned
-universal APK is 42,154,080 bytes (40.20 MiB), and the release AAB is
-18,735,241 bytes (17.87 MiB). Native libraries dominate the universal APK;
-R8 reduces the compressed DEX payload to about 1.07 MiB. The same build with the
-previous r1 OpenCV runtime was 76,056,239 bytes (72.53 MiB) for the universal
-APK and 32,959,091 bytes (31.43 MiB) for the AAB.
+For version 0.4.0 with the slimmed r2 OpenCV runtime, the verified unsigned
+universal APK is 44,379,873 bytes (42.32 MiB), and the release AAB is
+20,996,140 bytes (20.02 MiB). Native libraries still dominate the universal
+APK; the increase from 0.3.0 includes the expanded tracking, calibration, and
+camera-coordinator implementation.
 
 The repository deliberately contains no signing key or signing password. The
 APK must be signed before installation or distribution. Android Studio's
@@ -355,31 +386,34 @@ $buildTools = (Get-ChildItem "$env:LOCALAPPDATA\Android\Sdk\build-tools" -Direct
 New-Item -ItemType Directory -Force dist | Out-Null
 & "$buildTools\zipalign.exe" -f -p 4 `
   app\build\outputs\apk\release\app-release-unsigned.apk `
-  dist\lightstop-v0.3.0-aligned.apk
+  dist\lightstop-v0.4.0-aligned.apk
 & "$buildTools\apksigner.bat" sign `
   --ks C:\secure\lightstop-release.jks `
   --ks-key-alias lightstop `
-  --out dist\lightstop-v0.3.0-universal.apk `
-  dist\lightstop-v0.3.0-aligned.apk
+  --out dist\lightstop-v0.4.0-universal.apk `
+  dist\lightstop-v0.4.0-aligned.apk
 & "$buildTools\apksigner.bat" verify --verbose --print-certs `
-  dist\lightstop-v0.3.0-universal.apk
-Get-FileHash dist\lightstop-v0.3.0-universal.apk -Algorithm SHA256 |
+  dist\lightstop-v0.4.0-universal.apk
+Get-FileHash dist\lightstop-v0.4.0-universal.apk -Algorithm SHA256 |
   Format-List Algorithm, Hash, Path
 ```
 
 Do not delete or replace the keystore after the first public release: future
 APK updates must be signed by the same key. Back up the keystore and its alias
-and passwords in separate secure locations. Before publishing, commit the
+and passwords in separate secure locations. The 0.3.0/0.3.1 release certificate
+SHA-256 fingerprint is
+`94d693638fbb0a55bc1c11e81fa5916d67572ee8e298dd4b08b315787a7f7a7a`;
+verify the same fingerprint for every update. Before publishing, commit the
 source, create an annotated tag, and push both commit and tag:
 
 ```powershell
 git status
-git tag -a v0.3.0 -m "lightstop 0.3.0"
+git tag -a v0.4.0 -m "lightstop 0.4.0"
 git push origin HEAD:main
-git push origin v0.3.0
+git push origin v0.4.0
 ```
 
-On GitHub, create a Release from `v0.3.0`, retain the generated source archives,
+On GitHub, create a Release from `v0.4.0`, retain the generated source archives,
 and upload the signed universal APK, a text file containing its SHA-256, plus
 `LICENSE`, `NOTICE`, and `THIRD_PARTY_NOTICES.md`. Verify the uploaded APK after
 downloading it once; a GitHub Release is a distribution record, while the

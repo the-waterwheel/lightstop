@@ -56,11 +56,18 @@ class MeterLayout @JvmOverloads constructor(
         fun onCalibrationMeasureRequested(referenceEv100: Double)
         fun onCalibrationResetRequested()
         fun onCalibrationHistoryRestoreRequested(updatedAtEpochMs: Long)
+        fun onExposurePreviewCalibrationStarted()
+        fun onExposurePreviewCalibrationComparisonRequested(correctionEv: Double?)
+        fun onExposurePreviewCalibrationSaveRequested(correctionEv: Double)
+        fun onExposurePreviewCalibrationResetRequested()
+        fun onExposurePreviewCalibrationCancelled()
         fun onVignettingCalibrationOpened()
         fun onVignettingCalibrationRequested()
         fun onVignettingCalibrationResetRequested()
         fun onVignettingHistoryRestoreRequested(createdAtEpochMs: Long)
         fun onZoneMeasureRequested(marker: ZoneMarker, target: ZoneMeteringTarget?)
+        fun onZoneRemeasureHoldPrompt()
+        fun onZoneRemeasureAllRequested(markerIds: List<Int>)
         fun onZoneTrackingActiveChanged(active: Boolean)
         fun onParameterGpsEnableRequested()
         fun onColorTemperatureEstimateRequested()
@@ -326,6 +333,28 @@ class MeterLayout @JvmOverloads constructor(
                 override fun onMeasureRequested(referenceEv100: Double) {
                     value?.onCalibrationMeasureRequested(referenceEv100)
                 }
+
+                override fun onExposurePreviewCalibrationStarted() {
+                    value?.onExposurePreviewCalibrationStarted()
+                }
+
+                override fun onExposurePreviewCalibrationComparisonRequested(
+                    correctionEv: Double?,
+                ) {
+                    value?.onExposurePreviewCalibrationComparisonRequested(correctionEv)
+                }
+
+                override fun onExposurePreviewCalibrationSaveRequested(correctionEv: Double) {
+                    value?.onExposurePreviewCalibrationSaveRequested(correctionEv)
+                }
+
+                override fun onExposurePreviewCalibrationResetRequested() {
+                    value?.onExposurePreviewCalibrationResetRequested()
+                }
+
+                override fun onExposurePreviewCalibrationCancelled() {
+                    value?.onExposurePreviewCalibrationCancelled()
+                }
             }
             vignettingCalibrationView.listener = object : VignettingCalibrationView.Listener {
                 override fun onExitRequested() {
@@ -394,8 +423,16 @@ class MeterLayout @JvmOverloads constructor(
                     } else {
                         null
                     }
-                    zoneMarkerTracker.onMeteringStateChanged(true)
+                    suspendZoneVisualTrackingForMetering()
                     value?.onZoneMeasureRequested(marker, target)
+                }
+
+                override fun onRemeasureAllRequested(markerIds: List<Int>) {
+                    value?.onZoneRemeasureAllRequested(markerIds)
+                }
+
+                override fun onRemeasureHoldPrompt() {
+                    value?.onZoneRemeasureHoldPrompt()
                 }
 
                 override fun onMarkerRemoved(markerId: Int) {
@@ -891,12 +928,20 @@ class MeterLayout @JvmOverloads constructor(
         } else {
             geometry.cameraFrame
         }
-        val textureFrame = previewTextureFrame(
-            cameraFrame = cameraFrame,
-            width = width,
-            height = height,
-            showFullPreview = isVignettingCalibrationOpen,
-        )
+        val textureFrame = when {
+            isCombinationSelectionOpen || isVignettingCalibrationOpen || isCalibrationOpen ->
+                previewTextureFrame(
+                    cameraFrame = cameraFrame,
+                    width = width,
+                    height = height,
+                    showFullPreview = isVignettingCalibrationOpen,
+                )
+            else -> normalZonePreviewTextureFrame(
+                normalCameraFrame = geometry.cameraFrame,
+                width = width,
+                height = height,
+            )
+        }
         textureView.measure(
             MeasureSpec.makeMeasureSpec(textureFrame.width().toInt(), MeasureSpec.EXACTLY),
             MeasureSpec.makeMeasureSpec(textureFrame.height().toInt(), MeasureSpec.EXACTLY),
@@ -943,12 +988,20 @@ class MeterLayout @JvmOverloads constructor(
         } else {
             geometry.cameraFrame
         }
-        val textureFrame = previewTextureFrame(
-            cameraFrame = cameraFrame,
-            width = width,
-            height = height,
-            showFullPreview = isVignettingCalibrationOpen,
-        )
+        val textureFrame = when {
+            isCombinationSelectionOpen || isVignettingCalibrationOpen || isCalibrationOpen ->
+                previewTextureFrame(
+                    cameraFrame = cameraFrame,
+                    width = width,
+                    height = height,
+                    showFullPreview = isVignettingCalibrationOpen,
+                )
+            else -> normalZonePreviewTextureFrame(
+                normalCameraFrame = geometry.cameraFrame,
+                width = width,
+                height = height,
+            )
+        }
         textureView.layout(
             textureFrame.left.toInt(),
             textureFrame.top.toInt(),
@@ -1643,7 +1696,7 @@ class MeterLayout @JvmOverloads constructor(
             .withEndAction {
                 if (!isParameterEditorOpen) parameterRecordEditorView.visibility = View.GONE
                 if (resetCapture) recordCaptureSliderView.setCapturePending(false)
-                if (parameterRecordToolView.recording) recordCaptureSliderView.bringToFront()
+                if (parameterRecordToolView.recording) bringRecordSliderToFrontIfDialsCollapsed()
             }
             .start()
         return true
@@ -1697,7 +1750,7 @@ class MeterLayout @JvmOverloads constructor(
         recordCaptureSliderView.setCapturePending(false)
         if (visible) {
             updateRecordSliderAnchor()
-            recordCaptureSliderView.bringToFront()
+            bringRecordSliderToFrontIfDialsCollapsed()
         }
     }
 
@@ -1725,7 +1778,11 @@ class MeterLayout @JvmOverloads constructor(
             state.meteringPipelineMode != MeteringPipelineMode.FAST &&
             unobstructed
         val anchor = if (isZoneMode) zoneView.recordButtonRect() else instrumentView.recordButtonRect()
-        updateFlashDistanceControl(flashVisible, anchor)
+        // Keep the pair distinct while pulling it slightly closer to the primary action center.
+        val pairOffset = 38f * resources.displayMetrics.density
+        val angleOffset = if (visible && flashVisible) -pairOffset else 0f
+        val flashOffset = if (visible && flashVisible) pairOffset else 0f
+        updateFlashDistanceControl(flashVisible, anchor, flashOffset)
         if (!visible) {
             angleMeteringDialView.animate().cancel()
             angleControlFadeInAnimating = false
@@ -1734,7 +1791,7 @@ class MeterLayout @JvmOverloads constructor(
             angleMeteringDialView.collapse()
             return
         }
-        angleMeteringDialView.setAnchor(anchor)
+        angleMeteringDialView.setAnchor(anchor, angleOffset)
         angleMeteringDialView.refreshSupport()
         if (fadeIn) {
             angleMeteringDialView.animate().cancel()
@@ -1769,12 +1826,23 @@ class MeterLayout @JvmOverloads constructor(
 
             else -> angleMeteringDialView.bringToFront()
         }
-        if (recordCaptureSliderView.visibility == View.VISIBLE) {
+        bringRecordSliderToFrontIfDialsCollapsed()
+    }
+
+    private fun bringRecordSliderToFrontIfDialsCollapsed() {
+        if (recordCaptureSliderView.visibility == View.VISIBLE &&
+            !angleMeteringDialView.isExpanded() &&
+            !flashDistanceDialView.isExpanded()
+        ) {
             recordCaptureSliderView.bringToFront()
         }
     }
 
-    private fun updateFlashDistanceControl(visible: Boolean, anchor: RectF) {
+    private fun updateFlashDistanceControl(
+        visible: Boolean,
+        anchor: RectF,
+        compactCenterOffsetX: Float,
+    ) {
         if (!visible) {
             flashDistanceDialView.visibility = View.GONE
             flashDistanceDialView.collapse()
@@ -1784,7 +1852,7 @@ class MeterLayout @JvmOverloads constructor(
             state.appliedFlashConfiguration,
             state.distanceMeasurementState,
         )
-        flashDistanceDialView.setAnchor(anchor)
+        flashDistanceDialView.setAnchor(anchor, compactCenterOffsetX)
         flashDistanceDialView.visibility = View.VISIBLE
         flashDistanceDialView.bringToFront()
     }
@@ -2036,6 +2104,7 @@ class MeterLayout @JvmOverloads constructor(
 
     fun closeCalibration(): Boolean {
         if (!isCalibrationOpen) return false
+        if (calibrationView.closeExposurePreviewCalibration()) return true
         if (calibrationView.isMeasuring) return true
         isCalibrationOpen = false
         calibrationView.visibility = View.GONE
@@ -2112,6 +2181,57 @@ class MeterLayout @JvmOverloads constructor(
         return zoneView.completeMeasurement(reading)
     }
 
+    /** Called only when the resident preview/YUV stream is live again (or never stopped). */
+    fun resumeZoneVisualTrackingAfterMetering() {
+        zoneMarkerTracker.resumeVisualTrackingAfterMetering()
+    }
+
+    private fun suspendZoneVisualTrackingForMetering() {
+        zoneView.freezeMarkerDisplayPositions()
+        zoneMarkerTracker.onMeteringStateChanged(true)
+    }
+
+    /** Uses the point's latest tracked position and always enables preview-to-RAW registration. */
+    fun beginZoneRemeasure(markerId: Int): ZoneMeteringTarget? {
+        val marker = zoneView.beginRemeasure(markerId) ?: return null
+        suspendZoneVisualTrackingForMetering()
+        return zoneMeteringTarget(marker)
+    }
+
+    /** Freezes only points currently visible in the film frame for one shared RAW batch. */
+    fun beginZoneRemeasureBatch(markerIds: List<Int>): List<ZoneMeteringRequest> {
+        if (zoneView.session.pendingMarkerId != null) return emptyList()
+        val requestedIds = markerIds.toSet()
+        val requests = zoneView.session.markers.mapNotNull { marker ->
+            if (marker.id !in requestedIds || marker.ev100 == null ||
+                marker.trackingState == ZoneTrackingState.LOST ||
+                marker.normalizedX !in 0f..1f || marker.normalizedY !in 0f..1f
+            ) {
+                return@mapNotNull null
+            }
+            ZoneMeteringRequest(marker.id, zoneMeteringTarget(marker))
+        }
+        if (requests.isNotEmpty()) suspendZoneVisualTrackingForMetering()
+        return requests
+    }
+
+    fun completeZoneRemeasureBatch(results: List<ZoneMeteringResult>): Int {
+        zoneMarkerTracker.onMeteringStateChanged(false)
+        return zoneView.completeRemeasurements(results).size
+    }
+
+    fun failZoneRemeasureBatch() {
+        zoneMarkerTracker.onMeteringStateChanged(false)
+        zoneView.invalidate()
+    }
+
+    /** Zone readings cannot survive a change to the per-camera metering calibration. */
+    fun invalidateZoneMeasurementsAfterCalibration() {
+        zoneView.session.clear()
+        zoneMarkerTracker.clearMarkers()
+        zoneView.invalidate()
+    }
+
     fun currentExposurePreviewSelection(): ExposurePreviewSelection? {
         val sceneEv100: Double
         val selectedExposureEv100: Double
@@ -2139,6 +2259,7 @@ class MeterLayout @JvmOverloads constructor(
             previewCalibratedSceneEv100 = sceneEv100,
             selectedExposureEv100 = selectedExposureEv100,
             previewCorrectionEv = state.previewCameraCorrectionEv(),
+            executionCorrectionEv = state.exposurePreviewExecutionCorrectionEv(),
         )
     }
 
@@ -2238,7 +2359,7 @@ class MeterLayout @JvmOverloads constructor(
         pending?.invoke()
         if (recordCaptureSliderView.visibility == View.VISIBLE && !isParameterEditorOpen) {
             updateRecordSliderAnchor()
-            recordCaptureSliderView.bringToFront()
+            bringRecordSliderToFrontIfDialsCollapsed()
         }
         scheduleAngleControlAfterModeTransition()
         requestLayout()
@@ -2290,9 +2411,39 @@ class MeterLayout @JvmOverloads constructor(
         }
     }
 
+    /**
+     * Keeps the native TextureView layer identical while Normal and Zone animate between their
+     * differently shaped viewports. Resizing a live SurfaceTexture on every animation frame makes
+     * some vendor compositors keep the previous sampling geometry, leaving the destination mode
+     * stretched until the Activity is backgrounded. The union is only a transport surface: each
+     * mode still clips and maps through its own [cameraFrame].
+     */
+    private fun normalZonePreviewTextureFrame(
+        normalCameraFrame: RectF,
+        width: Int,
+        height: Int,
+    ): RectF {
+        val zoneCameraFrame = zoneView.calculatePreviewFrame(width, height)
+        val coverageFrame = RectF(
+            minOf(normalCameraFrame.left, zoneCameraFrame.left),
+            minOf(normalCameraFrame.top, zoneCameraFrame.top),
+            maxOf(normalCameraFrame.right, zoneCameraFrame.right),
+            maxOf(normalCameraFrame.bottom, zoneCameraFrame.bottom),
+        )
+        return previewTextureFrame(coverageFrame, width, height)
+    }
+
     private fun zoneMeteringTarget(marker: ZoneMarker): ZoneMeteringTarget {
         val cameraFrame = zoneView.calculatePreviewFrame(width, height)
-        val textureFrame = previewTextureFrame(cameraFrame, width, height)
+        val normalCameraFrame = LayoutGeometry.calculate(
+            width,
+            height,
+            resources.displayMetrics.density,
+            state.frameFormat,
+            state.frameLandscape,
+            state.isLeftHanded,
+        ).cameraFrame
+        val textureFrame = normalZonePreviewTextureFrame(normalCameraFrame, width, height)
         val screenX = cameraFrame.left + marker.normalizedX * cameraFrame.width()
         val screenY = cameraFrame.top + marker.normalizedY * cameraFrame.height()
         return ZoneMeteringTarget(

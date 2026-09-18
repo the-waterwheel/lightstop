@@ -299,8 +299,12 @@ internal class FlashDistanceDialView(
         val compactSize = 34f * density
         val gap = 5f * density
         val labelReserve = 18f * density
-        var compactTop = anchor.top - gap - compactSize
-        if (compactTop - labelReserve < margin) compactTop = anchor.bottom + gap + labelReserve
+        // Keep both metering accessories in the row above the meter button. Falling below used
+        // to collide with the parameter-record slider and made the two modes place controls on
+        // different sides of their primary action.
+        val compactTop = (anchor.top - gap - compactSize).coerceAtLeast(
+            margin + labelReserve,
+        )
         val compactLeft = (anchor.centerX() + compactCenterOffsetX - compactSize / 2f)
             .coerceIn(margin, (width - margin - compactSize).coerceAtLeast(margin))
         compactBounds = RectF(compactLeft, compactTop, compactLeft + compactSize, compactTop + compactSize)
@@ -309,7 +313,9 @@ internal class FlashDistanceDialView(
             margin + expandedRadius,
             (width - margin - expandedRadius).coerceAtLeast(margin + expandedRadius),
         )
-        expandedCenterY = anchor.centerY().coerceIn(
+        // Keep the enlarged dial entirely above the primary action and its recording slider.
+        // The compact badge and expanded dial therefore share the same lower visual edge.
+        expandedCenterY = (anchor.top - gap - expandedRadius).coerceIn(
             margin + expandedRadius,
             (height - margin - expandedRadius).coerceAtLeast(margin + expandedRadius),
         )

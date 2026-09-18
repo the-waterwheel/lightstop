@@ -15,8 +15,16 @@ internal data class MeteringPlan(
     val sensorFrameAspect: Float,
     val meteringRoiFraction: Float?,
     val displayedPreviewReference: PreviewLumaReference?,
+    val zoneBatchTargets: List<ZoneRawBatchTarget> = emptyList(),
     /** Monotonic request time used only for phase-by-phase latency diagnostics. */
     val requestedAtNs: Long = System.nanoTime(),
+)
+
+/** A Zone point and its preview feature patch, all frozen before the RAW session switch. */
+internal data class ZoneRawBatchTarget(
+    val markerId: Int,
+    val target: ZoneMeteringTarget,
+    val previewReference: PreviewLumaReference?,
 )
 
 internal data class ZoneRawFailure(
@@ -34,6 +42,7 @@ internal data class ZoneRawTransaction(
     val residentCharacteristics: CameraCharacteristics?,
     val sessionState: ZoneRawSessionState = ZoneRawSessionState(),
     var reading: MeterReading? = null,
+    var batchResults: List<ZoneMeteringResult>? = null,
     var failure: ZoneRawFailure? = null,
     var physicalCameraChanged: Boolean = false,
     var resultDelivered: Boolean = false,

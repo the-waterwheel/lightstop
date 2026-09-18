@@ -11,6 +11,7 @@ interface CameraControllerCallback {
     fun onZoneTrackingFrame(frame: ZoneTrackingFrame)
     fun onMeteringStarted(source: MeteringSource, frameCount: Int)
     fun onMeterReading(reading: MeterReading)
+    fun onZoneMeteringBatchResult(results: List<ZoneMeteringResult>) = Unit
     fun onMeteringError(message: String)
     /** Zone RAW can have a usable reading while the mutually-exclusive resident session restores. */
     fun onMeteringRestoreStateChanged(restoring: Boolean) = Unit

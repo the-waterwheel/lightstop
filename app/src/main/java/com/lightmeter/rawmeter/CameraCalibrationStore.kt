@@ -33,7 +33,40 @@ class CameraCalibrationStore(context: Context) {
     fun hasCalibrationArtifacts(): Boolean = preferences.all.keys.any { key ->
         key.startsWith("user_") || key.startsWith("yuv_user_") ||
             key.startsWith("isp_user_") || key.startsWith("compatible_user_") ||
-            key.startsWith("history_")
+            key.startsWith("preview_execution_user_") || key.startsWith("history_")
+    }
+
+    /** Auxiliary preview-execution calibration; independent from RAW/YUV/ISP metering records. */
+    @Synchronized
+    fun exposurePreviewCorrection(cameraId: String): Double {
+        val updatedAt = preferences.getLong(exposurePreviewUpdatedKey(cameraId), 0L)
+        if (!CalibrationEnvironmentStore.isCalibrationTimestampValid(appContext, updatedAt)) {
+            return 0.0
+        }
+        return (preferences.optionalFloat(exposurePreviewKey(cameraId)) ?: 0.0)
+            .coerceIn(
+                ExposurePreviewCalibrationMath.MIN_CORRECTION_EV,
+                ExposurePreviewCalibrationMath.MAX_CORRECTION_EV,
+            )
+    }
+
+    @Synchronized
+    fun saveExposurePreviewCorrection(cameraId: String, correctionEv: Double): Double {
+        require(correctionEv.isFinite()) { "Exposure preview correction must be finite" }
+        val saved = ExposurePreviewCalibrationMath.clampAndSnapCorrection(correctionEv)
+        preferences.edit()
+            .putFloat(exposurePreviewKey(cameraId), saved.toFloat())
+            .putLong(exposurePreviewUpdatedKey(cameraId), System.currentTimeMillis())
+            .apply()
+        return saved
+    }
+
+    @Synchronized
+    fun resetExposurePreviewCorrection(cameraId: String) {
+        preferences.edit()
+            .remove(exposurePreviewKey(cameraId))
+            .remove(exposurePreviewUpdatedKey(cameraId))
+            .apply()
     }
 
     @Synchronized
@@ -225,6 +258,10 @@ class CameraCalibrationStore(context: Context) {
     private fun updatedAtKey(cameraId: String): String = "updated_${deviceKey(cameraId)}"
     private fun countKey(cameraId: String): String = "count_${deviceKey(cameraId)}"
     private fun schemaVersionKey(cameraId: String): String = "schema_${deviceKey(cameraId)}"
+    private fun exposurePreviewKey(cameraId: String): String =
+        "preview_execution_user_${deviceKey(cameraId)}"
+    private fun exposurePreviewUpdatedKey(cameraId: String): String =
+        "preview_execution_updated_${deviceKey(cameraId)}"
 
     private fun historyKey(cameraId: String, index: Int, field: String): String =
         "history_${deviceKey(cameraId)}_${index}_$field"

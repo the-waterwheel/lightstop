@@ -36,6 +36,8 @@ internal class StaticZoneMarkerTracker(
 
     override fun onMeteringStateChanged(active: Boolean) = Unit
 
+    override fun resumeVisualTrackingAfterMetering() = Unit
+
     override fun resetMarker(id: Int, normalizedX: Float, normalizedY: Float) {
         update(id, normalizedX, normalizedY)
     }

@@ -30,6 +30,11 @@ class CalibrationView(
         fun onResetRequested()
         fun onHistoryRestoreRequested(updatedAtEpochMs: Long)
         fun onMeasureRequested(referenceEv100: Double)
+        fun onExposurePreviewCalibrationStarted()
+        fun onExposurePreviewCalibrationComparisonRequested(correctionEv: Double?)
+        fun onExposurePreviewCalibrationSaveRequested(correctionEv: Double)
+        fun onExposurePreviewCalibrationResetRequested()
+        fun onExposurePreviewCalibrationCancelled()
     }
 
     private data class Geometry(
@@ -82,6 +87,20 @@ class CalibrationView(
         isoEditor,
         luxEditor,
     )
+    private val exposurePreviewCalibrationPanel = ExposurePreviewCalibrationPanel(context, state)
+        .apply {
+            listener = object : ExposurePreviewCalibrationPanel.Listener {
+                override fun onComparisonRequested(correctionEv: Double?) {
+                    this@CalibrationView.listener
+                        ?.onExposurePreviewCalibrationComparisonRequested(correctionEv)
+                }
+
+                override fun onSaveRequested(correctionEv: Double) {
+                    this@CalibrationView.listener
+                        ?.onExposurePreviewCalibrationSaveRequested(correctionEv)
+                }
+            }
+        }
 
     private var mode = CalibrationReferenceMode.EV100
     private var geometry: Geometry? = null
@@ -89,15 +108,20 @@ class CalibrationView(
     private var currentYuvCorrectionEv: Double? = null
     private var currentIspCorrectionEv: Double? = null
     private var currentLegacyCompatibleCorrectionEv: Double? = null
+    private var currentExposurePreviewCorrectionEv = 0.0
     private var boundCalibrationCameraId: String? = null
     private var rawStreamVisible = false
     private var statusText = ""
     private var statusIsError = false
+    private var exposurePreviewCalibrationOpen = false
+    private var exposurePreviewCalibrationPreparing = false
 
     init {
         setWillNotDraw(false)
         isClickable = true
         allEditors.forEach(::addView)
+        addView(exposurePreviewCalibrationPanel)
+        exposurePreviewCalibrationPanel.visibility = GONE
         apertureEditor.setText("5.6")
         shutterEditor.setText("1/125")
         isoEditor.setText(state.iso.toString())
@@ -113,6 +137,7 @@ class CalibrationView(
         yuvCorrectionEv: Double?,
         ispPreviewCorrectionEv: Double?,
         legacyCompatibleCorrectionEv: Double?,
+        exposurePreviewCorrectionEv: Double,
         showRawStream: Boolean,
     ) {
         boundCalibrationCameraId = cameraId
@@ -120,6 +145,10 @@ class CalibrationView(
         currentYuvCorrectionEv = yuvCorrectionEv
         currentIspCorrectionEv = ispPreviewCorrectionEv
         currentLegacyCompatibleCorrectionEv = legacyCompatibleCorrectionEv
+        currentExposurePreviewCorrectionEv = exposurePreviewCorrectionEv
+        if (exposurePreviewCalibrationOpen && exposurePreviewCalibrationPreparing) {
+            exposurePreviewCalibrationPanel.updateInitialCorrection(exposurePreviewCorrectionEv)
+        }
         rawStreamVisible = showRawStream
         invalidate()
     }
@@ -130,6 +159,7 @@ class CalibrationView(
             editor.setHintTextColor(muted)
             editor.background = editorBackground()
         }
+        exposurePreviewCalibrationPanel.invalidate()
         invalidate()
     }
 
@@ -209,6 +239,39 @@ class CalibrationView(
         invalidate()
     }
 
+    fun setExposurePreviewCalibrationReady(ready: Boolean) {
+        if (!exposurePreviewCalibrationOpen) return
+        exposurePreviewCalibrationPreparing = false
+        exposurePreviewCalibrationPanel.setReady(ready)
+    }
+
+    fun showExposurePreviewCalibrationSaved(correctionEv: Double) {
+        currentExposurePreviewCorrectionEv = correctionEv
+        exposurePreviewCalibrationOpen = false
+        exposurePreviewCalibrationPreparing = false
+        exposurePreviewCalibrationPanel.visibility = GONE
+        statusText = localized(
+            "曝光预览辅助修正已保存，不影响测光校准",
+            "Exposure-preview correction saved; meter calibration is unchanged",
+        )
+        statusIsError = false
+        updateEditorVisibility()
+        requestLayout()
+        invalidate()
+    }
+
+    fun showExposurePreviewCalibrationReset() {
+        currentExposurePreviewCorrectionEv = 0.0
+        exposurePreviewCalibrationPanel.reset()
+    }
+
+    /** Returns true when Back only leaves the auxiliary calibration sub-page. */
+    fun closeExposurePreviewCalibration(): Boolean {
+        if (!exposurePreviewCalibrationOpen) return false
+        leaveExposurePreviewCalibration()
+        return true
+    }
+
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         val width = MeasureSpec.getSize(widthMeasureSpec)
         val height = MeasureSpec.getSize(heightMeasureSpec)
@@ -238,11 +301,30 @@ class CalibrationView(
                 MeasureSpec.makeMeasureSpec(editHeight, MeasureSpec.EXACTLY),
             )
         }
+        if (exposurePreviewCalibrationOpen) {
+            exposurePreviewCalibrationPanel.measure(
+                MeasureSpec.makeMeasureSpec(g.controls.width().toInt(), MeasureSpec.EXACTLY),
+                MeasureSpec.makeMeasureSpec(
+                    (g.controls.bottom - g.modes.first().bottom - 8f * density)
+                        .toInt().coerceAtLeast(1),
+                    MeasureSpec.EXACTLY,
+                ),
+            )
+        }
     }
 
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
         val g = calculateGeometry(right - left, bottom - top)
         geometry = g
+        if (exposurePreviewCalibrationOpen) {
+            val panelTop = g.modes.first().bottom + 8f * density
+            exposurePreviewCalibrationPanel.layout(
+                g.controls.left.toInt(),
+                panelTop.toInt(),
+                g.controls.right.toInt(),
+                g.controls.bottom.toInt(),
+            )
+        }
         if (mode == CalibrationReferenceMode.CAMERA_EXPOSURE) {
             val gap = 6f * density
             val fieldWidth = (g.editorArea.width() - gap * 2f) / 3f
@@ -285,6 +367,7 @@ class CalibrationView(
     }
 
     private fun drawHeader(canvas: Canvas, g: Geometry) {
+        val busy = isMeasuring || exposurePreviewCalibrationPreparing
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1.5f * density
         paint.color = foreground
@@ -308,7 +391,7 @@ class CalibrationView(
             boldPaint,
         )
         boldPaint.textSize = 10f * density
-        boldPaint.color = if (isMeasuring) muted else red
+        boldPaint.color = if (busy) muted else red
         drawCenteredText(
             canvas,
             localized("重置", "Reset"),
@@ -355,8 +438,11 @@ class CalibrationView(
 
     private fun drawControls(canvas: Canvas, g: Geometry) {
         g.modes.forEachIndexed { index, rect ->
-            val itemMode = CalibrationReferenceMode.entries[index]
-            val selected = itemMode == mode
+            val selected = if (index == PREVIEW_CALIBRATION_TAB_INDEX) {
+                exposurePreviewCalibrationOpen
+            } else {
+                !exposurePreviewCalibrationOpen && CalibrationReferenceMode.entries[index] == mode
+            }
             paint.style = Paint.Style.FILL
             paint.color = if (selected) foreground else surfaceColor
             canvas.drawRoundRect(rect, 3f * density, 3f * density, paint)
@@ -368,7 +454,16 @@ class CalibrationView(
             paint.color = if (selected) surfaceColor else foreground
             paint.textSize = 8.5f * density
             paint.typeface = Typeface.DEFAULT_BOLD
-            drawCenteredText(canvas, modeLabel(itemMode), rect.centerX(), rect.centerY(), paint)
+            val label = if (index == PREVIEW_CALIBRATION_TAB_INDEX) {
+                localized("预览校准", "Preview")
+            } else {
+                modeLabel(CalibrationReferenceMode.entries[index])
+            }
+            drawCenteredText(canvas, label, rect.centerX(), rect.centerY(), paint)
+        }
+
+        if (exposurePreviewCalibrationOpen) {
+            return
         }
 
         paint.style = Paint.Style.FILL
@@ -507,38 +602,53 @@ class CalibrationView(
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (event.actionMasked != MotionEvent.ACTION_UP) return true
         val g = geometry ?: return true
+        if (event.actionMasked != MotionEvent.ACTION_UP) return true
         when {
             g.back.contains(event.x, event.y) -> {
                 haptic()
-                if (isMeasuring) {
+                if (isMeasuring || exposurePreviewCalibrationPreparing) {
                     statusText = localized("请等待本次测光完成", "Wait for this measurement")
                     statusIsError = true
                     invalidate()
+                } else if (exposurePreviewCalibrationOpen) {
+                    leaveExposurePreviewCalibration()
                 } else {
                     listener?.onExitRequested()
                 }
             }
-            g.reset.contains(event.x, event.y) && !isMeasuring -> {
+            g.reset.contains(event.x, event.y) &&
+                !isMeasuring && !exposurePreviewCalibrationPreparing -> {
                 haptic()
-                listener?.onResetRequested()
+                if (exposurePreviewCalibrationOpen) {
+                    listener?.onExposurePreviewCalibrationResetRequested()
+                } else {
+                    listener?.onResetRequested()
+                }
             }
-            g.camera.contains(event.x, event.y) && !isMeasuring -> {
+            g.camera.contains(event.x, event.y) &&
+                !isMeasuring && !exposurePreviewCalibrationPreparing -> {
                 haptic()
+                if (exposurePreviewCalibrationOpen) leaveExposurePreviewCalibration()
                 clearEditorFocus()
                 listener?.onCameraRequested()
             }
-            g.modes.indexOfFirst { it.contains(event.x, event.y) } >= 0 && !isMeasuring -> {
+            g.modes.indexOfFirst { it.contains(event.x, event.y) } >= 0 &&
+                !isMeasuring && !exposurePreviewCalibrationPreparing -> {
                 val index = g.modes.indexOfFirst { it.contains(event.x, event.y) }
-                mode = CalibrationReferenceMode.entries[index]
-                statusText = ""
-                updateEditorVisibility()
-                haptic()
-                requestLayout()
-                invalidate()
+                if (index == PREVIEW_CALIBRATION_TAB_INDEX) {
+                    enterExposurePreviewCalibration()
+                } else {
+                    if (exposurePreviewCalibrationOpen) leaveExposurePreviewCalibration()
+                    mode = CalibrationReferenceMode.entries[index]
+                    statusText = ""
+                    updateEditorVisibility()
+                    haptic()
+                    requestLayout()
+                    invalidate()
+                }
             }
-            !isMeasuring -> {
+            !isMeasuring && !exposurePreviewCalibrationOpen -> {
                 val historyIndex = g.historyRows.indexOfFirst { row ->
                     historyActionRect(row).contains(event.x, event.y)
                 }
@@ -559,6 +669,31 @@ class CalibrationView(
         }
         performClick()
         return true
+    }
+
+    private fun enterExposurePreviewCalibration() {
+        if (exposurePreviewCalibrationOpen) return
+        exposurePreviewCalibrationOpen = true
+        exposurePreviewCalibrationPreparing = true
+        exposurePreviewCalibrationPanel.begin(currentExposurePreviewCorrectionEv)
+        exposurePreviewCalibrationPanel.visibility = VISIBLE
+        clearEditorFocus()
+        updateEditorVisibility()
+        haptic()
+        listener?.onExposurePreviewCalibrationStarted()
+        requestLayout()
+        invalidate()
+    }
+
+    private fun leaveExposurePreviewCalibration() {
+        exposurePreviewCalibrationOpen = false
+        exposurePreviewCalibrationPreparing = false
+        exposurePreviewCalibrationPanel.visibility = GONE
+        statusText = ""
+        listener?.onExposurePreviewCalibrationCancelled()
+        updateEditorVisibility()
+        requestLayout()
+        invalidate()
     }
 
     override fun performClick(): Boolean {
@@ -641,8 +776,9 @@ class CalibrationView(
         )
         val modeGap = 5f * density
         val modeHeight = min(34f * density, controls.height() * 0.16f)
-        val modeWidth = (controls.width() - modeGap * 2f) / 3f
-        val modes = CalibrationReferenceMode.entries.indices.map { index ->
+        val modeCount = CalibrationReferenceMode.entries.size + 1
+        val modeWidth = (controls.width() - modeGap * (modeCount - 1)) / modeCount
+        val modes = (0 until modeCount).map { index ->
             val left = controls.left + index * (modeWidth + modeGap)
             RectF(left, controls.top, left + modeWidth, controls.top + modeHeight)
         }
@@ -744,6 +880,10 @@ class CalibrationView(
     }
 
     private fun updateEditorVisibility() {
+        if (exposurePreviewCalibrationOpen) {
+            allEditors.forEach { it.visibility = GONE }
+            return
+        }
         evEditor.visibility = if (mode == CalibrationReferenceMode.EV100) VISIBLE else GONE
         val cameraVisible = if (mode == CalibrationReferenceMode.CAMERA_EXPOSURE) VISIBLE else GONE
         apertureEditor.visibility = cameraVisible
@@ -866,6 +1006,10 @@ class CalibrationView(
 
     private fun haptic() {
         performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+    }
+
+    companion object {
+        private val PREVIEW_CALIBRATION_TAB_INDEX = CalibrationReferenceMode.entries.size
     }
 
     private fun drawCenteredText(

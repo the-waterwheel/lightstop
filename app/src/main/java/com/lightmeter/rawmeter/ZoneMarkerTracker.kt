@@ -18,6 +18,12 @@ interface ZoneMarkerTracker {
     fun clearMarkers()
     /** Protect marker geometry while RAW capture interrupts or changes the ISP preview exposure. */
     fun onMeteringStateChanged(active: Boolean)
+    /**
+     * End the short gyroscope-only holdover after the live preview stream is usable again.
+     * The next visual frame must establish fresh optical-flow state instead of being compared
+     * with the frozen pre-RAW image.
+     */
+    fun resumeVisualTrackingAfterMetering()
     fun resetMarker(id: Int, normalizedX: Float, normalizedY: Float)
     /** Replace all marker anchors after a discontinuous, non-zoom preview geometry change. */
     fun reanchor(markers: List<ZoneMarker>)

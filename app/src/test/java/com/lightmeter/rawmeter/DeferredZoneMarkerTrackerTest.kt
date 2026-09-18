@@ -50,6 +50,7 @@ class DeferredZoneMarkerTrackerTest {
         override fun removeMarker(id: Int) = Unit
         override fun clearMarkers() = Unit
         override fun onMeteringStateChanged(active: Boolean) = Unit
+        override fun resumeVisualTrackingAfterMetering() = Unit
         override fun resetMarker(id: Int, normalizedX: Float, normalizedY: Float) = Unit
         override fun reanchor(markers: List<ZoneMarker>) = Unit
 

@@ -3,6 +3,43 @@
 All notable user-facing changes are recorded here. The project follows
 [Semantic Versioning](https://semver.org/) for public releases.
 
+## 0.4.0 - 2026-09-18
+
+- Kept one stable `TextureView`/`SurfaceTexture` transport geometry across
+  Normal and Zone. Mode transitions now change the clipped viewport and
+  controls without resizing the native preview layer, preventing the stretched
+  image left behind by affected vendor compositors.
+- Repositioned the parameter-record slider below the meter button in every
+  mode. Metering-angle and flash-distance controls now sit closer together in
+  a parallel row above it, and expanded dials take precedence over the slider
+  so the controls no longer obscure each other.
+- Reduced isolated Zone RAW latency by retaining reusable dormant RAW/YUV
+  readers between compatible sessions. Only the selected profile's surfaces
+  are attached to an active session, so the existing vendor-HAL isolation,
+  session ownership, fallback order, and recovery boundaries remain intact.
+- Added hold-to-remeasure for existing Zone points. A supported RAW workflow
+  captures one shared RAW set, registers every visible point independently,
+  and reports points outside the valid view as not updated instead of writing
+  an unsafe estimate.
+- During isolated RAW capture, Zone markers now remain visually frozen with
+  the frozen preview while a hidden gyroscope estimate advances their scene
+  position. Visual tracking and descriptor re-identification resume only after
+  a real live preview/YUV frame returns.
+- Improved Zone tracking under one-handed shake and longer off-screen motion:
+  rapid-motion optical-flow windows, interpolated marker presentation,
+  preserved feature anchors, camera-ray gyroscope propagation, bounded local
+  re-entry search, and periodic full-frame descriptor fallback reduce jumps and
+  relative spreading. Visually lost predictions stay hidden until confirmed.
+- Added an independent per-camera exposure-preview calibration. It corrects the
+  viewfinder's visual rendering of 0 EV without changing formal RAW/YUV/ISP
+  metering calibration; changing either calibration invalidates stale readings
+  rather than stacking old and new corrections.
+- Split camera opening, preview requests, runtime metadata, distance capture,
+  RAW record capture, vignetting capture, preview health, and exposure-preview
+  state into focused coordinators behind `CameraController`. The public
+  lifecycle, physical-camera routing, isolated-session policy, and HAL fallback
+  strategy are unchanged.
+
 ## 0.3.1 - 2026-09-12
 
 - Disabled Android Gradle Plugin VCS metadata in release APKs so distributed

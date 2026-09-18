@@ -63,10 +63,22 @@ internal class CameraSessionCoordinator(
 
     var previewSurface: Surface? = null
         private set
-    var rawReader: ImageReader? = null
-        private set
-    var trackingReader: ImageReader? = null
-        private set
+    /**
+     * Only readers attached to the current Camera2 session are exposed to consumers. The backing
+     * readers may stay allocated while dormant so an isolated Zone RAW round trip does not rebuild
+     * both buffer queues. Dormant surfaces are never added to the active session.
+     */
+    val rawReader: ImageReader?
+        get() = cachedRawReader.takeIf { rawOutputActive }
+    val trackingReader: ImageReader?
+        get() = cachedTrackingReader.takeIf { trackingOutputActive }
+
+    private var cachedRawReader: ImageReader? = null
+    private var cachedTrackingReader: ImageReader? = null
+    private var cachedRawSize: Size? = null
+    private var cachedTrackingSize: Size? = null
+    private var rawOutputActive = false
+    private var trackingOutputActive = false
 
     private var activeGeneration: Int? = null
     private var sessionRevision = 0L
@@ -85,29 +97,13 @@ internal class CameraSessionCoordinator(
         previewSurface?.release()
         previewSurface = Surface(surfaceTexture)
 
-        rawReader?.close()
-        rawReader = rawSize?.let { size ->
-            ImageReader.newInstance(
-                size.width,
-                size.height,
-                ImageFormat.RAW_SENSOR,
-                RAW_READER_MAX_IMAGES,
-            ).also { reader ->
-                reader.setOnImageAvailableListener(onRawImageAvailable, handler)
-            }
-        }
-
-        trackingReader?.close()
-        trackingReader = trackingSize?.let { size ->
-            ImageReader.newInstance(
-                size.width,
-                size.height,
-                ImageFormat.YUV_420_888,
-                ZoneLumaBufferPool.DEFAULT_CAPACITY,
-            ).also { reader ->
-                reader.setOnImageAvailableListener(onTrackingImageAvailable, handler)
-            }
-        }
+        closeCachedReaders()
+        ensureReaders(rawSize, trackingSize)
+        setActiveReaders(
+            rawActive = rawSize != null,
+            trackingActive = trackingSize != null,
+            handler = handler,
+        )
     }
 
     @SuppressLint("MissingPermission")
@@ -135,9 +131,10 @@ internal class CameraSessionCoordinator(
     }
 
     /**
-     * Replaces only the capture session and ImageReaders while retaining the open CameraDevice and
-     * TextureView Surface. Excluding [previewSurface] keeps its last submitted buffer visible during
-     * a short RAW-only Zone measurement.
+     * Replaces only the capture session while retaining the open CameraDevice, TextureView Surface,
+     * and compatible dormant ImageReaders. Excluding [previewSurface] keeps its last submitted
+     * buffer visible during a short RAW-only Zone measurement. Reader retention does not combine
+     * stream profiles: [createSession] adds only the outputs enabled by [profile].
      */
     fun reconfigure(
         profile: CameraSessionProfile,
@@ -154,10 +151,17 @@ internal class CameraSessionCoordinator(
         if (profile.usesRaw) checkNotNull(rawSize) { "RAW output size is unavailable" }
         if (profile.usesTracking) checkNotNull(trackingSize) { "YUV output size is unavailable" }
 
+        // Stop callbacks before invalidating the old session. A dormant Reader may retain its
+        // Surface, but it must not deliver a late frame into the other isolated workflow.
+        deactivateReaderCallbacks()
         invalidateCurrentSession()
-        replaceReaders(
+        ensureReaders(
             rawSize = rawSize.takeIf { profile.usesRaw },
             trackingSize = trackingSize.takeIf { profile.usesTracking },
+        )
+        setActiveReaders(
+            rawActive = profile.usesRaw,
+            trackingActive = profile.usesTracking,
             handler = handler,
         )
         createSession(
@@ -187,18 +191,7 @@ internal class CameraSessionCoordinator(
             Unit
         }
         device = null
-        try {
-            rawReader?.close()
-        } catch (_: Exception) {
-            Unit
-        }
-        rawReader = null
-        try {
-            trackingReader?.close()
-        } catch (_: Exception) {
-            Unit
-        }
-        trackingReader = null
+        closeCachedReaders()
         previewSurface?.release()
         previewSurface = null
     }
@@ -388,33 +381,86 @@ internal class CameraSessionCoordinator(
         configurationTimeoutTask = null
     }
 
-    private fun replaceReaders(
+    private fun ensureReaders(
         rawSize: Size?,
         trackingSize: Size?,
-        handler: Handler,
     ) {
-        runCatching { rawReader?.close() }
-        rawReader = rawSize?.let { size ->
-            ImageReader.newInstance(
-                size.width,
-                size.height,
+        if (rawSize != null && (cachedRawReader == null || cachedRawSize != rawSize)) {
+            runCatching { cachedRawReader?.close() }
+            cachedRawReader = ImageReader.newInstance(
+                rawSize.width,
+                rawSize.height,
                 ImageFormat.RAW_SENSOR,
                 RAW_READER_MAX_IMAGES,
-            ).also { reader ->
-                reader.setOnImageAvailableListener(onRawImageAvailable, handler)
-            }
+            )
+            cachedRawSize = rawSize
         }
-        runCatching { trackingReader?.close() }
-        trackingReader = trackingSize?.let { size ->
-            ImageReader.newInstance(
-                size.width,
-                size.height,
+        if (trackingSize != null &&
+            (cachedTrackingReader == null || cachedTrackingSize != trackingSize)
+        ) {
+            runCatching { cachedTrackingReader?.close() }
+            cachedTrackingReader = ImageReader.newInstance(
+                trackingSize.width,
+                trackingSize.height,
                 ImageFormat.YUV_420_888,
                 ZoneLumaBufferPool.DEFAULT_CAPACITY,
-            ).also { reader ->
-                reader.setOnImageAvailableListener(onTrackingImageAvailable, handler)
-            }
+            )
+            cachedTrackingSize = trackingSize
         }
+    }
+
+    private fun setActiveReaders(
+        rawActive: Boolean,
+        trackingActive: Boolean,
+        handler: Handler,
+    ) {
+        check(!rawActive || cachedRawReader != null) { "RAW reader is unavailable" }
+        check(!trackingActive || cachedTrackingReader != null) { "YUV reader is unavailable" }
+        rawOutputActive = rawActive
+        trackingOutputActive = trackingActive
+        cachedRawReader?.let { reader ->
+            drainReader(reader)
+            reader.setOnImageAvailableListener(
+                if (rawActive) onRawImageAvailable else null,
+                if (rawActive) handler else null,
+            )
+        }
+        cachedTrackingReader?.let { reader ->
+            drainReader(reader)
+            reader.setOnImageAvailableListener(
+                if (trackingActive) onTrackingImageAvailable else null,
+                if (trackingActive) handler else null,
+            )
+        }
+        Log.i(
+            TAG,
+            "Reader cache activeRaw=$rawActive activeTracking=$trackingActive " +
+                "cachedRaw=${cachedRawReader != null} cachedTracking=${cachedTrackingReader != null}",
+        )
+    }
+
+    private fun deactivateReaderCallbacks() {
+        cachedRawReader?.setOnImageAvailableListener(null, null)
+        cachedTrackingReader?.setOnImageAvailableListener(null, null)
+        rawOutputActive = false
+        trackingOutputActive = false
+    }
+
+    private fun drainReader(reader: ImageReader) {
+        while (true) {
+            val image = runCatching { reader.acquireNextImage() }.getOrNull() ?: return
+            image.close()
+        }
+    }
+
+    private fun closeCachedReaders() {
+        deactivateReaderCallbacks()
+        runCatching { cachedRawReader?.close() }
+        runCatching { cachedTrackingReader?.close() }
+        cachedRawReader = null
+        cachedTrackingReader = null
+        cachedRawSize = null
+        cachedTrackingSize = null
     }
 
     private fun isActive(generation: Int): Boolean = activeGeneration == generation

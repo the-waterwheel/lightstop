@@ -42,6 +42,7 @@ class ZoneMeterSession {
         private set
 
     private var placementOffsetBeforePending = 0.0
+    private var pendingMarkerIsNew = false
 
     fun initializeFromMeter(state: MeterState) {
         // Zone mode deliberately has no ISO control. Capture the ISO selected in Normal every
@@ -79,6 +80,27 @@ class ZoneMeterSession {
         )
         markers += marker
         pendingMarkerId = marker.id
+        pendingMarkerIsNew = true
+        selectedMarkerId = null
+        return marker
+    }
+
+    /** Opens an existing tracked point for a fresh reading without changing its identity. */
+    fun beginRemeasure(markerId: Int, iso: Int): ZoneMarker? {
+        if (pendingMarkerId != null) return null
+        val marker = markers.firstOrNull { it.id == markerId } ?: return null
+        if (marker.ev100 == null || marker.trackingState == ZoneTrackingState.LOST ||
+            marker.normalizedX !in 0f..1f || marker.normalizedY !in 0f..1f
+        ) {
+            return null
+        }
+        placementOffsetBeforePending = if (markers.any { it.ev100 != null }) {
+            weightedMeanEv100() - selectedExposureEv100(iso)
+        } else {
+            0.0
+        }
+        pendingMarkerId = marker.id
+        pendingMarkerIsNew = false
         selectedMarkerId = null
         return marker
     }
@@ -90,15 +112,48 @@ class ZoneMeterSession {
         marker.source = reading.source
         marker.trackingState = ZoneTrackingState.TRACKED
         pendingMarkerId = null
+        pendingMarkerIsNew = false
         val targetExposureEv100 = weightedMeanEv100() - placementOffsetBeforePending
         setExposureEv100(targetExposureEv100, iso, lockMode)
         return marker
     }
 
+    /** Applies readings produced from one shared RAW burst without opening points one by one. */
+    fun completeRemeasurements(
+        results: List<ZoneMeteringResult>,
+        iso: Int,
+        lockMode: ExposureLockMode,
+    ): List<ZoneMarker> {
+        if (pendingMarkerId != null || results.isEmpty()) return emptyList()
+        val placementOffset = if (markers.any { it.ev100 != null }) {
+            weightedMeanEv100() - selectedExposureEv100(iso)
+        } else {
+            0.0
+        }
+        val readingsById = results.associateBy(ZoneMeteringResult::markerId)
+        val updated = markers.mapNotNull { marker ->
+            val result = readingsById[marker.id] ?: return@mapNotNull null
+            marker.ev100 = result.reading.sceneEv100
+            marker.source = result.reading.source
+            marker.trackingState = ZoneTrackingState.TRACKED
+            marker
+        }
+        if (updated.isNotEmpty()) {
+            setExposureEv100(weightedMeanEv100() - placementOffset, iso, lockMode)
+        }
+        return updated
+    }
+
     fun cancelPending(): ZoneMarker? {
         val id = pendingMarkerId ?: return null
         pendingMarkerId = null
-        return markers.firstOrNull { it.id == id }?.also(markers::remove)
+        val removeMarker = pendingMarkerIsNew
+        pendingMarkerIsNew = false
+        return if (removeMarker) {
+            markers.firstOrNull { it.id == id }?.also(markers::remove)
+        } else {
+            null
+        }
     }
 
     fun selectedExposureEv100(iso: Int): Double =
@@ -185,6 +240,7 @@ class ZoneMeterSession {
         val removed = markers.toList()
         markers.clear()
         pendingMarkerId = null
+        pendingMarkerIsNew = false
         selectedMarkerId = null
         return removed
     }

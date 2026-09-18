@@ -16,8 +16,8 @@ android {
         applicationId = "com.lightmeter.rawmeter"
         minSdk = 28
         targetSdk = 36
-        versionCode = 8
-        versionName = "0.3.1"
+        versionCode = 9
+        versionName = "0.4.0"
 
         externalNativeBuild {
             cmake {

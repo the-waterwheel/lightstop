@@ -55,6 +55,48 @@ class ExposurePreviewMathTest {
     }
 
     @Test
+    fun auxiliaryPreviewCalibrationCorrectsManualAndAeInOppositeDirections() {
+        val selection = ExposurePreviewSelection(
+            previewCalibratedSceneEv100 = 12.0,
+            selectedExposureEv100 = 11.0,
+            previewCorrectionEv = 0.4,
+            executionCorrectionEv = 2.0,
+        )
+
+        assertEquals(12.6, ExposurePreviewMath.targetCameraEv100(selection), 0.0001)
+        assertEquals(-1.0, ExposurePreviewMath.requestedCompensationEv(selection), 0.0001)
+        assertEquals(
+            11.25,
+            ExposurePreviewCalibrationMath.calibrationManualTargetEv100(9.25, 2.0),
+            0.0001,
+        )
+        assertEquals(
+            -2.0,
+            ExposurePreviewCalibrationMath.calibrationAeCompensationEv(2.0),
+            0.0001,
+        )
+    }
+
+    @Test
+    fun auxiliaryPreviewCalibrationUsesThirdStopStepsAndSafeLimits() {
+        assertEquals(
+            1.0 / 3.0,
+            ExposurePreviewCalibrationMath.clampAndSnapCorrection(0.4),
+            0.0001,
+        )
+        assertEquals(
+            4.0,
+            ExposurePreviewCalibrationMath.clampAndSnapCorrection(9.0),
+            0.0001,
+        )
+        assertEquals(
+            -4.0,
+            ExposurePreviewCalibrationMath.clampAndSnapCorrection(-9.0),
+            0.0001,
+        )
+    }
+
+    @Test
     fun manualPreviewExposureUsesTargetEvAndRespectsSensorRanges() {
         val exposure = ExposurePreviewMath.manualExposure(
             targetCameraEv100 = 10.0,

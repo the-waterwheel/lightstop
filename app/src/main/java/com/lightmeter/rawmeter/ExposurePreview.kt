@@ -13,6 +13,7 @@ data class ExposurePreviewSelection(
     val previewCalibratedSceneEv100: Double,
     val selectedExposureEv100: Double,
     val previewCorrectionEv: Double,
+    val executionCorrectionEv: Double = 0.0,
 )
 
 data class ExposurePreviewManualExposure(
@@ -52,11 +53,26 @@ object ExposurePreviewMath {
     ): Double = measuredSceneEv100 - sourceCorrectionEv + previewCorrectionEv
 
     fun requestedCompensationEv(selection: ExposurePreviewSelection): Double =
-        selection.previewCalibratedSceneEv100 - selection.selectedExposureEv100
+        selection.previewCalibratedSceneEv100 - selection.selectedExposureEv100 -
+            selection.executionCorrectionEv
 
     /** Camera exposure EV that renders the calibrated photographic selection at reference luma. */
     fun targetCameraEv100(selection: ExposurePreviewSelection): Double =
-        selection.selectedExposureEv100 - selection.previewCorrectionEv
+        selection.selectedExposureEv100 - selection.previewCorrectionEv +
+            selection.executionCorrectionEv
+
+    fun cameraEv100(
+        aperture: Double,
+        exposureTimeNs: Long,
+        sensitivity: Int,
+    ): Double? {
+        if (!aperture.isFinite() || aperture <= 0.0 || exposureTimeNs <= 0L || sensitivity <= 0) {
+            return null
+        }
+        val seconds = exposureTimeNs / NANOSECONDS_PER_SECOND
+        return ExposureMath.log2(aperture * aperture / seconds * 100.0 / sensitivity)
+            .takeIf(Double::isFinite)
+    }
 
     /**
      * Converts the selected photographic EV into a responsive Camera2 preview exposure. Preview
@@ -142,4 +158,23 @@ object ExposurePreviewMath {
     private const val NANOSECONDS_PER_SECOND = 1_000_000_000.0
     private const val PREFERRED_PREVIEW_SECONDS = 1.0 / 30.0
     private const val HARD_PREVIEW_SECONDS = 1.0 / 15.0
+}
+
+/** Independent, per-camera correction for the execution of exposure preview. */
+object ExposurePreviewCalibrationMath {
+    const val MIN_CORRECTION_EV = -4.0
+    const val MAX_CORRECTION_EV = 4.0
+    const val STEP_EV = 1.0 / 3.0
+
+    fun snapCorrection(value: Double): Double =
+        (value / STEP_EV).roundToInt() * STEP_EV
+
+    fun clampAndSnapCorrection(value: Double): Double = snapCorrection(
+        value.coerceIn(MIN_CORRECTION_EV, MAX_CORRECTION_EV),
+    ).coerceIn(MIN_CORRECTION_EV, MAX_CORRECTION_EV)
+
+    fun calibrationManualTargetEv100(neutralCameraEv100: Double, correctionEv: Double): Double =
+        neutralCameraEv100 + correctionEv
+
+    fun calibrationAeCompensationEv(correctionEv: Double): Double = -correctionEv
 }

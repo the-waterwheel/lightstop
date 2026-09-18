@@ -96,6 +96,23 @@ internal class PreviewSurfaceCoordinator(
     }
 
     fun onPreviewStarted() {
+        // Replacing a CameraCaptureSession can replace the native producer/layer transaction even
+        // though Camera2 deliberately keeps the same TextureView Surface. A few vendor stacks then
+        // forget both the SurfaceTexture default buffer geometry and its native transform while
+        // retaining the Java objects. Reasserting only the Matrix leaves the producer dimensions
+        // ambiguous and can stretch the first new Zone/Normal stream to the View bounds.
+        val texture = textureView()
+        val size = previewSize()
+        if (texture?.isAvailable == true && size != null) {
+            runCatching {
+                texture.surfaceTexture?.setDefaultBufferSize(size.width, size.height)
+            }.onFailure { error ->
+                Log.w(TAG, "Unable to resynchronize preview buffer size after session change", error)
+            }
+        }
+        // Force the same two-step identity/current-matrix transaction used for foreground
+        // recovery on the first frame from every newly started preview session.
+        forceRecommitOnNextFrame = true
         confirmationFramesRemaining = CONFIRMATION_FRAMES
     }
 
@@ -114,7 +131,8 @@ internal class PreviewSurfaceCoordinator(
         if (forceRecommitScheduled) {
             forceRecommitOnNextFrame = false
             // Some vendor compositors retain the Java Matrix but lose the native transaction while
-            // backgrounded. Publish identity for one traversal and then the current matrix again.
+            // backgrounded or while replacing a CameraCaptureSession. Publish identity for one
+            // traversal and then the current matrix again.
             val expectedRevision = revision.incrementAndGet()
             textureView()?.setTransform(Matrix())
             lastWatchdogAtMs = SystemClock.uptimeMillis()
