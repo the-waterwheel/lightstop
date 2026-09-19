@@ -15,9 +15,15 @@ internal data class DepthOfFieldGeometry(
     val cocControl: RectF,
     val apertureDial: RectF,
     val focalDial: RectF,
+    val autoDistanceButton: RectF,
+    val autoDistanceLabel: RectF,
+    val autoDistanceHelp: RectF,
 ) {
     companion object {
         val EMPTY = DepthOfFieldGeometry(
+            RectF(),
+            RectF(),
+            RectF(),
             RectF(),
             RectF(),
             RectF(),
@@ -76,11 +82,44 @@ internal object DepthOfFieldGeometryCalculator {
         val coc = RectF(selectorLeft, frame.bottom + selectorGap, selectorLeft + selectorWidth, frame.bottom + selectorGap + selectorHeight)
 
         val dialAvailableHeight = (h - controlsTop - pad).coerceAtLeast(1f)
-        val dialSize = min(min(w * 0.33f, 132f * density), dialAvailableHeight)
-            .coerceAtLeast(min(64f * density, dialAvailableHeight))
+        // Reserve a real row above the focal-length dial. On short portrait tool panels the old
+        // dial consumed every remaining pixel, which would put the automatic-distance controls
+        // directly on top of the dial instead of above it.
+        val automaticDistanceRowReserve = 37f * density
+        val dialHeightBudget = (dialAvailableHeight - automaticDistanceRowReserve)
+            .coerceAtLeast(1f)
+        val dialSize = min(min(w * 0.33f, 132f * density), dialHeightBudget)
+            .coerceAtLeast(min(64f * density, dialHeightBudget))
         val dialTop = h - pad - dialSize
         val apertureDial = RectF(pad, dialTop, pad + dialSize, dialTop + dialSize)
         val focalDial = RectF(w - pad - dialSize, dialTop, w - pad, dialTop + dialSize)
+        val autoButtonSize = min(30f * density, dialSize * 0.28f).coerceAtLeast(24f * density)
+        val autoHelpSize = min(24f * density, autoButtonSize)
+        val autoLabelWidth = min(72f * density, w * 0.18f)
+        val autoGap = 5f * density
+        val autoRowWidth = autoButtonSize + autoGap + autoLabelWidth + autoGap + autoHelpSize
+        val autoRowLeft = (focalDial.centerX() - autoRowWidth / 2f)
+            .coerceIn(pad, (w - pad - autoRowWidth).coerceAtLeast(pad))
+        val autoRowTop = (focalDial.top - autoButtonSize - 7f * density)
+            .coerceAtLeast(controlsTop)
+        val autoDistanceButton = RectF(
+            autoRowLeft,
+            autoRowTop,
+            autoRowLeft + autoButtonSize,
+            autoRowTop + autoButtonSize,
+        )
+        val autoDistanceLabel = RectF(
+            autoDistanceButton.right + autoGap,
+            autoRowTop,
+            autoDistanceButton.right + autoGap + autoLabelWidth,
+            autoRowTop + autoButtonSize,
+        )
+        val autoDistanceHelp = RectF(
+            autoDistanceLabel.right + autoGap,
+            autoRowTop + (autoButtonSize - autoHelpSize) / 2f,
+            autoDistanceLabel.right + autoGap + autoHelpSize,
+            autoRowTop + (autoButtonSize + autoHelpSize) / 2f,
+        )
 
         return DepthOfFieldGeometry(
             headerBack = headerBack,
@@ -92,6 +131,9 @@ internal object DepthOfFieldGeometryCalculator {
             cocControl = coc,
             apertureDial = apertureDial,
             focalDial = focalDial,
+            autoDistanceButton = autoDistanceButton,
+            autoDistanceLabel = autoDistanceLabel,
+            autoDistanceHelp = autoDistanceHelp,
         )
     }
 }

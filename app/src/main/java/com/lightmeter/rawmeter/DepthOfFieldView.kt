@@ -2,6 +2,7 @@ package com.lightmeter.rawmeter
 
 import android.animation.ValueAnimator
 import android.annotation.SuppressLint
+import android.app.AlertDialog
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
@@ -32,12 +33,15 @@ class DepthOfFieldView(
     interface Listener {
         fun onBackToToolsRequested()
         fun onCloseRequested()
+        fun onAutomaticDistanceSampleRequested()
+        fun onAutomaticDistanceStopped()
     }
 
     var listener: Listener? = null
 
     private enum class TouchTarget {
-        BACK, CLOSE, FRAME, COC, APERTURE, FOCAL_LENGTH, FOCUS_RULER, FOCUS_VALUE, NONE
+        BACK, CLOSE, FRAME, COC, APERTURE, FOCAL_LENGTH, FOCUS_RULER, FOCUS_VALUE,
+        AUTO_DISTANCE, AUTO_DISTANCE_HELP, NONE
     }
 
     private val density = resources.displayMetrics.density
@@ -97,6 +101,15 @@ class DepthOfFieldView(
     private var apertureVisualOffset = 0f
     private var focalVisualOffset = 0f
     private var moved = false
+    private var automaticDistanceEnabled = false
+    private var lastAutomaticDistanceTimestampNs = Long.MIN_VALUE
+    private val automaticDistanceSampler = object : Runnable {
+        override fun run() {
+            if (!automaticDistanceEnabled || visibility != VISIBLE) return
+            listener?.onAutomaticDistanceSampleRequested()
+            postDelayed(this, AUTOMATIC_DISTANCE_INTERVAL_MS)
+        }
+    }
 
     init {
         isClickable = true
@@ -121,6 +134,21 @@ class DepthOfFieldView(
             return
         }
         updateMarkers(animate = true)
+        if (automaticDistanceEnabled) startAutomaticDistanceSampling()
+    }
+
+    fun pausePage() {
+        setAutomaticDistanceEnabled(false)
+    }
+
+    fun isAutomaticDistanceEnabled(): Boolean = automaticDistanceEnabled
+
+    fun updateAutomaticDistance(distanceState: DistanceMeasurementState) {
+        if (!automaticDistanceEnabled) return
+        val estimate = DepthOfFieldAutomaticDistancePolicy.usableEstimate(distanceState) ?: return
+        if (estimate.timestampNs <= lastAutomaticDistanceTimestampNs) return
+        lastAutomaticDistanceTimestampNs = estimate.timestampNs
+        if (session.selectFocusDistance(estimate.meters)) updateMarkers(animate = true)
     }
 
     override fun onSizeChanged(width: Int, height: Int, oldWidth: Int, oldHeight: Int) {
@@ -184,13 +212,6 @@ class DepthOfFieldView(
         paint.strokeWidth = 2f * density
         paint.color = foreground
         canvas.drawLine(lineLeft, rulerY, lineRight, rulerY, paint)
-        val tickDistances = listOf(0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 50.0, null)
-        tickDistances.forEach { distance ->
-            val x = lineLeft + lineWidth * DepthOfFieldMath.distanceFraction(distance).toFloat()
-            val tall = distance == 1.0 || distance == 10.0 || distance == null
-            canvas.drawLine(x, rulerY - if (tall) 7f * density else 4f * density, x, rulerY + if (tall) 7f * density else 4f * density, paint)
-        }
-
         val nearX = lineLeft + lineWidth * displayedNearFraction.toFloat()
         val focusX = lineLeft + lineWidth * displayedFocusFraction.toFloat()
         val farX = lineLeft + lineWidth * displayedFarFraction.toFloat()
@@ -272,6 +293,41 @@ class DepthOfFieldView(
             frameLabel,
         )
         drawSelector(canvas, geometry.cocControl, "c", "${"%.3f".format(session.circleOfConfusionMm)} mm")
+        drawAutomaticDistanceControl(canvas)
+    }
+
+    private fun drawAutomaticDistanceControl(canvas: Canvas) {
+        val button = geometry.autoDistanceButton
+        val help = geometry.autoDistanceHelp
+        val blue = Color.rgb(38, 112, 205)
+        paint.style = Paint.Style.FILL
+        paint.color = if (automaticDistanceEnabled) Color.argb(38, 38, 112, 205) else background
+        canvas.drawCircle(button.centerX(), button.centerY(), button.width() * 0.43f, paint)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = if (automaticDistanceEnabled) 2.1f * density else 1.4f * density
+        paint.color = blue
+        canvas.drawCircle(button.centerX(), button.centerY(), button.width() * 0.43f, paint)
+        boldPaint.color = blue
+        boldPaint.textAlign = Paint.Align.CENTER
+        boldPaint.textSize = 16f * scaledDensity
+        drawTextCentered(canvas, "A", button.centerX(), button.centerY(), boldPaint)
+
+        boldPaint.color = foreground
+        boldPaint.textSize = 10f * scaledDensity
+        drawTextCentered(
+            canvas,
+            localized("自动测距", "Auto distance"),
+            geometry.autoDistanceLabel.centerX(),
+            geometry.autoDistanceLabel.centerY(),
+            boldPaint,
+        )
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 1.2f * density
+        paint.color = foreground
+        canvas.drawCircle(help.centerX(), help.centerY(), help.width() * 0.39f, paint)
+        boldPaint.color = foreground
+        boldPaint.textSize = 10f * scaledDensity
+        drawTextCentered(canvas, "?", help.centerX(), help.centerY(), boldPaint)
     }
 
     private fun drawDial(
@@ -374,6 +430,9 @@ class DepthOfFieldView(
                     geometry.focusValue.contains(event.x, event.y) -> TouchTarget.FOCUS_VALUE
                     geometry.rulerTrack.contains(event.x, event.y) -> TouchTarget.FOCUS_RULER
                     geometry.apertureDial.contains(event.x, event.y) -> TouchTarget.APERTURE
+                    geometry.autoDistanceButton.contains(event.x, event.y) ||
+                        geometry.autoDistanceLabel.contains(event.x, event.y) -> TouchTarget.AUTO_DISTANCE
+                    geometry.autoDistanceHelp.contains(event.x, event.y) -> TouchTarget.AUTO_DISTANCE_HELP
                     geometry.focalDial.contains(event.x, event.y) -> TouchTarget.FOCAL_LENGTH
                     else -> TouchTarget.NONE
                 }
@@ -404,14 +463,23 @@ class DepthOfFieldView(
                 if (!moved) {
                     performClick()
                     when (touchTarget) {
-                        TouchTarget.BACK -> listener?.onBackToToolsRequested()
-                        TouchTarget.CLOSE -> listener?.onCloseRequested()
+                        TouchTarget.BACK -> {
+                            pausePage()
+                            listener?.onBackToToolsRequested()
+                        }
+                        TouchTarget.CLOSE -> {
+                            pausePage()
+                            listener?.onCloseRequested()
+                        }
                         TouchTarget.FRAME -> dialogs.showFrame(session.selectedFormat)
                         TouchTarget.COC -> dialogs.showCircleOfConfusion(
                             session.selectedFormat,
                             session.circleOfConfusionMm,
                         )
                         TouchTarget.FOCUS_VALUE -> dialogs.showFocusDistance(focusDistanceM())
+                        TouchTarget.AUTO_DISTANCE ->
+                            setAutomaticDistanceEnabled(!automaticDistanceEnabled)
+                        TouchTarget.AUTO_DISTANCE_HELP -> showAutomaticDistanceHelp()
                         else -> Unit
                     }
                 }
@@ -441,6 +509,7 @@ class DepthOfFieldView(
     }
 
     override fun onDetachedFromWindow() {
+        removeCallbacks(automaticDistanceSampler)
         markerAnimator?.cancel()
         markerAnimator = null
         super.onDetachedFromWindow()
@@ -653,4 +722,47 @@ class DepthOfFieldView(
 
     private fun lerp(start: Double, end: Double, fraction: Double): Double =
         start + (end - start) * fraction
+
+    private fun setAutomaticDistanceEnabled(enabled: Boolean) {
+        if (automaticDistanceEnabled == enabled) return
+        automaticDistanceEnabled = enabled
+        lastAutomaticDistanceTimestampNs = Long.MIN_VALUE
+        removeCallbacks(automaticDistanceSampler)
+        if (enabled) {
+            performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            startAutomaticDistanceSampling()
+        } else {
+            listener?.onAutomaticDistanceStopped()
+        }
+        invalidate()
+    }
+
+    private fun startAutomaticDistanceSampling() {
+        removeCallbacks(automaticDistanceSampler)
+        post(automaticDistanceSampler)
+    }
+
+    private fun showAutomaticDistanceHelp() {
+        AlertDialog.Builder(context)
+            .setTitle(localized("自动测距", "Auto distance"))
+            .setMessage(
+                localized(
+                    "试验性功能，自动测距可能不准，不建议用于精确的景深计算。",
+                    "Experimental feature. Automatic distance may be inaccurate and is not recommended for precise depth-of-field calculations.",
+                ),
+            )
+            .setPositiveButton(localized("知道了", "Got it"), null)
+            .show()
+    }
+
+    private companion object {
+        const val AUTOMATIC_DISTANCE_INTERVAL_MS = 500L
+    }
+}
+
+internal object DepthOfFieldAutomaticDistancePolicy {
+    fun usableEstimate(state: DistanceMeasurementState): DistanceEstimate? = state.estimate?.takeIf {
+        state.status == DistanceMeasurementStatus.AVAILABLE && it.isFresh &&
+            it.target == NormalizedPoint.CENTER && it.meters.isFinite() && it.meters > 0.0
+    }
 }

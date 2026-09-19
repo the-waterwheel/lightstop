@@ -24,7 +24,6 @@ internal class ExposurePreviewCalibrationPanel(
 
     private data class Geometry(
         val slider: RectF,
-        val comparison: RectF,
         val primary: RectF,
     )
 
@@ -49,7 +48,6 @@ internal class ExposurePreviewCalibrationPanel(
     }
 
     private var ready = false
-    private var referenceVisible = true
     private var draftCorrectionEv = 0.0
     private var statusText = ""
     private var statusIsError = false
@@ -61,21 +59,19 @@ internal class ExposurePreviewCalibrationPanel(
 
     fun begin(correctionEv: Double) {
         ready = false
-        referenceVisible = true
         sliderDragging = false
         draftCorrectionEv = correctionEv
-        statusText = localized("正在锁定曝光补偿 0 EV 参考…", "Locking the 0 EV reference…")
+        statusText = localized("正在锁定相机的 0 EV 基准…", "Locking the camera's 0 EV baseline…")
         statusIsError = false
         invalidate()
     }
 
     fun setReady(available: Boolean) {
         ready = available
-        referenceVisible = true
         statusText = if (available) {
             localized(
-                "已锁定 0 EV 参考；拖动滑块后可随时切换对照",
-                "0 EV reference locked; drag the slider and switch views to compare",
+                "拖动滑块，把当前画面调整为你期望的 0 EV 亮度",
+                "Adjust the current view to the brightness you expect at 0 EV",
             )
         } else {
             localized(
@@ -84,6 +80,7 @@ internal class ExposurePreviewCalibrationPanel(
             )
         }
         statusIsError = !available
+        if (available) listener?.onComparisonRequested(draftCorrectionEv)
         invalidate()
     }
 
@@ -95,14 +92,13 @@ internal class ExposurePreviewCalibrationPanel(
 
     fun reset() {
         draftCorrectionEv = 0.0
-        referenceVisible = true
         sliderDragging = false
         statusText = localized(
-            "曝光预览辅助修正已重置为 0 EV",
-            "Exposure-preview correction reset to 0 EV",
+            "预览曝光校准已重置为 0 EV",
+            "Preview exposure calibration reset to 0 EV",
         )
         statusIsError = false
-        listener?.onComparisonRequested(null)
+        listener?.onComparisonRequested(0.0)
         invalidate()
     }
 
@@ -116,8 +112,8 @@ internal class ExposurePreviewCalibrationPanel(
         drawCenteredText(
             canvas,
             localized(
-                "先观察曝光补偿为 0 EV 的画面",
-                "First observe the view at 0 EV exposure compensation",
+                "调整当前画面，使它符合你期望的 0 EV 视觉亮度",
+                "Adjust the current view to your expected visual brightness at 0 EV",
             ),
             width / 2f,
             9f * density,
@@ -126,8 +122,8 @@ internal class ExposurePreviewCalibrationPanel(
         drawCenteredText(
             canvas,
             localized(
-                "再调节档位，使校准预览与参考亮度一致",
-                "Then match the calibrated preview to the reference brightness",
+                "左上角直方图可辅助判断高光、阴影与整体分布",
+                "Use the top-left histogram to judge highlights, shadows, and distribution",
             ),
             width / 2f,
             20f * density,
@@ -144,7 +140,6 @@ internal class ExposurePreviewCalibrationPanel(
             boldPaint,
         )
         drawSlider(canvas, g.slider)
-        drawComparison(canvas, g.comparison)
 
         if (statusText.isNotEmpty()) {
             paint.style = Paint.Style.FILL
@@ -170,7 +165,7 @@ internal class ExposurePreviewCalibrationPanel(
         boldPaint.textSize = 11f * density
         drawCenteredText(
             canvas,
-            localized("保存辅助校准", "Save auxiliary calibration"),
+            localized("保存预览曝光校准", "Save preview exposure calibration"),
             g.primary.centerX(),
             g.primary.centerY(),
             boldPaint,
@@ -211,26 +206,6 @@ internal class ExposurePreviewCalibrationPanel(
         )
     }
 
-    private fun drawComparison(canvas: Canvas, rect: RectF) {
-        paint.style = Paint.Style.FILL
-        paint.color = if (ready) foreground else gray
-        canvas.drawRoundRect(rect, 3f * density, 3f * density, paint)
-        boldPaint.color = if (ready) surfaceColor else muted
-        boldPaint.textSize = 9f * density
-        val text = if (referenceVisible) {
-            localized("当前：0 EV 参考 · 点击查看校准预览", "0 EV reference · Tap for calibrated preview")
-        } else {
-            localized("当前：校准预览 · 点击查看 0 EV 参考", "Calibrated preview · Tap for 0 EV reference")
-        }
-        drawCenteredText(
-            canvas,
-            ellipsize(text, rect.width() - 12f * density, boldPaint),
-            rect.centerX(),
-            rect.centerY(),
-            boldPaint,
-        )
-    }
-
     override fun onTouchEvent(event: MotionEvent): Boolean {
         val g = geometry()
         val sliderTouch = RectF(g.slider).apply { inset(0f, -18f * density) }
@@ -258,17 +233,9 @@ internal class ExposurePreviewCalibrationPanel(
             }
         }
         if (event.actionMasked != MotionEvent.ACTION_UP || !ready) return true
-        when {
-            g.comparison.contains(event.x, event.y) -> {
-                referenceVisible = !referenceVisible
-                listener?.onComparisonRequested(if (referenceVisible) null else draftCorrectionEv)
-                haptic()
-                invalidate()
-            }
-            g.primary.contains(event.x, event.y) -> {
-                haptic()
-                listener?.onSaveRequested(draftCorrectionEv)
-            }
+        if (g.primary.contains(event.x, event.y)) {
+            haptic()
+            listener?.onSaveRequested(draftCorrectionEv)
         }
         performClick()
         return true
@@ -285,9 +252,8 @@ internal class ExposurePreviewCalibrationPanel(
             (ExposurePreviewCalibrationMath.MAX_CORRECTION_EV -
                 ExposurePreviewCalibrationMath.MIN_CORRECTION_EV)
         val correction = ExposurePreviewCalibrationMath.clampAndSnapCorrection(raw)
-        if (correction == draftCorrectionEv && !referenceVisible) return
+        if (correction == draftCorrectionEv) return
         draftCorrectionEv = correction
-        referenceVisible = false
         haptic()
         listener?.onComparisonRequested(correction)
         invalidate()
@@ -296,21 +262,14 @@ internal class ExposurePreviewCalibrationPanel(
     private fun geometry(): Geometry {
         val primaryHeight = min(48f * density, height * 0.19f)
         val primary = RectF(0f, height - primaryHeight, width.toFloat(), height.toFloat())
-        val comparisonHeight = min(36f * density, height * 0.14f)
-        val comparison = RectF(
-            0f,
-            primary.top - 24f * density - comparisonHeight,
-            width.toFloat(),
-            primary.top - 24f * density,
-        )
-        val sliderCenterY = (comparison.top * 0.58f).coerceAtLeast(60f * density)
+        val sliderCenterY = (primary.top * 0.55f).coerceAtLeast(60f * density)
         val slider = RectF(
             10f * density,
             sliderCenterY - 7f * density,
             width - 10f * density,
             sliderCenterY + 7f * density,
         )
-        return Geometry(slider, comparison, primary)
+        return Geometry(slider, primary)
     }
 
     private fun localized(chinese: String, english: String): String =

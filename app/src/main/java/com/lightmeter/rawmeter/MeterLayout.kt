@@ -32,7 +32,7 @@ class MeterLayout @JvmOverloads constructor(
     trackerFactory: ZoneMarkerTrackerFactory = OpenCvZoneMarkerTrackerFactory(),
 ) : ViewGroup(context, attributeSet) {
 
-    private enum class CameraManagementOrigin { SETTINGS, CALIBRATION, VIGNETTING }
+    private enum class CameraManagementOrigin { SETTINGS, CALIBRATION, PREVIEW_CALIBRATION, VIGNETTING }
     private enum class FilmSelectionTarget { LATITUDE, RECIPROCITY, PARAMETER_RECORD }
 
     interface Listener {
@@ -87,6 +87,7 @@ class MeterLayout @JvmOverloads constructor(
     val informationView = InformationView(context, state)
     val cameraManagementView = CameraManagementView(context, state)
     val calibrationView = CalibrationView(context, state)
+    internal val exposurePreviewCalibrationView = ExposurePreviewCalibrationView(context, state)
     val vignettingCalibrationView = VignettingCalibrationView(context, state)
     internal val combinationSelectionView = CameraCombinationSelectionView(context, state)
     val zoneView = ZoneSystemView(context, state)
@@ -130,6 +131,8 @@ class MeterLayout @JvmOverloads constructor(
         private set
     var isCalibrationOpen: Boolean = false
         private set
+    var isExposurePreviewCalibrationOpen: Boolean = false
+        private set
     var isVignettingCalibrationOpen: Boolean = false
         private set
     var isCameraManagementOpen: Boolean = false
@@ -159,6 +162,22 @@ class MeterLayout @JvmOverloads constructor(
     private var cameraManagementOrigin = CameraManagementOrigin.SETTINGS
     private var settingsOpenedFromZone = false
     private var pendingActionAfterZoneExit: (() -> Unit)? = null
+    private val previewHistogramSampler = object : Runnable {
+        override fun run() {
+            if (!isExposurePreviewCalibrationOpen) return
+            if (textureView.isAvailable) {
+                runCatching {
+                    textureView.getBitmap(HISTOGRAM_SAMPLE_WIDTH, HISTOGRAM_SAMPLE_HEIGHT)
+                }.getOrNull()?.let { bitmap ->
+                    exposurePreviewCalibrationView.updateHistogram(bitmap)
+                    bitmap.recycle()
+                }
+            }
+            if (isExposurePreviewCalibrationOpen) {
+                postDelayed(this, HISTOGRAM_SAMPLE_INTERVAL_MS)
+            }
+        }
+    }
     var listener: Listener? = null
         set(value) {
             field = value
@@ -259,6 +278,9 @@ class MeterLayout @JvmOverloads constructor(
                                     showCalibration()
                                     value?.onCalibrationOpened()
                                 }
+                                SettingActionKey.START_EXPOSURE_PREVIEW_CALIBRATION -> {
+                                    showExposurePreviewCalibration()
+                                }
                                 SettingActionKey.START_VIGNETTING_CALIBRATION -> {
                                     showVignettingCalibration()
                                     value?.onVignettingCalibrationOpened()
@@ -285,6 +307,9 @@ class MeterLayout @JvmOverloads constructor(
                         SettingActionKey.START_METERING_CALIBRATION -> {
                             showCalibration()
                             value?.onCalibrationOpened()
+                        }
+                        SettingActionKey.START_EXPOSURE_PREVIEW_CALIBRATION -> {
+                            showExposurePreviewCalibration()
                         }
                         SettingActionKey.START_VIGNETTING_CALIBRATION -> {
                             showVignettingCalibration()
@@ -333,29 +358,38 @@ class MeterLayout @JvmOverloads constructor(
                 override fun onMeasureRequested(referenceEv100: Double) {
                     value?.onCalibrationMeasureRequested(referenceEv100)
                 }
-
-                override fun onExposurePreviewCalibrationStarted() {
-                    value?.onExposurePreviewCalibrationStarted()
-                }
-
-                override fun onExposurePreviewCalibrationComparisonRequested(
-                    correctionEv: Double?,
-                ) {
-                    value?.onExposurePreviewCalibrationComparisonRequested(correctionEv)
-                }
-
-                override fun onExposurePreviewCalibrationSaveRequested(correctionEv: Double) {
-                    value?.onExposurePreviewCalibrationSaveRequested(correctionEv)
-                }
-
-                override fun onExposurePreviewCalibrationResetRequested() {
-                    value?.onExposurePreviewCalibrationResetRequested()
-                }
-
-                override fun onExposurePreviewCalibrationCancelled() {
-                    value?.onExposurePreviewCalibrationCancelled()
-                }
             }
+            exposurePreviewCalibrationView.listener =
+                object : ExposurePreviewCalibrationView.Listener {
+                    override fun onExitRequested() {
+                        closeExposurePreviewCalibration()
+                    }
+
+                    override fun onCameraRequested() {
+                        value?.onExposurePreviewCalibrationCancelled()
+                        showCameraManagement(CameraManagementOrigin.PREVIEW_CALIBRATION)
+                    }
+
+                    override fun onStarted() {
+                        value?.onExposurePreviewCalibrationStarted()
+                    }
+
+                    override fun onAdjustmentRequested(correctionEv: Double) {
+                        value?.onExposurePreviewCalibrationComparisonRequested(correctionEv)
+                    }
+
+                    override fun onSaveRequested(correctionEv: Double) {
+                        value?.onExposurePreviewCalibrationSaveRequested(correctionEv)
+                    }
+
+                    override fun onResetRequested() {
+                        value?.onExposurePreviewCalibrationResetRequested()
+                    }
+
+                    override fun onCancelled() {
+                        value?.onExposurePreviewCalibrationCancelled()
+                    }
+                }
             vignettingCalibrationView.listener = object : VignettingCalibrationView.Listener {
                 override fun onExitRequested() {
                     closeVignettingCalibration()
@@ -490,6 +524,8 @@ class MeterLayout @JvmOverloads constructor(
         addView(cameraManagementView)
         calibrationView.visibility = View.GONE
         addView(calibrationView)
+        exposurePreviewCalibrationView.visibility = View.GONE
+        addView(exposurePreviewCalibrationView)
         vignettingCalibrationView.visibility = View.GONE
         addView(vignettingCalibrationView)
         zoneView.visibility = View.GONE
@@ -625,6 +661,16 @@ class MeterLayout @JvmOverloads constructor(
             override fun onCloseRequested() {
                 closeTools()
             }
+
+            override fun onAutomaticDistanceSampleRequested() {
+                listener?.onAutomaticDistanceRequested()
+            }
+
+            override fun onAutomaticDistanceStopped() {
+                if (state.appliedFlashConfiguration?.isAutoDistance != true) {
+                    listener?.onAutomaticDistanceStopped()
+                }
+            }
         }
         latitudeView.listener = object : LatitudeView.Listener {
             override fun onBackToToolsRequested() {
@@ -706,7 +752,7 @@ class MeterLayout @JvmOverloads constructor(
                 state.setAppliedFlashConfiguration(configuration)
                 if (configuration?.isAutoDistance == true) {
                     listener?.onAutomaticDistanceRequested()
-                } else {
+                } else if (!depthOfFieldView.isAutomaticDistanceEnabled()) {
                     listener?.onAutomaticDistanceStopped()
                 }
                 updateFlashPresentation()
@@ -860,6 +906,10 @@ class MeterLayout @JvmOverloads constructor(
             MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
             MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
         )
+        exposurePreviewCalibrationView.measure(
+            MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
+        )
         vignettingCalibrationView.measure(
             MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
             MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
@@ -917,6 +967,8 @@ class MeterLayout @JvmOverloads constructor(
             RectF(0f, 0f, width.toFloat(), height.toFloat())
         } else if (isVignettingCalibrationOpen) {
             vignettingCalibrationView.calculatePreviewFrame(width, height)
+        } else if (isExposurePreviewCalibrationOpen) {
+            exposurePreviewCalibrationView.calculatePreviewFrame(width, height)
         } else if (isCalibrationOpen) {
             calibrationView.calculatePreviewFrame(width, height)
         } else if (zoneTransitionFraction > 0f || isZoneMode) {
@@ -929,7 +981,8 @@ class MeterLayout @JvmOverloads constructor(
             geometry.cameraFrame
         }
         val textureFrame = when {
-            isCombinationSelectionOpen || isVignettingCalibrationOpen || isCalibrationOpen ->
+            isCombinationSelectionOpen || isVignettingCalibrationOpen ||
+                isExposurePreviewCalibrationOpen || isCalibrationOpen ->
                 previewTextureFrame(
                     cameraFrame = cameraFrame,
                     width = width,
@@ -977,6 +1030,8 @@ class MeterLayout @JvmOverloads constructor(
             RectF(0f, 0f, width.toFloat(), height.toFloat())
         } else if (isVignettingCalibrationOpen) {
             vignettingCalibrationView.calculatePreviewFrame(width, height)
+        } else if (isExposurePreviewCalibrationOpen) {
+            exposurePreviewCalibrationView.calculatePreviewFrame(width, height)
         } else if (isCalibrationOpen) {
             calibrationView.calculatePreviewFrame(width, height)
         } else if (zoneTransitionFraction > 0f || isZoneMode) {
@@ -989,7 +1044,8 @@ class MeterLayout @JvmOverloads constructor(
             geometry.cameraFrame
         }
         val textureFrame = when {
-            isCombinationSelectionOpen || isVignettingCalibrationOpen || isCalibrationOpen ->
+            isCombinationSelectionOpen || isVignettingCalibrationOpen ||
+                isExposurePreviewCalibrationOpen || isCalibrationOpen ->
                 previewTextureFrame(
                     cameraFrame = cameraFrame,
                     width = width,
@@ -1019,6 +1075,7 @@ class MeterLayout @JvmOverloads constructor(
         informationView.layout(0, 0, width, height)
         cameraManagementView.layout(0, 0, width, height)
         calibrationView.layout(0, 0, width, height)
+        exposurePreviewCalibrationView.layout(0, 0, width, height)
         vignettingCalibrationView.layout(0, 0, width, height)
         zoneView.layout(0, 0, width, height)
         grayCardGuideView.layout(0, 0, width, height)
@@ -1091,9 +1148,11 @@ class MeterLayout @JvmOverloads constructor(
         informationView.invalidate()
         cameraManagementView.invalidate()
         calibrationView.invalidate()
+        exposurePreviewCalibrationView.invalidate()
         vignettingCalibrationView.invalidate()
         zoneView.invalidate()
         toolsView.invalidate()
+        depthOfFieldView.updateAutomaticDistance(state.distanceMeasurementState)
         depthOfFieldView.invalidate()
         latitudeView.invalidate()
         reciprocityView.invalidate()
@@ -1108,7 +1167,8 @@ class MeterLayout @JvmOverloads constructor(
     }
 
     fun showSettings() {
-        if (isSettingsOpen || isCalibrationOpen || isVignettingCalibrationOpen ||
+        if (isSettingsOpen || isCalibrationOpen || isExposurePreviewCalibrationOpen ||
+            isVignettingCalibrationOpen ||
             isCameraManagementOpen || isCombinationSelectionOpen ||
             isZoneMode || zoneTransitionFraction > 0f
         ) return
@@ -1118,7 +1178,8 @@ class MeterLayout @JvmOverloads constructor(
 
     /** Opens Settings from the Zone overlay; calibration actions then exit Zone first. */
     fun showSettingsFromZone() {
-        if (isSettingsOpen || isCalibrationOpen || isVignettingCalibrationOpen ||
+        if (isSettingsOpen || isCalibrationOpen || isExposurePreviewCalibrationOpen ||
+            isVignettingCalibrationOpen ||
             isCameraManagementOpen ||
             !isZoneMode || zoneTransitionFraction < 1f
         ) return
@@ -1155,7 +1216,8 @@ class MeterLayout @JvmOverloads constructor(
      * parameter areas differ) both keep their own viewfinder untouched.
      */
     fun showTools() {
-        if (isToolsOpen || isSettingsOpen || isCalibrationOpen || isVignettingCalibrationOpen ||
+        if (isToolsOpen || isSettingsOpen || isCalibrationOpen ||
+            isExposurePreviewCalibrationOpen || isVignettingCalibrationOpen ||
             isCameraManagementOpen || isInformationOpen
         ) return
         instrumentView.setModeTransitionEnabled(false)
@@ -1277,6 +1339,8 @@ class MeterLayout @JvmOverloads constructor(
     fun closeTools(): Boolean {
         if (!isToolsOpen) return false
         if (isFilmSelectorOpen) closeFilmSelector(animate = false)
+        depthOfFieldView.pausePage()
+        activeToolId = null
         isToolsOpen = false
         grayCardGuideView.setGuide(RectF(), false)
         val rect = toolsPanelRect(width, height)
@@ -1303,6 +1367,9 @@ class MeterLayout @JvmOverloads constructor(
             .start()
         return true
     }
+
+    fun isDepthOfFieldAutomaticDistanceEnabled(): Boolean =
+        depthOfFieldView.isAutomaticDistanceEnabled()
 
     private fun toolsPanelRect(width: Int, height: Int): RectF {
         val density = resources.displayMetrics.density
@@ -1769,7 +1836,8 @@ class MeterLayout @JvmOverloads constructor(
         }
         val transitionSettled = zoneTransitionFraction <= 0f || zoneTransitionFraction >= 1f
         val unobstructed = transitionSettled &&
-            !isCalibrationOpen && !isVignettingCalibrationOpen &&
+            !isCalibrationOpen && !isExposurePreviewCalibrationOpen &&
+            !isVignettingCalibrationOpen &&
             !isCameraManagementOpen && !isCombinationSelectionOpen && !isInformationOpen &&
             !isSettingsOpen && !isToolsOpen && !isFilmSelectorOpen &&
             !isParameterEditorOpen && !isParameterHistoryOpen
@@ -2036,6 +2104,10 @@ class MeterLayout @JvmOverloads constructor(
         when (origin) {
             CameraManagementOrigin.SETTINGS -> settingsView.visibility = View.GONE
             CameraManagementOrigin.CALIBRATION -> calibrationView.visibility = View.GONE
+            CameraManagementOrigin.PREVIEW_CALIBRATION -> {
+                exposurePreviewCalibrationView.visibility = View.GONE
+                stopPreviewHistogramSampling()
+            }
             CameraManagementOrigin.VIGNETTING -> vignettingCalibrationView.visibility = View.GONE
         }
         cameraManagementView.animate().cancel()
@@ -2063,6 +2135,8 @@ class MeterLayout @JvmOverloads constructor(
                     when (cameraManagementOrigin) {
                         CameraManagementOrigin.SETTINGS -> settingsView.bringToFront()
                         CameraManagementOrigin.CALIBRATION -> calibrationView.bringToFront()
+                        CameraManagementOrigin.PREVIEW_CALIBRATION ->
+                            exposurePreviewCalibrationView.bringToFront()
                         CameraManagementOrigin.VIGNETTING ->
                             vignettingCalibrationView.bringToFront()
                     }
@@ -2077,6 +2151,15 @@ class MeterLayout @JvmOverloads constructor(
                 calibrationView.visibility = View.VISIBLE
                 calibrationView.invalidate()
             }
+            CameraManagementOrigin.PREVIEW_CALIBRATION -> {
+                exposurePreviewCalibrationView.visibility = View.VISIBLE
+                exposurePreviewCalibrationView.open(
+                    currentCalibrationCameraId(),
+                    state.exposurePreviewExecutionCorrectionEv(currentCalibrationCameraId()),
+                )
+                exposurePreviewCalibrationView.invalidate()
+                startPreviewHistogramSampling()
+            }
             CameraManagementOrigin.VIGNETTING -> {
                 vignettingCalibrationView.visibility = View.VISIBLE
                 vignettingCalibrationView.invalidate()
@@ -2088,7 +2171,8 @@ class MeterLayout @JvmOverloads constructor(
     }
 
     fun showCalibration() {
-        if (isCalibrationOpen || isVignettingCalibrationOpen || isCameraManagementOpen ||
+        if (isCalibrationOpen || isExposurePreviewCalibrationOpen ||
+            isVignettingCalibrationOpen || isCameraManagementOpen ||
             isZoneMode || zoneTransitionFraction > 0f
         ) return
         settingsView.animate().cancel()
@@ -2104,7 +2188,6 @@ class MeterLayout @JvmOverloads constructor(
 
     fun closeCalibration(): Boolean {
         if (!isCalibrationOpen) return false
-        if (calibrationView.closeExposurePreviewCalibration()) return true
         if (calibrationView.isMeasuring) return true
         isCalibrationOpen = false
         calibrationView.visibility = View.GONE
@@ -2119,8 +2202,68 @@ class MeterLayout @JvmOverloads constructor(
         return true
     }
 
+    fun showExposurePreviewCalibration() {
+        if (isExposurePreviewCalibrationOpen || isCalibrationOpen ||
+            isVignettingCalibrationOpen || isCameraManagementOpen ||
+            isZoneMode || zoneTransitionFraction > 0f
+        ) return
+        settingsView.animate().cancel()
+        settingsView.visibility = View.GONE
+        isExposurePreviewCalibrationOpen = true
+        instrumentView.visibility = View.GONE
+        exposurePreviewCalibrationView.visibility = View.VISIBLE
+        exposurePreviewCalibrationView.bringToFront()
+        val cameraId = currentCalibrationCameraId()
+        exposurePreviewCalibrationView.open(
+            cameraId,
+            state.exposurePreviewExecutionCorrectionEv(cameraId),
+        )
+        startPreviewHistogramSampling()
+        updateBackground()
+        requestLayout()
+    }
+
+    fun closeExposurePreviewCalibration(): Boolean {
+        if (!isExposurePreviewCalibrationOpen) return false
+        exposurePreviewCalibrationView.close()
+        stopPreviewHistogramSampling()
+        isExposurePreviewCalibrationOpen = false
+        exposurePreviewCalibrationView.visibility = View.GONE
+        instrumentView.visibility = View.VISIBLE
+        settingsView.translationY = 0f
+        settingsView.visibility = View.VISIBLE
+        settingsView.bringToFront()
+        isSettingsOpen = true
+        updateBackground()
+        requestLayout()
+        invalidate()
+        return true
+    }
+
+    fun completeExposurePreviewCalibration(correctionEv: Double) {
+        if (!isExposurePreviewCalibrationOpen) return
+        exposurePreviewCalibrationView.showSaved(correctionEv)
+        closeExposurePreviewCalibration()
+    }
+
+    private fun currentCalibrationCameraId(): String =
+        state.cameraInfo.calibrationCameraId
+            .ifBlank { state.selectedCameraId }
+            .ifBlank { state.currentCamera()?.cameraId.orEmpty() }
+            .ifBlank { "0" }
+
+    private fun startPreviewHistogramSampling() {
+        removeCallbacks(previewHistogramSampler)
+        post(previewHistogramSampler)
+    }
+
+    private fun stopPreviewHistogramSampling() {
+        removeCallbacks(previewHistogramSampler)
+    }
+
     fun showVignettingCalibration() {
-        if (isVignettingCalibrationOpen || isCalibrationOpen || isCameraManagementOpen ||
+        if (isVignettingCalibrationOpen || isCalibrationOpen ||
+            isExposurePreviewCalibrationOpen || isCameraManagementOpen ||
             isZoneMode || zoneTransitionFraction > 0f
         ) return
         settingsView.animate().cancel()
@@ -2230,6 +2373,12 @@ class MeterLayout @JvmOverloads constructor(
         zoneView.session.clear()
         zoneMarkerTracker.clearMarkers()
         zoneView.invalidate()
+    }
+
+    private companion object {
+        const val HISTOGRAM_SAMPLE_WIDTH = 160
+        const val HISTOGRAM_SAMPLE_HEIGHT = 90
+        const val HISTOGRAM_SAMPLE_INTERVAL_MS = 500L
     }
 
     fun currentExposurePreviewSelection(): ExposurePreviewSelection? {
@@ -2471,6 +2620,7 @@ class MeterLayout @JvmOverloads constructor(
 
     override fun onDetachedFromWindow() {
         zoneAnimator?.cancel()
+        stopPreviewHistogramSampling()
         angleControlFadeInRunnable?.let(::removeCallbacks)
         angleControlFadeInRunnable = null
         angleMeteringDialView.animate().cancel()

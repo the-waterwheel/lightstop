@@ -31,6 +31,7 @@ enum class SettingActionKey {
     USE_SAFE_PREVIEW,
     SHOW_ABOUT,
     START_METERING_CALIBRATION,
+    START_EXPOSURE_PREVIEW_CALIBRATION,
     START_VIGNETTING_CALIBRATION,
 }
 
@@ -271,6 +272,14 @@ object SettingsCatalog {
                     description = LocalizedLabel(
                         "使用参考 EV、相机曝光值或 18% 灰卡 Lux 校准",
                         "Calibrate with EV, camera exposure, or lux on an 18% gray card",
+                    ),
+                ),
+                SettingActionSpec(
+                    key = SettingActionKey.START_EXPOSURE_PREVIEW_CALIBRATION,
+                    label = LocalizedLabel("预览曝光校准", "Preview exposure calibration"),
+                    description = LocalizedLabel(
+                        "把当前画面调整为你期望的 0 EV 视觉亮度",
+                        "Adjust the current view to your expected visual brightness at 0 EV",
                     ),
                 ),
                 SettingActionSpec(

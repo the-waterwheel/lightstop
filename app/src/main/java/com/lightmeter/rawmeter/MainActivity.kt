@@ -21,6 +21,12 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.text.SpannableString
+import android.text.Spanned
+import android.text.TextPaint
+import android.text.method.LinkMovementMethod
+import android.text.style.ClickableSpan
+import android.text.style.ForegroundColorSpan
 import android.view.Surface
 import android.view.View
 import android.view.WindowInsets
@@ -48,6 +54,8 @@ class MainActivity : Activity(), CameraControllerCallback {
     private var vignettingDialogVisible = false
     private var vignettingResetDialogVisible = false
     private var vignettingCalibrationPending = false
+    private var firstCalibrationPromptShownThisProcess = false
+    private var firstCalibrationPromptVisible = false
     private val calibrationCoordinator = MeteringCalibrationCoordinator()
     private var zoneMeasurementPending = false
     private var zoneRemeasureActive = false
@@ -339,12 +347,12 @@ class MainActivity : Activity(), CameraControllerCallback {
                 val accepted = cameraController.beginExposurePreviewCalibration { ready ->
                     if (activityResumed) {
                         if (!ready) cameraController.updateExposurePreview(null)
-                        meterLayout.calibrationView.setExposurePreviewCalibrationReady(ready)
+                        meterLayout.exposurePreviewCalibrationView.setReady(ready)
                     }
                 }
                 if (!accepted) {
                     cameraController.updateExposurePreview(null)
-                    meterLayout.calibrationView.setExposurePreviewCalibrationReady(false)
+                    meterLayout.exposurePreviewCalibrationView.setReady(false)
                 }
             }
 
@@ -357,7 +365,12 @@ class MainActivity : Activity(), CameraControllerCallback {
             override fun onExposurePreviewCalibrationSaveRequested(correctionEv: Double) {
                 val saved = cameraController.saveExposurePreviewCalibration(correctionEv)
                 cameraController.finishExposurePreviewCalibration()
-                meterLayout.calibrationView.showExposurePreviewCalibrationSaved(saved)
+                meterLayout.completeExposurePreviewCalibration(saved)
+                Toast.makeText(
+                    this@MainActivity,
+                    localized("预览曝光校准已保存", "Preview exposure calibration saved"),
+                    Toast.LENGTH_SHORT,
+                ).show()
                 meterLayout.refresh()
                 updateExposurePreviewFromMeter()
             }
@@ -366,7 +379,7 @@ class MainActivity : Activity(), CameraControllerCallback {
                 val cameraId = calibrationDisplayCameraId
                     ?: cameraController.currentCalibrationCameraId()
                 cameraController.resetExposurePreviewCalibration(cameraId)
-                meterLayout.calibrationView.showExposurePreviewCalibrationReset()
+                meterLayout.exposurePreviewCalibrationView.showReset()
             }
 
             override fun onExposurePreviewCalibrationCancelled() {
@@ -556,6 +569,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             refreshCameraCatalog()?.let(::activateCameraRoute)
             scheduleCameraStartAfterForegroundLayout()
             maybeShowCalibrationEnvironmentChange()
+            mainHandler.post(::maybeShowFirstMeteringCalibrationPrompt)
         } else {
             ensureCameraPermission()
         }
@@ -587,7 +601,7 @@ class MainActivity : Activity(), CameraControllerCallback {
         clearZoneRemeasureState()
         zoneCameraRestorePending = false
         // The auxiliary preview comparison is tied to live AE metadata and cannot survive pause.
-        meterLayout.calibrationView.closeExposurePreviewCalibration()
+        meterLayout.closeExposurePreviewCalibration()
         if (calibrationCoordinator.isActive) {
             clearCalibrationRun()
             meterLayout.calibrationView.showError(
@@ -785,6 +799,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             meterLayout.closeParameterHistoryFromBack() ||
             meterLayout.closeCameraManagement() ||
             meterLayout.closeVignettingCalibration() ||
+            meterLayout.closeExposurePreviewCalibration() ||
             meterLayout.closeCalibration() ||
             meterLayout.closeFilmSelector() ||
             meterLayout.closeParameterEditorFromBack() ||
@@ -859,6 +874,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             refreshCameraCatalog()?.let(::activateCameraRoute)
             if (activityResumed) scheduleCameraStartAfterForegroundLayout()
             maybeShowCalibrationEnvironmentChange()
+            mainHandler.post(::maybeShowFirstMeteringCalibrationPrompt)
         } else {
             val message = localized(
                 "需要相机权限才能进行测光。",
@@ -891,7 +907,8 @@ class MainActivity : Activity(), CameraControllerCallback {
             state.selectCamera(info.cameraId)
         }
         state.cameraInfo = info
-        if (state.appliedFlashConfiguration?.isAutoDistance == true &&
+        if ((state.appliedFlashConfiguration?.isAutoDistance == true ||
+                meterLayout.isDepthOfFieldAutomaticDistanceEnabled()) &&
             info.previewStreamGeneration > 0L && (
                 info.previewStreamGeneration != oldInfo.previewStreamGeneration ||
                     info.activePhysicalCameraId != oldInfo.activePhysicalCameraId
@@ -916,7 +933,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             state.transientMessage = null
         }
         if (state.zoom > info.maxDisplayZoom) state.zoom = info.maxDisplayZoom
-        if (meterLayout.isCalibrationOpen) {
+        if (meterLayout.isCalibrationOpen || meterLayout.isExposurePreviewCalibrationOpen) {
             refreshCalibrationCorrections()
         }
         meterLayout.refresh(
@@ -1329,8 +1346,11 @@ class MainActivity : Activity(), CameraControllerCallback {
             yuvCorrectionEv = record?.yuvCorrectionEv,
             ispPreviewCorrectionEv = record?.ispPreviewCorrectionEv,
             legacyCompatibleCorrectionEv = record?.legacyCompatibleCorrectionEv,
-            exposurePreviewCorrectionEv = state.exposurePreviewExecutionCorrectionEv(cameraId),
             showRawStream = showRawStream,
+        )
+        meterLayout.exposurePreviewCalibrationView.updateCamera(
+            cameraId,
+            state.exposurePreviewExecutionCorrectionEv(cameraId),
         )
     }
 
@@ -1448,6 +1468,66 @@ class MainActivity : Activity(), CameraControllerCallback {
                 meterLayout.showCalibrationSettings()
             }
             .show()
+    }
+
+    private fun maybeShowFirstMeteringCalibrationPrompt() {
+        if (!activityResumed || isFinishing || firstCalibrationPromptVisible ||
+            firstCalibrationPromptShownThisProcess ||
+            checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED ||
+            state.hasMeteringCalibrationArtifacts()
+        ) return
+        val preferences = getSharedPreferences(PREFERENCES_NAME, MODE_PRIVATE)
+        if (preferences.getBoolean(SUPPRESS_FIRST_CALIBRATION_PROMPT, false)) return
+
+        firstCalibrationPromptShownThisProcess = true
+        firstCalibrationPromptVisible = true
+        val body = localized(
+            "为了获得更可靠的测光结果，建议先针对当前设备和镜头完成一次测光校准。",
+            "For more reliable readings, calibrate metering for this device and lens first.",
+        )
+        val link = localized("点击进入测光校准", "Tap to open metering calibration")
+        val message = SpannableString("$body\n$link")
+        val linkStart = body.length + 1
+        message.setSpan(
+            ForegroundColorSpan(Color.rgb(35, 112, 205)),
+            linkStart,
+            message.length,
+            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+        )
+        lateinit var dialog: AlertDialog
+        message.setSpan(
+            object : ClickableSpan() {
+                override fun onClick(widget: View) {
+                    dialog.dismiss()
+                    meterLayout.showCalibration()
+                    refreshCalibrationCorrections()
+                }
+
+                override fun updateDrawState(drawState: TextPaint) {
+                    drawState.color = Color.rgb(35, 112, 205)
+                    drawState.isUnderlineText = false
+                }
+            },
+            linkStart,
+            message.length,
+            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+        )
+        dialog = AlertDialog.Builder(this)
+            .setTitle(localized("建议进行测光校准", "Metering calibration recommended"))
+            .setMessage(message)
+            .setNegativeButton(localized("下次再说", "Next time"), null)
+            .setPositiveButton(localized("不再提示", "Don't remind me again")) { _, _ ->
+                preferences.edit().putBoolean(SUPPRESS_FIRST_CALIBRATION_PROMPT, true).apply()
+            }
+            .setOnDismissListener { firstCalibrationPromptVisible = false }
+            .create()
+        dialog.setOnShowListener {
+            dialog.findViewById<TextView>(android.R.id.message)?.apply {
+                movementMethod = LinkMovementMethod.getInstance()
+                highlightColor = Color.TRANSPARENT
+            }
+        }
+        dialog.show()
     }
 
     private fun registerPredictiveBackCallback() {
@@ -2015,6 +2095,8 @@ class MainActivity : Activity(), CameraControllerCallback {
             "suppress_compatibility_mode_warning"
         private const val SUPPRESS_ANGLE_COMPATIBILITY_WARNING =
             "suppress_angle_compatibility_warning"
+        private const val SUPPRESS_FIRST_CALIBRATION_PROMPT =
+            "suppress_first_metering_calibration_prompt"
         private const val CAMERA_PERMISSION_REQUEST_MARKER = "camera-permission-requested"
         private const val BACK_DUPLICATE_GUARD_MS = 400L
         private val TRANSIENT_TOKEN = Any()

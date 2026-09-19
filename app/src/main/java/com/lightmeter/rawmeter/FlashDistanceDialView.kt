@@ -204,7 +204,10 @@ internal class FlashDistanceDialView(
                     expanded && distance <= radius + 10f * density -> Gesture.DIAL
                     else -> Gesture.NONE
                 }
-                if (gesture == Gesture.NONE) return false
+                if (gesture == Gesture.NONE) {
+                    if (expanded) collapse()
+                    return false
+                }
                 downX = event.x
                 downY = event.y
                 moved = false

@@ -30,11 +30,14 @@ class CameraCalibrationStore(context: Context) {
         return preferences.optionalFloat(userKey(cameraId, source)) ?: 0.0
     }
 
-    fun hasCalibrationArtifacts(): Boolean = preferences.all.keys.any { key ->
+    fun hasMeteringCalibrationArtifacts(): Boolean = preferences.all.keys.any { key ->
         key.startsWith("user_") || key.startsWith("yuv_user_") ||
             key.startsWith("isp_user_") || key.startsWith("compatible_user_") ||
-            key.startsWith("preview_execution_user_") || key.startsWith("history_")
+            key.startsWith("history_")
     }
+
+    fun hasCalibrationArtifacts(): Boolean = hasMeteringCalibrationArtifacts() ||
+        preferences.all.keys.any { key -> key.startsWith("preview_execution_user_") }
 
     /** Auxiliary preview-execution calibration; independent from RAW/YUV/ISP metering records. */
     @Synchronized

@@ -123,6 +123,27 @@ class SettingsCatalogTest {
         }
     }
 
+    @Test
+    fun calibrationSectionSeparatesMeteringAndPreviewExposureCalibration() {
+        val actions = SettingsCatalog.sections
+            .single { it.key == SettingsSectionKey.CALIBRATION }
+            .actions
+
+        assertEquals(
+            listOf(
+                SettingActionKey.START_METERING_CALIBRATION,
+                SettingActionKey.START_EXPOSURE_PREVIEW_CALIBRATION,
+                SettingActionKey.START_VIGNETTING_CALIBRATION,
+            ),
+            actions.map { it.key },
+        )
+        assertEquals("预览曝光校准", actions[1].label.resolve(MenuLanguage.CHINESE))
+        assertEquals(
+            "Preview exposure calibration",
+            actions[1].label.resolve(MenuLanguage.ENGLISH),
+        )
+    }
+
 
     @Test
     fun generalSectionExposesOnlyAboutAsItsInformationEntry() {

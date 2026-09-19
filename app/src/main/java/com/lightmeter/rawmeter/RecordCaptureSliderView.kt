@@ -1,6 +1,5 @@
 package com.lightmeter.rawmeter
 
-import android.animation.ValueAnimator
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Canvas
@@ -10,10 +9,10 @@ import android.graphics.RectF
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
-import android.view.animation.DecelerateInterpolator
+import android.view.ViewConfiguration
 import kotlin.math.min
 
-/** Deliberate slide-to-capture control shown below Normal's meter or Zone's mark button. */
+/** Deliberate hold-to-capture control shown below Normal's meter or Zone's mark button. */
 @SuppressLint("ViewConstructor")
 internal class RecordCaptureSliderView(
     context: Context,
@@ -23,16 +22,24 @@ internal class RecordCaptureSliderView(
 
     private val density = resources.displayMetrics.density
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val foreground: Int get() = if (state.isDarkMode) Color.rgb(224, 224, 220) else Color.rgb(20, 20, 20)
-    private val surface: Int get() = if (state.isDarkMode) Color.rgb(46, 46, 44) else Color.rgb(235, 235, 232)
     private val red = Color.rgb(201, 39, 46)
     private var anchor = RectF()
     private var track = RectF()
-    private var fraction = 0f
-    private var dragOffset = 0f
-    private var dragging = false
+    private val innerTrack = RectF()
+    private var pressing = false
+    private var longPressTriggered = false
+    private var downX = 0f
+    private var downY = 0f
     private var capturePending = false
-    private var returnAnimator: ValueAnimator? = null
+    private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
+    private val longPress = Runnable {
+        if (!pressing || capturePending) return@Runnable
+        longPressTriggered = true
+        capturePending = true
+        performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        onCaptureRequested?.invoke()
+        invalidate()
+    }
 
     fun setAnchor(value: RectF) {
         anchor = RectF(value)
@@ -42,7 +49,10 @@ internal class RecordCaptureSliderView(
 
     fun setCapturePending(value: Boolean) {
         capturePending = value
-        if (!value) fraction = 0f
+        if (!value) {
+            pressing = false
+            longPressTriggered = false
+        }
         invalidate()
     }
 
@@ -67,90 +77,78 @@ internal class RecordCaptureSliderView(
     override fun onDraw(canvas: Canvas) {
         if (track.isEmpty) return
         paint.style = Paint.Style.FILL
-        paint.color = surface
+        paint.color = Color.rgb(10, 10, 10)
         canvas.drawRoundRect(track, track.height() / 2f, track.height() / 2f, paint)
         paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 1.2f * density
-        paint.color = foreground
+        paint.strokeWidth = 2.4f * density
+        paint.color = Color.BLACK
         canvas.drawRoundRect(track, track.height() / 2f, track.height() / 2f, paint)
-        val knobRadius = track.height() * 0.38f
-        val start = track.left + track.height() / 2f
-        val end = track.right - track.height() / 2f
-        val x = start + (end - start) * fraction
-        paint.style = Paint.Style.FILL
-        paint.color = if (capturePending) Color.rgb(150, 150, 146) else red
-        canvas.drawCircle(x, track.centerY(), knobRadius, paint)
-
+        innerTrack.set(track)
+        innerTrack.inset(2.2f * density, 2.2f * density)
         paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 1.6f * density
-        paint.strokeCap = Paint.Cap.ROUND
-        paint.color = Color.WHITE
-        val chevronHalf = 3.2f * density
-        canvas.drawLine(x - chevronHalf, track.centerY() - chevronHalf, x + chevronHalf, track.centerY(), paint)
-        canvas.drawLine(x + chevronHalf, track.centerY(), x - chevronHalf, track.centerY() + chevronHalf, paint)
-        paint.strokeCap = Paint.Cap.BUTT
+        paint.strokeWidth = 1.5f * density
+        paint.color = if (capturePending) Color.rgb(126, 38, 42) else red
+        canvas.drawRoundRect(
+            innerTrack,
+            innerTrack.height() / 2f,
+            innerTrack.height() / 2f,
+            paint,
+        )
 
         paint.style = Paint.Style.FILL
-        paint.color = foreground
-        paint.textSize = 8f * density * resources.configuration.fontScale
+        paint.color = if (capturePending) Color.rgb(160, 160, 156) else Color.WHITE
+        paint.textSize = 8.5f * density * resources.configuration.fontScale
         paint.textAlign = Paint.Align.CENTER
-        val text = if (capturePending) localized("处理中", "Saving") else localized("滑动记录", "Slide")
+        val text = when {
+            capturePending -> localized("处理中", "Saving")
+            pressing -> localized("继续按住", "Keep holding")
+            else -> localized("长按参数记录", "Hold to record")
+        }
         val metrics = paint.fontMetrics
-        val textStart = start + knobRadius + 3f * density
-        canvas.drawText(text, (textStart + end) / 2f, track.centerY() - (metrics.ascent + metrics.descent) / 2f, paint)
+        canvas.drawText(text, track.centerX(), track.centerY() - (metrics.ascent + metrics.descent) / 2f, paint)
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (capturePending) return track.contains(event.x, event.y)
-        val knobRadius = track.height() * 0.55f
-        val start = track.left + track.height() / 2f
-        val end = track.right - track.height() / 2f
-        val knobX = start + (end - start) * fraction
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                if (!track.contains(event.x, event.y) || kotlin.math.abs(event.x - knobX) > knobRadius) return false
-                returnAnimator?.cancel()
-                dragging = true
-                dragOffset = event.x - knobX
+                if (!track.contains(event.x, event.y)) return false
+                pressing = true
+                longPressTriggered = false
+                downX = event.x
+                downY = event.y
+                postDelayed(longPress, ViewConfiguration.getLongPressTimeout().toLong())
                 parent?.requestDisallowInterceptTouchEvent(true)
-                return true
-            }
-            MotionEvent.ACTION_MOVE -> if (dragging) {
-                fraction = ((event.x - dragOffset - start) / (end - start)).coerceIn(0f, 1f)
                 invalidate()
                 return true
             }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> if (dragging) {
-                dragging = false
-                parent?.requestDisallowInterceptTouchEvent(false)
-                if (event.actionMasked != MotionEvent.ACTION_CANCEL && fraction >= 0.92f) {
-                    fraction = 1f
-                    capturePending = true
-                    performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                    onCaptureRequested?.invoke()
-                    invalidate()
-                } else {
-                    animateBack()
+            MotionEvent.ACTION_MOVE -> if (pressing) {
+                if (!track.contains(event.x, event.y) ||
+                    kotlin.math.abs(event.x - downX) > touchSlop ||
+                    kotlin.math.abs(event.y - downY) > touchSlop
+                ) {
+                    cancelPress()
                 }
-                performClick()
+                return true
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> if (pressing || longPressTriggered) {
+                removeCallbacks(longPress)
+                pressing = false
+                parent?.requestDisallowInterceptTouchEvent(false)
+                if (event.actionMasked == MotionEvent.ACTION_UP && !longPressTriggered) performClick()
+                invalidate()
                 return true
             }
         }
         return false
     }
 
-    private fun animateBack() {
-        val start = fraction
-        returnAnimator?.cancel()
-        returnAnimator = ValueAnimator.ofFloat(start, 0f).apply {
-            duration = 240L
-            interpolator = DecelerateInterpolator()
-            addUpdateListener {
-                fraction = it.animatedValue as Float
-                invalidate()
-            }
-            start()
-        }
+    private fun cancelPress() {
+        removeCallbacks(longPress)
+        pressing = false
+        longPressTriggered = false
+        parent?.requestDisallowInterceptTouchEvent(false)
+        invalidate()
     }
 
     private fun localized(chinese: String, english: String): String =
@@ -159,5 +157,10 @@ internal class RecordCaptureSliderView(
     override fun performClick(): Boolean {
         super.performClick()
         return true
+    }
+
+    override fun onDetachedFromWindow() {
+        removeCallbacks(longPress)
+        super.onDetachedFromWindow()
     }
 }

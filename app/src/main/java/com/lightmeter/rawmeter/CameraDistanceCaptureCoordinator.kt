@@ -1,11 +1,13 @@
 package com.lightmeter.rawmeter
 
+import android.graphics.Rect
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
+import android.hardware.camera2.params.MeteringRectangle
 import android.os.Handler
 import android.util.Log
 import android.view.Surface
@@ -81,6 +83,7 @@ internal class CameraDistanceCaptureCoordinator(
                 addTarget(preview)
                 set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
                 configureAutoFocus(this)
+                configureCenterAutoFocusRegion(this)
                 set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_START)
             }
             session.capture(builder.build(), previewCaptureCallback(), cameraHandler())
@@ -89,6 +92,26 @@ internal class CameraDistanceCaptureCoordinator(
             Log.w(TAG, "Unable to trigger autofocus for automatic distance", it)
             false
         }
+    }
+
+    private fun configureCenterAutoFocusRegion(builder: CaptureRequest.Builder) {
+        val cameraCharacteristics = characteristics() ?: return
+        val maximumRegions = cameraCharacteristics.get(
+            CameraCharacteristics.CONTROL_MAX_REGIONS_AF,
+        ) ?: 0
+        val activeArray = cameraCharacteristics.get(
+            CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE,
+        ) ?: return
+        if (maximumRegions <= 0 || activeArray.width() <= 0 || activeArray.height() <= 0) return
+        val regionWidth = (activeArray.width() / 8).coerceAtLeast(1)
+        val regionHeight = (activeArray.height() / 8).coerceAtLeast(1)
+        val left = activeArray.centerX() - regionWidth / 2
+        val top = activeArray.centerY() - regionHeight / 2
+        val centerRegion = Rect(left, top, left + regionWidth, top + regionHeight)
+        builder.set(
+            CaptureRequest.CONTROL_AF_REGIONS,
+            arrayOf(MeteringRectangle(centerRegion, MeteringRectangle.METERING_WEIGHT_MAX)),
+        )
     }
 
     private fun currentContext(): DistanceContext? {

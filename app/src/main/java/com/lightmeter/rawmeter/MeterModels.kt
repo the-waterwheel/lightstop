@@ -776,6 +776,9 @@ class MeterState(context: Context) {
         cameraCalibrationStore.hasCalibrationArtifacts() ||
             vignettingCalibrationStore.hasCalibrationArtifacts()
 
+    fun hasMeteringCalibrationArtifacts(): Boolean =
+        cameraCalibrationStore.hasMeteringCalibrationArtifacts()
+
     fun setCameraNote(cameraId: String, note: String) {
         cameraSelectionStore.setNote(cameraId, note)
     }
