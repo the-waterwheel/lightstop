@@ -42,9 +42,18 @@ data class FilmLatitudeProfile(
     val discontinued: Boolean,
     val originalRange: FilmLatitudeRange,
     val custom: Boolean = false,
+    /** Search-only metadata. These names are never used as the visible film name. */
+    val searchAliases: List<String> = emptyList(),
 ) {
     val displayName: String
         get() = listOf(manufacturer, model).filter(String::isNotBlank).joinToString(" ")
+
+    internal val primarySearchKeys: List<String> by lazy {
+        FilmSearchText.primaryKeys(this)
+    }
+    internal val aliasSearchKeys: List<String> by lazy {
+        FilmSearchText.aliasKeys(this)
+    }
 }
 
 data class AppliedFilmLatitude(
@@ -59,6 +68,11 @@ internal class FilmLatitudeCatalog(context: Context) {
         .open(FILM_DATABASE_UPDATES_ASSET)
         .bufferedReader()
         .use { reader -> JSONObject(reader.readText()) }
+    private val searchAliases = FilmSearchAliasCatalog(
+        context.assets.open(FILM_SEARCH_ALIASES_ASSET)
+            .bufferedReader()
+            .use { reader -> JSONObject(reader.readText()) },
+    )
 
     val films: List<FilmLatitudeProfile> = buildList {
         addAll(
@@ -76,6 +90,7 @@ internal class FilmLatitudeCatalog(context: Context) {
         replaceAll { profile -> patchById[profile.id]?.let { profile.patchedWith(it) } ?: profile }
         addAll(parse(updates.optJSONArray("profiles") ?: JSONArray()))
     }.distinctBy(FilmLatitudeProfile::id)
+        .map { profile -> profile.copy(searchAliases = searchAliases.aliasesFor(profile)) }
 
     private fun parse(array: JSONArray): List<FilmLatitudeProfile> = buildList(array.length()) {
         for (index in 0 until array.length()) {
@@ -115,5 +130,48 @@ internal class FilmLatitudeCatalog(context: Context) {
 
     private companion object {
         const val FILM_DATABASE_UPDATES_ASSET = "film_database_updates_2026_09_08.json"
+        const val FILM_SEARCH_ALIASES_ASSET = "film_search_aliases_2026_09_19.json"
+    }
+}
+
+/** Keeps alternate names out of the presentation model while making the index data-driven. */
+private class FilmSearchAliasCatalog(root: JSONObject) {
+    private val manufacturerAliases = root.optJSONArray("manufacturerAliases")
+        .objects()
+        .associate { item -> item.optString("manufacturer") to item.stringList("aliases") }
+
+    private val modelAliases = root.optJSONArray("modelAliases")
+        .objects()
+        .map { item -> item.optString("modelContains") to item.stringList("aliases") }
+
+    private val profileAliases = root.optJSONArray("profileAliases")
+        .objects()
+        .associate { item -> "builtin-${item.getInt("id")}" to item.stringList("aliases") }
+
+    fun aliasesFor(profile: FilmLatitudeProfile): List<String> = buildList {
+        addAll(manufacturerAliases[profile.manufacturer].orEmpty())
+        modelAliases.forEach { (modelFragment, aliases) ->
+            if (modelFragment.isNotBlank() && profile.model.contains(modelFragment, ignoreCase = true)) {
+                addAll(aliases)
+            }
+        }
+        addAll(profileAliases[profile.id].orEmpty())
+    }.distinct()
+
+    private fun JSONArray?.objects(): List<JSONObject> = if (this == null) {
+        emptyList()
+    } else {
+        buildList(length()) {
+            for (index in 0 until length()) optJSONObject(index)?.let(::add)
+        }
+    }
+
+    private fun JSONObject.stringList(key: String): List<String> {
+        val values = optJSONArray(key) ?: return emptyList()
+        return buildList(values.length()) {
+            for (index in 0 until values.length()) {
+                values.optString(index).takeIf(String::isNotBlank)?.let(::add)
+            }
+        }
     }
 }

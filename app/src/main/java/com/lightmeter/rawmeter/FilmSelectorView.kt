@@ -428,18 +428,15 @@ internal class FilmSelectorView(
 
     private fun refreshFilms() {
         val query = searchField.text?.toString()?.trim().orEmpty()
-        val filtered = repository.films().filter { profile ->
-            (!favoritesOnly || repository.isFavorite(profile.id)) &&
-                (query.isBlank() || profile.displayName.contains(query, ignoreCase = true) ||
-                    profile.type.contains(query, ignoreCase = true))
+        val candidates = repository.films().filter { profile ->
+            !favoritesOnly || repository.isFavorite(profile.id)
         }
-        visibleFilms = if (mode == FilmSelectorMode.RECIPROCITY) {
-            FilmSelectorOrdering.availableFirst(filtered) { profile ->
-                reciprocityRepository.hasCalculationData(profile.id)
-            }
+        val availability = if (mode == FilmSelectorMode.RECIPROCITY) {
+            { profile: FilmLatitudeProfile -> reciprocityRepository.hasCalculationData(profile.id) }
         } else {
-            filtered
+            null
         }
+        visibleFilms = FilmSelectorSearch.filterAndOrder(candidates, query, availability)
         scrollOffset = 0f
         invalidate()
     }
