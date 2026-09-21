@@ -15,6 +15,7 @@ internal class ParameterRecordRepository(context: Context) {
     private val transactions = ParameterRecordTransaction(root)
     private val preferences = context.getSharedPreferences("parameter_record_settings", Context.MODE_PRIVATE)
     private var categories = loadCategories().toMutableList()
+    @Volatile
     var activeCategoryId: String? = preferences.getString(KEY_ACTIVE_CATEGORY, null)
         private set
 
@@ -65,6 +66,7 @@ internal class ParameterRecordRepository(context: Context) {
     fun record(categoryId: String, recordId: String): ParameterRecordEntry? =
         category(categoryId)?.records?.firstOrNull { it.id == recordId }
 
+    @Synchronized
     fun startCategory(now: Long = System.currentTimeMillis()): ParameterRecordCategory {
         category(activeCategoryId)?.takeIf { it.endedAtEpochMs == null }?.let { return it }
         val category = ParameterRecordCategory(
@@ -80,6 +82,7 @@ internal class ParameterRecordRepository(context: Context) {
         return category
     }
 
+    @Synchronized
     fun finishActiveCategory(now: Long = System.currentTimeMillis()): ParameterRecordCategory? {
         val id = activeCategoryId ?: return null
         val current = category(id) ?: return null
@@ -114,6 +117,7 @@ internal class ParameterRecordRepository(context: Context) {
         )
     }
 
+    @Synchronized
     fun save(draft: ParameterCaptureDraft): ParameterRecordEntry {
         val category = startCategory()
         require(ParameterRecordPathPolicy.isIdentifier(draft.id)) { "Invalid parameter-record id" }
@@ -172,12 +176,14 @@ internal class ParameterRecordRepository(context: Context) {
         }
     }
 
+    @Synchronized
     fun discard(draft: ParameterCaptureDraft) {
         deletePending(draft.previewTempPath)
         draft.rawTempPath?.let(::deletePending)
     }
 
     /** The history screen may edit RAW-derived points, but never captured exposure or file paths. */
+    @Synchronized
     fun updateZonePoints(
         categoryId: String,
         recordId: String,
@@ -281,6 +287,7 @@ internal class ParameterRecordRepository(context: Context) {
         if (directory.listFiles().orEmpty().isEmpty()) directory.delete()
     }
 
+    @Synchronized
     private fun replaceCategory(value: ParameterRecordCategory) {
         val index = categories.indexOfFirst { it.id == value.id }
         if (index >= 0) categories[index] = value else categories += value
@@ -296,6 +303,7 @@ internal class ParameterRecordRepository(context: Context) {
         emptyList()
     }
 
+    @Synchronized
     private fun saveIndex() {
         val output = index.startWrite()
         try {
@@ -575,3 +583,4 @@ internal class ParameterRecordRepository(context: Context) {
         const val PRIVACY_NOTICE_VERSION = 2
     }
 }
+

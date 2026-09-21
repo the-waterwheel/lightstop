@@ -9,6 +9,8 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.RectF
 import android.graphics.SurfaceTexture
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.util.AttributeSet
 import android.view.TextureView
@@ -18,6 +20,7 @@ import android.view.ViewGroup
 import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
 import android.widget.Toast
+import java.io.File
 import java.util.UUID
 import kotlin.math.max
 import kotlin.math.min
@@ -111,6 +114,12 @@ class MeterLayout @JvmOverloads constructor(
         filmReciprocityRepository,
     )
     private val parameterRecordRepository = ParameterRecordRepository(context)
+    private val parameterIoDispatcher = ParameterRecordIoDispatcher(
+        mainHandler = Handler(Looper.getMainLooper()),
+    )
+    private val parameterCaptureGuard = ParameterCaptureGuard()
+    private var activeCaptureToken = 0
+    private var parameterSaveInFlight = false
     private val parameterRecordToolView = ParameterRecordToolView(context, state, parameterRecordRepository)
     private val parameterRecordEditorView = ParameterRecordEditorView(context, state)
     private val parameterHistoryView = ParameterHistoryView(context, state, parameterRecordRepository)
@@ -810,8 +819,10 @@ class MeterLayout @JvmOverloads constructor(
         }
         parameterRecordEditorView.listener = object : ParameterRecordEditorView.Listener {
             override fun onCancelRequested(draft: ParameterCaptureDraft) {
-                parameterRecordRepository.discard(draft)
+                parameterCaptureGuard.cancel()
                 closeParameterEditor(resetCapture = true)
+                // Discard only touches pending files; it must not block the main thread.
+                parameterIoDispatcher.execute { parameterRecordRepository.discard(draft) }
             }
 
             override fun onFilmSelectionRequested() {
@@ -819,20 +830,29 @@ class MeterLayout @JvmOverloads constructor(
             }
 
             override fun onSaveRequested(draft: ParameterCaptureDraft) {
-                runCatching { parameterRecordRepository.save(draft) }
-                    .onSuccess { closeParameterEditor(resetCapture = true) }
-                    .onFailure {
-                        Log.e("lightstop", "Unable to save parameter record", it)
-                        Toast.makeText(
-                            context,
-                            if (state.menuLanguage == MenuLanguage.ENGLISH) {
-                                "Unable to save this record. Check available storage."
-                            } else {
-                                "无法保存本条记录，请检查可用存储空间"
-                            },
-                            Toast.LENGTH_LONG,
-                        ).show()
-                    }
+                if (parameterSaveInFlight) return
+                parameterSaveInFlight = true
+                parameterIoDispatcher.submit(
+                    background = { runCatching { parameterRecordRepository.save(draft) } },
+                    onMain = { result ->
+                        parameterSaveInFlight = false
+                        result.onSuccess {
+                            parameterCaptureGuard.complete()
+                            closeParameterEditor(resetCapture = true)
+                        }.onFailure {
+                            Log.e("lightstop", "Unable to save parameter record", it)
+                            Toast.makeText(
+                                context,
+                                if (state.menuLanguage == MenuLanguage.ENGLISH) {
+                                    "Unable to save this record. Check available storage."
+                                } else {
+                                    "无法保存本条记录，请检查可用存储空间"
+                                },
+                                Toast.LENGTH_LONG,
+                            ).show()
+                        }
+                    },
+                )
             }
         }
         parameterHistoryView.listener = object : ParameterHistoryView.Listener {
@@ -1630,8 +1650,15 @@ class MeterLayout @JvmOverloads constructor(
 
     private fun startParameterCapture() {
         val id = UUID.randomUUID().toString()
-        val preview = captureParameterPreview(id)
-        if (preview == null) {
+        activeCaptureToken = parameterCaptureGuard.begin(id)
+        // Freeze every value the record must keep even if the user changes settings while the
+        // preview is being encoded off the main thread.
+        val options = parameterRecordRepository.options
+        val snapshot = currentParameterSnapshot()
+        val previewFile = parameterRecordRepository.createPendingPreviewFile(id)
+        val source = capturePreviewBitmap()
+        if (source == null) {
+            parameterCaptureGuard.cancel()
             recordCaptureSliderView.setCapturePending(false)
             Toast.makeText(
                 context,
@@ -1642,68 +1669,102 @@ class MeterLayout @JvmOverloads constructor(
                 },
                 Toast.LENGTH_LONG,
             ).show()
-        } else {
-            listener?.onParameterCaptureRequested(
-                id,
-                currentParameterSnapshot(),
-                parameterRecordRepository.options,
-                preview,
-            ) ?: recordCaptureSliderView.setCapturePending(false)
+            return
         }
+        // Crop geometry depends on live view layout, so it is resolved on the main thread before
+        // the bitmap is handed to the I/O dispatcher, which owns and recycles it.
+        val crop = calculateParameterCrop(source.width, source.height)
+        val token = activeCaptureToken
+        parameterIoDispatcher.submit(
+            background = { writeParameterPreview(source, crop, previewFile) },
+            onMain = { path ->
+                if (!parameterCaptureGuard.isCurrent(token)) {
+                    path?.let { File(it).delete() }
+                    return@submit
+                }
+                if (path == null) {
+                    parameterCaptureGuard.cancel()
+                    recordCaptureSliderView.setCapturePending(false)
+                    Toast.makeText(
+                        context,
+                        if (state.menuLanguage == MenuLanguage.ENGLISH) {
+                            "Unable to capture the current preview. Try again."
+                        } else {
+                            "无法截取当前画面，请重试"
+                        },
+                        Toast.LENGTH_LONG,
+                    ).show()
+                } else {
+                    listener?.onParameterCaptureRequested(id, snapshot, options, path)
+                        ?: recordCaptureSliderView.setCapturePending(false)
+                }
+            },
+        )
     }
 
-    private fun captureParameterPreview(id: String): String? {
-        val file = parameterRecordRepository.createPendingPreviewFile(id)
-        return runCatching {
-            val sourceWidth = textureView.width.coerceAtLeast(1)
-            val sourceHeight = textureView.height.coerceAtLeast(1)
-            val scale = min(1f, 1600f / max(sourceWidth, sourceHeight).toFloat())
-            val source = checkNotNull(textureView.getBitmap(
-                (sourceWidth * scale).roundToInt().coerceAtLeast(1),
-                (sourceHeight * scale).roundToInt().coerceAtLeast(1),
-            ))
-            var bitmap: Bitmap? = null
+    private fun capturePreviewBitmap(): Bitmap? = runCatching {
+        val sourceWidth = textureView.width.coerceAtLeast(1)
+        val sourceHeight = textureView.height.coerceAtLeast(1)
+        val scale = min(1f, 1600f / max(sourceWidth, sourceHeight).toFloat())
+        textureView.getBitmap(
+            (sourceWidth * scale).roundToInt().coerceAtLeast(1),
+            (sourceHeight * scale).roundToInt().coerceAtLeast(1),
+        )
+    }.getOrNull()
+
+    private data class PixelCrop(val left: Int, val top: Int, val right: Int, val bottom: Int)
+
+    private fun calculateParameterCrop(sourceWidth: Int, sourceHeight: Int): PixelCrop {
+        val viewWidth = textureView.width.coerceAtLeast(1)
+        val viewHeight = textureView.height.coerceAtLeast(1)
+        val cameraFrame = if (isZoneMode) {
+            zoneView.calculatePreviewFrame(width, height)
+        } else {
+            LayoutGeometry.calculate(
+                width,
+                height,
+                resources.displayMetrics.density,
+                state.frameFormat,
+                state.frameLandscape,
+                state.isLeftHanded,
+            ).cameraFrame
+        }
+        val cropLeft = (((cameraFrame.left - textureView.left) / viewWidth) * sourceWidth)
+            .roundToInt().coerceIn(0, sourceWidth - 1)
+        val cropTop = (((cameraFrame.top - textureView.top) / viewHeight) * sourceHeight)
+            .roundToInt().coerceIn(0, sourceHeight - 1)
+        val cropRight = (((cameraFrame.right - textureView.left) / viewWidth) * sourceWidth)
+            .roundToInt().coerceIn(cropLeft + 1, sourceWidth)
+        val cropBottom = (((cameraFrame.bottom - textureView.top) / viewHeight) * sourceHeight)
+            .roundToInt().coerceIn(cropTop + 1, sourceHeight)
+        return PixelCrop(cropLeft, cropTop, cropRight, cropBottom)
+    }
+
+    /** Runs on the I/O dispatcher; owns and recycles [source] and any cropped copy. */
+    private fun writeParameterPreview(source: Bitmap, crop: PixelCrop, file: File): String? {
+        try {
+            val cropped = Bitmap.createBitmap(
+                source,
+                crop.left,
+                crop.top,
+                crop.right - crop.left,
+                crop.bottom - crop.top,
+            )
             try {
-                val cameraFrame = if (isZoneMode) {
-                    zoneView.calculatePreviewFrame(width, height)
-                } else {
-                    LayoutGeometry.calculate(
-                        width,
-                        height,
-                        resources.displayMetrics.density,
-                        state.frameFormat,
-                        state.frameLandscape,
-                        state.isLeftHanded,
-                    ).cameraFrame
-                }
-                val cropLeft = (((cameraFrame.left - textureView.left) / sourceWidth) * source.width)
-                    .roundToInt().coerceIn(0, source.width - 1)
-                val cropTop = (((cameraFrame.top - textureView.top) / sourceHeight) * source.height)
-                    .roundToInt().coerceIn(0, source.height - 1)
-                val cropRight = (((cameraFrame.right - textureView.left) / sourceWidth) * source.width)
-                    .roundToInt().coerceIn(cropLeft + 1, source.width)
-                val cropBottom = (((cameraFrame.bottom - textureView.top) / sourceHeight) * source.height)
-                    .roundToInt().coerceIn(cropTop + 1, source.height)
-                val cropped = Bitmap.createBitmap(
-                    source,
-                    cropLeft,
-                    cropTop,
-                    cropRight - cropLeft,
-                    cropBottom - cropTop,
-                )
-                bitmap = cropped
                 file.outputStream().use { output ->
                     check(cropped.compress(Bitmap.CompressFormat.JPEG, 92, output))
                 }
-                file.absolutePath
+                return file.absolutePath
             } finally {
-                bitmap?.takeIf { it !== source }?.recycle()
-                source.recycle()
+                if (cropped !== source) cropped.recycle()
             }
-        }.onFailure {
+        } catch (error: Exception) {
             file.delete()
-            Log.e("lightstop", "Unable to capture parameter-record preview", it)
-        }.getOrNull()
+            Log.e("lightstop", "Unable to capture parameter-record preview", error)
+            return null
+        } finally {
+            source.recycle()
+        }
     }
 
     fun createParameterRawFile(id: String) = parameterRecordRepository.createPendingRawFile(id)
@@ -1719,8 +1780,9 @@ class MeterLayout @JvmOverloads constructor(
     }
 
     fun discardParameterCapture(draft: ParameterCaptureDraft) {
-        parameterRecordRepository.discard(draft)
+        parameterCaptureGuard.cancel()
         recordCaptureSliderView.setCapturePending(false)
+        parameterIoDispatcher.execute { parameterRecordRepository.discard(draft) }
     }
 
     private fun showParameterEditor(draft: ParameterCaptureDraft) {
@@ -1771,7 +1833,8 @@ class MeterLayout @JvmOverloads constructor(
 
     fun closeParameterEditorFromBack(): Boolean {
         val draft = parameterRecordEditorView.currentDraft() ?: return false
-        parameterRecordRepository.discard(draft)
+        parameterCaptureGuard.cancel()
+        parameterIoDispatcher.execute { parameterRecordRepository.discard(draft) }
         return closeParameterEditor(resetCapture = true)
     }
 
@@ -2625,6 +2688,7 @@ class MeterLayout @JvmOverloads constructor(
         angleControlFadeInRunnable = null
         angleMeteringDialView.animate().cancel()
         zoneMarkerTracker.release()
+        parameterIoDispatcher.shutdown()
         super.onDetachedFromWindow()
     }
 
