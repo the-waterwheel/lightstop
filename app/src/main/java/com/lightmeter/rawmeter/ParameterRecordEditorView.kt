@@ -53,6 +53,10 @@ internal class ParameterRecordEditorView(
     private var geometry = ParameterRecordEditorGeometry.EMPTY
     private var draft: ParameterCaptureDraft? = null
     private var target = Target.NONE
+    private val accessibilityHelper = CanvasAccessibilityHelper(this, ::handleAccessibilityClick)
+    private val accessibilityManager: android.view.accessibility.AccessibilityManager?
+        get() = context.getSystemService(Context.ACCESSIBILITY_SERVICE)
+            as? android.view.accessibility.AccessibilityManager
     private var touchStartY = 0f
     private var moved = false
     private var aperturePosition = 0f
@@ -101,6 +105,44 @@ internal class ParameterRecordEditorView(
         drawSelector(canvas, geometry.shutter, localized("快门", "Shutter"), shutterLabels(), shutterPosition)
         drawSelector(canvas, geometry.ei, "EI", eiValues(value).map(Int::toString), eiPosition)
         drawSave(canvas)
+        accessibilityHelper.update(accessibilityNodes())
+    }
+
+    override fun getAccessibilityNodeProvider(): android.view.accessibility.AccessibilityNodeProvider =
+        accessibilityHelper.provider
+
+    override fun onInitializeAccessibilityNodeInfo(
+        info: android.view.accessibility.AccessibilityNodeInfo,
+    ) {
+        super.onInitializeAccessibilityNodeInfo(info)
+        info.className = "android.view.View"
+        info.contentDescription = localized("记录参数编辑", "Edit record parameters")
+    }
+
+    override fun dispatchHoverEvent(event: MotionEvent): Boolean {
+        if (accessibilityHelper.handleHoverEvent(event, accessibilityManager)) return true
+        return super.dispatchHoverEvent(event)
+    }
+
+    private fun accessibilityNodes(): List<CanvasAccessibilityHelper.VirtualNode> = listOf(
+        CanvasAccessibilityHelper.VirtualNode(A11Y_CLOSE, geometry.close, localized("取消", "Cancel")),
+        CanvasAccessibilityHelper.VirtualNode(A11Y_FILM, geometry.film, localized("选择胶片类型", "Select film")),
+        CanvasAccessibilityHelper.VirtualNode(A11Y_ADD_NOTE, geometry.addNote, localized("添加备注", "Add note")),
+        CanvasAccessibilityHelper.VirtualNode(A11Y_SAVE, geometry.save, localized("保存", "Save")),
+    )
+
+    private fun handleAccessibilityClick(virtualViewId: Int): Boolean {
+        val value = currentDraft() ?: return false
+        target = when (virtualViewId) {
+            A11Y_CLOSE -> Target.CLOSE
+            A11Y_FILM -> Target.FILM
+            A11Y_ADD_NOTE -> Target.ADD_NOTE
+            A11Y_SAVE -> Target.SAVE
+            else -> return false
+        }
+        handleTap(value)
+        target = Target.NONE
+        return true
     }
 
     private fun drawClose(canvas: Canvas) {
@@ -420,5 +462,11 @@ internal class ParameterRecordEditorView(
         return true
     }
 
-    private companion object { const val MAX_NOTES = 10 }
+    private companion object {
+        const val MAX_NOTES = 10
+        private const val A11Y_CLOSE = 1
+        private const val A11Y_FILM = 2
+        private const val A11Y_ADD_NOTE = 3
+        private const val A11Y_SAVE = 4
+    }
 }
