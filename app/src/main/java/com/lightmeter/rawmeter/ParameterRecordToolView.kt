@@ -11,6 +11,9 @@ import android.graphics.RectF
 import android.graphics.Typeface
 import android.util.TypedValue
 import android.view.MotionEvent
+import android.view.accessibility.AccessibilityManager
+import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityNodeProvider
 import android.view.View
 
 @SuppressLint("ViewConstructor")
@@ -48,6 +51,9 @@ internal class ParameterRecordToolView(
     private var geometry = ParameterRecordToolGeometry.EMPTY
     private var target = Target.NONE
     private var locationState = ParameterLocationDisplayState.DISABLED
+    private val accessibilityHelper = CanvasAccessibilityHelper(this, ::handleAccessibilityClick)
+    private val accessibilityManager: AccessibilityManager?
+        get() = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager
 
     fun resumePage() {
         if (!state.cameraInfo.rawAvailable && repository.options.recordRaw) {
@@ -81,6 +87,7 @@ internal class ParameterRecordToolView(
 
     override fun onDraw(canvas: Canvas) {
         canvas.drawColor(background)
+        accessibilityHelper.update(accessibilityNodes())
         drawHeader(canvas)
         drawHistory(canvas)
         val options = repository.options
@@ -276,8 +283,79 @@ internal class ParameterRecordToolView(
         return super.onTouchEvent(event)
     }
 
-    private fun handle(target: Target) {
-        when (target) {
+    override fun getAccessibilityNodeProvider(): AccessibilityNodeProvider = accessibilityHelper.provider
+
+    override fun onInitializeAccessibilityNodeInfo(info: AccessibilityNodeInfo) {
+        super.onInitializeAccessibilityNodeInfo(info)
+        info.className = "android.view.View"
+        info.contentDescription = localized("参数记录工具", "Parameter log tools")
+    }
+
+    override fun dispatchHoverEvent(event: MotionEvent): Boolean {
+        if (accessibilityHelper.handleHoverEvent(event, accessibilityManager)) return true
+        return super.dispatchHoverEvent(event)
+    }
+
+    private fun accessibilityNodes(): List<CanvasAccessibilityHelper.VirtualNode> = listOf(
+        CanvasAccessibilityHelper.VirtualNode(A11Y_BACK, geometry.back, localized("返回", "Back")),
+        CanvasAccessibilityHelper.VirtualNode(A11Y_CLOSE, geometry.close, localized("关闭", "Close")),
+        CanvasAccessibilityHelper.VirtualNode(
+            A11Y_HISTORY,
+            geometry.history,
+            localized("过往记录", "History"),
+        ),
+        CanvasAccessibilityHelper.VirtualNode(
+            A11Y_GPS,
+            geometry.gpsToggle,
+            localized("记录 GPS 定位", "Record GPS location"),
+            selected = repository.options.recordGps,
+        ),
+        CanvasAccessibilityHelper.VirtualNode(
+            A11Y_TIME,
+            geometry.timeToggle,
+            localized("记录时间", "Record time"),
+            selected = repository.options.recordTime,
+        ),
+        CanvasAccessibilityHelper.VirtualNode(
+            A11Y_RAW,
+            geometry.rawToggle,
+            localized("记录 RAW 数据", "Record RAW data"),
+            selected = repository.options.recordRaw,
+        ),
+        CanvasAccessibilityHelper.VirtualNode(
+            A11Y_START_STOP,
+            geometry.startStop,
+            if (recording) {
+                localized("停止记录", "Stop recording")
+            } else {
+                localized("开始记录", "Start recording")
+            },
+            selected = recording,
+        ),
+        CanvasAccessibilityHelper.VirtualNode(
+            A11Y_FINISH,
+            geometry.finishCategory,
+            localized("结束该类记录", "Finish category"),
+        ),
+    )
+
+    private fun handleAccessibilityClick(virtualViewId: Int): Boolean {
+        val mapped = when (virtualViewId) {
+            A11Y_BACK -> Target.BACK
+            A11Y_CLOSE -> Target.CLOSE
+            A11Y_HISTORY -> Target.HISTORY
+            A11Y_GPS -> Target.GPS
+            A11Y_TIME -> Target.TIME
+            A11Y_RAW -> Target.RAW
+            A11Y_START_STOP -> Target.START_STOP
+            A11Y_FINISH -> Target.FINISH
+            else -> return false
+        }
+        handle(mapped)
+        return true
+    }
+
+    private fun handle(target: Target) {        when (target) {
             Target.BACK -> listener?.onBackToToolsRequested()
             Target.CLOSE -> listener?.onCloseRequested()
             Target.HISTORY -> listener?.onHistoryRequested()
@@ -363,5 +441,16 @@ internal class ParameterRecordToolView(
     override fun performClick(): Boolean {
         super.performClick()
         return true
+    }
+
+    private companion object {
+        private const val A11Y_BACK = 1
+        private const val A11Y_CLOSE = 2
+        private const val A11Y_HISTORY = 3
+        private const val A11Y_GPS = 4
+        private const val A11Y_TIME = 5
+        private const val A11Y_RAW = 6
+        private const val A11Y_START_STOP = 7
+        private const val A11Y_FINISH = 8
     }
 }

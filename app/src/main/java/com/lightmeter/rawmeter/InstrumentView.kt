@@ -15,7 +15,6 @@ import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
-import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityManager
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityNodeProvider
@@ -73,7 +72,6 @@ class InstrumentView(
     private val accessibilityHelper = CanvasAccessibilityHelper(this, ::handleAccessibilityClick)
     private val accessibilityManager: AccessibilityManager?
         get() = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager
-    private var hoveredVirtualViewId = Int.MIN_VALUE
     private var touchTarget = TouchTarget.NONE
     private var lastDialAngle = 0f
     private var dialStepAccumulator = 0f
@@ -1106,58 +1104,8 @@ class InstrumentView(
     }
 
     override fun dispatchHoverEvent(event: MotionEvent): Boolean {
-        val manager = accessibilityManager
-        if (manager?.isEnabled == true && manager.isTouchExplorationEnabled) {
-            when (event.actionMasked) {
-                MotionEvent.ACTION_HOVER_ENTER, MotionEvent.ACTION_HOVER_MOVE -> {
-                    val id = accessibilityHelper.nodeIdAt(event.x, event.y) ?: Int.MIN_VALUE
-                    if (id != hoveredVirtualViewId) {
-                        updateHoveredVirtualView(id)
-                        return true
-                    }
-                }
-
-                MotionEvent.ACTION_HOVER_EXIT -> {
-                    if (hoveredVirtualViewId != Int.MIN_VALUE) {
-                        updateHoveredVirtualView(Int.MIN_VALUE)
-                        return true
-                    }
-                }
-            }
-        }
+        if (accessibilityHelper.handleHoverEvent(event, accessibilityManager)) return true
         return super.dispatchHoverEvent(event)
-    }
-
-    private fun updateHoveredVirtualView(virtualViewId: Int) {
-        val previous = hoveredVirtualViewId
-        hoveredVirtualViewId = virtualViewId
-        if (virtualViewId == previous) return
-        if (previous != Int.MIN_VALUE) {
-            sendAccessibilityEventForVirtualView(
-                previous,
-                AccessibilityEvent.TYPE_VIEW_HOVER_EXIT,
-            )
-        }
-        if (virtualViewId != Int.MIN_VALUE) {
-            sendAccessibilityEventForVirtualView(
-                virtualViewId,
-                AccessibilityEvent.TYPE_VIEW_HOVER_ENTER,
-            )
-        }
-    }
-
-    private fun sendAccessibilityEventForVirtualView(virtualViewId: Int, eventType: Int) {
-        val manager = accessibilityManager ?: return
-        if (!manager.isEnabled) return
-        val node = accessibilityHelper.provider.createAccessibilityNodeInfo(virtualViewId) ?: return
-        val event = AccessibilityEvent.obtain(eventType).apply {
-            packageName = context.packageName
-            className = "android.view.View"
-            contentDescription = node.contentDescription
-            isEnabled = true
-            setSource(this@InstrumentView, virtualViewId)
-        }
-        manager.sendAccessibilityEvent(event)
     }
 
     private fun accessibilityNodes(g: LayoutGeometry): List<CanvasAccessibilityHelper.VirtualNode> =
