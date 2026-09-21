@@ -113,13 +113,17 @@ class MeterLayout @JvmOverloads constructor(
         filmLatitudeRepository,
         filmReciprocityRepository,
     )
-    private val parameterRecordRepository = ParameterRecordRepository(context)
     private val parameterIoDispatcher = ParameterRecordIoDispatcher(
         mainHandler = Handler(Looper.getMainLooper()),
     )
+    private val parameterRecordRepository = ParameterRecordRepository(context)
     private val parameterCaptureGuard = ParameterCaptureGuard()
     private var activeCaptureToken = 0
     private var parameterSaveInFlight = false
+
+    init {
+        parameterRecordRepository.scheduleRecovery(parameterIoDispatcher)
+    }
     private val parameterRecordToolView = ParameterRecordToolView(context, state, parameterRecordRepository)
     private val parameterRecordEditorView = ParameterRecordEditorView(context, state)
     private val parameterHistoryView = ParameterHistoryView(context, state, parameterRecordRepository)

@@ -44,13 +44,28 @@ internal class ParameterRecordRepository(context: Context) {
         preferences.edit().putInt(KEY_PRIVACY_NOTICE_VERSION, PRIVACY_NOTICE_VERSION).apply()
     }
 
-    init {
-        transactions.recover { categoryId, recordId ->
-            categories.any { category ->
-                category.id == categoryId && category.records.any { record -> record.id == recordId }
+    @Volatile
+    private var recoveryScheduled = false
+
+    /**
+     * Runs crash-journal recovery and quarantine cleanup on the record I/O thread. Until it
+     * completes, callers must not mutate records; [ParameterRecordIoDispatcher] queues writes after
+     * this task, so ordering is preserved.
+     */
+    fun scheduleRecovery(dispatcher: ParameterRecordIoDispatcher) {
+        if (recoveryScheduled) return
+        recoveryScheduled = true
+        dispatcher.execute {
+            synchronized(this) {
+                transactions.recover { categoryId, recordId ->
+                    categories.any { category ->
+                        category.id == categoryId &&
+                            category.records.any { record -> record.id == recordId }
+                    }
+                }
+                cleanupQuarantinedDeletes()
             }
         }
-        cleanupQuarantinedDeletes()
     }
 
     @Synchronized
