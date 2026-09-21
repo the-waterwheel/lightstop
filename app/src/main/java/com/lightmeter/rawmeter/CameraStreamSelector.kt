@@ -3,7 +3,9 @@ package com.lightmeter.rawmeter
 import android.graphics.ImageFormat
 import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.params.RecommendedStreamConfigurationMap
 import android.hardware.camera2.params.StreamConfigurationMap
+import android.os.Build
 import android.util.Range
 import android.util.Size
 import kotlin.math.abs
@@ -40,8 +42,28 @@ internal object CameraStreamSelector {
         val selected = choosePreviewDimensions(
             sizes = bounded.map { it.width to it.height },
             sensorAspect = sensorAspect,
+            preferred = recommendedPreviewSizes(characteristics),
         ) ?: return null
         return bounded.firstOrNull { it.width == selected.first && it.height == selected.second }
+    }
+
+    /**
+     * API 29+ recommended preview outputs act as an ordering reference only. A missing or
+     * incompatible recommendation falls back to the full advertised table.
+     */
+    private fun recommendedPreviewSizes(
+        characteristics: CameraCharacteristics,
+    ): Set<Pair<Int, Int>> {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return emptySet()
+        val recommended = runCatching {
+            characteristics.getRecommendedStreamConfigurationMap(
+                RecommendedStreamConfigurationMap.USECASE_PREVIEW,
+            )
+        }.getOrNull() ?: return emptySet()
+        return recommended.getOutputSizes(SurfaceTexture::class.java)
+            ?.map { it.width to it.height }
+            ?.toSet()
+            .orEmpty()
     }
 
     fun chooseTrackingSize(map: StreamConfigurationMap, preview: Size): Size? {
@@ -154,6 +176,7 @@ internal object CameraStreamSelector {
     fun choosePreviewDimensions(
         sizes: List<Pair<Int, Int>>,
         sensorAspect: Double,
+        preferred: Set<Pair<Int, Int>> = emptySet(),
     ): Pair<Int, Int>? {
         if (sizes.isEmpty()) return null
         val fourThirds = 4.0 / 3.0
@@ -169,7 +192,11 @@ internal object CameraStreamSelector {
             sensorAspect
         }
         val targetAspect = if (commonShape.isNotEmpty()) fourThirds else normalizedSensorAspect
-        return candidates.minWithOrNull(
+        val preferredCandidates = preferred.takeIf { it.isNotEmpty() }
+            ?.let { recommended -> candidates.filter { it in recommended } }
+            .orEmpty()
+        val pool = preferredCandidates.ifEmpty { candidates }
+        return pool.minWithOrNull(
             compareBy<Pair<Int, Int>> { (width, height) ->
                 if (width > 0 && height > 0) {
                     abs(max(width, height).toDouble() / min(width, height) - targetAspect)

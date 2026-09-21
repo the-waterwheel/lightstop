@@ -78,21 +78,84 @@ internal class CameraDistanceCaptureCoordinator(
         val device = cameraDevice() ?: return false
         val session = captureSession() ?: return false
         val preview = previewSurface() ?: return false
+        val handler = cameraHandler() ?: return false
+        val modes = characteristics()?.get(
+            CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES,
+        ) ?: intArrayOf()
+        val canTrigger = modes.contains(CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE) ||
+            modes.contains(CameraMetadata.CONTROL_AF_MODE_AUTO)
+        if (!canTrigger) return false
+        val generation = cameraGeneration()
         return runCatching {
-            val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
-                addTarget(preview)
-                set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
-                configureAutoFocus(this)
-                configureCenterAutoFocusRegion(this)
-                set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_START)
-            }
-            session.capture(builder.build(), previewCaptureCallback(), cameraHandler())
+            // CANCEL -> START releases a previous lock and begins exactly one scan. The resident
+            // preview request never carries START, so continuous AF is not left locked.
+            submitAutoFocusRequest(
+                device = device,
+                session = session,
+                preview = preview,
+                handler = handler,
+                trigger = CameraMetadata.CONTROL_AF_TRIGGER_CANCEL,
+                callback = noOpCaptureCallback,
+            )
+            submitAutoFocusRequest(
+                device = device,
+                session = session,
+                preview = preview,
+                handler = handler,
+                trigger = CameraMetadata.CONTROL_AF_TRIGGER_START,
+                callback = previewCaptureCallback(),
+            )
+            scheduleAutoFocusRelease(device, session, preview, handler, generation)
             true
         }.getOrElse {
             Log.w(TAG, "Unable to trigger autofocus for automatic distance", it)
             false
         }
     }
+
+    private fun submitAutoFocusRequest(
+        device: CameraDevice,
+        session: CameraCaptureSession,
+        preview: Surface,
+        handler: Handler,
+        trigger: Int,
+        callback: CameraCaptureSession.CaptureCallback,
+    ) {
+        val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+            addTarget(preview)
+            set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
+            configureAutoFocus(this)
+            configureCenterAutoFocusRegion(this)
+            set(CaptureRequest.CONTROL_AF_TRIGGER, trigger)
+        }
+        session.capture(builder.build(), callback, handler)
+    }
+
+    /** Releases the one-shot AF lock without touching a newer session. */
+    private fun scheduleAutoFocusRelease(
+        device: CameraDevice,
+        session: CameraCaptureSession,
+        preview: Surface,
+        handler: Handler,
+        generation: Int,
+    ) {
+        val task = Runnable {
+            if (generation != cameraGeneration()) return@Runnable
+            runCatching {
+                submitAutoFocusRequest(
+                    device = device,
+                    session = session,
+                    preview = preview,
+                    handler = handler,
+                    trigger = CameraMetadata.CONTROL_AF_TRIGGER_IDLE,
+                    callback = noOpCaptureCallback,
+                )
+            }.onFailure { Log.w(TAG, "Unable to release the autofocus trigger", it) }
+        }
+        handler.postDelayed(task, AF_RELEASE_DELAY_MS)
+    }
+
+    private val noOpCaptureCallback = object : CameraCaptureSession.CaptureCallback() {}
 
     private fun configureCenterAutoFocusRegion(builder: CaptureRequest.Builder) {
         val cameraCharacteristics = characteristics() ?: return
@@ -128,5 +191,6 @@ internal class CameraDistanceCaptureCoordinator(
 
     companion object {
         private const val TAG = "lightstop"
+        private const val AF_RELEASE_DELAY_MS = 600L
     }
 }

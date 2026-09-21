@@ -62,6 +62,28 @@ class CameraStreamSelectorTest {
     }
 
     @Test
+    fun `recommended outputs order otherwise equivalent candidates`() {
+        val selected = CameraStreamSelector.choosePreviewDimensions(
+            sizes = listOf(1600 to 1200, 1440 to 1080),
+            sensorAspect = 4.0 / 3.0,
+            preferred = setOf(1440 to 1080),
+        )
+
+        assertEquals(1440 to 1080, selected)
+    }
+
+    @Test
+    fun `missing recommendation keeps the full advertised table`() {
+        val selected = CameraStreamSelector.choosePreviewDimensions(
+            sizes = listOf(1440 to 1080, 1600 to 1200),
+            sensorAspect = 4.0 / 3.0,
+            preferred = setOf(4000 to 3000),
+        )
+
+        assertEquals(1600 to 1200, selected)
+    }
+
+    @Test
     fun `never selects advertised 60 fps range when ceiling is 30`() {
         val selected = CameraStreamSelector.selectFpsRangeBounds(
             listOf(15 to 30, 30 to 30, 30 to 60, 60 to 60),
