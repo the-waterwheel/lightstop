@@ -28,6 +28,8 @@ internal data class RawProbeFrameDescriptor(
     val bayerCfa: Boolean,
     val validBlackLevel: Boolean,
     val whiteLevel: Int?,
+    /** False when the route-aware resolver could not confirm the physical result identity. */
+    val metadataIdentityValid: Boolean = true,
 )
 
 internal data class RawProbeFrameHealth(
@@ -43,6 +45,9 @@ internal object RawProbeFrameHealthPolicy {
     fun evaluate(frame: RawProbeFrameDescriptor): RawProbeFrameHealth {
         fun invalid(reason: String) = RawProbeFrameHealth(false, reason)
         if (frame.format != ImageFormat.RAW_SENSOR) return invalid("Unexpected RAW image format")
+        if (!frame.metadataIdentityValid) {
+            return invalid("RAW result identity does not match the requested route")
+        }
         if (frame.width < 2 || frame.height < 2) return invalid("Invalid RAW dimensions")
         if ((frame.expectedWidth != null && frame.width != frame.expectedWidth) ||
             (frame.expectedHeight != null && frame.height != frame.expectedHeight)
@@ -91,6 +96,7 @@ internal object RawProbeFrameHealthPolicy {
         result: CaptureResult,
         characteristics: CameraCharacteristics,
         expectedSize: Size?,
+        metadataIdentityValid: Boolean = true,
     ): RawProbeFrameHealth {
         val plane = image.planes.firstOrNull()
         val planeBuffer = plane?.buffer
@@ -136,6 +142,7 @@ internal object RawProbeFrameHealthPolicy {
                 ),
                 validBlackLevel = validDynamicBlack || validFixedBlack,
                 whiteLevel = whiteLevel,
+                metadataIdentityValid = metadataIdentityValid,
             ),
         )
     }
