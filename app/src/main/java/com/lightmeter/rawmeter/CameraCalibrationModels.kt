@@ -4,6 +4,8 @@ package com.lightmeter.rawmeter
 data class StreamCalibration(
     val correctionEv: Double?,
     val measuredEv100: Double?,
+    /** Capture-context signature recorded with this value; null for pre-signature data. */
+    val signature: CalibrationSignature? = null,
 )
 
 /**

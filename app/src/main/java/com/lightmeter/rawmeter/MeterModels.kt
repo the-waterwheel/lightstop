@@ -736,6 +736,11 @@ class MeterState(context: Context) {
     fun cameraCalibrationRecord(cameraId: String): CameraCalibrationRecord? =
         cameraCalibrationStore.record(cameraId)
 
+    fun cameraCalibrationSignatureState(
+        cameraId: String,
+        source: MeteringSource,
+    ): CalibrationSignatureState = cameraCalibrationStore.signatureState(cameraId, source)
+
     fun previewCalibratedSceneEv100(sceneEv100: Double, source: MeteringSource): Double {
         val cameraId = cameraInfo.calibrationCameraId.ifBlank { selectedCameraId }.ifBlank { "0" }
         return ExposurePreviewMath.previewCalibratedSceneEv100(

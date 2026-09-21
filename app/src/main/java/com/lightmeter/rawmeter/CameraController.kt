@@ -4,6 +4,7 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.ImageFormat
 import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraAccessException
 import android.hardware.camera2.CameraCaptureSession
@@ -14,6 +15,7 @@ import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
 import android.media.ImageReader
+import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
@@ -61,6 +63,7 @@ class CameraController(
             ) {
                 if (!started || generation != cameraGeneration) return
                 cameraFailureStage = CameraFailureStage.RUNNING
+                publishCalibrationContext()
                 if (combinationWorkflowProbe.onSessionConfigured(
                         device = device,
                         session = session,
@@ -1824,6 +1827,59 @@ class CameraController(
         }
     }
 
+    /**
+     * Publishes the capture context used to validate stored calibrations. It is derived from the
+     * actually configured session outputs, never from an expected configuration.
+     */
+    private fun publishCalibrationContext() {
+        val profile = activeSessionProfile
+        if (profile == null) {
+            calibrationStore.setActiveContext(null)
+            vignettingCalibrationStore.setActiveContext(null)
+            return
+        }
+        val info = cameraInfo
+        val outputs = buildMap {
+            rawOutputSize?.takeIf { profile.usesRaw }?.let { size ->
+                put(
+                    MeteringSource.RAW,
+                    CalibrationOutputGeometry(size.width, size.height, ImageFormat.RAW_SENSOR),
+                )
+            }
+            trackingOutputSize?.takeIf { profile.usesTracking }?.let { size ->
+                put(
+                    MeteringSource.YUV_PREVIEW,
+                    CalibrationOutputGeometry(size.width, size.height, ImageFormat.YUV_420_888),
+                )
+            }
+            previewSize?.let { size ->
+                put(MeteringSource.ISP_PREVIEW, CalibrationOutputGeometry(size.width, size.height, 0))
+            }
+        }
+        val context = CalibrationCaptureContext(
+            buildFingerprintHash = CalibrationEnvironmentStore.buildFingerprintHash(),
+            cameraInfoVersion = cameraInfoVersion(),
+            selectionRouteId = CalibrationRouteIdentity.resolve(
+                info.cameraId,
+                info.runtimeCameraId,
+            ),
+            logicalCameraId = info.logicalCameraId,
+            configuredPhysicalCameraId = selectedPhysicalCameraId,
+            confirmedPhysicalCameraId = info.activePhysicalCameraId,
+            routeKind = selectedRouteKind,
+            outputs = outputs,
+        )
+        calibrationStore.setActiveContext(context)
+        vignettingCalibrationStore.setActiveContext(context)
+    }
+
+    private fun cameraInfoVersion(): String? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            characteristics?.get(CameraCharacteristics.INFO_VERSION)
+        } else {
+            null
+        }
+
     private fun rawMeteringContext(): RawMeteringContext? {
         val device = cameraDevice ?: return null
         val session = captureSession ?: return null
@@ -2369,6 +2425,7 @@ class CameraController(
                 status = localized("正在打开摄像头", "Opening camera"),
             )
             postInfo(cameraInfo)
+            publishCalibrationContext()
 
             sessionCoordinator.configureOutputs(
                 surfaceTexture = surfaceTexture,
@@ -2980,8 +3037,7 @@ class CameraController(
         }
     }
 
-    private fun warnRejectedPreviewMetadata(failure: CaptureMetadataFailure?) {
-        val now = SystemClock.elapsedRealtime()
+    private fun warnRejectedPreviewMetadata(failure: CaptureMetadataFailure?) {        val now = SystemClock.elapsedRealtime()
         if (now - lastRejectedMetadataLogMs < REJECTED_METADATA_LOG_INTERVAL_MS) return
         lastRejectedMetadataLogMs = now
         Log.w(
@@ -3092,6 +3148,8 @@ class CameraController(
         logicalCharacteristics = null
         selectedPhysicalCameraId = null
         selectedRouteKind = CameraRouteKind.LOGICAL_AUTO
+        calibrationStore.setActiveContext(null)
+        vignettingCalibrationStore.setActiveContext(null)
         runtimeMetadata.reset()
         latestResult = null
         previewResultStore.clear()

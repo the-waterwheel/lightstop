@@ -50,7 +50,7 @@ internal data class CameraRouteCandidate(
     val isLogicalFallback: Boolean get() = kind == CameraRouteKind.LOGICAL_FALLBACK
 }
 
-internal enum class CameraRouteKind {
+enum class CameraRouteKind {
     LOGICAL_AUTO,
     PUBLIC_DIRECT,
     FIXED_PHYSICAL,

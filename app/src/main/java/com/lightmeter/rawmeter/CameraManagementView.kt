@@ -296,6 +296,25 @@ class CameraManagementView(
             paint,
         )
 
+        val coverageEntry = coverage.activePhysical ?: coverage.direct
+        if (coverageEntry != null && calibrationNeedsRevalidation(coverageEntry)) {
+            paint.color = muted
+            paint.textSize = 7f * density
+            canvas.drawText(
+                ellipsize(
+                    localized(
+                        "校准需在本系统版本上重新验证",
+                        "Calibration needs revalidation on this OS build",
+                    ),
+                    row.width() - 24f * density,
+                    paint,
+                ),
+                row.left + 12f * density,
+                row.top + 69f * density,
+                paint,
+            )
+        }
+
         val gap = 6f * density
         val buttonTop = row.bottom - 34f * density
         val buttonBottom = row.bottom - 8f * density
@@ -404,6 +423,25 @@ class CameraManagementView(
 
     private fun localized(chinese: String, english: String): String =
         if (state.menuLanguage == MenuLanguage.ENGLISH) english else chinese
+
+    private fun calibrationNeedsRevalidation(entry: CameraCalibrationCoverageEntry): Boolean {
+        val record = entry.record
+        val sources = listOf(
+            MeteringSource.RAW to record.rawCorrectionEv,
+            MeteringSource.YUV_PREVIEW to record.yuvCorrectionEv,
+            MeteringSource.ISP_PREVIEW to record.ispPreviewCorrectionEv,
+        )
+        return sources.any { (source, value) ->
+            if (value == null) {
+                false
+            } else {
+                when (state.cameraCalibrationSignatureState(entry.storageCameraId, source)) {
+                    CalibrationSignatureState.VALID, CalibrationSignatureState.NONE -> false
+                    else -> true
+                }
+            }
+        }
+    }
 
     private fun signedEv(value: Double): String =
         if (value >= 0.0) "+${"%.2f".format(value)}" else "%.2f".format(value)

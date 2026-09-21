@@ -91,6 +91,7 @@ internal class CalibrationEnvironmentStore(context: Context) {
             append(Build.MODEL).append('|')
             append(Build.DEVICE).append('|')
             append(Build.HARDWARE).append('|')
+            append(buildFingerprintHash()).append('|')
             cameras.asSequence()
                 .filter { it.lensFacing != CameraCharacteristics.LENS_FACING_EXTERNAL }
                 .sortedBy { it.cameraId }
@@ -128,5 +129,15 @@ internal class CalibrationEnvironmentStore(context: Context) {
                 .getLong(KEY_MINIMUM_VALID_TIMESTAMP, 0L)
             return cutoff <= 0L || timestamp >= cutoff
         }
+
+        /** Stable hash of the running OS build; an OTA changes it and invalidates old signatures. */
+        fun buildFingerprintHash(): String = sha256Static(
+            "${Build.FINGERPRINT}|${Build.DISPLAY}|${Build.VERSION.SDK_INT}",
+        )
+
+        private fun sha256Static(value: String): String =
+            MessageDigest.getInstance("SHA-256")
+                .digest(value.toByteArray(Charsets.UTF_8))
+                .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
     }
 }
