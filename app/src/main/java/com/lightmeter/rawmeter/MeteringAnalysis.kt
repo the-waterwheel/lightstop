@@ -19,6 +19,8 @@ internal data class MeteringFrameStat(
     val captureIso: Int,
     val exposureTimeNs: Long,
     val aperture: Float,
+    /** RAW channel medians pinned at the white level; drives exposure retry, not clipping alone. */
+    val saturatedChannelCount: Int = 0,
 )
 
 internal data class RawColorSample(
@@ -290,6 +292,9 @@ internal object MeteringAnalysis {
             captureIso = sensitivity,
             exposureTimeNs = exposureTime,
             aperture = aperture,
+            saturatedChannelCount = (0..3).count {
+                values[it] >= RawExposureRetryPolicy.CHANNEL_SATURATION_LEVEL
+            },
         )
     }
 

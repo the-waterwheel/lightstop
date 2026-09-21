@@ -4,23 +4,38 @@ import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.roundToLong
 
-/** Pure state policy for RAW highlight-protection recaptures. */
-internal object RawHighlightProtectionPolicy {
+/** Inputs for deciding whether a RAW frame's usable statistic is distorted. */
+internal data class RawExposureRetryInput(
+    /** Channel medians at or above [RawExposureRetryPolicy.CHANNEL_SATURATION_LEVEL]. */
+    val saturatedChannelCount: Int,
+    val currentStage: Int,
+    /** Diagnostic only; never triggers a retry by itself. */
+    val clippedFraction: Double,
+)
+
+/**
+ * Pure state policy for RAW exposure recaptures.
+ *
+ * A saturated-pixel fraction is deliberately not a quality gate: a few specular highlights do not
+ * distort a robust per-channel median. A recapture is requested only when the statistic actually
+ * used for metering is pinned at the white level, i.e. enough channel medians are saturated.
+ */
+internal object RawExposureRetryPolicy {
     const val EXPOSURE_STEP_EV = 3
     const val MAX_RECAPTURE_STAGE = 2
     const val SINGLE_FRAME_COUNT = 1
 
-    /**
-     * Ignore a very small number of saturated samples, which can be caused by hot pixels.
-     * A one-percent clipped region is still low enough to protect a small specular highlight.
-     */
-    const val CLIPPED_FRACTION_THRESHOLD = 0.01
+    /** Normalized median at which a channel's typical value is effectively at the white level. */
+    const val CHANNEL_SATURATION_LEVEL = 0.985
 
-    fun nextStage(clippedFraction: Double, currentStage: Int): Int? = when {
-        !clippedFraction.isFinite() -> null
-        clippedFraction <= CLIPPED_FRACTION_THRESHOLD -> null
-        currentStage >= MAX_RECAPTURE_STAGE -> null
-        else -> currentStage + 1
+    /** Two saturated channel medians (for example both green channels) indicate a distorted read. */
+    const val REQUIRED_SATURATED_CHANNELS = 2
+
+    fun nextStage(input: RawExposureRetryInput): Int? {
+        if (input.currentStage >= MAX_RECAPTURE_STAGE) return null
+        val statisticsDistorted =
+            input.saturatedChannelCount >= REQUIRED_SATURATED_CHANNELS
+        return if (statisticsDistorted) input.currentStage + 1 else null
     }
 
     fun exposureReductionEv(stage: Int): Int =

@@ -4,29 +4,43 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
-class RawHighlightProtectionTest {
-    @Test
-    fun `clipping triggers at most two three-EV recaptures`() {
-        val clipped = RawHighlightProtectionPolicy.CLIPPED_FRACTION_THRESHOLD + 0.001
+class RawExposureRetryPolicyTest {
+    private fun input(
+        saturatedChannelCount: Int,
+        currentStage: Int,
+        clippedFraction: Double = 0.0,
+    ) = RawExposureRetryInput(
+        saturatedChannelCount = saturatedChannelCount,
+        currentStage = currentStage,
+        clippedFraction = clippedFraction,
+    )
 
-        assertEquals(1, RawHighlightProtectionPolicy.nextStage(clipped, 0))
-        assertEquals(2, RawHighlightProtectionPolicy.nextStage(clipped, 1))
-        assertNull(RawHighlightProtectionPolicy.nextStage(clipped, 2))
-        assertEquals(3, RawHighlightProtectionPolicy.exposureReductionEv(1))
-        assertEquals(6, RawHighlightProtectionPolicy.exposureReductionEv(2))
-        assertEquals(1, RawHighlightProtectionPolicy.SINGLE_FRAME_COUNT)
+    @Test
+    fun `distorted statistics trigger at most two three-EV recaptures`() {
+        val saturated = RawExposureRetryPolicy.REQUIRED_SATURATED_CHANNELS
+
+        assertEquals(1, RawExposureRetryPolicy.nextStage(input(saturated, 0)))
+        assertEquals(2, RawExposureRetryPolicy.nextStage(input(saturated, 1)))
+        assertNull(RawExposureRetryPolicy.nextStage(input(saturated, 2)))
+        assertEquals(3, RawExposureRetryPolicy.exposureReductionEv(1))
+        assertEquals(6, RawExposureRetryPolicy.exposureReductionEv(2))
+        assertEquals(1, RawExposureRetryPolicy.SINGLE_FRAME_COUNT)
     }
 
     @Test
-    fun `noise-level or invalid clipping does not recapture`() {
-        assertNull(RawHighlightProtectionPolicy.nextStage(0.0, 0))
+    fun `a small clipped fraction alone never triggers a recapture`() {
+        assertNull(RawExposureRetryPolicy.nextStage(input(0, 0, clippedFraction = 0.02)))
+        assertNull(RawExposureRetryPolicy.nextStage(input(1, 0, clippedFraction = 0.5)))
+    }
+
+    @Test
+    fun `valid statistics are accepted regardless of clipped fraction`() {
+        assertNull(RawExposureRetryPolicy.nextStage(input(0, 0, clippedFraction = 0.0)))
         assertNull(
-            RawHighlightProtectionPolicy.nextStage(
-                RawHighlightProtectionPolicy.CLIPPED_FRACTION_THRESHOLD,
-                0,
+            RawExposureRetryPolicy.nextStage(
+                input(1, 0, clippedFraction = RawExposureRetryPolicy.CHANNEL_SATURATION_LEVEL),
             ),
         )
-        assertNull(RawHighlightProtectionPolicy.nextStage(Double.NaN, 0))
     }
 
     @Test

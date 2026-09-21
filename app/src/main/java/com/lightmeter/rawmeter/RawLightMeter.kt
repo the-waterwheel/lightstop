@@ -453,7 +453,7 @@ internal class RawLightMeter(
             pair.image.close()
             active.completedFrames += 1
         }
-        if (stat != null && retryForClippedHighlights(active, stat)) return
+        if (stat != null && retryForDistortedStatistics(active, stat)) return
         stat?.let(active.stats::add)
         when {
             active.stats.size >= active.expectedFrames -> finishWithReading(active)
@@ -513,8 +513,16 @@ internal class RawLightMeter(
             pair.image.close()
             active.completedFrames += 1
         }
-        val mostClipped = frameStats.maxByOrNull { it.second.clipped }?.second
-        if (mostClipped != null && retryForClippedHighlights(active, mostClipped)) return
+        val retryStat = frameStats.firstOrNull { (_, stat) ->
+            RawExposureRetryPolicy.nextStage(
+                RawExposureRetryInput(
+                    saturatedChannelCount = stat.saturatedChannelCount,
+                    currentStage = active.highlightProtectionStage,
+                    clippedFraction = stat.clipped,
+                ),
+            ) != null
+        }?.second
+        if (retryStat != null && retryForDistortedStatistics(active, retryStat)) return
         frameStats.forEach { (target, stat) -> target.stats += stat }
         if (active.completedFrames >= active.expectedFrames) {
             finishWithBatchReadings(active)
@@ -523,21 +531,24 @@ internal class RawLightMeter(
         }
     }
 
-    private fun retryForClippedHighlights(
+    private fun retryForDistortedStatistics(
         active: MeasurementAccumulator,
         stat: MeteringFrameStat,
     ): Boolean {
-        val nextStage = RawHighlightProtectionPolicy.nextStage(
-            clippedFraction = stat.clipped,
-            currentStage = active.highlightProtectionStage,
+        val nextStage = RawExposureRetryPolicy.nextStage(
+            RawExposureRetryInput(
+                saturatedChannelCount = stat.saturatedChannelCount,
+                currentStage = active.highlightProtectionStage,
+                clippedFraction = stat.clipped,
+            ),
         ) ?: return false
         if (activeMeasurement?.id != active.id) return true
         val context = activeContext ?: return false
-        val reductionEv = RawHighlightProtectionPolicy.exposureReductionEv(nextStage)
+        val reductionEv = RawExposureRetryPolicy.exposureReductionEv(nextStage)
         active.framePairer.clear()
         val retry = MeasurementAccumulator(
             id = ++nextMeasurementId,
-            expectedFrames = RawHighlightProtectionPolicy.SINGLE_FRAME_COUNT,
+            expectedFrames = RawExposureRetryPolicy.SINGLE_FRAME_COUNT,
             highlightProtectionStage = nextStage,
             frameAspect = active.frameAspect,
             zoom = active.zoom,
@@ -562,10 +573,11 @@ internal class RawLightMeter(
             scheduleTimeout(retry, context.handler)
             Log.w(
                 TAG,
-                "RAW highlights clipped: fraction=${stat.clipped} " +
-                    "recaptureStage=$nextStage reductionEv=$reductionEv frames=1",
+                "RAW statistics distorted: saturatedChannels=${stat.saturatedChannelCount} " +
+                    "clippedFraction=${stat.clipped} recaptureStage=$nextStage " +
+                    "reductionEv=$reductionEv frames=1",
             )
-            listener.onRawMeteringStarted(RawHighlightProtectionPolicy.SINGLE_FRAME_COUNT)
+            listener.onRawMeteringStarted(RawExposureRetryPolicy.SINGLE_FRAME_COUNT)
             fillPipeline(retry)
             true
         } catch (error: Exception) {
