@@ -83,9 +83,10 @@ internal object MeteringAnalysis {
         val seconds = exposureTime / 1_000_000_000.0
         val cameraEv = log2(aperture * aperture / seconds * 100.0 / sensitivity)
         val sceneEv = cameraEv + log2(region.luma / RAW_REFERENCE_LEVEL) +
-            calibrationStore.userCorrection(
+            calibrationStore.responseCorrection(
                 cameraId.ifBlank { "0" },
                 MeteringSource.ISP_PREVIEW,
+                region.luma,
             )
         return MeteringFrameStat(
             ev100 = sceneEv,
@@ -141,7 +142,11 @@ internal object MeteringAnalysis {
         val seconds = exposureTime / 1_000_000_000.0
         val cameraEv = log2(aperture * aperture / seconds * 100.0 / sensitivity)
         val sceneEv = cameraEv + log2(region.luma / RAW_REFERENCE_LEVEL) +
-            calibrationStore.userCorrection(cameraId.ifBlank { "0" }, MeteringSource.YUV_PREVIEW)
+            calibrationStore.responseCorrection(
+                cameraId.ifBlank { "0" },
+                MeteringSource.YUV_PREVIEW,
+                region.luma,
+            )
         return MeteringFrameStat(
             ev100 = sceneEv,
             luma = region.luma,

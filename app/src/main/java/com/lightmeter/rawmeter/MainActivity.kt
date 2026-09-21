@@ -1304,6 +1304,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             referenceEv100 = result.referenceEv100,
             measurements = result.measurements,
             signatures = result.signatures,
+            inputLuma = result.inputLuma,
         )
         invalidateMeteringAfterCalibrationChange()
         clearCalibrationRun()

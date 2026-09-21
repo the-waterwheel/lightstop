@@ -2073,6 +2073,7 @@ class CameraController(
         referenceEv100: Double,
         measurements: Map<MeteringSource, Double>,
         signatures: Map<MeteringSource, CalibrationSignature> = emptyMap(),
+        inputLuma: Map<MeteringSource, Double> = emptyMap(),
     ): CameraCalibrationRecord {
         val cameraId = calibrationCameraId()
         val updated = calibrationStore.updateUserCorrections(
@@ -2080,6 +2081,7 @@ class CameraController(
             referenceEv100 = referenceEv100,
             measurements = measurements,
             signatures = signatures,
+            inputLuma = inputLuma,
         )
         Log.i(
             TAG,

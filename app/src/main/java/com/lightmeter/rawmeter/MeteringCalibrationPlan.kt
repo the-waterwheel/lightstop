@@ -35,6 +35,7 @@ class MeteringCalibrationRun(
     private val successfulMeasurements = linkedMapOf<MeteringSource, Double>()
     private val failedSources = linkedSetOf<MeteringSource>()
     private val sourceSignatures = linkedMapOf<MeteringSource, CalibrationSignature>()
+    private val sourceInputLuma = linkedMapOf<MeteringSource, Double>()
 
     val activeSource: MeteringSource? get() = sources.getOrNull(activeIndex)
     val completedCount: Int get() = activeIndex.coerceAtMost(sources.size)
@@ -43,6 +44,9 @@ class MeteringCalibrationRun(
 
     /** Signature captured at the instant each source was measured, never reconstructed later. */
     val signatures: Map<MeteringSource, CalibrationSignature> get() = sourceSignatures.toMap()
+
+    /** Processed-stream input luminance at each measurement, for response calibration. */
+    val inputLuma: Map<MeteringSource, Double> get() = sourceInputLuma.toMap()
     val hasFailures: Boolean get() = failedSources.isNotEmpty()
     val isComplete: Boolean get() = activeSource == null
 
@@ -57,6 +61,9 @@ class MeteringCalibrationRun(
         if (reading.source in sources) {
             successfulMeasurements[reading.source] = reading.sceneEv100
             signature?.let { sourceSignatures[reading.source] = it }
+            if (reading.rawLuma.isFinite() && reading.rawLuma > 0.0) {
+                sourceInputLuma[reading.source] = reading.rawLuma
+            }
         }
         return advancePastCompleted()
     }

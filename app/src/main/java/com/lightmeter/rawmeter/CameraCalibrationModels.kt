@@ -6,6 +6,8 @@ data class StreamCalibration(
     val measuredEv100: Double?,
     /** Capture-context signature recorded with this value; null for pre-signature data. */
     val signature: CalibrationSignature? = null,
+    /** Multi-point response for processed YUV/ISP streams; null for RAW or single-offset data. */
+    val response: ProcessedResponseCalibration? = null,
 )
 
 /**

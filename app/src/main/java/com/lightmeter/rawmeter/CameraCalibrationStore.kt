@@ -47,6 +47,24 @@ class CameraCalibrationStore(context: Context) {
     private fun currentSignature(source: MeteringSource): CalibrationSignature? =
         activeContext?.signature(source)
 
+    /**
+     * Applies a processed stream's multi-point response at [inputLuma], falling back to the single
+     * offset. The response is gated by the same signature as the offset.
+     */
+    @Synchronized
+    fun responseCorrection(
+        cameraId: String,
+        source: MeteringSource,
+        inputLuma: Double,
+    ): Double {
+        val fallback = userCorrection(cameraId, source)
+        if (activeContext != null && !signatureState(cameraId, source).isApplicable) return 0.0
+        val response = ProcessedResponseCalibration.parse(
+            preferences.getString(responseKey(cameraId, source), null),
+        )
+        return response?.correctionEv(inputLuma, fallback) ?: fallback
+    }
+
     @Synchronized
     fun userCorrection(cameraId: String, source: MeteringSource = MeteringSource.RAW): Double {
         if (!CalibrationEnvironmentStore.isCalibrationTimestampValid(
@@ -168,6 +186,9 @@ class CameraCalibrationStore(context: Context) {
                 signature = CalibrationSignature.parse(
                     preferences.getString(signatureKey(cameraId, MeteringSource.YUV_PREVIEW), null),
                 ),
+                response = ProcessedResponseCalibration.parse(
+                    preferences.getString(responseKey(cameraId, MeteringSource.YUV_PREVIEW), null),
+                ),
             ),
             ispPreview = StreamCalibration(
                 correctionEv = preferences.optionalFloat(ispKey).takeIf {
@@ -178,6 +199,9 @@ class CameraCalibrationStore(context: Context) {
                 },
                 signature = CalibrationSignature.parse(
                     preferences.getString(signatureKey(cameraId, MeteringSource.ISP_PREVIEW), null),
+                ),
+                response = ProcessedResponseCalibration.parse(
+                    preferences.getString(responseKey(cameraId, MeteringSource.ISP_PREVIEW), null),
                 ),
             ),
             legacyCompatibleCorrectionEv = preferences.optionalFloat(legacyKey).takeIf {
@@ -203,6 +227,7 @@ class CameraCalibrationStore(context: Context) {
         referenceEv100: Double,
         measurements: Map<MeteringSource, Double>,
         signatures: Map<MeteringSource, CalibrationSignature> = emptyMap(),
+        inputLuma: Map<MeteringSource, Double> = emptyMap(),
     ): CameraCalibrationRecord {
         require(measurements.isNotEmpty()) {
             "At least one calibration measurement is required"
@@ -215,6 +240,7 @@ class CameraCalibrationStore(context: Context) {
             measurement = measurements[MeteringSource.RAW],
             referenceEv100 = referenceEv100,
             signature = signatures[MeteringSource.RAW],
+            inputLuma = inputLuma[MeteringSource.RAW],
         )
         val updatedYuv = updatedStream(
             cameraId = cameraId,
@@ -223,6 +249,7 @@ class CameraCalibrationStore(context: Context) {
             measurement = measurements[MeteringSource.YUV_PREVIEW],
             referenceEv100 = referenceEv100,
             signature = signatures[MeteringSource.YUV_PREVIEW],
+            inputLuma = inputLuma[MeteringSource.YUV_PREVIEW],
         )
         val updatedIsp = updatedStream(
             cameraId = cameraId,
@@ -231,6 +258,7 @@ class CameraCalibrationStore(context: Context) {
             measurement = measurements[MeteringSource.ISP_PREVIEW],
             referenceEv100 = referenceEv100,
             signature = signatures[MeteringSource.ISP_PREVIEW],
+            inputLuma = inputLuma[MeteringSource.ISP_PREVIEW],
         )
         val previous = history(cameraId)
         val count = maxOf(
@@ -264,20 +292,36 @@ class CameraCalibrationStore(context: Context) {
         measurement: Double?,
         referenceEv100: Double,
         signature: CalibrationSignature?,
+        inputLuma: Double?,
     ): StreamCalibration = if (measurement == null) {
         previous ?: StreamCalibration(correctionEv = null, measuredEv100 = null)
     } else {
+        val correction = CalibrationMath.updatedUserCorrection(
+            currentCorrectionEv = userCorrection(cameraId, source),
+            referenceEv100 = referenceEv100,
+            measuredEv100 = measurement,
+        )
         StreamCalibration(
-            correctionEv = CalibrationMath.updatedUserCorrection(
-                currentCorrectionEv = userCorrection(cameraId, source),
-                referenceEv100 = referenceEv100,
-                measuredEv100 = measurement,
-            ),
+            correctionEv = correction,
             measuredEv100 = measurement,
             // Prefer the signature captured at measurement time; the active context is only a
             // fallback for callers that did not supply one.
             signature = signature ?: currentSignature(source),
+            // Processed streams accumulate a multi-point response; RAW keeps its single offset.
+            response = responseForSource(source, previous, inputLuma, correction),
         )
+    }
+
+    private fun responseForSource(
+        source: MeteringSource,
+        previous: StreamCalibration?,
+        inputLuma: Double?,
+        correctionEv: Double,
+    ): ProcessedResponseCalibration? {
+        if (source == MeteringSource.RAW) return previous?.response
+        val luma = inputLuma?.takeIf { it.isFinite() } ?: return previous?.response
+        val base = previous?.response ?: ProcessedResponseCalibration(emptyList())
+        return base.withAnchor(ProcessedResponseAnchor(luma, correctionEv))
     }
 
     @Synchronized
@@ -309,6 +353,8 @@ class CameraCalibrationStore(context: Context) {
             remove(signatureKey(cameraId, MeteringSource.RAW))
             remove(signatureKey(cameraId, MeteringSource.YUV_PREVIEW))
             remove(signatureKey(cameraId, MeteringSource.ISP_PREVIEW))
+            remove(responseKey(cameraId, MeteringSource.YUV_PREVIEW))
+            remove(responseKey(cameraId, MeteringSource.ISP_PREVIEW))
         }.apply()
     }
 
@@ -334,6 +380,8 @@ class CameraCalibrationStore(context: Context) {
     private fun schemaVersionKey(cameraId: String): String = "schema_${deviceKey(cameraId)}"
     private fun signatureKey(cameraId: String, source: MeteringSource): String =
         "signature_${deviceKey(cameraId)}_${source.name}"
+    private fun responseKey(cameraId: String, source: MeteringSource): String =
+        "response_${deviceKey(cameraId)}_${source.name}"
     private fun exposurePreviewKey(cameraId: String): String =
         "preview_execution_user_${deviceKey(cameraId)}"
     private fun exposurePreviewUpdatedKey(cameraId: String): String =
@@ -379,6 +427,9 @@ class CameraCalibrationStore(context: Context) {
                 signature = CalibrationSignature.parse(
                     preferences.getString(historyKey(cameraId, index, "yuv_signature"), null),
                 ),
+                response = ProcessedResponseCalibration.parse(
+                    preferences.getString(historyKey(cameraId, index, "yuv_response"), null),
+                ),
             ),
             ispPreview = StreamCalibration(
                 correctionEv = preferences.optionalFloat(ispCorrection).takeIf {
@@ -389,6 +440,9 @@ class CameraCalibrationStore(context: Context) {
                 ).takeIf { processedCalibrationIsCurrent },
                 signature = CalibrationSignature.parse(
                     preferences.getString(historyKey(cameraId, index, "isp_signature"), null),
+                ),
+                response = ProcessedResponseCalibration.parse(
+                    preferences.getString(historyKey(cameraId, index, "isp_response"), null),
                 ),
             ),
             legacyCompatibleCorrectionEv = preferences.optionalFloat(legacyCorrection).takeIf {
@@ -428,6 +482,8 @@ class CameraCalibrationStore(context: Context) {
         putSignature(cameraId, MeteringSource.RAW, record.raw.signature)
         putSignature(cameraId, MeteringSource.YUV_PREVIEW, record.yuv.signature)
         putSignature(cameraId, MeteringSource.ISP_PREVIEW, record.ispPreview.signature)
+        putResponse(cameraId, MeteringSource.YUV_PREVIEW, record.yuv.response)
+        putResponse(cameraId, MeteringSource.ISP_PREVIEW, record.ispPreview.response)
         putLong(updatedAtKey(cameraId), record.updatedAtEpochMs)
         putInt(countKey(cameraId), record.calibrationCount)
         putInt(schemaVersionKey(cameraId), record.schemaVersion)
@@ -440,6 +496,15 @@ class CameraCalibrationStore(context: Context) {
     ) {
         val key = signatureKey(cameraId, source)
         if (signature == null) remove(key) else putString(key, signature.serialize())
+    }
+
+    private fun android.content.SharedPreferences.Editor.putResponse(
+        cameraId: String,
+        source: MeteringSource,
+        response: ProcessedResponseCalibration?,
+    ) {
+        val key = responseKey(cameraId, source)
+        if (response == null) remove(key) else putString(key, response.serialize())
     }
 
     private fun android.content.SharedPreferences.Editor.writeHistory(
@@ -490,11 +555,23 @@ class CameraCalibrationStore(context: Context) {
                 putHistorySignature(cameraId, index, "signature", record.raw.signature)
                 putHistorySignature(cameraId, index, "yuv_signature", record.yuv.signature)
                 putHistorySignature(cameraId, index, "isp_signature", record.ispPreview.signature)
+                putHistoryResponse(cameraId, index, "yuv_response", record.yuv.response)
+                putHistoryResponse(cameraId, index, "isp_response", record.ispPreview.response)
                 putLong(historyKey(cameraId, index, "updated"), record.updatedAtEpochMs)
                 putInt(historyKey(cameraId, index, "count"), record.calibrationCount)
                 putInt(historyKey(cameraId, index, "schema"), record.schemaVersion)
             }
         }
+    }
+
+    private fun android.content.SharedPreferences.Editor.putHistoryResponse(
+        cameraId: String,
+        index: Int,
+        field: String,
+        response: ProcessedResponseCalibration?,
+    ) {
+        val key = historyKey(cameraId, index, field)
+        if (response == null) remove(key) else putString(key, response.serialize())
     }
 
     private fun android.content.SharedPreferences.Editor.putHistorySignature(
@@ -524,6 +601,8 @@ class CameraCalibrationStore(context: Context) {
             "signature",
             "yuv_signature",
             "isp_signature",
+            "yuv_response",
+            "isp_response",
             "updated",
             "count",
             "schema",
