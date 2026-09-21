@@ -12,7 +12,9 @@ Camera permission is required for viewfinding and metering. Location permission
 is optional and is used only after the user enables location for parameter
 records and grants permission. The app may read a recent location or request one
 current location and attach it to a record the user chooses to save. It does not
-continuously track location in the background.
+continuously track location in the background. A recent fix is attached only
+when it passes a freshness/accuracy policy; a coarse (approximate) fix is stored
+and shown as coarse rather than being presented as a precise position.
 
 When the user saves a parameter record, the app stores a viewfinder JPEG,
 exposure parameters, time, notes, and an optional authorized location in
@@ -49,6 +51,8 @@ SDK，也不会由应用或开发者把相机画面、测光数据、位置、�
 应用需要相机权限才能提供取景和测光。位置权限是可选的，仅在用户主动启用
 参数记录的位置选项并授权后使用。应用可能读取最近位置或请求一次当前位置，
 并把获得的位置写入用户主动保存的参数记录；应用不在后台持续跟踪位置。
+只有通过时效与精度策略的定位才会写入记录；粗略（大致）位置会以粗略方式
+保存和显示，不会被当作精确位置。
 
 当用户主动保存参数记录时，应用会在应用私有存储中保存取景 JPEG、曝光参数、
 时间、备注和用户选择记录的位置；启用 RAW 记录时还可能保存 DNG 与紧凑 RAW

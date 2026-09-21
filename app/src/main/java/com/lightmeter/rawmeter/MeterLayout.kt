@@ -1646,8 +1646,8 @@ class MeterLayout @JvmOverloads constructor(
             .setTitle(localized("隐私说明", "Privacy notice"))
             .setMessage(
                 localized(
-                    "光档不会通过网络向开发者上传照片、测光数据、位置、备注、闪光灯或距离信息。位置仅在你启用参数记录的位置选项并授权后使用，不会在后台持续跟踪。系统或设备厂商的备份服务可能按你的系统设置复制应用私有数据；是否备份、加密、保留或成功恢复取决于设备、账号、系统版本、厂商政策和备份配额。较大的 DNG 不保证会被备份。",
-                    "lightstop does not upload photos, meter readings, locations, notes, flash settings, or distance information to the developer. Location is used only after you enable it for parameter records and grant permission; it is not tracked in the background. System or device-vendor backup services may copy app-private data according to your settings. Backup, encryption, retention, and restore depend on the device, account, OS version, vendor policy, and quota. Large DNG files are not guaranteed to be backed up.",
+                    "光档不会通过网络向开发者上传照片、测光数据、位置、备注、闪光灯或距离信息。位置仅在你启用参数记录的位置选项并授权后使用，不会在后台持续跟踪；只有足够新且精度合理的定位才会写入记录，粗略位置会标注为粗略。系统或设备厂商的备份服务可能按你的系统设置复制应用私有数据；是否备份、加密、保留或成功恢复取决于设备、账号、系统版本、厂商政策和备份配额。较大的 DNG 不保证会被备份。",
+                    "lightstop does not upload photos, meter readings, locations, notes, flash settings, or distance information to the developer. Location is used only after you enable it for parameter records and grant permission; it is not tracked in the background. Only a fresh, plausibly accurate fix is attached, and a coarse fix is labelled as coarse. System or device-vendor backup services may copy app-private data according to your settings. Backup, encryption, retention, and restore depend on the device, account, OS version, vendor policy, and quota. Large DNG files are not guaranteed to be backed up.",
                 ),
             )
             .setPositiveButton(localized("确定", "OK"), null)
