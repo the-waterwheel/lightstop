@@ -25,6 +25,7 @@ internal class Ev100BadgeRenderer(
     ) {
         if (rect.isEmpty) return
         val foreground = if (darkMode) Color.rgb(218, 218, 214) else Color.rgb(22, 22, 22)
+        val muted = if (darkMode) Color.rgb(150, 150, 146) else Color.rgb(120, 120, 116)
         val surface = if (darkMode) Color.rgb(32, 32, 30) else Color.WHITE
         paint.style = Paint.Style.FILL
         paint.color = surface
@@ -35,10 +36,15 @@ internal class Ev100BadgeRenderer(
         canvas.drawRoundRect(rect, 5f * density, 5f * density, paint)
 
         bold.textAlign = Paint.Align.CENTER
-        bold.color = foreground
+        bold.color = if (readout.lowConfidence) muted else foreground
         bold.textSize = 7.5f * scaledDensity
-        centered(canvas, "EV100", rect.centerX(), rect.top + rect.height() * 0.31f, bold)
-        bold.color = if (readout.pending) red else foreground
+        val header = readout.sourceLabel?.let { "EV100 · $it" } ?: "EV100"
+        centered(canvas, header, rect.centerX(), rect.top + rect.height() * 0.31f, bold)
+        bold.color = when {
+            readout.pending -> red
+            readout.lowConfidence -> muted
+            else -> foreground
+        }
         bold.textSize = 11.5f * scaledDensity
         val text = when {
             readout.pending -> "…"
