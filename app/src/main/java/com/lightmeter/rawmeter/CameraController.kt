@@ -3159,7 +3159,7 @@ class CameraController(
     private fun postInfo(info: CameraUiInfo) {
         cameraInfo = info
         val generation = cameraGeneration
-        Log.e(
+        Log.i(
             TAG,
                 "Camera status: ${info.status}; id=${info.cameraId}; " +
                 "logical=${info.logicalCameraId}; runtime=${info.runtimeCameraId}; " +

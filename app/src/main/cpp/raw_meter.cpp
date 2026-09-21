@@ -73,6 +73,7 @@ Java_com_lightmeter_rawmeter_RawMeterBridge_analyzeRaw(
     auto* base = static_cast<uint8_t*>(env->GetDirectBufferAddress(buffer));
     const jlong capacity = env->GetDirectBufferCapacity(buffer);
     jdoubleArray output = env->NewDoubleArray(6);
+    if (output == nullptr) return nullptr;
     std::array<jdouble, 6> result{0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
     if (base == nullptr || capacity <= 0 || pixel_stride < 2 || row_stride <= 0 ||
         cfa < 0 || cfa > 3 ||
@@ -85,16 +86,23 @@ Java_com_lightmeter_rawmeter_RawMeterBridge_analyzeRaw(
     if (black_levels_array != nullptr && env->GetArrayLength(black_levels_array) >= 4) {
         env->GetFloatArrayRegion(black_levels_array, 0, 4, black.data());
     }
+    for (const float level : black) {
+        if (!std::isfinite(level) || level < 0.f || level >= static_cast<float>(white_level)) {
+            env->SetDoubleArrayRegion(output, 0, result.size(), result.data());
+            return output;
+        }
+    }
 
-    const int left = std::max(0, roi_left);
-    const int top = std::max(0, roi_top);
-    const int right = std::min(static_cast<int>(width), left + std::max(0, roi_width));
-    const int bottom = std::min(static_cast<int>(height), top + std::max(0, roi_height));
+    // Widen before adding so an extreme ROI cannot overflow a 32-bit int.
+    const int64_t left = std::max<int64_t>(0, roi_left);
+    const int64_t top = std::max<int64_t>(0, roi_top);
+    const int64_t right = std::min<int64_t>(width, left + std::max<int64_t>(0, roi_width));
+    const int64_t bottom = std::min<int64_t>(height, top + std::max<int64_t>(0, roi_height));
 
-    const int first_x = left + (left & 1);
-    const int first_y = top + (top & 1);
-    const int cell_columns = std::max(0, (right - first_x) / 2);
-    const int cell_rows = std::max(0, (bottom - first_y) / 2);
+    const int first_x = static_cast<int>(left + (left & 1));
+    const int first_y = static_cast<int>(top + (top & 1));
+    const int cell_columns = static_cast<int>(std::max<int64_t>(0, (right - first_x) / 2));
+    const int cell_rows = static_cast<int>(std::max<int64_t>(0, (bottom - first_y) / 2));
     const int64_t total_cells = static_cast<int64_t>(cell_columns) * cell_rows;
     const double sampling_ratio = total_cells > 0
             ? static_cast<double>(total_cells) / kMaxSamplesPerChannel

@@ -269,12 +269,11 @@ internal object MeteringAnalysis {
         )
         val baselineCalibrationEv = calibrationEv - userCalibrationEv
         val sceneEv = cameraEv + log2(luma / RAW_REFERENCE_LEVEL) + calibrationEv
-        val postRawBoost = result.get(CaptureResult.CONTROL_POST_RAW_SENSITIVITY_BOOST) ?: 100
-        val neutralPoint = result.get(CaptureResult.SENSOR_NEUTRAL_COLOR_POINT)
-            ?.joinToString(prefix = "[", postfix = "]") { it.toString() }
-            ?: "unavailable"
-        Log.e(
-            TAG,
+        MeterDiagnostics.log(TAG) {
+            val postRawBoost = result.get(CaptureResult.CONTROL_POST_RAW_SENSITIVITY_BOOST) ?: 100
+            val neutralPoint = result.get(CaptureResult.SENSOR_NEUTRAL_COLOR_POINT)
+                ?.joinToString(prefix = "[", postfix = "]") { it.toString() }
+                ?: "unavailable"
             "RAW frame diagnostics: r=${values[0]} g1=${values[1]} g2=${values[2]} " +
                 "b=${values[3]} legacyLuma=$legacyLuma colorLuma=$baseLuma " +
                 "vignettingGain=$vignettingGain correctedLuma=$luma " +
@@ -285,8 +284,8 @@ internal object MeteringAnalysis {
                 "postRawBoost=$postRawBoost neutral=$neutralPoint cameraEv=$cameraEv " +
                 "baselineCalibrationEv=$baselineCalibrationEv " +
                 "userCalibrationEv=$userCalibrationEv calibrationEv=$calibrationEv " +
-                "sceneEv=$sceneEv mode=$meteringMode",
-        )
+                "sceneEv=$sceneEv mode=$meteringMode"
+        }
         return MeteringFrameStat(
             ev100 = sceneEv,
             luma = luma,

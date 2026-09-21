@@ -1,15 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <full-backup-content>
-    <!-- Final, user-owned records. Cache and incomplete capture files are excluded by domain. -->
-    <include domain="file" path="parameter_records/" />
-    <include domain="file" path="vignetting-calibration/" />
+    <!-- Final, user-owned records. Cache and incomplete capture files are excluded by domain.
+         Android 9-11 cloud backup requires client-side encryption; a device that cannot encrypt
+         simply keeps these files local rather than uploading them unprotected. -->
+    <include domain="file" path="parameter_records/" requireFlags="clientSideEncryption" />
+    <include domain="file" path="vignetting-calibration/" requireFlags="clientSideEncryption" />
 
     <!-- Keep only the explicitly enumerated settings and calibration stores. -->
-    <include domain="sharedpref" path="raw_light_meter_state.xml" />
-    <include domain="sharedpref" path="raw_meter_calibration.xml" />
-    <include domain="sharedpref" path="calibration_environment.xml" />
-    <include domain="sharedpref" path="raw_light_meter_cameras.xml" />
-    <include domain="sharedpref" path="film_latitude_state.xml" />
-    <include domain="sharedpref" path="film_reciprocity_state.xml" />
-    <include domain="sharedpref" path="parameter_record_settings.xml" />
+    <include domain="sharedpref" path="raw_light_meter_state.xml" requireFlags="clientSideEncryption" />
+    <include domain="sharedpref" path="raw_meter_calibration.xml" requireFlags="clientSideEncryption" />
+    <include domain="sharedpref" path="calibration_environment.xml" requireFlags="clientSideEncryption" />
+    <include domain="sharedpref" path="raw_light_meter_cameras.xml" requireFlags="clientSideEncryption" />
+    <include domain="sharedpref" path="film_latitude_state.xml" requireFlags="clientSideEncryption" />
+    <include domain="sharedpref" path="film_reciprocity_state.xml" requireFlags="clientSideEncryption" />
+    <include domain="sharedpref" path="parameter_record_settings.xml" requireFlags="clientSideEncryption" />
 </full-backup-content>
