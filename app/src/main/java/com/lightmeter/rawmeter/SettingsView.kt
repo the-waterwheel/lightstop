@@ -57,6 +57,11 @@ class SettingsView(
     private var tabSections: List<SettingsSectionSpec> = emptyList()
     private var optionTargets: List<OptionHitTarget> = emptyList()
     private var actionTargets: List<ActionHitTarget> = emptyList()
+    private val accessibilityHelper = CanvasAccessibilityHelper(this, ::handleAccessibilityClick)
+    private val accessibilityRects = HashMap<Int, RectF>()
+    private val accessibilityManager: android.view.accessibility.AccessibilityManager?
+        get() = context.getSystemService(Context.ACCESSIBILITY_SERVICE)
+            as? android.view.accessibility.AccessibilityManager
     private var downX = 0f
     private var downY = 0f
     private var dragging = false
@@ -342,7 +347,74 @@ class SettingsView(
         optionTargets = newTargets
         actionTargets = newActionTargets
         canvas.restore()
+        accessibilityHelper.update(accessibilityNodes())
     }
+
+    override fun getAccessibilityNodeProvider(): android.view.accessibility.AccessibilityNodeProvider =
+        accessibilityHelper.provider
+
+    override fun onInitializeAccessibilityNodeInfo(
+        info: android.view.accessibility.AccessibilityNodeInfo,
+    ) {
+        super.onInitializeAccessibilityNodeInfo(info)
+        info.className = "android.view.View"
+        info.contentDescription = localized("设置", "Settings")
+    }
+
+    override fun dispatchHoverEvent(event: MotionEvent): Boolean {
+        if (accessibilityHelper.handleHoverEvent(event, accessibilityManager)) return true
+        return super.dispatchHoverEvent(event)
+    }
+
+    private fun accessibilityNodes(): List<CanvasAccessibilityHelper.VirtualNode> = buildList {
+        accessibilityRects.clear()
+        var nextId = A11Y_DYNAMIC_BASE
+        fun add(id: Int, rect: RectF, label: CharSequence, selected: Boolean = false) {
+            accessibilityRects[id] = RectF(rect)
+            add(CanvasAccessibilityHelper.VirtualNode(id, rect, label, selected))
+        }
+        if (closeRect.width() > 0f) {
+            add(A11Y_CLOSE, closeRect, localized("关闭设置", "Close settings"))
+        }
+        if (nestedBackRect.width() > 0f) {
+            add(A11Y_BACK, nestedBackRect, localized("返回", "Back"))
+        }
+        tabRects.forEachIndexed { index, rect ->
+            tabSections.getOrNull(index)?.let { section ->
+                add(
+                    A11Y_TAB_BASE + index,
+                    rect,
+                    section.label.resolve(state.menuLanguage),
+                    selected = index == selectedSectionIndex,
+                )
+            }
+        }
+        optionTargets.forEach { target ->
+            add(
+                nextId++,
+                target.rect,
+                "${target.item.label.resolve(state.menuLanguage)}: " +
+                    target.option.label.resolve(state.menuLanguage),
+                selected = state.settingValue(target.item.key) == target.option.value,
+            )
+        }
+        actionTargets.forEach { target ->
+            add(
+                nextId++,
+                target.rect,
+                target.action.label.resolve(state.menuLanguage),
+            )
+        }
+    }
+
+    private fun handleAccessibilityClick(virtualViewId: Int): Boolean {
+        val rect = accessibilityRects[virtualViewId] ?: return false
+        handleTap(rect.centerX(), rect.centerY())
+        return true
+    }
+
+    private fun localized(chinese: String, english: String): String =
+        if (state.menuLanguage == MenuLanguage.ENGLISH) english else chinese
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
@@ -461,5 +533,12 @@ class SettingsView(
         textPaint: Paint,
     ) {
         canvas.drawText(text, left, baseline, textPaint)
+    }
+
+    private companion object {
+        private const val A11Y_CLOSE = 1
+        private const val A11Y_BACK = 2
+        private const val A11Y_TAB_BASE = 10
+        private const val A11Y_DYNAMIC_BASE = 1_000
     }
 }
