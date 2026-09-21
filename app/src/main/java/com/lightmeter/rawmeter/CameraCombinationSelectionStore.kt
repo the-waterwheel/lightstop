@@ -11,7 +11,7 @@ internal class CameraCombinationSelectionStore(context: Context) {
         if (cameraRouteId.isBlank()) return null
         val prefix = keyPrefix(cameraRouteId)
         if (preferences.getInt("${prefix}_schema", 0) != SCHEMA_VERSION) return null
-        if (preferences.getString("${prefix}_fingerprint", null) != Build.FINGERPRINT) return null
+        if (preferences.getString("${prefix}_fingerprint", null) != environmentKey()) return null
         return preferences.getString("${prefix}_plan", null)?.takeIf(String::isNotBlank)
     }
 
@@ -20,7 +20,7 @@ internal class CameraCombinationSelectionStore(context: Context) {
         val prefix = keyPrefix(cameraRouteId)
         preferences.edit()
             .putInt("${prefix}_schema", SCHEMA_VERSION)
-            .putString("${prefix}_fingerprint", Build.FINGERPRINT)
+            .putString("${prefix}_fingerprint", environmentKey())
             .putString("${prefix}_plan", planId)
             .apply()
     }
@@ -42,7 +42,7 @@ internal class CameraCombinationSelectionStore(context: Context) {
         if (cameraRouteId.isBlank()) return null
         val prefix = "${keyPrefix(cameraRouteId)}_system_${mode.name.lowercase()}"
         if (preferences.getInt("${prefix}_schema", 0) != SCHEMA_VERSION) return null
-        if (preferences.getString("${prefix}_fingerprint", null) != Build.FINGERPRINT) return null
+        if (preferences.getString("${prefix}_fingerprint", null) != environmentKey()) return null
         return preferences.getString("${prefix}_plan", null)?.takeIf(String::isNotBlank)
     }
 
@@ -55,7 +55,7 @@ internal class CameraCombinationSelectionStore(context: Context) {
         val prefix = "${keyPrefix(cameraRouteId)}_system_${mode.name.lowercase()}"
         preferences.edit()
             .putInt("${prefix}_schema", SCHEMA_VERSION)
-            .putString("${prefix}_fingerprint", Build.FINGERPRINT)
+            .putString("${prefix}_fingerprint", environmentKey())
             .putString("${prefix}_plan", planId)
             .apply()
     }
@@ -70,11 +70,15 @@ internal class CameraCombinationSelectionStore(context: Context) {
             .apply()
     }
 
+    private fun environmentKey(): String = Build.FINGERPRINT + "|" + COMPATIBILITY_POLICY_VERSION
+
     private fun keyPrefix(cameraRouteId: String): String =
         "combination_${cameraRouteId.hashCode().toUInt().toString(16)}"
 
     private companion object {
         private const val PREFERENCES = "camera_combination_selection"
         private const val SCHEMA_VERSION = 1
+        private const val COMPATIBILITY_POLICY_VERSION = 1
     }
 }
+
