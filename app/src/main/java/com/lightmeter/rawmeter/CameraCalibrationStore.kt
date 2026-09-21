@@ -84,6 +84,14 @@ class CameraCalibrationStore(context: Context) {
         if (!CalibrationEnvironmentStore.isCalibrationTimestampValid(appContext, updatedAt)) {
             return 0.0
         }
+        // Independent domain: the preview-execution correction is invalidated by an OS build
+        // change, but never shares the RAW/YUV/ISP signatures or corrections.
+        val storedBuild = preferences.getString(exposurePreviewBuildKey(cameraId), null)
+        if (storedBuild != null &&
+            storedBuild != CalibrationEnvironmentStore.buildFingerprintHash()
+        ) {
+            return 0.0
+        }
         return (preferences.optionalFloat(exposurePreviewKey(cameraId)) ?: 0.0)
             .coerceIn(
                 ExposurePreviewCalibrationMath.MIN_CORRECTION_EV,
@@ -98,6 +106,10 @@ class CameraCalibrationStore(context: Context) {
         preferences.edit()
             .putFloat(exposurePreviewKey(cameraId), saved.toFloat())
             .putLong(exposurePreviewUpdatedKey(cameraId), System.currentTimeMillis())
+            .putString(
+                exposurePreviewBuildKey(cameraId),
+                CalibrationEnvironmentStore.buildFingerprintHash(),
+            )
             .apply()
         return saved
     }
@@ -107,6 +119,7 @@ class CameraCalibrationStore(context: Context) {
         preferences.edit()
             .remove(exposurePreviewKey(cameraId))
             .remove(exposurePreviewUpdatedKey(cameraId))
+            .remove(exposurePreviewBuildKey(cameraId))
             .apply()
     }
 
@@ -318,6 +331,8 @@ class CameraCalibrationStore(context: Context) {
         "preview_execution_user_${deviceKey(cameraId)}"
     private fun exposurePreviewUpdatedKey(cameraId: String): String =
         "preview_execution_updated_${deviceKey(cameraId)}"
+    private fun exposurePreviewBuildKey(cameraId: String): String =
+        "preview_execution_build_${deviceKey(cameraId)}"
 
     private fun historyKey(cameraId: String, index: Int, field: String): String =
         "history_${deviceKey(cameraId)}_${index}_$field"

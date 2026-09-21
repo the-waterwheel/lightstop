@@ -6,6 +6,7 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureResult
+import android.os.Build
 import android.util.Range
 import android.util.Size
 import android.util.SizeF
@@ -77,6 +78,52 @@ internal data class CameraOpenConfiguration(
             status = status,
         )
     }
+
+    /**
+     * Builds the calibration capture context from the outputs this route/profile actually
+     * configures. A source that the active profile does not attach is omitted rather than recorded
+     * from its expected capability.
+     */
+    fun calibrationCaptureContext(
+        profile: CameraSessionProfile,
+        confirmedPhysicalCameraId: String?,
+    ): CalibrationCaptureContext {
+        val outputs = buildMap {
+            rawSize?.takeIf { profile.usesRaw }?.let { size ->
+                put(
+                    MeteringSource.RAW,
+                    CalibrationOutputGeometry(size.width, size.height, ImageFormat.RAW_SENSOR),
+                )
+            }
+            trackingSize?.takeIf { profile.usesTracking }?.let { size ->
+                put(
+                    MeteringSource.YUV_PREVIEW,
+                    CalibrationOutputGeometry(size.width, size.height, ImageFormat.YUV_420_888),
+                )
+            }
+            put(
+                MeteringSource.ISP_PREVIEW,
+                CalibrationOutputGeometry(previewSize.width, previewSize.height, 0),
+            )
+        }
+        return CalibrationCaptureContext(
+            buildFingerprintHash = CalibrationEnvironmentStore.buildFingerprintHash(),
+            cameraInfoVersion = infoVersion(),
+            selectionRouteId = descriptor.cameraId,
+            logicalCameraId = descriptor.logicalCameraId,
+            configuredPhysicalCameraId = route.physicalCameraId,
+            confirmedPhysicalCameraId = confirmedPhysicalCameraId,
+            routeKind = route.kind,
+            outputs = outputs,
+        )
+    }
+
+    private fun infoVersion(): String? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            streamCharacteristics.get(CameraCharacteristics.INFO_VERSION)
+        } else {
+            null
+        }
 }
 
 /**

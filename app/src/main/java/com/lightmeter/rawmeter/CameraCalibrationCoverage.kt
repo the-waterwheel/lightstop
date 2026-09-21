@@ -3,7 +3,20 @@ package com.lightmeter.rawmeter
 internal data class CameraCalibrationCoverageEntry(
     val storageCameraId: String,
     val record: CameraCalibrationRecord,
-)
+    val signatureStates: Map<MeteringSource, CalibrationSignatureState> = emptyMap(),
+) {
+    /** True when a stored correction exists but does not apply to the current capture context. */
+    val needsRevalidation: Boolean
+        get() = listOf(
+            MeteringSource.RAW to record.rawCorrectionEv,
+            MeteringSource.YUV_PREVIEW to record.yuvCorrectionEv,
+            MeteringSource.ISP_PREVIEW to record.ispPreviewCorrectionEv,
+        ).any { (source, value) ->
+            value != null && signatureStates[source]?.let {
+                it != CalibrationSignatureState.VALID && it != CalibrationSignatureState.NONE
+            } == true
+        }
+}
 
 internal data class CameraCalibrationCoverage(
     val direct: CameraCalibrationCoverageEntry?,
@@ -20,10 +33,19 @@ internal object CameraCalibrationCoverageResolver {
         selectedCameraId: String,
         cameraInfo: CameraUiInfo,
         record: (String) -> CameraCalibrationRecord?,
+        signatureState: (String, MeteringSource) -> CalibrationSignatureState = { _, _ ->
+            CalibrationSignatureState.VALID
+        },
     ): CameraCalibrationCoverage {
-        val direct = record(camera.cameraId)?.let {
-            CameraCalibrationCoverageEntry(camera.cameraId, it)
-        }
+        fun entryFor(storageId: String, value: CameraCalibrationRecord) =
+            CameraCalibrationCoverageEntry(
+                storageCameraId = storageId,
+                record = value,
+                signatureStates = MeteringSource.entries.associateWith { source ->
+                    signatureState(storageId, source)
+                },
+            )
+        val direct = record(camera.cameraId)?.let { entryFor(camera.cameraId, it) }
         if (camera.lensRole != CameraLensRole.AUTOMATIC || camera.physicalCameraId != null) {
             return CameraCalibrationCoverage(direct, null, emptyList(), 0)
         }
@@ -41,7 +63,7 @@ internal object CameraCalibrationCoverageResolver {
             ?.let { "${camera.logicalCameraId}@$it" }
         if (activeId != null && activeId !in physicalIds) physicalIds.add(0, activeId)
         val physical = physicalIds.mapNotNull { storageId ->
-            record(storageId)?.let { CameraCalibrationCoverageEntry(storageId, it) }
+            record(storageId)?.let { entryFor(storageId, it) }
         }
         return CameraCalibrationCoverage(
             direct = direct,

@@ -442,6 +442,7 @@ class CameraController(
     private var logicalCharacteristics: CameraCharacteristics? = null
     private var selectedPhysicalCameraId: String? = null
     private var selectedRouteKind: CameraRouteKind = CameraRouteKind.LOGICAL_AUTO
+    private var activeOpenConfiguration: CameraOpenConfiguration? = null
     private val metadataResolver = PhysicalCaptureResultResolver()
     private var meteringPipelineMode = MeteringPipelineMode.AUTO
     @Volatile
@@ -1832,53 +1833,20 @@ class CameraController(
      * actually configured session outputs, never from an expected configuration.
      */
     private fun publishCalibrationContext() {
+        val configuration = activeOpenConfiguration
         val profile = activeSessionProfile
-        if (profile == null) {
+        if (configuration == null || profile == null) {
             calibrationStore.setActiveContext(null)
             vignettingCalibrationStore.setActiveContext(null)
             return
         }
-        val info = cameraInfo
-        val outputs = buildMap {
-            rawOutputSize?.takeIf { profile.usesRaw }?.let { size ->
-                put(
-                    MeteringSource.RAW,
-                    CalibrationOutputGeometry(size.width, size.height, ImageFormat.RAW_SENSOR),
-                )
-            }
-            trackingOutputSize?.takeIf { profile.usesTracking }?.let { size ->
-                put(
-                    MeteringSource.YUV_PREVIEW,
-                    CalibrationOutputGeometry(size.width, size.height, ImageFormat.YUV_420_888),
-                )
-            }
-            previewSize?.let { size ->
-                put(MeteringSource.ISP_PREVIEW, CalibrationOutputGeometry(size.width, size.height, 0))
-            }
-        }
-        val context = CalibrationCaptureContext(
-            buildFingerprintHash = CalibrationEnvironmentStore.buildFingerprintHash(),
-            cameraInfoVersion = cameraInfoVersion(),
-            selectionRouteId = CalibrationRouteIdentity.resolve(
-                info.cameraId,
-                info.runtimeCameraId,
-            ),
-            logicalCameraId = info.logicalCameraId,
-            configuredPhysicalCameraId = selectedPhysicalCameraId,
-            confirmedPhysicalCameraId = info.activePhysicalCameraId,
-            routeKind = selectedRouteKind,
-            outputs = outputs,
+        val context = configuration.calibrationCaptureContext(
+            profile = profile,
+            confirmedPhysicalCameraId = cameraInfo.activePhysicalCameraId,
         )
         calibrationStore.setActiveContext(context)
         vignettingCalibrationStore.setActiveContext(context)
     }
-
-    private fun cameraInfoVersion(): String? =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            characteristics?.get(CameraCharacteristics.INFO_VERSION)
-        } else {
-            null
-        }
 
     private fun rawMeteringContext(): RawMeteringContext? {
         val device = cameraDevice ?: return null
@@ -2298,6 +2266,7 @@ class CameraController(
                 return
             }
             val descriptor = configuration.descriptor
+            activeOpenConfiguration = configuration
             val effectivePhysicalId = configuration.route.physicalCameraId
             val chars = configuration.streamCharacteristics
             // Keep the catalog selection stable even when a vendor camera must temporarily use
@@ -3148,6 +3117,7 @@ class CameraController(
         logicalCharacteristics = null
         selectedPhysicalCameraId = null
         selectedRouteKind = CameraRouteKind.LOGICAL_AUTO
+        activeOpenConfiguration = null
         calibrationStore.setActiveContext(null)
         vignettingCalibrationStore.setActiveContext(null)
         runtimeMetadata.reset()
