@@ -53,9 +53,22 @@ internal object RawMeteringQualityPolicy {
         )
     }
 
-    private fun frameNoiseStops(frameLumas: List<Double>): Double? {
+    /** Spread of the fused luminance across frames, in EV; null when fewer than two frames. */
+    fun frameNoiseStops(frameLumas: List<Double>): Double? {
         val finite = frameLumas.filter { it.isFinite() }
         if (finite.size < 2) return null
         return (finite.max() - finite.min())
     }
+
+    /**
+     * Whether one more same-exposure frame is worth capturing. Only random inter-frame noise can
+     * be reduced by more frames; systematic bias needs a different exposure instead.
+     */
+    fun shouldAppendSameExposure(
+        framesCaptured: Int,
+        maxFrames: Int,
+        noiseStops: Double?,
+    ): Boolean = framesCaptured < maxFrames &&
+        noiseStops != null &&
+        noiseStops > RANDOM_NOISE_EV_THRESHOLD
 }

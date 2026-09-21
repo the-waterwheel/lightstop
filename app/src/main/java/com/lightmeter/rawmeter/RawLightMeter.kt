@@ -68,7 +68,10 @@ internal object RawMeteringPolicy {
 /** Mutable state owned by [RawLightMeter] for exactly one RAW burst. */
 private data class MeasurementAccumulator(
     val id: Int,
-    val expectedFrames: Int,
+    val baseFrames: Int,
+    /** Current target; may grow by one when inter-frame noise is high, up to [maxFrames]. */
+    var expectedFrames: Int,
+    val maxFrames: Int,
     val highlightProtectionStage: Int,
     val frameAspect: Float,
     val zoom: Float,
@@ -132,7 +135,9 @@ internal class RawLightMeter(
         )
         val accumulator = MeasurementAccumulator(
             id = ++nextMeasurementId,
+            baseFrames = count,
             expectedFrames = count,
+            maxFrames = count + MAX_EXTRA_ADAPTIVE_FRAMES,
             highlightProtectionStage = 0,
             frameAspect = frameAspect,
             zoom = zoom.coerceAtLeast(1f),
@@ -188,7 +193,9 @@ internal class RawLightMeter(
         )
         val accumulator = MeasurementAccumulator(
             id = ++nextMeasurementId,
+            baseFrames = count,
             expectedFrames = count,
+            maxFrames = count + MAX_EXTRA_ADAPTIVE_FRAMES,
             highlightProtectionStage = 0,
             frameAspect = frameAspect,
             zoom = zoom.coerceAtLeast(1f),
@@ -456,13 +463,30 @@ internal class RawLightMeter(
         if (stat != null && retryForDistortedStatistics(active, stat)) return
         stat?.let(active.stats::add)
         when {
-            active.stats.size >= active.expectedFrames -> finishWithReading(active)
-            active.completedFrames >= active.expectedFrames -> finishWithError(
-                localized("测光数据无效，请重试", "Metering data was invalid. Please try again"),
-            )
+            active.stats.size >= active.expectedFrames -> {
+                if (shouldAppendAdaptiveFrame(active)) {
+                    active.expectedFrames = active.stats.size + 1
+                    fillPipeline(active)
+                } else {
+                    finishWithReading(active)
+                }
+            }
+            active.completedFrames >= active.maxFrames -> finishWithReading(active)
             else -> fillPipeline(active)
         }
     }
+
+    /**
+     * After the current target is reached, append one more frame only when the inter-frame
+     * luminance spread indicates random noise. Systematic bias is handled earlier by the
+     * exposure-retry path, and the total stays bounded by [MeasurementAccumulator.maxFrames].
+     */
+    private fun shouldAppendAdaptiveFrame(active: MeasurementAccumulator): Boolean =
+        RawMeteringQualityPolicy.shouldAppendSameExposure(
+            framesCaptured = active.stats.size,
+            maxFrames = active.maxFrames,
+            noiseStops = RawMeteringQualityPolicy.frameNoiseStops(active.stats.map { it.luma }),
+        )
 
     private fun processBatchPair(
         active: MeasurementAccumulator,
@@ -524,10 +548,17 @@ internal class RawLightMeter(
         }?.second
         if (retryStat != null && retryForDistortedStatistics(active, retryStat)) return
         frameStats.forEach { (target, stat) -> target.stats += stat }
-        if (active.completedFrames >= active.expectedFrames) {
-            finishWithBatchReadings(active)
-        } else {
-            fillPipeline(active)
+        when {
+            active.completedFrames >= active.expectedFrames -> {
+                if (shouldAppendAdaptiveFrame(active)) {
+                    active.expectedFrames = active.completedFrames + 1
+                    fillPipeline(active)
+                } else {
+                    finishWithBatchReadings(active)
+                }
+            }
+            active.completedFrames >= active.maxFrames -> finishWithBatchReadings(active)
+            else -> fillPipeline(active)
         }
     }
 
@@ -548,7 +579,9 @@ internal class RawLightMeter(
         active.framePairer.clear()
         val retry = MeasurementAccumulator(
             id = ++nextMeasurementId,
+            baseFrames = RawExposureRetryPolicy.SINGLE_FRAME_COUNT,
             expectedFrames = RawExposureRetryPolicy.SINGLE_FRAME_COUNT,
+            maxFrames = RawExposureRetryPolicy.SINGLE_FRAME_COUNT,
             highlightProtectionStage = nextStage,
             frameAspect = active.frameAspect,
             zoom = active.zoom,
@@ -751,5 +784,7 @@ internal class RawLightMeter(
         private const val PIPELINE_DEPTH = 1
         private const val METERING_TIMEOUT_MS = 8_000L
         private const val DEFAULT_FRAME_DURATION_NS = 33_333_333L
+        /** Bounded extra same-exposure frames appended only when inter-frame noise is high. */
+        private const val MAX_EXTRA_ADAPTIVE_FRAMES = 1
     }
 }

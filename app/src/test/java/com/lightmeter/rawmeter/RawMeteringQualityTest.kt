@@ -47,4 +47,45 @@ class RawMeteringQualityTest {
         assertEquals(RawMeteringQualityAction.REJECT, assessment.action)
         assertNull(assessment.randomNoiseStops)
     }
+
+    @Test
+    fun `noisy frames append one more same-exposure frame within the cap`() {
+        val noisy = listOf(0.0, 0.3)
+        assertEquals(
+            true,
+            RawMeteringQualityPolicy.shouldAppendSameExposure(
+                framesCaptured = 2,
+                maxFrames = 3,
+                noiseStops = RawMeteringQualityPolicy.frameNoiseStops(noisy),
+            ),
+        )
+        assertEquals(
+            false,
+            RawMeteringQualityPolicy.shouldAppendSameExposure(
+                framesCaptured = 3,
+                maxFrames = 3,
+                noiseStops = 0.5,
+            ),
+        )
+    }
+
+    @Test
+    fun `stable frames never append`() {
+        assertEquals(
+            false,
+            RawMeteringQualityPolicy.shouldAppendSameExposure(
+                framesCaptured = 1,
+                maxFrames = 2,
+                noiseStops = RawMeteringQualityPolicy.frameNoiseStops(listOf(1.0, 1.01)),
+            ),
+        )
+        assertEquals(
+            false,
+            RawMeteringQualityPolicy.shouldAppendSameExposure(
+                framesCaptured = 1,
+                maxFrames = 2,
+                noiseStops = null,
+            ),
+        )
+    }
 }
