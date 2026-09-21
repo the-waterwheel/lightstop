@@ -15,6 +15,10 @@ import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
+import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityManager
+import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityNodeProvider
 import android.view.animation.DecelerateInterpolator
 import kotlin.math.abs
 import kotlin.math.atan2
@@ -66,6 +70,10 @@ class InstrumentView(
         scaledDensity = resources.displayMetrics.scaledDensity,
     )
     private var geometry: LayoutGeometry? = null
+    private val accessibilityHelper = CanvasAccessibilityHelper(this, ::handleAccessibilityClick)
+    private val accessibilityManager: AccessibilityManager?
+        get() = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager
+    private var hoveredVirtualViewId = Int.MIN_VALUE
     private var touchTarget = TouchTarget.NONE
     private var lastDialAngle = 0f
     private var dialStepAccumulator = 0f
@@ -120,6 +128,7 @@ class InstrumentView(
             state.isLeftHanded,
         )
         geometry = g
+        accessibilityHelper.update(accessibilityNodes(g))
         drawSurfaceOutsidePreview(canvas, g.cameraFrame)
         drawPanels(canvas, g)
         drawCameraOverlay(canvas, g)
@@ -1085,6 +1094,150 @@ class InstrumentView(
         return true
     }
 
+    override fun getAccessibilityNodeProvider(): AccessibilityNodeProvider = accessibilityHelper.provider
+
+    override fun onInitializeAccessibilityNodeInfo(info: AccessibilityNodeInfo) {
+        super.onInitializeAccessibilityNodeInfo(info)
+        info.className = "android.view.View"
+        info.contentDescription = localized(
+            "测光仪表。当前 ISO ${state.iso}，曝光补偿 ${"%.1f".format(state.exposureCompEv)} EV",
+            "Meter. Current ISO ${state.iso}, exposure compensation ${"%.1f".format(state.exposureCompEv)} EV",
+        )
+    }
+
+    override fun dispatchHoverEvent(event: MotionEvent): Boolean {
+        val manager = accessibilityManager
+        if (manager?.isEnabled == true && manager.isTouchExplorationEnabled) {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_HOVER_ENTER, MotionEvent.ACTION_HOVER_MOVE -> {
+                    val id = accessibilityHelper.nodeIdAt(event.x, event.y) ?: Int.MIN_VALUE
+                    if (id != hoveredVirtualViewId) {
+                        updateHoveredVirtualView(id)
+                        return true
+                    }
+                }
+
+                MotionEvent.ACTION_HOVER_EXIT -> {
+                    if (hoveredVirtualViewId != Int.MIN_VALUE) {
+                        updateHoveredVirtualView(Int.MIN_VALUE)
+                        return true
+                    }
+                }
+            }
+        }
+        return super.dispatchHoverEvent(event)
+    }
+
+    private fun updateHoveredVirtualView(virtualViewId: Int) {
+        val previous = hoveredVirtualViewId
+        hoveredVirtualViewId = virtualViewId
+        if (virtualViewId == previous) return
+        if (previous != Int.MIN_VALUE) {
+            sendAccessibilityEventForVirtualView(
+                previous,
+                AccessibilityEvent.TYPE_VIEW_HOVER_EXIT,
+            )
+        }
+        if (virtualViewId != Int.MIN_VALUE) {
+            sendAccessibilityEventForVirtualView(
+                virtualViewId,
+                AccessibilityEvent.TYPE_VIEW_HOVER_ENTER,
+            )
+        }
+    }
+
+    private fun sendAccessibilityEventForVirtualView(virtualViewId: Int, eventType: Int) {
+        val manager = accessibilityManager ?: return
+        if (!manager.isEnabled) return
+        val node = accessibilityHelper.provider.createAccessibilityNodeInfo(virtualViewId) ?: return
+        val event = AccessibilityEvent.obtain(eventType).apply {
+            packageName = context.packageName
+            className = "android.view.View"
+            contentDescription = node.contentDescription
+            isEnabled = true
+            setSource(this@InstrumentView, virtualViewId)
+        }
+        manager.sendAccessibilityEvent(event)
+    }
+
+    private fun accessibilityNodes(g: LayoutGeometry): List<CanvasAccessibilityHelper.VirtualNode> =
+        listOf(
+            CanvasAccessibilityHelper.VirtualNode(
+                ACCESSIBILITY_ISO,
+                g.isoModeButton,
+                localized("ISO 或曝光补偿", "ISO or exposure compensation"),
+                selected = state.isoAdjustMode,
+            ),
+            CanvasAccessibilityHelper.VirtualNode(
+                ACCESSIBILITY_FORMAT,
+                g.formatButton,
+                localized("画幅格式", "Frame format"),
+            ),
+            CanvasAccessibilityHelper.VirtualNode(
+                ACCESSIBILITY_METER,
+                g.meterButton,
+                localized("测光", "Measure"),
+            ),
+            CanvasAccessibilityHelper.VirtualNode(
+                ACCESSIBILITY_MORE,
+                g.moreButton,
+                localized("更多设置", "More settings"),
+            ),
+            CanvasAccessibilityHelper.VirtualNode(
+                ACCESSIBILITY_TOOLS,
+                g.toolsButton,
+                localized("工具", "Tools"),
+            ),
+            CanvasAccessibilityHelper.VirtualNode(
+                ACCESSIBILITY_ORIENTATION,
+                g.orientationButton,
+                localized("左右手布局", "Handedness"),
+            ),
+        )
+
+    private fun handleAccessibilityClick(virtualViewId: Int): Boolean {
+        if (state.measuring && virtualViewId != ACCESSIBILITY_METER) return false
+        return when (virtualViewId) {
+            ACCESSIBILITY_ISO -> {
+                state.isoAdjustMode = !state.isoAdjustMode
+                listener?.onControlsChanged(false)
+                invalidate()
+                true
+            }
+
+            ACCESSIBILITY_FORMAT -> {
+                formatMenuOpen = !formatMenuOpen
+                invalidate()
+                true
+            }
+
+            ACCESSIBILITY_METER -> {
+                if (!state.measuring) listener?.onMeasureRequested()
+                true
+            }
+
+            ACCESSIBILITY_MORE -> {
+                listener?.onMoreRequested()
+                true
+            }
+
+            ACCESSIBILITY_TOOLS -> {
+                listener?.onToolsRequested()
+                true
+            }
+
+            ACCESSIBILITY_ORIENTATION -> {
+                listener?.onOrientationToggle()
+                true
+            }
+
+            else -> false
+        }
+    }
+
+    private fun localized(chinese: String, english: String): String =
+        if (state.menuLanguage == MenuLanguage.ENGLISH) english else chinese
+
     private fun updateZoom(y: Float, track: RectF) {
         val top = track.top + 22f * density
         val bottom = track.bottom - 16f * density
@@ -1366,5 +1519,11 @@ class InstrumentView(
         private const val METERING_SPINNER_SWEEP_DEGREES = 108f
         private const val DEFAULT_SPOT_DIAMETER_FRACTION = 0.09f
         private const val OVERLAY_ALPHA = 168
+        private const val ACCESSIBILITY_ISO = 1
+        private const val ACCESSIBILITY_FORMAT = 2
+        private const val ACCESSIBILITY_METER = 3
+        private const val ACCESSIBILITY_MORE = 4
+        private const val ACCESSIBILITY_TOOLS = 5
+        private const val ACCESSIBILITY_ORIENTATION = 6
     }
 }
