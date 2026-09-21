@@ -19,8 +19,20 @@ internal object Ev100Readouts {
         )
     }
 
-    fun zone(session: ZoneMeterSession): Ev100Readout = when {
-        session.pendingMarkerId != null -> Ev100Readout(value = null, pending = true)
-        else -> Ev100Readout(value = session.markers.lastOrNull()?.ev100, pending = false)
+    fun zone(session: ZoneMeterSession): Ev100Readout {
+        if (session.pendingMarkerId != null) return Ev100Readout(value = null, pending = true)
+        val measured = session.markers.lastOrNull { it.ev100 != null }
+        val sourceLabel = when (measured?.source) {
+            MeteringSource.RAW -> "RAW"
+            MeteringSource.YUV_PREVIEW -> "YUV"
+            MeteringSource.ISP_PREVIEW -> "ISP"
+            null -> null
+        }
+        return Ev100Readout(
+            value = session.markers.lastOrNull()?.ev100,
+            pending = false,
+            sourceLabel = sourceLabel,
+            lowConfidence = measured != null && measured.source != MeteringSource.RAW,
+        )
     }
 }
