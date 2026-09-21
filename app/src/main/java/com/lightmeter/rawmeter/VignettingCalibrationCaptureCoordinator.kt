@@ -38,6 +38,7 @@ internal class VignettingCalibrationCaptureCoordinator(
     private var active: ActiveCapture? = null
     private var nextId = 0
     private var timeout: Runnable? = null
+    private val metadataResolver = PhysicalCaptureResultResolver()
 
     val isActive: Boolean
         get() = active != null
@@ -99,10 +100,25 @@ internal class VignettingCalibrationCaptureCoordinator(
             result: TotalCaptureResult,
         ) {
             val capture = active ?: return
-            val effective = effectiveCaptureResult(result, capture.context.selectedPhysicalCameraId)
+            val resolution = metadataResolver.resolve(
+                total = result,
+                routeKind = capture.context.routeKind,
+                requestedPhysicalCameraId = capture.context.selectedPhysicalCameraId,
+            )
+            val effective = resolution.effectiveResult
+            if (effective == null) {
+                resolution.pairedTimestampNs?.let(capture.framePairer::reject)
+                finishWithError(
+                    localized(
+                        "相机未提供暗角校准所需的物理元数据，请重试",
+                        "The camera did not provide the physical metadata required for vignetting calibration. Please try again",
+                    ),
+                )
+                return
+            }
             listener.onVignettingCaptureResult(result, effective)
-            val timestamp = effective.get(CaptureResult.SENSOR_TIMESTAMP)
-                ?: result.get(CaptureResult.SENSOR_TIMESTAMP)
+            val timestamp = resolution.pairedTimestampNs
+                ?: effective.get(CaptureResult.SENSOR_TIMESTAMP)
                 ?: return
             capture.framePairer.offerResult(timestamp, effective)?.let { pair ->
                 processPair(capture, pair)
@@ -209,12 +225,6 @@ internal class VignettingCalibrationCaptureCoordinator(
         Log.e(TAG, "Vignetting calibration failed: $message")
         listener.onVignettingCaptureError(message)
     }
-
-    @Suppress("DEPRECATION")
-    private fun effectiveCaptureResult(
-        result: TotalCaptureResult,
-        selectedPhysicalCameraId: String?,
-    ): CaptureResult = selectedPhysicalCameraId?.let { result.physicalCameraResults[it] } ?: result
 
     companion object {
         private const val TAG = "lightstop"

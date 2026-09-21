@@ -27,6 +27,7 @@ internal data class RawMeteringContext(
     val characteristics: CameraCharacteristics,
     val cameraInfo: CameraUiInfo,
     val selectedPhysicalCameraId: String?,
+    val routeKind: CameraRouteKind = CameraRouteKind.LOGICAL_AUTO,
 )
 
 internal interface RawLightMeterListener {
@@ -113,6 +114,7 @@ internal class RawLightMeter(
     private var activeRequest: CaptureRequest? = null
     private var activeContext: RawMeteringContext? = null
     private var timeout: Runnable? = null
+    private val metadataResolver = PhysicalCaptureResultResolver()
 
     fun start(
         context: RawMeteringContext,
@@ -346,10 +348,30 @@ internal class RawLightMeter(
             result: TotalCaptureResult,
         ) {
             val context = activeContext ?: return
-            val effectiveResult = effectiveCaptureResult(result, context.selectedPhysicalCameraId)
+            val resolution = metadataResolver.resolve(
+                total = result,
+                routeKind = context.routeKind,
+                requestedPhysicalCameraId = context.selectedPhysicalCameraId,
+            )
+            val effectiveResult = resolution.effectiveResult
+            if (effectiveResult == null) {
+                Log.w(
+                    TAG,
+                    "RAW frame metadata rejected: ${resolution.failure} " +
+                        "physical=${context.selectedPhysicalCameraId}",
+                )
+                resolution.pairedTimestampNs?.let { activeMeasurement?.framePairer?.reject(it) }
+                finishWithError(
+                    localized(
+                        "相机未提供本次测光所需的物理元数据，请重试",
+                        "The camera did not provide the physical metadata required for this measurement. Please try again",
+                    ),
+                )
+                return
+            }
             listener.onRawCaptureResult(effectiveResult, result)
-            val timestamp = effectiveResult.get(CaptureResult.SENSOR_TIMESTAMP)
-                ?: result.get(CaptureResult.SENSOR_TIMESTAMP)
+            val timestamp = resolution.pairedTimestampNs
+                ?: effectiveResult.get(CaptureResult.SENSOR_TIMESTAMP)
                 ?: return
             val active = activeMeasurement ?: return
             active.framePairer.offerResult(timestamp, effectiveResult)?.let { pair ->
@@ -685,12 +707,6 @@ internal class RawLightMeter(
         timeout = null
         handler?.removeCallbacks(timeoutTask)
     }
-
-    @Suppress("DEPRECATION")
-    private fun effectiveCaptureResult(
-        result: TotalCaptureResult,
-        selectedPhysicalCameraId: String?,
-    ): CaptureResult = selectedPhysicalCameraId?.let(result.physicalCameraResults::get) ?: result
 
     private fun setSupportedAutoFocus(
         builder: CaptureRequest.Builder,

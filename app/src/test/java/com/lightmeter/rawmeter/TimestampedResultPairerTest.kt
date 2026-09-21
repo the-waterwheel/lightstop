@@ -102,4 +102,41 @@ class TimestampedResultPairerTest {
         assertEquals(TimestampedResultPair(100L, "image-100", "result-96"), pair)
         assertEquals(1, pairer.pendingResultCount)
     }
+
+    @Test
+    fun `rejecting a result releases its pending image and drops a late image`() {
+        val released = mutableListOf<String>()
+        val pairer = TimestampedResultPairer<String, String>(released::add)
+
+        pairer.offerImage(10L, "image-10")
+        pairer.reject(10L)
+
+        assertEquals(listOf("image-10"), released)
+        assertEquals(0, pairer.pendingImageCount)
+        assertNull(pairer.offerImage(10L, "late-image-10"))
+        assertEquals(listOf("image-10", "late-image-10"), released)
+    }
+
+    @Test
+    fun `rejecting an image-first frame drops a late result`() {
+        val pairer = TimestampedResultPairer<String, String>({})
+
+        pairer.reject(30L)
+        assertNull(pairer.offerResult(30L, "result-30"))
+        assertEquals(0, pairer.pendingResultCount)
+    }
+
+    @Test
+    fun `clear forgets rejected timestamps`() {
+        val pairer = TimestampedResultPairer<String, String>({})
+
+        pairer.reject(40L)
+        pairer.clear()
+
+        assertNull(pairer.offerImage(40L, "image-40"))
+        assertEquals(
+            TimestampedResultPair(40L, "image-40", "result-40"),
+            pairer.offerResult(40L, "result-40"),
+        )
+    }
 }

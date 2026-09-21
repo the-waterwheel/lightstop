@@ -57,6 +57,8 @@ internal class CameraCombinationWorkflowProbeRunner(
     private val rawSurface: () -> Surface?,
     private val rawCharacteristics: () -> CameraCharacteristics?,
     private val expectedRawSize: () -> Size?,
+    private val requestedPhysicalCameraId: () -> String?,
+    private val routeKind: () -> CameraRouteKind,
     private val configureAutoFocus: (CaptureRequest.Builder) -> Unit,
     private val startPreview: (
         CameraDevice,
@@ -75,6 +77,7 @@ internal class CameraCombinationWorkflowProbeRunner(
         get() = active != null
 
     private val rawFramePairer = TimestampedResultPairer<Image, CaptureResult>(Image::close)
+    private val metadataResolver = PhysicalCaptureResultResolver()
     private var rawStageRevision = 0
     private var rawStageGeneration = -1
     private var rawStageTimeout: Runnable? = null
@@ -183,12 +186,28 @@ internal class CameraCombinationWorkflowProbeRunner(
                         result: TotalCaptureResult,
                     ) {
                         if (generation == currentGeneration() && active === probe) {
-                            val timestamp = result.get(CaptureResult.SENSOR_TIMESTAMP)
+                            val resolution = metadataResolver.resolve(
+                                total = result,
+                                routeKind = routeKind(),
+                                requestedPhysicalCameraId = requestedPhysicalCameraId(),
+                            )
+                            val effective = resolution.effectiveResult
+                            if (effective == null) {
+                                resolution.pairedTimestampNs?.let(rawFramePairer::reject)
+                                fail(
+                                    IllegalStateException(
+                                        "Probe RAW metadata rejected: ${resolution.failure}",
+                                    ),
+                                )
+                                return
+                            }
+                            val timestamp = resolution.pairedTimestampNs
+                                ?: effective.get(CaptureResult.SENSOR_TIMESTAMP)
                             if (timestamp == null || timestamp <= 0L) {
                                 fail(IllegalStateException("Probe RAW result has no sensor timestamp"))
                                 return
                             }
-                            rawFramePairer.offerResult(timestamp, result)?.let { pair ->
+                            rawFramePairer.offerResult(timestamp, effective)?.let { pair ->
                                 finishRawFrame(probe, pair, generation, stageRevision)
                             }
                         }

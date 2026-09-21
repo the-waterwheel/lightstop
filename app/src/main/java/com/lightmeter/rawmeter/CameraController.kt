@@ -17,6 +17,7 @@ import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.util.Range
 import android.util.Size
@@ -424,6 +425,8 @@ class CameraController(
         rawSurface = { rawReader?.surface },
         rawCharacteristics = { characteristics },
         expectedRawSize = { rawOutputSize },
+        requestedPhysicalCameraId = { selectedPhysicalCameraId },
+        routeKind = { selectedRouteKind },
         configureAutoFocus = distanceCapture::configureAutoFocus,
         startPreview = ::startPreview,
         reconfigure = ::reconfigureSession,
@@ -435,6 +438,8 @@ class CameraController(
     private var pendingSystemWorkflowProbePlanId: String? = null
     private var logicalCharacteristics: CameraCharacteristics? = null
     private var selectedPhysicalCameraId: String? = null
+    private var selectedRouteKind: CameraRouteKind = CameraRouteKind.LOGICAL_AUTO
+    private val metadataResolver = PhysicalCaptureResultResolver()
     private var meteringPipelineMode = MeteringPipelineMode.AUTO
     @Volatile
     private var rawHardwareAvailable = false
@@ -1843,6 +1848,7 @@ class CameraController(
                 )
             } ?: cameraInfo,
             selectedPhysicalCameraId = selectedPhysicalCameraId,
+            routeKind = selectedRouteKind,
         )
     }
 
@@ -2244,6 +2250,7 @@ class CameraController(
             val activeCameraId = descriptor.cameraId
             requestedCameraId = activeCameraId
             selectedPhysicalCameraId = effectivePhysicalId
+            selectedRouteKind = configuration.route.kind
             logicalCharacteristics = configuration.logicalCharacteristics
             characteristics = chars
             val activeContext = runtimeMetadata.resetPhysicalCamera(
@@ -2931,11 +2938,25 @@ class CameraController(
             result: TotalCaptureResult,
         ) {
             updateActivePhysicalCamera(result)
-            val effectiveResult = effectiveCaptureResult(result)
+            val resolution = metadataResolver.resolve(
+                total = result,
+                routeKind = selectedRouteKind,
+                requestedPhysicalCameraId = selectedPhysicalCameraId,
+            )
+            val effectiveResult = resolution.effectiveResult
+            if (effectiveResult == null) {
+                // A fixed physical output without its own result must not borrow the logical
+                // metadata. The preview keeps running, but formal measurement metadata is withheld
+                // until a valid frame arrives instead of exposing a stale or foreign value.
+                warnRejectedPreviewMetadata(resolution.failure)
+                latestResult = null
+                distanceCapture.invalidate("Physical capture metadata unavailable")
+                return
+            }
             latestResult = effectiveResult
             observeAbsoluteExposureMetadata(effectiveResult)
-            val timestamp = effectiveResult.get(CaptureResult.SENSOR_TIMESTAMP)
-                ?: result.get(CaptureResult.SENSOR_TIMESTAMP)
+            val timestamp = resolution.pairedTimestampNs
+                ?: effectiveResult.get(CaptureResult.SENSOR_TIMESTAMP)
             if (timestamp != null) previewResultStore.put(timestamp, effectiveResult)
             runtimeMetadata.observeActualPreviewFps(timestamp, cameraInfo)
                 ?.let(::postRuntimeInfo)
@@ -2959,11 +2980,18 @@ class CameraController(
         }
     }
 
-    @Suppress("DEPRECATION")
-    private fun effectiveCaptureResult(result: TotalCaptureResult): CaptureResult {
-        val physicalId = selectedPhysicalCameraId ?: return result
-        return result.physicalCameraResults[physicalId] ?: result
+    private fun warnRejectedPreviewMetadata(failure: CaptureMetadataFailure?) {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastRejectedMetadataLogMs < REJECTED_METADATA_LOG_INTERVAL_MS) return
+        lastRejectedMetadataLogMs = now
+        Log.w(
+            TAG,
+            "Preview frame metadata rejected: $failure " +
+                "route=$selectedRouteKind physical=$selectedPhysicalCameraId",
+        )
     }
+
+    private var lastRejectedMetadataLogMs = 0L
 
     /**
      * Promotes an unconfirmed vendor route after any real preview result proves it usable.
@@ -3063,6 +3091,7 @@ class CameraController(
         characteristics = null
         logicalCharacteristics = null
         selectedPhysicalCameraId = null
+        selectedRouteKind = CameraRouteKind.LOGICAL_AUTO
         runtimeMetadata.reset()
         latestResult = null
         previewResultStore.clear()
@@ -3118,6 +3147,7 @@ class CameraController(
 
     companion object {
         private const val TAG = "lightstop"
+        private const val REJECTED_METADATA_LOG_INTERVAL_MS = 5_000L
         private const val MAX_METERING_REFERENCE_AGE_NS = 350_000_000L
         private const val PREVIEW_REFERENCE_LONG_EDGE = 384
         private const val SESSION_RECOVERY_DELAY_MS = 300L

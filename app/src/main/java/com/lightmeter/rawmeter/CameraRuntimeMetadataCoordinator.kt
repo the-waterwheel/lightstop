@@ -5,6 +5,7 @@ import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
 import android.os.Build
+import android.os.SystemClock
 import android.util.Log
 import android.util.Size
 import kotlin.math.abs
@@ -26,6 +27,7 @@ internal class CameraRuntimeMetadataCoordinator(
     private val activePhysicalCameraTracker = ActivePhysicalCameraTracker()
     private var actualFpsWindowStartNs = 0L
     private var actualFpsFrameCount = 0
+    private var lastMissingPhysicalResultLogMs = 0L
 
     fun resetPhysicalCamera(
         logicalCameraId: String,
@@ -45,12 +47,7 @@ internal class CameraRuntimeMetadataCoordinator(
         if (update.context.requestedPhysicalCameraId != null &&
             !update.requestedPhysicalResultPresent
         ) {
-            Log.w(
-                TAG,
-                "Physical result missing for requested camera=" +
-                    "${update.context.requestedPhysicalCameraId}; the frame will use only " +
-                    "metadata present in its TotalCaptureResult",
-            )
+            warnMissingPhysicalResult(update.context.requestedPhysicalCameraId)
         }
         if (!update.changed) return null
         val nextCharacteristics = update.context.activePhysicalCameraId?.let { physicalId ->
@@ -177,11 +174,24 @@ internal class CameraRuntimeMetadataCoordinator(
         actualFpsWindowStartNs = 0L
         actualFpsFrameCount = 0
         activePhysicalCameraTracker.reset("", null)
+        lastMissingPhysicalResultLogMs = 0L
+    }
+
+    private fun warnMissingPhysicalResult(physicalId: String) {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastMissingPhysicalResultLogMs < MISSING_PHYSICAL_RESULT_LOG_INTERVAL_MS) return
+        lastMissingPhysicalResultLogMs = now
+        Log.w(
+            TAG,
+            "Physical result missing for requested camera=$physicalId; formal measurement " +
+                "metadata is withheld instead of borrowing the logical result",
+        )
     }
 
     companion object {
         private const val TAG = "lightstop"
         private const val ACTUAL_FPS_WINDOW_NS = 1_000_000_000L
         private const val OUTPUT_ASPECT_SCALE = 10_000
+        private const val MISSING_PHYSICAL_RESULT_LOG_INTERVAL_MS = 5_000L
     }
 }
