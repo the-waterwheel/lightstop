@@ -21,6 +21,8 @@ internal data class MeteringFrameStat(
     val aperture: Float,
     /** RAW channel medians pinned at the white level; drives exposure retry, not clipping alone. */
     val saturatedChannelCount: Int = 0,
+    /** Valid RAW samples used for the median, for quality assessment. */
+    val sampleCount: Int = 0,
 )
 
 internal data class RawColorSample(
@@ -295,6 +297,7 @@ internal object MeteringAnalysis {
             saturatedChannelCount = (0..3).count {
                 values[it] >= RawExposureRetryPolicy.CHANNEL_SATURATION_LEVEL
             },
+            sampleCount = values[5].toInt(),
         )
     }
 

@@ -640,11 +640,18 @@ internal class RawLightMeter(
         isMeasuring = false
         active.framePairer.clear()
         val elapsedMs = (System.nanoTime() - active.startedAtNs) / 1_000_000.0
+        val quality = RawMeteringQualityPolicy.assess(
+            frameLumas = active.stats.map { it.luma },
+            saturatedChannelCount = active.stats.maxOfOrNull { it.saturatedChannelCount } ?: 0,
+            sampleCount = active.stats.maxOfOrNull { it.sampleCount } ?: 0,
+        )
         Log.i(
             TAG,
             "RAW metering completed: frames=${reading.frameCount} ev100=${reading.sceneEv100} " +
                 "luma=${reading.rawLuma} clipped=${reading.clippedFraction} " +
                 "highlightStage=${active.highlightProtectionStage} " +
+                "quality=${quality.action} noiseStops=${quality.randomNoiseStops} " +
+                "systematicBias=${quality.systematicBias} " +
                 "elapsedMs=${"%.1f".format(elapsedMs)} pipelineDepth=$PIPELINE_DEPTH",
         )
         listener.onRawMeteringReading(reading)
