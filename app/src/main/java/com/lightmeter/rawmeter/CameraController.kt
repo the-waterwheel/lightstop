@@ -2065,7 +2065,7 @@ class CameraController(
             referenceEv100 = referenceEv100,
             measurements = measurements,
         )
-        Log.e(
+        Log.i(
             TAG,
             "User calibration updated: camera=$cameraId reference=$referenceEv100 measurements=$measurements " +
                 "rawCorrection=${updated.rawCorrectionEv} " +
