@@ -79,6 +79,8 @@ class MeterLayout @JvmOverloads constructor(
             snapshot: ParameterMeterSnapshot,
             options: ParameterRecordOptions,
             previewPath: String,
+            previewAspect: Float,
+            zoom: Float,
         )
     }
 
@@ -1659,6 +1661,14 @@ class MeterLayout @JvmOverloads constructor(
         // preview is being encoded off the main thread.
         val options = parameterRecordRepository.options
         val snapshot = currentParameterSnapshot()
+        // Freeze the crop and zoom at capture start so an asynchronous RAW request cannot pick up
+        // a later viewfinder change.
+        val previewAspect = if (state.frameLandscape) {
+            state.frameFormat.landscapeAspect
+        } else {
+            1f / state.frameFormat.landscapeAspect
+        }
+        val zoom = state.zoom
         val previewFile = parameterRecordRepository.createPendingPreviewFile(id)
         val source = capturePreviewBitmap()
         if (source == null) {
@@ -1699,8 +1709,14 @@ class MeterLayout @JvmOverloads constructor(
                         Toast.LENGTH_LONG,
                     ).show()
                 } else {
-                    listener?.onParameterCaptureRequested(id, snapshot, options, path)
-                        ?: recordCaptureSliderView.setCapturePending(false)
+                    listener?.onParameterCaptureRequested(
+                        id,
+                        snapshot,
+                        options,
+                        path,
+                        previewAspect,
+                        zoom,
+                    ) ?: recordCaptureSliderView.setCapturePending(false)
                 }
             },
         )

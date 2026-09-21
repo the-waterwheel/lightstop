@@ -559,8 +559,10 @@ class MainActivity : Activity(), CameraControllerCallback {
                 snapshot: ParameterMeterSnapshot,
                 options: ParameterRecordOptions,
                 previewPath: String,
+                previewAspect: Float,
+                zoom: Float,
             ) {
-                captureParameterRecord(draftId, snapshot, options, previewPath)
+                captureParameterRecord(draftId, snapshot, options, previewPath, previewAspect, zoom)
             }
         }
         setContentView(meterLayout)
@@ -1906,6 +1908,8 @@ class MainActivity : Activity(), CameraControllerCallback {
         snapshot: ParameterMeterSnapshot,
         options: ParameterRecordOptions,
         previewPath: String,
+        previewAspect: Float,
+        zoom: Float,
     ) {
         val locationFix = if (options.recordGps) parameterLocationCoordinator.snapshot() else null
         if (options.recordGps && locationFix == null) {
@@ -1930,12 +1934,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             return
         }
         val rawFile = meterLayout.createParameterRawFile(draftId)
-        val previewAspect = if (state.frameLandscape) {
-            state.frameFormat.landscapeAspect
-        } else {
-            1f / state.frameFormat.landscapeAspect
-        }
-        cameraController.captureRawRecord(rawFile, previewAspect, state.zoom) { result ->
+        cameraController.captureRawRecord(rawFile, previewAspect, zoom) { result ->
             val completed = result.fold(
                 onSuccess = { artifact ->
                     draft.copy(
