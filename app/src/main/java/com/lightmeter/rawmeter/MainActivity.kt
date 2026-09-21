@@ -98,9 +98,17 @@ class MainActivity : Activity(), CameraControllerCallback {
         parameterLocationCoordinator = ParameterLocationCoordinator(
             context = this,
             mainHandler = mainHandler,
-            onFixChanged = { _ -> },
+            onFixChanged = { fix ->
+                meterLayout.setParameterLocationState(
+                    when {
+                        fix == null -> ParameterLocationDisplayState.NO_FIX
+                        fix.isCoarse -> ParameterLocationDisplayState.COARSE_FIX
+                        else -> ParameterLocationDisplayState.FINE_FIX
+                    },
+                )
+            },
             onProviderUnavailable = {
-                meterLayout.setParameterGpsEnabled(false)
+                meterLayout.setParameterLocationState(ParameterLocationDisplayState.NO_FIX)
             },
         )
         cameraController = CameraController(this, this)
@@ -1880,6 +1888,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             return
         }
         meterLayout.setParameterGpsEnabled(true)
+        meterLayout.setParameterLocationState(ParameterLocationDisplayState.REQUESTING)
         parameterLocationCoordinator.requestFix()
     }
 
@@ -1900,7 +1909,8 @@ class MainActivity : Activity(), CameraControllerCallback {
     ) {
         val locationFix = if (options.recordGps) parameterLocationCoordinator.snapshot() else null
         if (options.recordGps && locationFix == null) {
-            meterLayout.setParameterGpsEnabled(false)
+            // Keep the user's GPS preference; only this record omits the location.
+            meterLayout.setParameterLocationState(ParameterLocationDisplayState.NO_FIX)
             Toast.makeText(
                 this,
                 localized("暂时无法取得定位，本条记录不包含 GPS", "No location fix is available; this record will not include GPS"),

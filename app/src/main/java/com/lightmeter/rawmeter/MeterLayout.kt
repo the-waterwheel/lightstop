@@ -1773,6 +1773,10 @@ class MeterLayout @JvmOverloads constructor(
         parameterRecordToolView.setGpsEnabled(enabled)
     }
 
+    fun setParameterLocationState(state: ParameterLocationDisplayState) {
+        parameterRecordToolView.setLocationState(state)
+    }
+
     fun isParameterGpsEnabled(): Boolean = parameterRecordRepository.options.recordGps
 
     fun completeParameterCapture(draft: ParameterCaptureDraft) {

@@ -7,6 +7,15 @@ enum class LocationPermissionQuality {
     NONE,
 }
 
+/** What the parameter-record UI should tell the user about the current fix. */
+enum class ParameterLocationDisplayState {
+    DISABLED,
+    REQUESTING,
+    FINE_FIX,
+    COARSE_FIX,
+    NO_FIX,
+}
+
 /**
  * One validated location candidate. The age is measured against the monotonic clock so it can be
  * compared with Camera2 sensor timestamps without mixing wall-clock time.

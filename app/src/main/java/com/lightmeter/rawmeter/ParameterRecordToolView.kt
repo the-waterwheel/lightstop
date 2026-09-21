@@ -47,6 +47,7 @@ internal class ParameterRecordToolView(
     private val red = Color.rgb(201, 39, 46)
     private var geometry = ParameterRecordToolGeometry.EMPTY
     private var target = Target.NONE
+    private var locationState = ParameterLocationDisplayState.DISABLED
 
     fun resumePage() {
         if (!state.cameraInfo.rawAvailable && repository.options.recordRaw) {
@@ -57,6 +58,13 @@ internal class ParameterRecordToolView(
 
     fun setGpsEnabled(enabled: Boolean) {
         repository.options = repository.options.copy(recordGps = enabled)
+        if (!enabled) locationState = ParameterLocationDisplayState.DISABLED
+        invalidate()
+    }
+
+    fun setLocationState(state: ParameterLocationDisplayState) {
+        if (locationState == state) return
+        locationState = state
         invalidate()
     }
 
@@ -77,6 +85,7 @@ internal class ParameterRecordToolView(
         drawHistory(canvas)
         val options = repository.options
         drawOption(canvas, geometry.gpsRow, geometry.gpsToggle, localized("记录 GPS 定位", "Record GPS location"), options.recordGps, true)
+        drawLocationState(canvas, geometry.gpsRow)
         drawOption(canvas, geometry.timeRow, geometry.timeToggle, localized("记录时间", "Record time"), options.recordTime, true)
         drawOption(canvas, geometry.rawRow, geometry.rawToggle, localized("记录 RAW 数据", "Record RAW data"), options.recordRaw, state.cameraInfo.rawAvailable)
         drawHelp(canvas)
@@ -149,8 +158,21 @@ internal class ParameterRecordToolView(
         canvas.drawCircle(x, track.centerY(), 7f * density, paint)
     }
 
-    private fun drawHelp(canvas: Canvas) {
-        paint.style = Paint.Style.STROKE
+    private fun drawLocationState(canvas: Canvas, row: RectF) {
+        val text = when (locationState) {
+            ParameterLocationDisplayState.DISABLED -> return
+            ParameterLocationDisplayState.REQUESTING -> localized("定位中…", "Locating…")
+            ParameterLocationDisplayState.FINE_FIX -> localized("已定位", "Located")
+            ParameterLocationDisplayState.COARSE_FIX -> localized("粗略位置", "Coarse")
+            ParameterLocationDisplayState.NO_FIX -> localized("无有效定位", "No fix")
+        }
+        boldPaint.textAlign = Paint.Align.RIGHT
+        boldPaint.textSize = 10.5f * scaledDensity
+        boldPaint.color = muted
+        canvas.drawText(text, row.right - 58f * density, row.centerY() + 4f * density, boldPaint)
+    }
+
+    private fun drawHelp(canvas: Canvas) {        paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1.2f * density
         paint.color = if (state.cameraInfo.rawAvailable) foreground else muted
         val radius = 9f * density
