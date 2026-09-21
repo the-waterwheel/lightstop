@@ -202,6 +202,7 @@ class CameraCalibrationStore(context: Context) {
         cameraId: String,
         referenceEv100: Double,
         measurements: Map<MeteringSource, Double>,
+        signatures: Map<MeteringSource, CalibrationSignature> = emptyMap(),
     ): CameraCalibrationRecord {
         require(measurements.isNotEmpty()) {
             "At least one calibration measurement is required"
@@ -213,6 +214,7 @@ class CameraCalibrationStore(context: Context) {
             previous = current?.raw,
             measurement = measurements[MeteringSource.RAW],
             referenceEv100 = referenceEv100,
+            signature = signatures[MeteringSource.RAW],
         )
         val updatedYuv = updatedStream(
             cameraId = cameraId,
@@ -220,6 +222,7 @@ class CameraCalibrationStore(context: Context) {
             previous = current?.yuv,
             measurement = measurements[MeteringSource.YUV_PREVIEW],
             referenceEv100 = referenceEv100,
+            signature = signatures[MeteringSource.YUV_PREVIEW],
         )
         val updatedIsp = updatedStream(
             cameraId = cameraId,
@@ -227,6 +230,7 @@ class CameraCalibrationStore(context: Context) {
             previous = current?.ispPreview,
             measurement = measurements[MeteringSource.ISP_PREVIEW],
             referenceEv100 = referenceEv100,
+            signature = signatures[MeteringSource.ISP_PREVIEW],
         )
         val previous = history(cameraId)
         val count = maxOf(
@@ -259,6 +263,7 @@ class CameraCalibrationStore(context: Context) {
         previous: StreamCalibration?,
         measurement: Double?,
         referenceEv100: Double,
+        signature: CalibrationSignature?,
     ): StreamCalibration = if (measurement == null) {
         previous ?: StreamCalibration(correctionEv = null, measuredEv100 = null)
     } else {
@@ -269,7 +274,9 @@ class CameraCalibrationStore(context: Context) {
                 measuredEv100 = measurement,
             ),
             measuredEv100 = measurement,
-            signature = currentSignature(source),
+            // Prefer the signature captured at measurement time; the active context is only a
+            // fallback for callers that did not supply one.
+            signature = signature ?: currentSignature(source),
         )
     }
 

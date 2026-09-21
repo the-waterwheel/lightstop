@@ -2033,6 +2033,20 @@ class CameraController(
         activePhysicalCameraId = cameraInfo.activePhysicalCameraId,
     )
 
+    /**
+     * Signature for one source at the instant a calibration reading arrives. It is derived from the
+     * session that produced the reading, not from whichever session happens to be last.
+     */
+    @Synchronized
+    internal fun currentCalibrationSignature(source: MeteringSource): CalibrationSignature? {
+        val configuration = activeOpenConfiguration ?: return null
+        val profile = activeSessionProfile ?: return null
+        return configuration.calibrationCaptureContext(
+            profile = profile,
+            confirmedPhysicalCameraId = cameraInfo.activePhysicalCameraId,
+        ).signature(source)
+    }
+
     @Synchronized
     fun isRawMeteringAvailable(): Boolean = cameraInfo.rawAvailable && rawReader != null
 
@@ -2058,12 +2072,14 @@ class CameraController(
     fun updateUserCalibration(
         referenceEv100: Double,
         measurements: Map<MeteringSource, Double>,
+        signatures: Map<MeteringSource, CalibrationSignature> = emptyMap(),
     ): CameraCalibrationRecord {
         val cameraId = calibrationCameraId()
         val updated = calibrationStore.updateUserCorrections(
             cameraId = cameraId,
             referenceEv100 = referenceEv100,
             measurements = measurements,
+            signatures = signatures,
         )
         Log.i(
             TAG,

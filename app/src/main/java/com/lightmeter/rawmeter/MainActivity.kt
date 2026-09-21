@@ -1262,7 +1262,11 @@ class MainActivity : Activity(), CameraControllerCallback {
 
     private fun handleCalibrationReading(reading: MeterReading) {
         handleCalibrationTransition(
-            calibrationCoordinator.onReading(reading, cameraController.currentCalibrationIdentity()),
+            calibrationCoordinator.onReading(
+                reading = reading,
+                currentCameraIdentity = cameraController.currentCalibrationIdentity(),
+                signature = cameraController.currentCalibrationSignature(reading.source),
+            ),
         )
     }
 
@@ -1299,6 +1303,7 @@ class MainActivity : Activity(), CameraControllerCallback {
         val record = cameraController.updateUserCalibration(
             referenceEv100 = result.referenceEv100,
             measurements = result.measurements,
+            signatures = result.signatures,
         )
         invalidateMeteringAfterCalibrationChange()
         clearCalibrationRun()

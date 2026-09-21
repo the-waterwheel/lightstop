@@ -13,6 +13,8 @@ internal data class MeteringCalibrationCompletion(
     val measurements: Map<MeteringSource, Double>,
     val hasFailures: Boolean,
     val terminalError: String?,
+    /** Per-source capture signatures recorded when each source was measured. */
+    val signatures: Map<MeteringSource, CalibrationSignature> = emptyMap(),
 )
 
 internal sealed interface MeteringCalibrationTransition {
@@ -47,6 +49,7 @@ internal class MeteringCalibrationCoordinator {
     fun onReading(
         reading: MeterReading,
         currentCameraIdentity: CalibrationCaptureIdentity,
+        signature: CalibrationSignature? = null,
     ): MeteringCalibrationTransition {
         val activeRun = run ?: return MeteringCalibrationTransition.Idle
         val expectedIdentity = expectedCameraIdentity
@@ -58,7 +61,7 @@ internal class MeteringCalibrationCoordinator {
         // A newly opened logical-camera session initially has no active physical id. Learn the
         // first concrete id it reports, but never treat the temporary null state as a lens switch.
         expectedCameraIdentity = expectedIdentity.withReportedPhysicalFrom(currentCameraIdentity)
-        activeRun.accept(reading)
+        activeRun.accept(reading, signature)
         return nextOrComplete(terminalError = null)
     }
 
@@ -80,6 +83,7 @@ internal class MeteringCalibrationCoordinator {
             measurements = activeRun.measurements,
             hasFailures = activeRun.hasFailures,
             terminalError = terminalError,
+            signatures = activeRun.signatures,
         )
         clear()
         return MeteringCalibrationTransition.Complete(result)

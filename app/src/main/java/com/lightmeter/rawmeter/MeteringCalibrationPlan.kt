@@ -34,21 +34,29 @@ class MeteringCalibrationRun(
     private var activeIndex = 0
     private val successfulMeasurements = linkedMapOf<MeteringSource, Double>()
     private val failedSources = linkedSetOf<MeteringSource>()
+    private val sourceSignatures = linkedMapOf<MeteringSource, CalibrationSignature>()
 
     val activeSource: MeteringSource? get() = sources.getOrNull(activeIndex)
     val completedCount: Int get() = activeIndex.coerceAtMost(sources.size)
     val totalCount: Int get() = sources.size
     val measurements: Map<MeteringSource, Double> get() = successfulMeasurements.toMap()
+
+    /** Signature captured at the instant each source was measured, never reconstructed later. */
+    val signatures: Map<MeteringSource, CalibrationSignature> get() = sourceSignatures.toMap()
     val hasFailures: Boolean get() = failedSources.isNotEmpty()
     val isComplete: Boolean get() = activeSource == null
 
     /** Consumes the active stage and stores only the source actually reported by Camera2. */
-    fun accept(reading: MeterReading): MeteringSource? {
+    fun accept(
+        reading: MeterReading,
+        signature: CalibrationSignature? = null,
+    ): MeteringSource? {
         val requested = activeSource ?: return null
         activeIndex += 1
         if (reading.source != requested) failedSources += requested
         if (reading.source in sources) {
             successfulMeasurements[reading.source] = reading.sceneEv100
+            signature?.let { sourceSignatures[reading.source] = it }
         }
         return advancePastCompleted()
     }
