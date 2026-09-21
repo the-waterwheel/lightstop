@@ -443,6 +443,8 @@ class CameraController(
     private var selectedPhysicalCameraId: String? = null
     private var selectedRouteKind: CameraRouteKind = CameraRouteKind.LOGICAL_AUTO
     private var activeOpenConfiguration: CameraOpenConfiguration? = null
+    @Volatile
+    private var geometryContext = CameraGeometryContext.EMPTY
     private val metadataResolver = PhysicalCaptureResultResolver()
     private var meteringPipelineMode = MeteringPipelineMode.AUTO
     @Volatile
@@ -1838,6 +1840,7 @@ class CameraController(
         if (configuration == null || profile == null) {
             calibrationStore.setActiveContext(null)
             vignettingCalibrationStore.setActiveContext(null)
+            geometryContext = CameraGeometryContext.EMPTY
             return
         }
         val context = configuration.calibrationCaptureContext(
@@ -1846,7 +1849,55 @@ class CameraController(
         )
         calibrationStore.setActiveContext(context)
         vignettingCalibrationStore.setActiveContext(context)
+        publishGeometryContext()
     }
+
+    /**
+     * Maintains the preview and RAW geometry domains and advances the epoch when either changes.
+     * Consumers that convert coordinates record the epoch so stale results cannot be applied after
+     * a geometry change.
+     */
+    private fun publishGeometryContext() {
+        val profile = activeSessionProfile
+        if (profile == null) {
+            geometryContext = CameraGeometryContext.EMPTY
+            return
+        }
+        val info = cameraInfo
+        val previewGeometry = previewSize?.let { size ->
+            PreviewStreamGeometry(
+                routeId = info.logicalCameraId,
+                generation = info.previewStreamGeneration,
+                sensorOrientationDegrees = info.sensorOrientationDegrees,
+                lensFacing = info.lensFacing,
+                activeArray = info.activeArray,
+                previewWidth = size.width,
+                previewHeight = size.height,
+                sensorViewport = info.previewSensorViewport,
+            )
+        }
+        val rawGeometry = rawOutputSize?.takeIf { profile.usesRaw }?.let { size ->
+            val chars = characteristics
+            RawSensorGeometry(
+                routeId = info.runtimeCameraId,
+                generation = info.previewStreamGeneration,
+                physicalCameraId = info.activePhysicalCameraId ?: selectedPhysicalCameraId,
+                sensorOrientationDegrees = chars?.get(CameraCharacteristics.SENSOR_ORIENTATION)
+                    ?: info.sensorOrientationDegrees,
+                lensFacing = info.lensFacing,
+                activeArray = info.activeArray,
+                rawWidth = size.width,
+                rawHeight = size.height,
+            )
+        }
+        val next = geometryContext.withDomains(previewGeometry, rawGeometry)
+        if (next.epoch != geometryContext.epoch) {
+            distanceCapture.invalidate("Preview/RAW geometry changed")
+        }
+        geometryContext = next
+    }
+
+    internal fun currentGeometryEpoch(): Long = geometryContext.epoch
 
     private fun rawMeteringContext(): RawMeteringContext? {
         val device = cameraDevice ?: return null
@@ -3047,6 +3098,7 @@ class CameraController(
         ) ?: return
         characteristics = update.characteristics
         postInfo(update.cameraInfo)
+        publishGeometryContext()
         distanceCapture.invalidate("Active physical camera changed")
     }
 
