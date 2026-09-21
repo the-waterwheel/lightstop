@@ -10,6 +10,12 @@ data class RecordedLocation(
     val latitude: Double,
     val longitude: Double,
     val accuracyMeters: Float?,
+    /** Fix provider name, e.g. "gps" or "network"; null for pre-migration records. */
+    val provider: String? = null,
+    /** Age of the fix when the record was frozen; null when unknown. */
+    val ageMsAtCapture: Long? = null,
+    /** "FINE" or "COARSE"; null when the permission level was not recorded. */
+    val permissionQuality: String? = null,
 )
 
 data class RecordedZonePoint(

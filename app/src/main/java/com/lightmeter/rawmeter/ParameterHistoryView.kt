@@ -423,7 +423,12 @@ internal class ParameterHistoryView(
         } else {
             "GPS $latitudeSide ${"%.5f".format(latitude)}° · $longitudeSide ${"%.5f".format(longitude)}°"
         }
-        return location.accuracyMeters?.let { "$coordinates  ±${it.roundToInt()} m" } ?: coordinates
+        val accuracy = location.accuracyMeters?.let { "$coordinates  ±${it.roundToInt()} m" } ?: coordinates
+        return if (location.permissionQuality == LocationPermissionQuality.COARSE.name) {
+            accuracy + localized("  ·  粗略位置", "  ·  Coarse location")
+        } else {
+            accuracy
+        }
     }
 
     private fun formatRecordedFlashAdjustment(flash: RecordedFlashSnapshot): String = when (flash.adjustmentStatus) {

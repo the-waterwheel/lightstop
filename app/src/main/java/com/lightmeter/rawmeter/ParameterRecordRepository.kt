@@ -372,6 +372,9 @@ internal class ParameterRecordRepository(context: Context) {
         .put("latitude", latitude)
         .put("longitude", longitude)
         .put("accuracy", accuracyMeters)
+        .put("provider", provider)
+        .put("ageMsAtCapture", ageMsAtCapture)
+        .put("permissionQuality", permissionQuality)
 
     private fun RecordedZonePoint.toJson(): JSONObject = JSONObject()
         .put("id", id)
@@ -496,9 +499,12 @@ internal class ParameterRecordRepository(context: Context) {
     }
 
     private fun JSONObject.toLocation(): RecordedLocation = RecordedLocation(
-        optDouble("latitude"),
-        optDouble("longitude"),
-        nullableDouble("accuracy")?.toFloat(),
+        latitude = optDouble("latitude"),
+        longitude = optDouble("longitude"),
+        accuracyMeters = nullableDouble("accuracy")?.toFloat(),
+        provider = optString("provider").takeIf { it.isNotBlank() },
+        ageMsAtCapture = nullableLong("ageMsAtCapture"),
+        permissionQuality = optString("permissionQuality").takeIf { it.isNotBlank() },
     )
 
     private fun JSONObject.toRawGrid(): RecordedRawGrid? {

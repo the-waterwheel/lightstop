@@ -12,9 +12,6 @@ import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
 import android.hardware.display.DisplayManager
-import android.location.Location
-import android.location.LocationListener
-import android.location.LocationManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -73,8 +70,7 @@ class MainActivity : Activity(), CameraControllerCallback {
     private lateinit var foregroundCameraStartCoordinator: ForegroundCameraStartCoordinator
     private var backInvokedCallback: OnBackInvokedCallback? = null
     private var lastOverlayBackHandledAtMs = 0L
-    private var parameterLocation: RecordedLocation? = null
-    private var parameterLocationListener: LocationListener? = null
+    private lateinit var parameterLocationCoordinator: ParameterLocationCoordinator
     private var manualCombinationCandidates: List<CameraCombinationCandidate> = emptyList()
     private var manualCombinationIndex = -1
     private var manualCombinationGeneration = 0
@@ -99,6 +95,14 @@ class MainActivity : Activity(), CameraControllerCallback {
         applyRequestedOrientationFromState()
 
         meterLayout = MeterLayout(this, state)
+        parameterLocationCoordinator = ParameterLocationCoordinator(
+            context = this,
+            mainHandler = mainHandler,
+            onFixChanged = { _ -> },
+            onProviderUnavailable = {
+                meterLayout.setParameterGpsEnabled(false)
+            },
+        )
         cameraController = CameraController(this, this)
         appliedPipelineMode = state.meteringPipelineMode
         cameraController.setMeteringPipelineMode(state.meteringPipelineMode)
@@ -586,10 +590,7 @@ class MainActivity : Activity(), CameraControllerCallback {
         foregroundCameraStartCoordinator.cancel()
         (getSystemService(DISPLAY_SERVICE) as DisplayManager)
             .unregisterDisplayListener(displayListener)
-        parameterLocationListener?.let { listener ->
-            (getSystemService(LOCATION_SERVICE) as? LocationManager)?.removeUpdates(listener)
-        }
-        parameterLocationListener = null
+        parameterLocationCoordinator.cancel()
         cameraController.setTrackingFramesEnabled(false)
         meterLayout.pauseZoneTracking()
         if (zoneMeasurementPending) {
@@ -1864,25 +1865,12 @@ class MainActivity : Activity(), CameraControllerCallback {
     }
 
     private fun enableParameterGps() {
-        val hasFine = checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
-            PackageManager.PERMISSION_GRANTED
-        val hasCoarse = checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) ==
-            PackageManager.PERMISSION_GRANTED
-        if (!hasFine && !hasCoarse) {
+        val quality = parameterLocationCoordinator.permissionQuality()
+        if (quality == LocationPermissionQuality.NONE) {
             requestPermissions(LOCATION_PERMISSIONS, LOCATION_PERMISSION_REQUEST)
             return
         }
-        val manager = getSystemService(LOCATION_SERVICE) as? LocationManager
-        val candidates = if (hasFine) {
-            listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
-        } else {
-            listOf(LocationManager.NETWORK_PROVIDER)
-        }
-        val provider = candidates
-            .firstOrNull { name ->
-                manager != null && runCatching { manager.isProviderEnabled(name) }.getOrDefault(false)
-            }
-        if (manager == null || provider == null) {
+        if (!parameterLocationCoordinator.systemLocationAvailable()) {
             meterLayout.setParameterGpsEnabled(false)
             Toast.makeText(
                 this,
@@ -1892,48 +1880,17 @@ class MainActivity : Activity(), CameraControllerCallback {
             return
         }
         meterLayout.setParameterGpsEnabled(true)
-        refreshParameterLocation(manager, provider)
+        parameterLocationCoordinator.requestFix()
     }
 
-    @SuppressLint("MissingPermission")
-    @Suppress("DEPRECATION")
-    private fun refreshParameterLocation(manager: LocationManager, provider: String) {
-        parameterLocationListener?.let(manager::removeUpdates)
-        manager.getLastKnownLocation(provider)?.let(::rememberParameterLocation)
-        val listener = object : LocationListener {
-            override fun onLocationChanged(location: Location) {
-                rememberParameterLocation(location)
-                parameterLocationListener?.let(manager::removeUpdates)
-                parameterLocationListener = null
-            }
-
-            @Deprecated("Legacy LocationListener callback")
-            override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) = Unit
-
-            override fun onProviderEnabled(provider: String) = Unit
-
-            override fun onProviderDisabled(provider: String) {
-                if (parameterLocationListener === this) {
-                    parameterLocationListener = null
-                    meterLayout.setParameterGpsEnabled(false)
-                }
-            }
-        }
-        parameterLocationListener = listener
-        runCatching { manager.requestSingleUpdate(provider, listener, mainLooper) }
-            .onFailure {
-                parameterLocationListener = null
-                meterLayout.setParameterGpsEnabled(false)
-            }
-    }
-
-    private fun rememberParameterLocation(location: Location) {
-        parameterLocation = RecordedLocation(
-            latitude = location.latitude,
-            longitude = location.longitude,
-            accuracyMeters = if (location.hasAccuracy()) location.accuracy else null,
-        )
-    }
+    private fun recordedLocationFrom(fix: LocationFix): RecordedLocation = RecordedLocation(
+        latitude = fix.latitude,
+        longitude = fix.longitude,
+        accuracyMeters = fix.accuracyMeters,
+        provider = fix.provider,
+        ageMsAtCapture = fix.ageMs,
+        permissionQuality = fix.permissionQuality.name,
+    )
 
     private fun captureParameterRecord(
         draftId: String,
@@ -1941,7 +1898,8 @@ class MainActivity : Activity(), CameraControllerCallback {
         options: ParameterRecordOptions,
         previewPath: String,
     ) {
-        if (options.recordGps && parameterLocation == null) {
+        val locationFix = if (options.recordGps) parameterLocationCoordinator.snapshot() else null
+        if (options.recordGps && locationFix == null) {
             meterLayout.setParameterGpsEnabled(false)
             Toast.makeText(
                 this,
@@ -1954,7 +1912,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             snapshot = snapshot,
             previewTempPath = previewPath,
             cameraId = state.cameraInfo.calibrationCameraId.ifBlank { state.selectedCameraId },
-            location = parameterLocation.takeIf { options.recordGps },
+            location = locationFix?.let(::recordedLocationFrom),
             capturedAtEpochMs = System.currentTimeMillis().takeIf { options.recordTime },
         )
         if (!options.recordRaw) {
