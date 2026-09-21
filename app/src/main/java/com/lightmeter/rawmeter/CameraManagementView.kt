@@ -52,6 +52,11 @@ class CameraManagementView(
     private var closeRect = RectF()
     private var hiddenToggleRect = RectF()
     private var hitTargets: List<HitTarget> = emptyList()
+    private val accessibilityHelper = CanvasAccessibilityHelper(this, ::handleAccessibilityClick)
+    private val accessibilityRects = HashMap<Int, RectF>()
+    private val accessibilityManager: android.view.accessibility.AccessibilityManager?
+        get() = context.getSystemService(Context.ACCESSIBILITY_SERVICE)
+            as? android.view.accessibility.AccessibilityManager
     private var scrollOffset = 0f
     private var maxScrollOffset = 0f
     private var downX = 0f
@@ -188,6 +193,59 @@ class CameraManagementView(
         }
         hitTargets = targets
         canvas.restore()
+        accessibilityHelper.update(accessibilityNodes())
+    }
+
+    override fun getAccessibilityNodeProvider(): android.view.accessibility.AccessibilityNodeProvider =
+        accessibilityHelper.provider
+
+    override fun onInitializeAccessibilityNodeInfo(
+        info: android.view.accessibility.AccessibilityNodeInfo,
+    ) {
+        super.onInitializeAccessibilityNodeInfo(info)
+        info.className = "android.view.View"
+        info.contentDescription = localized("摄像头管理", "Camera management")
+    }
+
+    override fun dispatchHoverEvent(event: MotionEvent): Boolean {
+        if (accessibilityHelper.handleHoverEvent(event, accessibilityManager)) return true
+        return super.dispatchHoverEvent(event)
+    }
+
+    private fun accessibilityNodes(): List<CanvasAccessibilityHelper.VirtualNode> = buildList {
+        accessibilityRects.clear()
+        var nextId = A11Y_DYNAMIC_BASE
+        fun add(id: Int, rect: RectF, label: CharSequence, selected: Boolean = false) {
+            accessibilityRects[id] = RectF(rect)
+            add(CanvasAccessibilityHelper.VirtualNode(id, rect, label, selected))
+        }
+        if (closeRect.width() > 0f) {
+            add(A11Y_CLOSE, closeRect, localized("返回", "Back"))
+        }
+        if (hiddenToggleRect.width() > 0f) {
+            add(A11Y_HIDDEN_TOGGLE, hiddenToggleRect, localized("显示已隐藏的镜头", "Show hidden lenses"))
+        }
+        hitTargets.forEach { target ->
+            add(
+                nextId++,
+                target.rect,
+                "${target.cameraId} · ${actionLabel(target.action)}",
+                selected = target.action == RowAction.SELECT,
+            )
+        }
+    }
+
+    private fun actionLabel(action: RowAction): String = when (action) {
+        RowAction.SELECT -> localized("选择", "Select")
+        RowAction.NOTE -> localized("备注", "Note")
+        RowAction.ASPECT -> localized("画幅", "Aspect")
+        RowAction.VISIBILITY -> localized("隐藏/显示", "Hide or unhide")
+    }
+
+    private fun handleAccessibilityClick(virtualViewId: Int): Boolean {
+        val rect = accessibilityRects[virtualViewId] ?: return false
+        handleTap(rect.centerX(), rect.centerY())
+        return true
     }
 
     private fun drawCameraRow(
@@ -460,5 +518,11 @@ class CameraManagementView(
             null,
         )
         return text.take(count.coerceAtLeast(0)) + suffix
+    }
+
+    private companion object {
+        private const val A11Y_CLOSE = 1
+        private const val A11Y_HIDDEN_TOGGLE = 2
+        private const val A11Y_DYNAMIC_BASE = 1_000
     }
 }
