@@ -60,6 +60,9 @@ class MainActivity : Activity(), CameraControllerCallback {
     private var zoneRemeasureTotal = 0
     /** A Zone value may be visible while Camera2 rebuilds the resident preview/YUV session. */
     private var zoneCameraRestorePending = false
+    /** Camera2 may still be rebuilding its resident session after a result is already visible. */
+    private val meteringInteractionBusy: Boolean
+        get() = state.measuring || zoneCameraRestorePending
     private var activityResumed = false
     private var appliedPipelineMode: MeteringPipelineMode? = null
     private var cameraPermissionDialogVisible = false
@@ -426,7 +429,7 @@ class MainActivity : Activity(), CameraControllerCallback {
                 marker: ZoneMarker,
                 target: ZoneMeteringTarget?,
             ) {
-                if (zoneMeasurementPending || state.measuring) return
+                if (zoneMeasurementPending || meteringInteractionBusy) return
                 zoneMeasurementPending = true
                 state.measuring = true
                 meterLayout.zoneView.invalidate()
@@ -453,7 +456,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             }
 
             override fun onZoneRemeasureAllRequested(markerIds: List<Int>) {
-                if (zoneMeasurementPending || state.measuring || zoneRemeasureActive) {
+                if (zoneMeasurementPending || meteringInteractionBusy || zoneRemeasureActive) {
                     Toast.makeText(
                         this@MainActivity,
                         localized("请等待当前测量完成", "Wait for the current measurement"),
@@ -507,7 +510,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             }
 
             override fun onZoneRemeasureHoldPrompt() {
-                if (zoneMeasurementPending || state.measuring || zoneRemeasureActive) return
+                if (zoneMeasurementPending || meteringInteractionBusy || zoneRemeasureActive) return
                 state.transientMessage = localized(
                     "请稳住设备，继续按住以重新测量全部跟踪点",
                     "Hold the device steady; keep pressing to remeasure all points",
@@ -591,7 +594,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
                 checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED)
         ) {
-            enableParameterGps()
+            parameterLocationCoordinator.ensureFreshFix(foreground = true, enabled = true)
         }
     }
 
@@ -1049,7 +1052,9 @@ class MainActivity : Activity(), CameraControllerCallback {
         if (!activityResumed) return
         zoneCameraRestorePending = restoring
         if (restoring) {
-            state.measuring = true
+            // Result delivery and Camera2 recovery are separate states: do not restart the
+            // metering spinner merely because the resident preview is rebuilding.
+            state.measuring = false
             state.transientMessage = localized("正在恢复预览", "Restoring preview")
         } else if (!zoneMeasurementPending) {
             state.measuring = false
@@ -1070,9 +1075,9 @@ class MainActivity : Activity(), CameraControllerCallback {
         }
         if (zoneMeasurementPending) {
             zoneMeasurementPending = false
-            // The marker is complete now; keep the controller lock visible until the resident
-            // preview/YUV session reports that it has recovered.
-            state.measuring = zoneCameraRestorePending
+            // The measured value is ready now. zoneCameraRestorePending still blocks a second
+            // capture, but must not keep the measurement indicator spinning.
+            state.measuring = false
             state.lastReading = reading
             meterLayout.completeZoneMeasurement(reading)
             if (!zoneCameraRestorePending) {
@@ -1120,7 +1125,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             meterLayout.resumeZoneVisualTrackingAfterMetering()
         }
         results.lastOrNull()?.reading?.let { state.lastReading = it }
-        state.measuring = zoneCameraRestorePending
+        state.measuring = false
         state.transientMessage = if (zoneCameraRestorePending) {
             localized("正在恢复预览", "Restoring preview")
         } else {
@@ -1265,7 +1270,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             calibrationCoordinator.onReading(
                 reading = reading,
                 currentCameraIdentity = cameraController.currentCalibrationIdentity(),
-                signature = cameraController.currentCalibrationSignature(reading.source),
+                signature = reading.calibrationSample?.signature,
             ),
         )
     }
@@ -1305,6 +1310,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             measurements = result.measurements,
             signatures = result.signatures,
             inputLuma = result.inputLuma,
+            samples = result.samples,
         )
         invalidateMeteringAfterCalibrationChange()
         clearCalibrationRun()
@@ -1918,6 +1924,12 @@ class MainActivity : Activity(), CameraControllerCallback {
         zoom: Float,
     ) {
         val locationFix = if (options.recordGps) parameterLocationCoordinator.snapshot() else null
+        if (options.recordGps && locationFix == null) {
+            parameterLocationCoordinator.ensureFreshFix(
+                foreground = activityResumed,
+                enabled = true,
+            )
+        }
         if (options.recordGps && locationFix == null) {
             // Keep the user's GPS preference; only this record omits the location.
             meterLayout.setParameterLocationState(ParameterLocationDisplayState.NO_FIX)

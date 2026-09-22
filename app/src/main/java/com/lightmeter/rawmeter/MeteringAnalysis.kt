@@ -19,6 +19,10 @@ internal data class MeteringFrameStat(
     val captureIso: Int,
     val exposureTimeNs: Long,
     val aperture: Float,
+    /** EV before the user offset or processed response curve was applied. */
+    val ev100BeforeUserCalibration: Double = ev100,
+    /** The exact user offset/response correction used to produce [ev100]. */
+    val appliedUserCorrectionEv: Double = 0.0,
     /** RAW channel medians pinned at the white level; drives exposure retry, not clipping alone. */
     val saturatedChannelCount: Int = 0,
     /** Valid RAW samples used for the median, for quality assessment. */
@@ -82,12 +86,13 @@ internal object MeteringAnalysis {
             ?: return null
         val seconds = exposureTime / 1_000_000_000.0
         val cameraEv = log2(aperture * aperture / seconds * 100.0 / sensitivity)
-        val sceneEv = cameraEv + log2(region.luma / RAW_REFERENCE_LEVEL) +
-            calibrationStore.responseCorrection(
+        val beforeUserCalibration = cameraEv + log2(region.luma / RAW_REFERENCE_LEVEL)
+        val userCorrection = calibrationStore.responseCorrection(
                 cameraId.ifBlank { "0" },
                 MeteringSource.ISP_PREVIEW,
                 region.luma,
             )
+        val sceneEv = beforeUserCalibration + userCorrection
         return MeteringFrameStat(
             ev100 = sceneEv,
             luma = region.luma,
@@ -95,6 +100,8 @@ internal object MeteringAnalysis {
             captureIso = sensitivity,
             exposureTimeNs = exposureTime,
             aperture = aperture,
+            ev100BeforeUserCalibration = beforeUserCalibration,
+            appliedUserCorrectionEv = userCorrection,
         )
     }
 
@@ -141,12 +148,13 @@ internal object MeteringAnalysis {
             ?: return null
         val seconds = exposureTime / 1_000_000_000.0
         val cameraEv = log2(aperture * aperture / seconds * 100.0 / sensitivity)
-        val sceneEv = cameraEv + log2(region.luma / RAW_REFERENCE_LEVEL) +
-            calibrationStore.responseCorrection(
+        val beforeUserCalibration = cameraEv + log2(region.luma / RAW_REFERENCE_LEVEL)
+        val userCorrection = calibrationStore.responseCorrection(
                 cameraId.ifBlank { "0" },
                 MeteringSource.YUV_PREVIEW,
                 region.luma,
             )
+        val sceneEv = beforeUserCalibration + userCorrection
         return MeteringFrameStat(
             ev100 = sceneEv,
             luma = region.luma,
@@ -154,6 +162,8 @@ internal object MeteringAnalysis {
             captureIso = sensitivity,
             exposureTimeNs = exposureTime,
             aperture = aperture,
+            ev100BeforeUserCalibration = beforeUserCalibration,
+            appliedUserCorrectionEv = userCorrection,
         )
     }
 
@@ -298,6 +308,8 @@ internal object MeteringAnalysis {
             captureIso = sensitivity,
             exposureTimeNs = exposureTime,
             aperture = aperture,
+            ev100BeforeUserCalibration = cameraEv + log2(luma / RAW_REFERENCE_LEVEL) + baselineCalibrationEv,
+            appliedUserCorrectionEv = userCalibrationEv,
             saturatedChannelCount = (0..3).count {
                 values[it] >= RawExposureRetryPolicy.CHANNEL_SATURATION_LEVEL
             },

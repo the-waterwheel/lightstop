@@ -30,7 +30,7 @@ class RawMeteringQualityTest {
     @Test
     fun `noisy frames ask for more frames at the same exposure`() {
         val assessment = RawMeteringQualityPolicy.assess(
-            frameLumas = listOf(0.0, 0.3),
+            frameLumas = listOf(0.1, 0.3),
             saturatedChannelCount = 0,
             sampleCount = 1024,
         )
@@ -50,7 +50,7 @@ class RawMeteringQualityTest {
 
     @Test
     fun `noisy frames append one more same-exposure frame within the cap`() {
-        val noisy = listOf(0.0, 0.3)
+        val noisy = listOf(0.1, 0.3)
         assertEquals(
             true,
             RawMeteringQualityPolicy.shouldAppendSameExposure(
@@ -87,5 +87,12 @@ class RawMeteringQualityTest {
                 noiseStops = null,
             ),
         )
+    }
+
+    @Test
+    fun `noise is measured in EV and rejects invalid luminance`() {
+        assertEquals(1.0, RawMeteringQualityPolicy.frameNoiseStops(listOf(1.0, 2.0))!!, 1e-9)
+        assertEquals(1.0, RawMeteringQualityPolicy.frameNoiseStops(listOf(10.0, 20.0))!!, 1e-9)
+        assertNull(RawMeteringQualityPolicy.frameNoiseStops(listOf(0.0, -1.0, Double.NaN)))
     }
 }

@@ -77,6 +77,32 @@ class CameraRecoveryStateMachineTest {
         assertTrue(state.beginRecovery(CameraSessionProfile.PREVIEW_ONLY))
     }
 
+    @Test
+    fun `confirmed raw workflow never downgrades on repeated failures`() {
+        val state = stateMachine(maxAttempts = 2)
+        state.resolveProfile(MeteringPipelineMode.AUTO, rawSupported = true, trackingSupported = true)
+        repeat(10) {
+            val decision = state.decideFailure(
+                CameraFailureKind.DEVICE,
+                CameraFailureStage.RUNNING,
+                MeteringPipelineMode.AUTO,
+                rawSupported = true,
+                trackingSupported = true,
+                confirmedRawWorkflow = true,
+            )
+            assertEquals(CameraRecoveryAction.RETRY, decision.action)
+        }
+        val disabled = state.decideFailure(
+            CameraFailureKind.DISABLED,
+            CameraFailureStage.RUNNING,
+            MeteringPipelineMode.AUTO,
+            rawSupported = true,
+            trackingSupported = true,
+            confirmedRawWorkflow = true,
+        )
+        assertEquals(CameraRecoveryAction.STOP, disabled.action)
+    }
+
     private fun stateMachine(maxAttempts: Int = 6, rawFailures: Int = 2) =
         CameraRecoveryStateMachine(maxAttempts, rawFailures)
 }

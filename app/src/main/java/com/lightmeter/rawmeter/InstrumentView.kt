@@ -1459,6 +1459,7 @@ class InstrumentView(
         dependentAnimator?.cancel()
         exposureLockAnimator?.cancel()
         lockedScaleAnimator?.cancel()
+        accessibilityHelper.clearFocusForHostExit()
         super.onDetachedFromWindow()
     }
 

@@ -3,26 +3,51 @@ package com.lightmeter.rawmeter
 import android.content.Context
 import android.os.Build
 
+/** Where a persisted combination choice came from, so migration can treat it honestly. */
+internal enum class CombinationSelectionOrigin {
+    /** The user explicitly accepted this workflow. */
+    MANUAL,
+
+    /** This build's real system probe accepted this workflow. */
+    SYSTEM_PROBE,
+
+    /** Written by an older build that had no origin; it may be an automatic downgrade. */
+    LEGACY_AUTO,
+}
+
+/** A persisted combination choice with its origin. */
+internal data class CombinationSelection(
+    val planId: String,
+    val origin: CombinationSelectionOrigin,
+)
+
 /** Persists a human-approved workflow only for the same camera route and OS build. */
 internal class CameraCombinationSelectionStore(context: Context) {
     private val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
 
-    fun selectedPlanId(cameraRouteId: String): String? {
-        if (cameraRouteId.isBlank()) return null
-        val prefix = keyPrefix(cameraRouteId)
-        if (preferences.getInt("${prefix}_schema", 0) != SCHEMA_VERSION) return null
-        if (preferences.getString("${prefix}_fingerprint", null) != environmentKey()) return null
-        return preferences.getString("${prefix}_plan", null)?.takeIf(String::isNotBlank)
-    }
+    fun selectedPlan(cameraRouteId: String): CombinationSelection? =
+        readSelection(cameraRouteId, systemMode = null)
+
+    fun selectedSystemPlan(
+        cameraRouteId: String,
+        mode: MeteringPipelineMode,
+    ): CombinationSelection? = readSelection(cameraRouteId, systemMode = mode)
 
     fun save(cameraRouteId: String, planId: String) {
-        if (cameraRouteId.isBlank() || planId.isBlank()) return
-        val prefix = keyPrefix(cameraRouteId)
-        preferences.edit()
-            .putInt("${prefix}_schema", SCHEMA_VERSION)
-            .putString("${prefix}_fingerprint", environmentKey())
-            .putString("${prefix}_plan", planId)
-            .apply()
+        writeSelection(cameraRouteId, systemMode = null, planId = planId, origin = CombinationSelectionOrigin.MANUAL)
+    }
+
+    fun saveSystem(
+        cameraRouteId: String,
+        mode: MeteringPipelineMode,
+        planId: String,
+    ) {
+        writeSelection(
+            cameraRouteId,
+            systemMode = mode,
+            planId = planId,
+            origin = CombinationSelectionOrigin.SYSTEM_PROBE,
+        )
     }
 
     fun clear(cameraRouteId: String) {
@@ -32,41 +57,50 @@ internal class CameraCombinationSelectionStore(context: Context) {
             .remove("${prefix}_schema")
             .remove("${prefix}_fingerprint")
             .remove("${prefix}_plan")
-            .apply()
-    }
-
-    fun selectedSystemPlanId(
-        cameraRouteId: String,
-        mode: MeteringPipelineMode,
-    ): String? {
-        if (cameraRouteId.isBlank()) return null
-        val prefix = "${keyPrefix(cameraRouteId)}_system_${mode.name.lowercase()}"
-        if (preferences.getInt("${prefix}_schema", 0) != SCHEMA_VERSION) return null
-        if (preferences.getString("${prefix}_fingerprint", null) != environmentKey()) return null
-        return preferences.getString("${prefix}_plan", null)?.takeIf(String::isNotBlank)
-    }
-
-    fun saveSystem(
-        cameraRouteId: String,
-        mode: MeteringPipelineMode,
-        planId: String,
-    ) {
-        if (cameraRouteId.isBlank() || planId.isBlank()) return
-        val prefix = "${keyPrefix(cameraRouteId)}_system_${mode.name.lowercase()}"
-        preferences.edit()
-            .putInt("${prefix}_schema", SCHEMA_VERSION)
-            .putString("${prefix}_fingerprint", environmentKey())
-            .putString("${prefix}_plan", planId)
+            .remove("${prefix}_origin")
             .apply()
     }
 
     fun clearSystem(cameraRouteId: String, mode: MeteringPipelineMode) {
         if (cameraRouteId.isBlank()) return
-        val prefix = "${keyPrefix(cameraRouteId)}_system_${mode.name.lowercase()}"
+        val prefix = systemPrefix(cameraRouteId, mode)
         preferences.edit()
             .remove("${prefix}_schema")
             .remove("${prefix}_fingerprint")
             .remove("${prefix}_plan")
+            .remove("${prefix}_origin")
+            .apply()
+    }
+
+    private fun readSelection(
+        cameraRouteId: String,
+        systemMode: MeteringPipelineMode?,
+    ): CombinationSelection? {
+        if (cameraRouteId.isBlank()) return null
+        val prefix = systemMode?.let { systemPrefix(cameraRouteId, it) } ?: keyPrefix(cameraRouteId)
+        if (preferences.getInt("${prefix}_schema", 0) != SCHEMA_VERSION) return null
+        if (preferences.getString("${prefix}_fingerprint", null) != environmentKey()) return null
+        val planId = preferences.getString("${prefix}_plan", null)?.takeIf(String::isNotBlank)
+            ?: return null
+        val origin = preferences.getString("${prefix}_origin", null)
+            ?.let { runCatching { CombinationSelectionOrigin.valueOf(it) }.getOrNull() }
+            ?: CombinationSelectionOrigin.LEGACY_AUTO
+        return CombinationSelection(planId, origin)
+    }
+
+    private fun writeSelection(
+        cameraRouteId: String,
+        systemMode: MeteringPipelineMode?,
+        planId: String,
+        origin: CombinationSelectionOrigin,
+    ) {
+        if (cameraRouteId.isBlank() || planId.isBlank()) return
+        val prefix = systemMode?.let { systemPrefix(cameraRouteId, it) } ?: keyPrefix(cameraRouteId)
+        preferences.edit()
+            .putInt("${prefix}_schema", SCHEMA_VERSION)
+            .putString("${prefix}_fingerprint", environmentKey())
+            .putString("${prefix}_plan", planId)
+            .putString("${prefix}_origin", origin.name)
             .apply()
     }
 
@@ -75,10 +109,12 @@ internal class CameraCombinationSelectionStore(context: Context) {
     private fun keyPrefix(cameraRouteId: String): String =
         "combination_${cameraRouteId.hashCode().toUInt().toString(16)}"
 
+    private fun systemPrefix(cameraRouteId: String, mode: MeteringPipelineMode): String =
+        "${keyPrefix(cameraRouteId)}_system_${mode.name.lowercase()}"
+
     private companion object {
         private const val PREFERENCES = "camera_combination_selection"
         private const val SCHEMA_VERSION = 1
         private const val COMPATIBILITY_POLICY_VERSION = 1
     }
 }
-

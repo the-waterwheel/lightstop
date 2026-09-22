@@ -15,4 +15,10 @@ class RawMeteringPolicyTest {
         assertEquals(3, RawMeteringPolicy.frameCount(6400))
         assertEquals(1, CompatibleMeteringPolicy.FRAME_COUNT)
     }
+
+    @Test
+    fun `high iso keeps three base valid frames`() {
+        assertEquals(3, RawMeteringPolicy.frameCount(1200))
+        assertEquals(3, RawMeteringPolicy.frameCount(6400))
+    }
 }

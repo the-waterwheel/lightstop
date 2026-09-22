@@ -17,6 +17,8 @@ internal data class MeteringCalibrationCompletion(
     val signatures: Map<MeteringSource, CalibrationSignature> = emptyMap(),
     /** Per-source processed-stream input luminance, for response calibration. */
     val inputLuma: Map<MeteringSource, Double> = emptyMap(),
+    /** Immutable source contexts captured alongside each successful measurement. */
+    val samples: Map<MeteringSource, CalibrationMeasurementSample> = emptyMap(),
 )
 
 internal sealed interface MeteringCalibrationTransition {
@@ -87,6 +89,7 @@ internal class MeteringCalibrationCoordinator {
             terminalError = terminalError,
             signatures = activeRun.signatures,
             inputLuma = activeRun.inputLuma,
+            samples = activeRun.samples,
         )
         clear()
         return MeteringCalibrationTransition.Complete(result)

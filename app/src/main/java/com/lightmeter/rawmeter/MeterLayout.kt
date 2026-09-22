@@ -121,7 +121,6 @@ class MeterLayout @JvmOverloads constructor(
     private val parameterRecordRepository = ParameterRecordRepository(context)
     private val parameterCaptureGuard = ParameterCaptureGuard()
     private var activeCaptureToken = 0
-    private var parameterSaveInFlight = false
 
     init {
         parameterRecordRepository.scheduleRecovery(parameterIoDispatcher)
@@ -825,7 +824,7 @@ class MeterLayout @JvmOverloads constructor(
         }
         parameterRecordEditorView.listener = object : ParameterRecordEditorView.Listener {
             override fun onCancelRequested(draft: ParameterCaptureDraft) {
-                parameterCaptureGuard.cancel()
+                if (!parameterCaptureGuard.cancel(activeCaptureToken, draft.id)) return
                 closeParameterEditor(resetCapture = true)
                 // Discard only touches pending files; it must not block the main thread.
                 parameterIoDispatcher.execute { parameterRecordRepository.discard(draft) }
@@ -836,16 +835,20 @@ class MeterLayout @JvmOverloads constructor(
             }
 
             override fun onSaveRequested(draft: ParameterCaptureDraft) {
-                if (parameterSaveInFlight) return
-                parameterSaveInFlight = true
-                parameterIoDispatcher.submit(
+                val token = activeCaptureToken
+                if (!parameterCaptureGuard.beginSave(token, draft.id)) return
+                parameterRecordEditorView.setSaving(true)
+                val accepted = parameterIoDispatcher.submit(
                     background = { runCatching { parameterRecordRepository.save(draft) } },
                     onMain = { result ->
-                        parameterSaveInFlight = false
                         result.onSuccess {
-                            parameterCaptureGuard.complete()
-                            closeParameterEditor(resetCapture = true)
+                            if (parameterCaptureGuard.complete(token, draft.id)) {
+                                parameterRecordEditorView.setSaving(false)
+                                closeParameterEditor(resetCapture = true)
+                            }
                         }.onFailure {
+                            if (!parameterCaptureGuard.finishSave(token, draft.id)) return@onFailure
+                            parameterRecordEditorView.setSaving(false)
                             Log.e("lightstop", "Unable to save parameter record", it)
                             Toast.makeText(
                                 context,
@@ -859,6 +862,10 @@ class MeterLayout @JvmOverloads constructor(
                         }
                     },
                 )
+                if (!accepted && parameterCaptureGuard.finishSave(token, draft.id)) {
+                    parameterRecordEditorView.setSaving(false)
+                    Toast.makeText(context, localized("保存任务未能启动", "Unable to start saving"), Toast.LENGTH_LONG).show()
+                }
             }
         }
         parameterHistoryView.listener = object : ParameterHistoryView.Listener {
@@ -1692,7 +1699,7 @@ class MeterLayout @JvmOverloads constructor(
         parameterIoDispatcher.submit(
             background = { writeParameterPreview(source, crop, previewFile) },
             onMain = { path ->
-                if (!parameterCaptureGuard.isCurrent(token)) {
+                if (!parameterCaptureGuard.isCurrent(token, id)) {
                     path?.let { File(it).delete() }
                     return@submit
                 }
@@ -1800,11 +1807,11 @@ class MeterLayout @JvmOverloads constructor(
     fun isParameterGpsEnabled(): Boolean = parameterRecordRepository.options.recordGps
 
     fun completeParameterCapture(draft: ParameterCaptureDraft) {
-        showParameterEditor(draft)
+        if (parameterCaptureGuard.isCurrent(activeCaptureToken, draft.id)) showParameterEditor(draft)
     }
 
     fun discardParameterCapture(draft: ParameterCaptureDraft) {
-        parameterCaptureGuard.cancel()
+        if (!parameterCaptureGuard.cancel(activeCaptureToken, draft.id)) return
         recordCaptureSliderView.setCapturePending(false)
         parameterIoDispatcher.execute { parameterRecordRepository.discard(draft) }
     }
@@ -1847,7 +1854,10 @@ class MeterLayout @JvmOverloads constructor(
             .setDuration(260L)
             .setInterpolator(DecelerateInterpolator())
             .withEndAction {
-                if (!isParameterEditorOpen) parameterRecordEditorView.visibility = View.GONE
+                if (!isParameterEditorOpen) {
+                    parameterRecordEditorView.visibility = View.GONE
+                    parameterRecordEditorView.clearDraft()
+                }
                 if (resetCapture) recordCaptureSliderView.setCapturePending(false)
                 if (parameterRecordToolView.recording) bringRecordSliderToFrontIfDialsCollapsed()
             }
@@ -1856,10 +1866,24 @@ class MeterLayout @JvmOverloads constructor(
     }
 
     fun closeParameterEditorFromBack(): Boolean {
-        val draft = parameterRecordEditorView.currentDraft() ?: return false
-        parameterCaptureGuard.cancel()
-        parameterIoDispatcher.execute { parameterRecordRepository.discard(draft) }
-        return closeParameterEditor(resetCapture = true)
+        val draft = parameterRecordEditorView.currentDraft()
+        return when (
+            ParameterEditorBackPolicy.decide(
+                isOpen = isParameterEditorOpen,
+                hasDraft = draft != null,
+                saving = parameterCaptureGuard.isSaving,
+            )
+        ) {
+            ParameterEditorBackAction.NOT_HANDLED -> false
+            ParameterEditorBackAction.CONSUME_SAVING -> true
+            ParameterEditorBackAction.CLOSE_STALE -> closeParameterEditor(resetCapture = true)
+            ParameterEditorBackAction.CLOSE_AND_DISCARD -> {
+                if (draft != null && parameterCaptureGuard.cancel(activeCaptureToken, draft.id)) {
+                    parameterIoDispatcher.execute { parameterRecordRepository.discard(draft) }
+                }
+                closeParameterEditor(resetCapture = true)
+            }
+        }
     }
 
     private fun showParameterHistory() {

@@ -58,6 +58,7 @@ internal class CameraRecoveryStateMachine(
         mode: MeteringPipelineMode,
         rawSupported: Boolean,
         trackingSupported: Boolean,
+        confirmedRawWorkflow: Boolean = false,
     ): CameraRecoveryDecision {
         val current = profile ?: CameraSessionProfile.PREVIEW_ONLY
         val key = Triple(current, failure, stage)
@@ -71,6 +72,7 @@ internal class CameraRecoveryStateMachine(
             attempt,
             rawSupported,
             trackingSupported,
+            confirmedRawWorkflow,
         )
     }
 

@@ -20,26 +20,44 @@ internal class ParameterCaptureGuard {
         return generation
     }
 
-    fun isCurrent(token: Int): Boolean = token == generation && activeDraftId != null
+    fun isCurrent(token: Int, draftId: String? = null): Boolean =
+        token == generation && activeDraftId != null && (draftId == null || activeDraftId == draftId)
 
     /** Reserves the save slot; returns false when a save is already in flight. */
-    fun beginSave(token: Int): Boolean {
-        if (token != generation || activeDraftId == null || saving) return false
+    fun beginSave(token: Int, draftId: String): Boolean {
+        if (!isCurrent(token, draftId) || saving) return false
         saving = true
         return true
     }
 
-    fun finishSave() {
+    /** Returns false for a stale completion so it cannot unlock a newer draft. */
+    fun finishSave(token: Int, draftId: String): Boolean {
+        if (!isCurrent(token, draftId) || !saving) return false
         saving = false
+        return true
     }
 
-    fun complete() {
+    /** Completes only the draft which reserved the save slot. */
+    fun complete(token: Int, draftId: String): Boolean {
+        if (!isCurrent(token, draftId) || !saving) return false
         generation += 1
         activeDraftId = null
         saving = false
+        return true
+    }
+
+    /** Saving is intentionally non-cancellable: its file transaction owns the pending files. */
+    fun cancel(token: Int, draftId: String): Boolean {
+        if (!isCurrent(token, draftId) || saving) return false
+        generation += 1
+        activeDraftId = null
+        return true
     }
 
     fun cancel() {
-        complete()
+        if (!saving) {
+            generation += 1
+            activeDraftId = null
+        }
     }
 }

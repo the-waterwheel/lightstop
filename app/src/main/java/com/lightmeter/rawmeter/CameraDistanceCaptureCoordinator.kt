@@ -65,9 +65,15 @@ internal class CameraDistanceCaptureCoordinator(
         triggerAutoFocus()
     }
 
-    fun stop() = distanceCoordinator.stop()
+    fun stop() {
+        cancelPendingAutoFocusRelease()
+        distanceCoordinator.stop()
+    }
 
-    fun invalidate(reason: String) = distanceCoordinator.invalidate(reason)
+    fun invalidate(reason: String) {
+        cancelPendingAutoFocusRelease()
+        distanceCoordinator.invalidate(reason)
+    }
 
     fun onCaptureResult(result: CaptureResult, fallbackTimestampNs: Long?) {
         val context = currentContext() ?: return
@@ -75,6 +81,7 @@ internal class CameraDistanceCaptureCoordinator(
     }
 
     private fun triggerAutoFocus(): Boolean {
+        cancelPendingAutoFocusRelease()
         val device = cameraDevice() ?: return false
         val session = captureSession() ?: return false
         val preview = previewSurface() ?: return false
@@ -140,7 +147,9 @@ internal class CameraDistanceCaptureCoordinator(
         generation: Int,
     ) {
         val task = Runnable {
-            if (generation != cameraGeneration()) return@Runnable
+            if (generation != cameraGeneration() || cameraDevice() !== device ||
+                captureSession() !== session || previewSurface() !== preview
+            ) return@Runnable
             runCatching {
                 submitAutoFocusRequest(
                     device = device,
@@ -152,10 +161,18 @@ internal class CameraDistanceCaptureCoordinator(
                 )
             }.onFailure { Log.w(TAG, "Unable to release the autofocus trigger", it) }
         }
+        pendingAutoFocusRelease = task
         handler.postDelayed(task, AF_RELEASE_DELAY_MS)
     }
 
     private val noOpCaptureCallback = object : CameraCaptureSession.CaptureCallback() {}
+    private var pendingAutoFocusRelease: Runnable? = null
+
+    private fun cancelPendingAutoFocusRelease() {
+        val task = pendingAutoFocusRelease ?: return
+        cameraHandler()?.removeCallbacks(task)
+        pendingAutoFocusRelease = null
+    }
 
     private fun configureCenterAutoFocusRegion(builder: CaptureRequest.Builder) {
         val cameraCharacteristics = characteristics() ?: return

@@ -52,6 +52,16 @@ class RawProbeFrameHealthPolicyTest {
         assertEquals("RAW black-level metadata is unavailable", health.reason)
     }
 
+    @Test
+    fun `a result identity that does not match the requested route is rejected`() {
+        val health = RawProbeFrameHealthPolicy.evaluate(
+            healthy().copy(metadataIdentityValid = false),
+        )
+
+        assertFalse(health.usable)
+        assertEquals("RAW result identity does not match the requested route", health.reason)
+    }
+
     private fun healthy() = RawProbeFrameDescriptor(
         format = ImageFormat.RAW_SENSOR,
         width = 400,

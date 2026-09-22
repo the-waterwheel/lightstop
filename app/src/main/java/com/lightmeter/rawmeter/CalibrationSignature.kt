@@ -135,6 +135,10 @@ data class CalibrationCaptureContext(
     val routeKind: CameraRouteKind,
     val outputs: Map<MeteringSource, CalibrationOutputGeometry>,
 ) {
+    /** A source absent from this session has no calibration evidence; never manufacture 0x0 output. */
+    fun sampleSignature(source: MeteringSource): CalibrationSignature? =
+        outputs[source]?.let { signature(source) }
+
     fun signature(source: MeteringSource): CalibrationSignature {
         val output = outputs[source] ?: CalibrationOutputGeometry(0, 0, 0)
         return CalibrationSignature(

@@ -121,6 +121,8 @@ data class MeterReading(
     val exposureTimeNs: Long,
     val aperture: Float,
     val source: MeteringSource = MeteringSource.RAW,
+    /** Present only when this reading can be used for a calibration save. */
+    val calibrationSample: CalibrationMeasurementSample? = null,
 )
 
 /** A Zone touch expressed in both the film-frame viewport and the full preview TextureView. */

@@ -462,17 +462,24 @@ internal class RawLightMeter(
         }
         if (stat != null && retryForDistortedStatistics(active, stat)) return
         stat?.let(active.stats::add)
-        when {
-            active.stats.size >= active.expectedFrames -> {
-                if (shouldAppendAdaptiveFrame(active)) {
-                    active.expectedFrames = active.stats.size + 1
-                    fillPipeline(active)
-                } else {
-                    finishWithReading(active)
-                }
+        when (
+            val action = RawBurstProgressPolicy.afterFrame(
+                state = RawBurstState(
+                    baseFrames = active.baseFrames,
+                    maxFrames = active.maxFrames,
+                    expectedFrames = active.expectedFrames,
+                    completedFrames = active.completedFrames,
+                    validFrames = active.stats.size,
+                ),
+                appendRecommended = shouldAppendAdaptiveFrame(active),
+            )
+        ) {
+            is RawBurstAction.Continue -> {
+                active.expectedFrames = action.nextExpectedFrames
+                fillPipeline(active)
             }
-            active.completedFrames >= active.maxFrames -> finishWithReading(active)
-            else -> fillPipeline(active)
+
+            RawBurstAction.FinishSuccess, RawBurstAction.FinishError -> finishWithReading(active)
         }
     }
 
@@ -517,6 +524,11 @@ internal class RawLightMeter(
                             )
                         }
                     }
+                    // Existing Zone markers require feature evidence; geometry-only fallback is
+                    // allowed for a new single spot but must not overwrite an old Zone value.
+                    if (batchTarget.rawMeterPoint?.matchScore?.isFinite() != true) {
+                        return@forEach
+                    }
                     MeteringAnalysis.analyzeRaw(
                         pair.image,
                         pair.result,
@@ -549,18 +561,33 @@ internal class RawLightMeter(
         if (retryStat != null && retryForDistortedStatistics(active, retryStat)) return
         frameStats.forEach { (target, stat) -> target.stats += stat }
         when {
-            active.completedFrames >= active.expectedFrames -> {
-                if (shouldAppendAdaptiveFrame(active)) {
-                    active.expectedFrames = active.completedFrames + 1
-                    fillPipeline(active)
-                } else {
-                    finishWithBatchReadings(active)
-                }
-            }
+            active.completedFrames < active.expectedFrames -> fillPipeline(active)
             active.completedFrames >= active.maxFrames -> finishWithBatchReadings(active)
-            else -> fillPipeline(active)
+            hasEligibleBatchTarget(active) &&
+                (batchNeedsMoreValidFrames(active) || shouldAppendBatchAdaptiveFrame(active)) -> {
+                // All Zone targets share this single recovery/adaptive RAW request.
+                active.expectedFrames = minOf(active.maxFrames, active.completedFrames + 1)
+                fillPipeline(active)
+            }
+            else -> finishWithBatchReadings(active)
         }
     }
+
+    private fun batchNeedsMoreValidFrames(active: MeasurementAccumulator): Boolean =
+        active.batchTargets.any { it.rawMeterPoint?.matchScore?.isFinite() == true &&
+            it.stats.size < active.baseFrames }
+
+    private fun hasEligibleBatchTarget(active: MeasurementAccumulator): Boolean =
+        active.batchTargets.any { it.rawMeterPoint?.matchScore?.isFinite() == true }
+
+    private fun shouldAppendBatchAdaptiveFrame(active: MeasurementAccumulator): Boolean =
+        active.batchTargets.any { target ->
+            RawMeteringQualityPolicy.shouldAppendSameExposure(
+                framesCaptured = target.stats.size,
+                maxFrames = active.maxFrames,
+                noiseStops = RawMeteringQualityPolicy.frameNoiseStops(target.stats.map { it.luma }),
+            )
+        }
 
     private fun retryForDistortedStatistics(
         active: MeasurementAccumulator,
@@ -658,6 +685,10 @@ internal class RawLightMeter(
 
     private fun finishWithReading(active: MeasurementAccumulator) {
         if (activeMeasurement?.id != active.id) return
+        if (active.stats.size < active.baseFrames) {
+            finishWithError(localized("测光数据无效，请重试", "Metering data was invalid. Please try again"))
+            return
+        }
         val reading = MeteringFusion.fuse(active.stats, MeteringSource.RAW)
         if (reading == null) {
             finishWithError(
@@ -693,7 +724,8 @@ internal class RawLightMeter(
     private fun finishWithBatchReadings(active: MeasurementAccumulator) {
         if (activeMeasurement?.id != active.id) return
         val results = active.batchTargets.mapNotNull { target ->
-            if (target.stats.size < active.expectedFrames) return@mapNotNull null
+            if (target.rawMeterPoint?.matchScore?.isFinite() != true) return@mapNotNull null
+            if (target.stats.size < active.baseFrames) return@mapNotNull null
             MeteringFusion.fuse(target.stats, MeteringSource.RAW)?.let { reading ->
                 ZoneMeteringResult(target.request.markerId, reading)
             }

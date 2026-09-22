@@ -48,6 +48,8 @@ object ParameterLocationPolicy {
 
     /** Upper bound for a single fix request before it is abandoned. */
     const val REQUEST_TIMEOUT_MS = 8_000L
+    const val PREFETCH_AGE_MS = 45_000L
+    const val RETRY_MIN_INTERVAL_MS = 10_000L
 
     /** Reference accuracy for a fine fix; coarser fixes are labelled, not rejected. */
     const val FINE_ACCURACY_REFERENCE_METERS = 100.0
@@ -77,4 +79,15 @@ object ParameterLocationPolicy {
     }
 
     fun isAcceptable(fix: LocationFix): Boolean = evaluate(fix) == null
+
+    fun shouldRequestRefresh(
+        cachedAgeMs: Long?,
+        permission: LocationPermissionQuality,
+        foreground: Boolean,
+        enabled: Boolean,
+        inFlight: Boolean,
+        sinceLastFailureMs: Long?,
+    ): Boolean = foreground && enabled && permission != LocationPermissionQuality.NONE && !inFlight &&
+        (cachedAgeMs == null || cachedAgeMs >= PREFETCH_AGE_MS) &&
+        (sinceLastFailureMs == null || sinceLastFailureMs >= RETRY_MIN_INTERVAL_MS)
 }

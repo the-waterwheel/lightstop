@@ -27,10 +27,10 @@ class ParameterCaptureGuardTest {
     fun `a save cannot be started twice for the same capture`() {
         val guard = ParameterCaptureGuard()
         val token = guard.begin("a")
-        assertTrue(guard.beginSave(token))
-        assertFalse(guard.beginSave(token))
-        guard.finishSave()
-        assertTrue(guard.beginSave(token))
+        assertTrue(guard.beginSave(token, "a"))
+        assertFalse(guard.beginSave(token, "a"))
+        assertTrue(guard.finishSave(token, "a"))
+        assertTrue(guard.beginSave(token, "a"))
     }
 
     @Test
@@ -38,15 +38,27 @@ class ParameterCaptureGuardTest {
         val guard = ParameterCaptureGuard()
         val stale = guard.begin("a")
         guard.begin("b")
-        assertFalse(guard.beginSave(stale))
+        assertFalse(guard.beginSave(stale, "a"))
     }
 
     @Test
     fun `complete ends the capture`() {
         val guard = ParameterCaptureGuard()
         val token = guard.begin("a")
-        guard.complete()
+        guard.beginSave(token, "a")
+        assertTrue(guard.complete(token, "a"))
         assertFalse(guard.isCurrent(token))
         assertFalse(guard.isActive)
+    }
+
+    @Test
+    fun `old save completion cannot unlock the new draft`() {
+        val guard = ParameterCaptureGuard()
+        val old = guard.begin("a")
+        assertTrue(guard.beginSave(old, "a"))
+        val current = guard.begin("b")
+        assertFalse(guard.complete(old, "a"))
+        assertTrue(guard.isCurrent(current, "b"))
+        assertFalse(guard.isSaving)
     }
 }

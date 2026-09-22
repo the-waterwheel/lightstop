@@ -86,4 +86,38 @@ class ParameterLocationPolicyTest {
             ParameterLocationPolicy.isAcceptable(fix(quality = LocationPermissionQuality.NONE)),
         )
     }
+
+    @Test
+    fun `refresh is foreground gated deduplicated and rate limited`() {
+        assertTrue(
+            ParameterLocationPolicy.shouldRequestRefresh(
+                cachedAgeMs = 61_000L,
+                permission = LocationPermissionQuality.FINE,
+                foreground = true,
+                enabled = true,
+                inFlight = false,
+                sinceLastFailureMs = null,
+            ),
+        )
+        assertFalse(
+            ParameterLocationPolicy.shouldRequestRefresh(
+                cachedAgeMs = 61_000L,
+                permission = LocationPermissionQuality.FINE,
+                foreground = true,
+                enabled = true,
+                inFlight = true,
+                sinceLastFailureMs = null,
+            ),
+        )
+        assertFalse(
+            ParameterLocationPolicy.shouldRequestRefresh(
+                cachedAgeMs = null,
+                permission = LocationPermissionQuality.FINE,
+                foreground = false,
+                enabled = true,
+                inFlight = false,
+                sinceLastFailureMs = null,
+            ),
+        )
+    }
 }

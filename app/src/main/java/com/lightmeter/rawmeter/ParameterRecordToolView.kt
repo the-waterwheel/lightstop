@@ -56,9 +56,9 @@ internal class ParameterRecordToolView(
         get() = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager
 
     fun resumePage() {
-        if (!state.cameraInfo.rawAvailable && repository.options.recordRaw) {
-            repository.options = repository.options.copy(recordRaw = false)
-        }
+        // A resident Zone/YUV session can temporarily have no RAW surface while the selected
+        // workflow still supports transient RAW capture. Never erase the user's record intent
+        // merely because this instantaneous session is not RAW-ready.
         invalidate()
     }
 
@@ -441,6 +441,11 @@ internal class ParameterRecordToolView(
     override fun performClick(): Boolean {
         super.performClick()
         return true
+    }
+
+    override fun onDetachedFromWindow() {
+        accessibilityHelper.clearFocusForHostExit()
+        super.onDetachedFromWindow()
     }
 
     private companion object {

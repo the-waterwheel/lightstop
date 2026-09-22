@@ -456,6 +456,11 @@ class SettingsView(
         return true
     }
 
+    override fun onDetachedFromWindow() {
+        accessibilityHelper.clearFocusForHostExit()
+        super.onDetachedFromWindow()
+    }
+
     override fun computeScroll() {
         flingScroller.compute(maxScrollOffset)?.let {
             scrollOffset = it

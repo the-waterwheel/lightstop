@@ -26,4 +26,7 @@ data class CalibrationMeasurementSample(
             appliedUserCorrectionEv.isFinite() &&
             signature != null &&
             cameraId.isNotBlank()
+
+    fun withCaptureContext(cameraId: String, signature: CalibrationSignature?, generation: Long) =
+        copy(cameraId = cameraId, signature = signature, sessionGeneration = generation)
 }

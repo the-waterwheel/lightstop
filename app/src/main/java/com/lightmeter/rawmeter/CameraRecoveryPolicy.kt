@@ -157,7 +157,14 @@ internal object CameraRecoveryPolicy {
         attempt: Int,
         rawSupported: Boolean,
         trackingSupported: Boolean,
-    ): CameraRecoveryDecision = when (failure) {
+        confirmedRawWorkflow: Boolean = false,
+    ): CameraRecoveryDecision {
+        if (confirmedRawWorkflow) {
+            // Runtime faults may retry the identical workflow or stop safely, but may never turn
+            // a verified RAW path into a lower-precision profile.
+            return if (failure == CameraFailureKind.DISABLED) stop() else retry(current, 1_000L)
+        }
+        return when (failure) {
         CameraFailureKind.IN_USE -> if (attempt == 1) retry(current, 800L) else stop()
 
         CameraFailureKind.RESOURCE_LIMIT -> if (attempt == 1) {
@@ -181,6 +188,7 @@ internal object CameraRecoveryPolicy {
             retry(current, 1_000L)
         } else {
             downgrade(current, mode, rawSupported, trackingSupported, 1_000L)
+        }
         }
     }
 

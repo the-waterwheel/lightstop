@@ -453,6 +453,11 @@ class CameraManagementView(
         return true
     }
 
+    override fun onDetachedFromWindow() {
+        accessibilityHelper.clearFocusForHostExit()
+        super.onDetachedFromWindow()
+    }
+
     private fun handleTap(x: Float, y: Float) {
         when {
             closeRect.contains(x, y) -> {

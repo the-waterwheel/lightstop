@@ -16,6 +16,7 @@ internal class CameraPreviewHealthCoordinator(
     private val cameraGeneration: () -> Int,
     private val sessionTransitionActive: () -> Boolean,
     private val retryAtStandardFrameRate: () -> Boolean,
+    private val confirmedRawWorkflow: () -> Boolean,
     private val advanceSystemCombination: () -> Boolean,
     private val tryNextCameraRoute: () -> Boolean,
     private val failSafePreview: () -> Unit,
@@ -34,7 +35,7 @@ internal class CameraPreviewHealthCoordinator(
     @Volatile
     private var recoveryPending = false
 
-    private var recoveryAttempts = 0
+    private val recoveryBudget = PreviewHealthRecoveryBudget(MAX_RECOVERY_ATTEMPTS)
     private var confirmationPending = false
     private var confirmationGeneration = NO_GENERATION
 
@@ -60,7 +61,7 @@ internal class CameraPreviewHealthCoordinator(
 
     /** Clears route-scoped failure evidence after a user selection or recovery-policy reset. */
     fun resetRecoveryState() {
-        recoveryAttempts = 0
+        recoveryBudget.reset()
         clearConfirmation()
     }
 
@@ -75,7 +76,7 @@ internal class CameraPreviewHealthCoordinator(
     }
 
     fun markLongRunningPreviewStable() {
-        recoveryAttempts = 0
+        recoveryBudget.reset()
     }
 
     /** Re-evaluates UI-thread bitmap sampling after lifecycle or camera-session changes. */
@@ -93,9 +94,28 @@ internal class CameraPreviewHealthCoordinator(
             // Deliberate session replacements freeze TextureView briefly. Wait for fresh samples
             // from the restored session before classifying its output.
             if (sessionTransitionActive()) return@post
-            if (retryAtStandardFrameRate()) {
-                Log.w(TAG, "Preview health failure at high FPS; retrying same workflow reason=$reason")
-                return@post
+            when (
+                CameraPreviewHealthRecoveryPolicy.decide(
+                    confirmedRawWorkflow = confirmedRawWorkflow(),
+                    retryAtStandardRate = retryAtStandardFrameRate(),
+                )
+            ) {
+                PreviewHealthRecoveryDecision.RETRY_STANDARD_RATE -> {
+                    Log.w(TAG, "Preview health failure at high FPS; retrying same workflow reason=$reason")
+                    return@post
+                }
+
+                PreviewHealthRecoveryDecision.CONFIRMED_WARNING_ONLY -> {
+                    // A confirmed RAW workflow is not replaced by a soft picture-quality heuristic.
+                    // Real session/device faults are handled by the camera failure path, not here.
+                    Log.w(
+                        TAG,
+                        "Confirmed RAW workflow: preview health warning only, no fallback reason=$reason",
+                    )
+                    return@post
+                }
+
+                PreviewHealthRecoveryDecision.CONTINUE -> Unit
             }
             if (advanceSystemCombination()) return@post
             if (confirmationPending && confirmationGeneration == generation) {
@@ -106,11 +126,11 @@ internal class CameraPreviewHealthCoordinator(
                 }
                 return@post
             }
-            if (recoveryAttempts >= MAX_RECOVERY_ATTEMPTS) {
+            if (!recoveryBudget.canAttempt()) {
                 if (!tryNextCameraRoute()) failPreview()
                 return@post
             }
-            recoveryAttempts += 1
+            recoveryBudget.recordAttempt()
             confirmationPending = true
             confirmationGeneration = NO_GENERATION
             scheduleSafePreviewRecovery()
@@ -128,7 +148,7 @@ internal class CameraPreviewHealthCoordinator(
                 return@post
             }
             clearConfirmation()
-            recoveryAttempts = 0
+            recoveryBudget.reset()
             markPreviewStable()
             Log.i(TAG, "Safe preview health confirmation succeeded generation=$generation")
         }

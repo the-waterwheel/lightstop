@@ -1,5 +1,7 @@
 package com.lightmeter.rawmeter
 
+import kotlin.math.ln
+
 /**
  * What the metering pipeline should do with the frames it already captured. The distinction
  * between random and systematic error matters: more frames reduce random noise but never a
@@ -55,9 +57,9 @@ internal object RawMeteringQualityPolicy {
 
     /** Spread of the fused luminance across frames, in EV; null when fewer than two frames. */
     fun frameNoiseStops(frameLumas: List<Double>): Double? {
-        val finite = frameLumas.filter { it.isFinite() }
-        if (finite.size < 2) return null
-        return (finite.max() - finite.min())
+        val positiveFinite = frameLumas.filter { it.isFinite() && it > 0.0 }
+        if (positiveFinite.size < 2) return null
+        return ln(positiveFinite.max()) / ln(2.0) - ln(positiveFinite.min()) / ln(2.0)
     }
 
     /**

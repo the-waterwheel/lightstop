@@ -36,6 +36,37 @@ internal class ParameterRecordEditorView(
     }
 
     var listener: Listener? = null
+    private var saving = false
+
+    fun setSaving(value: Boolean) {
+        if (saving == value) return
+        saving = value
+        if (value) {
+            // Freeze every mutation path, not only taps: stop inertia and drop the active gesture.
+            selectorAnimator?.cancel()
+            selectorAnimator = null
+            velocityTracker?.recycle()
+            velocityTracker = null
+            target = Target.NONE
+            touchedNoteIndex = null
+            parent?.requestDisallowInterceptTouchEvent(false)
+        }
+        invalidate()
+    }
+
+    /** Clears the current draft and transient edit state when the editor is closed for good. */
+    fun clearDraft() {
+        draft = null
+        target = Target.NONE
+        touchedNoteIndex = null
+        noteScroll = 0f
+        selectorAnimator?.cancel()
+        selectorAnimator = null
+        velocityTracker?.recycle()
+        velocityTracker = null
+        saving = false
+        invalidate()
+    }
 
     private enum class Target { CLOSE, FILM, ADD_NOTE, NOTE, APERTURE, SHUTTER, EI, SAVE, NONE }
 
@@ -79,6 +110,7 @@ internal class ParameterRecordEditorView(
     fun currentDraft(): ParameterCaptureDraft? = draft
 
     fun selectFilm(profile: FilmLatitudeProfile) {
+        if (saving) return
         draft = draft?.let { current ->
             current.copy(
                 filmId = profile.id,
@@ -125,10 +157,10 @@ internal class ParameterRecordEditorView(
     }
 
     private fun accessibilityNodes(): List<CanvasAccessibilityHelper.VirtualNode> = listOf(
-        CanvasAccessibilityHelper.VirtualNode(A11Y_CLOSE, geometry.close, localized("取消", "Cancel")),
-        CanvasAccessibilityHelper.VirtualNode(A11Y_FILM, geometry.film, localized("选择胶片类型", "Select film")),
-        CanvasAccessibilityHelper.VirtualNode(A11Y_ADD_NOTE, geometry.addNote, localized("添加备注", "Add note")),
-        CanvasAccessibilityHelper.VirtualNode(A11Y_SAVE, geometry.save, localized("保存", "Save")),
+        CanvasAccessibilityHelper.VirtualNode(A11Y_CLOSE, geometry.close, localized("取消", "Cancel"), enabled = !saving),
+        CanvasAccessibilityHelper.VirtualNode(A11Y_FILM, geometry.film, localized("选择胶片类型", "Select film"), enabled = !saving),
+        CanvasAccessibilityHelper.VirtualNode(A11Y_ADD_NOTE, geometry.addNote, localized("添加备注", "Add note"), enabled = !saving),
+        CanvasAccessibilityHelper.VirtualNode(A11Y_SAVE, geometry.save, localized("保存", "Save"), enabled = !saving),
     )
 
     private fun handleAccessibilityClick(virtualViewId: Int): Boolean {
@@ -243,6 +275,7 @@ internal class ParameterRecordEditorView(
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         val value = draft ?: return false
+        if (saving) return true
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 touchStartY = event.y
@@ -310,6 +343,7 @@ internal class ParameterRecordEditorView(
     }
 
     private fun handleTap(value: ParameterCaptureDraft) {
+        if (saving) return
         when (target) {
             Target.CLOSE -> listener?.onCancelRequested(value)
             Target.FILM -> listener?.onFilmSelectionRequested()
@@ -321,6 +355,7 @@ internal class ParameterRecordEditorView(
     }
 
     private fun updateSelector(selector: Target, requestedPosition: Float) {
+        if (saving) return
         val current = draft ?: return
         val lastIndex = selectorLastIndex(selector)
         if (lastIndex < 0) return
@@ -418,6 +453,7 @@ internal class ParameterRecordEditorView(
     }
 
     private fun showNoteDialog(index: Int?) {
+        val editingDraftId = draft?.id
         val field = EditText(context).apply {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
             minLines = 2
@@ -429,9 +465,12 @@ internal class ParameterRecordEditorView(
             .setView(field)
             .setNegativeButton(localized("取消", "Cancel"), null)
             .setPositiveButton(localized("保存", "Save")) { _, _ ->
+                if (saving) return@setPositiveButton
                 val text = field.text?.toString()?.trim().orEmpty()
                 if (text.isBlank()) return@setPositiveButton
                 val current = draft ?: return@setPositiveButton
+                // A late dialog must not write into a saving or replaced draft.
+                if (editingDraftId == null || current.id != editingDraftId) return@setPositiveButton
                 val notes = current.notes.toMutableList()
                 if (index == null) notes += text else if (index in notes.indices) notes[index] = text
                 draft = current.copy(notes = notes.take(MAX_NOTES))
@@ -446,6 +485,7 @@ internal class ParameterRecordEditorView(
         selectorAnimator?.cancel()
         velocityTracker?.recycle()
         velocityTracker = null
+        accessibilityHelper.clearFocusForHostExit()
         super.onDetachedFromWindow()
     }
 

@@ -228,37 +228,51 @@ class CameraCalibrationStore(context: Context) {
         measurements: Map<MeteringSource, Double>,
         signatures: Map<MeteringSource, CalibrationSignature> = emptyMap(),
         inputLuma: Map<MeteringSource, Double> = emptyMap(),
+        samples: Map<MeteringSource, CalibrationMeasurementSample> = emptyMap(),
     ): CameraCalibrationRecord {
         require(measurements.isNotEmpty()) {
             "At least one calibration measurement is required"
         }
         val current = readActiveRecord(cameraId)
+        // New capture paths supply immutable samples. Missing/invalid evidence must preserve the
+        // prior source record rather than silently falling back to the active-session formula.
+        // The empty-map branch keeps the public compatibility API usable for old direct callers.
+        fun measuredValue(source: MeteringSource): Double? = if (samples.isEmpty()) {
+            measurements[source]
+        } else {
+            samples[source]?.takeIf {
+                it.source == source && it.cameraId == cameraId && it.isUsableForSave()
+            }?.let { measurements[source] }
+        }
         val updatedRaw = updatedStream(
             cameraId = cameraId,
             source = MeteringSource.RAW,
             previous = current?.raw,
-            measurement = measurements[MeteringSource.RAW],
+            measurement = measuredValue(MeteringSource.RAW),
             referenceEv100 = referenceEv100,
             signature = signatures[MeteringSource.RAW],
             inputLuma = inputLuma[MeteringSource.RAW],
+            sample = samples[MeteringSource.RAW],
         )
         val updatedYuv = updatedStream(
             cameraId = cameraId,
             source = MeteringSource.YUV_PREVIEW,
             previous = current?.yuv,
-            measurement = measurements[MeteringSource.YUV_PREVIEW],
+            measurement = measuredValue(MeteringSource.YUV_PREVIEW),
             referenceEv100 = referenceEv100,
             signature = signatures[MeteringSource.YUV_PREVIEW],
             inputLuma = inputLuma[MeteringSource.YUV_PREVIEW],
+            sample = samples[MeteringSource.YUV_PREVIEW],
         )
         val updatedIsp = updatedStream(
             cameraId = cameraId,
             source = MeteringSource.ISP_PREVIEW,
             previous = current?.ispPreview,
-            measurement = measurements[MeteringSource.ISP_PREVIEW],
+            measurement = measuredValue(MeteringSource.ISP_PREVIEW),
             referenceEv100 = referenceEv100,
             signature = signatures[MeteringSource.ISP_PREVIEW],
             inputLuma = inputLuma[MeteringSource.ISP_PREVIEW],
+            sample = samples[MeteringSource.ISP_PREVIEW],
         )
         val previous = history(cameraId)
         val count = maxOf(
@@ -293,10 +307,22 @@ class CameraCalibrationStore(context: Context) {
         referenceEv100: Double,
         signature: CalibrationSignature?,
         inputLuma: Double?,
+        sample: CalibrationMeasurementSample?,
     ): StreamCalibration = if (measurement == null) {
         previous ?: StreamCalibration(correctionEv = null, measuredEv100 = null)
     } else {
-        val correction = CalibrationMath.updatedUserCorrection(
+        val usableSample = sample?.takeIf {
+            it.source == source && it.cameraId == cameraId && it.isUsableForSave()
+        }
+        // A captured sample already excludes the exact offset/curve that was applied to its
+        // frame. Do not read the active session here: it may now be a later ISP-only stage.
+        val correction = usableSample?.let {
+            CalibrationMath.updatedUserCorrection(
+                currentCorrectionEv = 0.0,
+                referenceEv100 = referenceEv100,
+                measuredEv100 = it.ev100BeforeUserCalibration,
+            )
+        } ?: CalibrationMath.updatedUserCorrection(
             currentCorrectionEv = userCorrection(cameraId, source),
             referenceEv100 = referenceEv100,
             measuredEv100 = measurement,
@@ -306,9 +332,14 @@ class CameraCalibrationStore(context: Context) {
             measuredEv100 = measurement,
             // Prefer the signature captured at measurement time; the active context is only a
             // fallback for callers that did not supply one.
-            signature = signature ?: currentSignature(source),
+            signature = usableSample?.signature ?: signature ?: currentSignature(source),
             // Processed streams accumulate a multi-point response; RAW keeps its single offset.
-            response = responseForSource(source, previous, inputLuma, correction),
+            response = responseForSource(
+                source,
+                previous,
+                usableSample?.inputLuma ?: inputLuma,
+                correction,
+            ),
         )
     }
 

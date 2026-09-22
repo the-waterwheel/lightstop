@@ -6,6 +6,28 @@ import org.junit.Test
 
 class CameraRecoveryPolicyTest {
     @Test
+    fun `confirmed raw failures never request a lower precision profile`() {
+        listOf(
+            CameraFailureKind.RESOURCE_LIMIT,
+            CameraFailureKind.DEVICE,
+            CameraFailureKind.SERVICE,
+            CameraFailureKind.DISCONNECTED,
+        ).forEach { failure ->
+            val decision = CameraRecoveryPolicy.decide(
+                failure = failure,
+                stage = CameraFailureStage.RUNNING,
+                current = CameraSessionProfile.RAW_ONLY,
+                mode = MeteringPipelineMode.AUTO,
+                attempt = 10,
+                rawSupported = true,
+                trackingSupported = true,
+                confirmedRawWorkflow = true,
+            )
+            assertEquals(CameraRecoveryAction.RETRY, decision.action)
+            assertEquals(CameraSessionProfile.RAW_ONLY, decision.profile)
+        }
+    }
+    @Test
     fun autoModeAvoidsResidentThreeStreamProfile() {
         val profile = CameraRecoveryPolicy.initialProfile(
             MeteringPipelineMode.AUTO,

@@ -20,19 +20,18 @@ internal class ParameterRecordIoDispatcher(
         Thread(runnable, threadName).apply { isDaemon = true }
     }
 
-    fun execute(task: () -> Unit) {
+    fun execute(task: () -> Unit): Boolean {
         try {
             executor.execute(task)
+            return true
         } catch (_: RejectedExecutionException) {
-            // The dispatcher is shutting down; the owning Activity is gone.
+            return false
         }
     }
 
-    fun <T> submit(background: () -> T, onMain: (T) -> Unit) {
-        execute {
-            val result = background()
-            mainHandler.post { onMain(result) }
-        }
+    fun <T> submit(background: () -> T, onMain: (T) -> Unit): Boolean = execute {
+        val result = background()
+        mainHandler.post { onMain(result) }
     }
 
     fun shutdown() {

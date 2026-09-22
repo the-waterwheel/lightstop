@@ -36,6 +36,8 @@ internal class ParameterLocationCoordinator(
     private var cancellationSignal: CancellationSignal? = null
     private var timeoutTask: Runnable? = null
     private var cached: CachedFix? = null
+    private var requestInFlight = false
+    private var lastFailureElapsedNs: Long? = null
 
     private data class CachedFix(
         val latitude: Double,
@@ -65,6 +67,7 @@ internal class ParameterLocationCoordinator(
 
     @SuppressLint("MissingPermission")
     fun requestFix(): Boolean {
+        if (requestInFlight) return true
         val quality = permissionQuality()
         if (quality == LocationPermissionQuality.NONE) return false
         val locationManager = manager ?: return false
@@ -74,6 +77,7 @@ internal class ParameterLocationCoordinator(
         }
         val requestGeneration = ++generation
         clearActiveRequest()
+        requestInFlight = true
         // A last-known fix is a candidate only if it passes the freshness/accuracy policy.
         locationManager.getLastKnownLocation(provider)?.let { location ->
             accept(location, provider, quality, requestGeneration)
@@ -94,6 +98,7 @@ internal class ParameterLocationCoordinator(
     /** Freezes the currently valid fix for one capture, or null when nothing fresh is available. */
     fun snapshot(): LocationFix? {
         val fix = cached ?: return null
+        if (permissionQuality() == LocationPermissionQuality.NONE) return null
         val ageMs = (SystemClock.elapsedRealtimeNanos() - fix.elapsedRealtimeNs) / 1_000_000L
         val candidate = fix.toLocationFix(ageMs)
         if (!ParameterLocationPolicy.isAcceptable(candidate)) {
@@ -102,6 +107,23 @@ internal class ParameterLocationCoordinator(
             return null
         }
         return candidate
+    }
+
+    /** Event-driven foreground refresh; never starts a background location listener. */
+    fun ensureFreshFix(foreground: Boolean, enabled: Boolean): Boolean {
+        val age = cached?.let { (SystemClock.elapsedRealtimeNanos() - it.elapsedRealtimeNs) / 1_000_000L }
+        val sinceFailure = lastFailureElapsedNs?.let {
+            (SystemClock.elapsedRealtimeNanos() - it) / 1_000_000L
+        }
+        return if (ParameterLocationPolicy.shouldRequestRefresh(
+                cachedAgeMs = age,
+                permission = permissionQuality(),
+                foreground = foreground,
+                enabled = enabled,
+                inFlight = requestInFlight,
+                sinceLastFailureMs = sinceFailure,
+            )
+        ) requestFix() else false
     }
 
     private fun providerFor(
@@ -125,6 +147,7 @@ internal class ParameterLocationCoordinator(
         quality: LocationPermissionQuality,
         requestGeneration: Int,
     ) {
+        requestInFlight = true
         scheduleTimeout(requestGeneration)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             val signal = CancellationSignal()
@@ -191,14 +214,17 @@ internal class ParameterLocationCoordinator(
             accuracyMeters = if (location.hasAccuracy()) location.accuracy else null,
             provider = provider,
             permissionQuality = quality,
-            elapsedRealtimeNs = location.elapsedRealtimeNanos.takeIf { it > 0L }
-                ?: SystemClock.elapsedRealtimeNanos(),
+            elapsedRealtimeNs = location.elapsedRealtimeNanos,
         )
         val ageMs = (SystemClock.elapsedRealtimeNanos() - fix.elapsedRealtimeNs) / 1_000_000L
         val candidate = fix.toLocationFix(ageMs)
-        if (!ParameterLocationPolicy.isAcceptable(candidate)) return
+        if (!ParameterLocationPolicy.isAcceptable(candidate)) {
+            requestFailed()
+            return
+        }
         cached = fix
         clearActiveRequest()
+        lastFailureElapsedNs = null
         onFixChanged(candidate)
     }
 
@@ -215,6 +241,7 @@ internal class ParameterLocationCoordinator(
         val task = Runnable {
             if (requestGeneration != generation) return@Runnable
             clearActiveRequest()
+            requestFailed()
         }
         timeoutTask = task
         mainHandler.postDelayed(task, ParameterLocationPolicy.REQUEST_TIMEOUT_MS)
@@ -229,6 +256,12 @@ internal class ParameterLocationCoordinator(
         cancellationSignal = null
         timeoutTask?.let(mainHandler::removeCallbacks)
         timeoutTask = null
+        requestInFlight = false
+    }
+
+    private fun requestFailed() {
+        lastFailureElapsedNs = SystemClock.elapsedRealtimeNanos()
+        onFixChanged(snapshot())
     }
 
     private companion object {
