@@ -5,6 +5,8 @@ interface CameraControllerCallback {
     fun onCameraInfo(info: CameraUiInfo)
     fun onDistanceMeasurementState(state: DistanceMeasurementState) = Unit
     fun onCombinationSelectionFallbackToSystem() = Unit
+    /** A legacy manual RAW choice may be kept, but must be re-probed before it can meter again. */
+    fun onManualCombinationRevalidationNeeded(planId: String) = Unit
     fun onRawUnavailable()
     fun tryReserveZoneTrackingFrame(): Boolean
     fun cancelZoneTrackingFrameReservation()

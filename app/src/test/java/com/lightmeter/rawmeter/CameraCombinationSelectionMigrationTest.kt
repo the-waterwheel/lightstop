@@ -93,4 +93,69 @@ class CameraCombinationSelectionMigrationTest {
             ),
         )
     }
+
+    @Test
+    fun `a confirmation only matches the route it was verified on`() {
+        val selection = CombinationSelection(
+            planId = "raw_split_v1",
+            origin = CombinationSelectionOrigin.SYSTEM_PROBE,
+            routeIdentity = "path-a",
+        )
+        assertTrue(CombinationRouteMatchPolicy.matches(selection, "path-a"))
+        assertFalse(CombinationRouteMatchPolicy.matches(selection, "path-b"))
+        assertFalse(CombinationRouteMatchPolicy.matches(selection.copy(routeIdentity = null), "path-a"))
+        assertFalse(CombinationRouteMatchPolicy.matches(null, "path-a"))
+    }
+
+    @Test
+    fun `system raw caches require a probe credential and a matching route`() {
+        val verified = CombinationSelection(
+            "raw_split_v1", CombinationSelectionOrigin.SYSTEM_PROBE, "path-a",
+        )
+        assertFalse(CombinationRouteMatchPolicy.needsSystemRevalidation(null, "path-a"))
+        assertFalse(CombinationRouteMatchPolicy.needsSystemRevalidation(verified, "path-a"))
+        assertTrue(CombinationRouteMatchPolicy.needsSystemRevalidation(verified, "path-b"))
+        assertTrue(CombinationRouteMatchPolicy.needsSystemRevalidation(verified.copy(routeIdentity = null), "path-a"))
+        val legacy = verified.copy(origin = CombinationSelectionOrigin.LEGACY_AUTO)
+        assertTrue(CombinationRouteMatchPolicy.needsSystemRevalidation(legacy, "path-a"))
+        assertTrue(CombinationRouteMatchPolicy.needsSystemRevalidation(legacy.copy(routeIdentity = null), "path-a"))
+    }
+
+    @Test
+    fun `legacy manual raw selection needs revalidation`() {
+        assertTrue(
+            ManualCombinationRevalidationPolicy.needsRevalidation(
+                selection = selection(origin = CombinationSelectionOrigin.MANUAL),
+                isRawPlan = true,
+                currentRouteId = "path-a",
+            ),
+        )
+        assertFalse(
+            ManualCombinationRevalidationPolicy.needsRevalidation(
+                selection = selection(origin = CombinationSelectionOrigin.MANUAL_VERIFIED)
+                    .copy(routeIdentity = "path-a"),
+                isRawPlan = true,
+                currentRouteId = "path-a",
+            ),
+        )
+        assertFalse(
+            ManualCombinationRevalidationPolicy.needsRevalidation(
+                selection = selection(origin = CombinationSelectionOrigin.MANUAL),
+                isRawPlan = false,
+                currentRouteId = "path-a",
+            ),
+        )
+    }
+
+    @Test
+    fun `manual raw verification requires a trusted origin and matching resolved route`() {
+        val verified = selection(origin = CombinationSelectionOrigin.MANUAL_VERIFIED)
+            .copy(routeIdentity = "path-a")
+        assertTrue(ManualCombinationRevalidationPolicy.needsRevalidation(verified, true, "path-b"))
+        assertTrue(ManualCombinationRevalidationPolicy.needsRevalidation(verified, true, null))
+        assertTrue(ManualCombinationRevalidationPolicy.needsRevalidation(verified.copy(routeIdentity = null), true, "path-a"))
+        assertTrue(ManualCombinationRevalidationPolicy.needsRevalidation(verified.copy(origin = CombinationSelectionOrigin.LEGACY_AUTO), true, "path-a"))
+        assertFalse(ManualCombinationRevalidationPolicy.needsRevalidation(null, true, "path-a"))
+        assertFalse(ManualCombinationRevalidationPolicy.needsRevalidation(verified, false, "path-b"))
+    }
 }

@@ -77,6 +77,10 @@ class MainActivity : Activity(), CameraControllerCallback {
     private var manualCombinationCandidates: List<CameraCombinationCandidate> = emptyList()
     private var manualCombinationIndex = -1
     private var manualCombinationGeneration = 0
+    /** Present only after CameraController has frozen route-bound manual probe evidence. */
+    private var manualCombinationProbeEvidence: ManualCombinationProbeEvidence? = null
+    /** Rechecking an old saved choice must never overwrite it with a System fallback on cancel. */
+    private var manualCombinationRevalidating = false
     private val displayListener = object : DisplayManager.DisplayListener {
         override fun onDisplayAdded(displayId: Int) = Unit
 
@@ -616,6 +620,9 @@ class MainActivity : Activity(), CameraControllerCallback {
         if (zoneRemeasureActive) meterLayout.failZoneRemeasureBatch()
         clearZoneRemeasureState()
         zoneCameraRestorePending = false
+        // A restore transaction is torn down on pause; a late restore-finished callback is dropped
+        // by the resumed guard. Keep the View's resource-busy flag in sync so it cannot stay stuck.
+        state.meteringInteractionBusy = false
         // The auxiliary preview comparison is tied to live AE metadata and cannot survive pause.
         meterLayout.closeExposurePreviewCalibration()
         if (calibrationCoordinator.isActive) {
@@ -681,22 +688,34 @@ class MainActivity : Activity(), CameraControllerCallback {
         manualCombinationGeneration += 1
         manualCombinationCandidates = candidates
         manualCombinationIndex = 0
+        manualCombinationProbeEvidence = null
+        manualCombinationRevalidating = false
         showNextManualCombination()
     }
 
     private fun showNextManualCombination() {
         val generation = manualCombinationGeneration
         val candidate = manualCombinationCandidates.getOrNull(manualCombinationIndex)
+        manualCombinationProbeEvidence = null
         if (candidate == null) {
+            val revalidating = manualCombinationRevalidating
             meterLayout.closeCombinationSelection()
-            restoreSystemCombinationSelection()
+            if (!revalidating) restoreSystemCombinationSelection()
+            manualCombinationRevalidating = false
             cameraController.cancelManualCombinationSelection()
             Toast.makeText(
                 this,
-                localized(
-                    "没有找到用户确认正常的组合，已恢复系统设置",
-                    "No combination was confirmed; System selection was restored",
-                ),
+                if (revalidating) {
+                    localized(
+                        "原组合未通过重新验证，已保留选择但不会用于测光",
+                        "The saved combination did not pass revalidation and remains disabled",
+                    )
+                } else {
+                    localized(
+                        "没有找到用户确认正常的组合，已恢复系统设置",
+                        "No combination was confirmed; System selection was restored",
+                    )
+                },
                 Toast.LENGTH_LONG,
             ).show()
             return
@@ -717,6 +736,7 @@ class MainActivity : Activity(), CameraControllerCallback {
                 return@probeManualCombination
             }
             if (result.isSuccess) {
+                manualCombinationProbeEvidence = result.getOrNull()
                 meterLayout.updateCombinationProbeState(
                     ready = true,
                     status = localized(
@@ -763,7 +783,10 @@ class MainActivity : Activity(), CameraControllerCallback {
 
     private fun acceptCurrentManualCombination() {
         val candidate = manualCombinationCandidates.getOrNull(manualCombinationIndex) ?: return
-        if (!cameraController.acceptManualCombination(candidate.plan.id)) {
+        val evidence = manualCombinationProbeEvidence
+        if (evidence == null || evidence.planId != candidate.plan.id ||
+            !cameraController.acceptManualCombination(candidate.plan.id, evidence.probeId)
+        ) {
             manualCombinationIndex += 1
             showNextManualCombination()
             return
@@ -771,6 +794,8 @@ class MainActivity : Activity(), CameraControllerCallback {
         manualCombinationGeneration += 1
         manualCombinationCandidates = emptyList()
         manualCombinationIndex = -1
+        manualCombinationProbeEvidence = null
+        manualCombinationRevalidating = false
         meterLayout.closeCombinationSelection()
         meterLayout.refresh(frameChanged = true)
         Toast.makeText(
@@ -787,8 +812,10 @@ class MainActivity : Activity(), CameraControllerCallback {
         manualCombinationGeneration += 1
         manualCombinationCandidates = emptyList()
         manualCombinationIndex = -1
+        manualCombinationProbeEvidence = null
         meterLayout.closeCombinationSelection()
-        restoreSystemCombinationSelection()
+        if (!manualCombinationRevalidating) restoreSystemCombinationSelection()
+        manualCombinationRevalidating = false
         cameraController.cancelManualCombinationSelection()
     }
 
@@ -987,6 +1014,18 @@ class MainActivity : Activity(), CameraControllerCallback {
         }
     }
 
+    override fun onManualCombinationRevalidationNeeded(planId: String) {
+        if (!activityResumed || meterLayout.isCombinationSelectionOpen) return
+        val candidate = cameraController.manualCombinationCandidates()
+            .firstOrNull { it.plan.id == planId } ?: return
+        manualCombinationGeneration += 1
+        manualCombinationCandidates = listOf(candidate)
+        manualCombinationIndex = 0
+        manualCombinationProbeEvidence = null
+        manualCombinationRevalidating = true
+        showNextManualCombination()
+    }
+
     override fun onRawUnavailable() {
         if (!activityResumed) return
         showRawUnavailableDialog(force = false)
@@ -1051,7 +1090,12 @@ class MainActivity : Activity(), CameraControllerCallback {
     }
 
     override fun onMeteringRestoreStateChanged(restoring: Boolean) {
-        if (!activityResumed) return
+        if (!activityResumed) {
+            // A restore callback arriving while backgrounded is ignored; the transaction is already
+            // being torn down on pause, so clear any stale busy flag it might have left.
+            state.meteringInteractionBusy = false
+            return
+        }
         zoneCameraRestorePending = restoring
         state.meteringInteractionBusy = restoring
         if (restoring) {

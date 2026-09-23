@@ -18,10 +18,12 @@ internal enum class CombinationSelectionOrigin {
     LEGACY_AUTO,
 }
 
-/** A persisted combination choice with its origin. */
+/** A persisted combination choice with its origin and the actual route it was verified on. */
 internal data class CombinationSelection(
     val planId: String,
     val origin: CombinationSelectionOrigin,
+    /** Actual HAL route identity at verification time; null for legacy records. */
+    val routeIdentity: String? = null,
 )
 
 /** Persists a human-approved workflow only for the same camera route and OS build. */
@@ -36,16 +38,23 @@ internal class CameraCombinationSelectionStore(context: Context) {
         mode: MeteringPipelineMode,
     ): CombinationSelection? = readSelection(cameraRouteId, systemMode = mode)
 
-    fun save(cameraRouteId: String, planId: String) {
-        writeSelection(cameraRouteId, systemMode = null, planId = planId, origin = CombinationSelectionOrigin.MANUAL)
+    fun save(cameraRouteId: String, planId: String, routeIdentity: String) {
+        writeSelection(
+            cameraRouteId,
+            systemMode = null,
+            planId = planId,
+            origin = CombinationSelectionOrigin.MANUAL,
+            routeIdentity = routeIdentity,
+        )
     }
 
-    fun saveVerified(cameraRouteId: String, planId: String) {
+    fun saveVerified(cameraRouteId: String, planId: String, routeIdentity: String) {
         writeSelection(
             cameraRouteId,
             systemMode = null,
             planId = planId,
             origin = CombinationSelectionOrigin.MANUAL_VERIFIED,
+            routeIdentity = routeIdentity,
         )
     }
 
@@ -53,12 +62,14 @@ internal class CameraCombinationSelectionStore(context: Context) {
         cameraRouteId: String,
         mode: MeteringPipelineMode,
         planId: String,
+        routeIdentity: String,
     ) {
         writeSelection(
             cameraRouteId,
             systemMode = mode,
             planId = planId,
             origin = CombinationSelectionOrigin.SYSTEM_PROBE,
+            routeIdentity = routeIdentity,
         )
     }
 
@@ -70,6 +81,7 @@ internal class CameraCombinationSelectionStore(context: Context) {
             .remove("${prefix}_fingerprint")
             .remove("${prefix}_plan")
             .remove("${prefix}_origin")
+            .remove("${prefix}_route")
             .apply()
     }
 
@@ -81,6 +93,7 @@ internal class CameraCombinationSelectionStore(context: Context) {
             .remove("${prefix}_fingerprint")
             .remove("${prefix}_plan")
             .remove("${prefix}_origin")
+            .remove("${prefix}_route")
             .apply()
     }
 
@@ -97,7 +110,8 @@ internal class CameraCombinationSelectionStore(context: Context) {
         val origin = preferences.getString("${prefix}_origin", null)
             ?.let { runCatching { CombinationSelectionOrigin.valueOf(it) }.getOrNull() }
             ?: CombinationSelectionOrigin.LEGACY_AUTO
-        return CombinationSelection(planId, origin)
+        val routeIdentity = preferences.getString("${prefix}_route", null)?.takeIf(String::isNotBlank)
+        return CombinationSelection(planId, origin, routeIdentity)
     }
 
     private fun writeSelection(
@@ -105,6 +119,7 @@ internal class CameraCombinationSelectionStore(context: Context) {
         systemMode: MeteringPipelineMode?,
         planId: String,
         origin: CombinationSelectionOrigin,
+        routeIdentity: String,
     ) {
         if (cameraRouteId.isBlank() || planId.isBlank()) return
         val prefix = systemMode?.let { systemPrefix(cameraRouteId, it) } ?: keyPrefix(cameraRouteId)
@@ -113,6 +128,7 @@ internal class CameraCombinationSelectionStore(context: Context) {
             .putString("${prefix}_fingerprint", environmentKey())
             .putString("${prefix}_plan", planId)
             .putString("${prefix}_origin", origin.name)
+            .putString("${prefix}_route", routeIdentity)
             .apply()
     }
 
