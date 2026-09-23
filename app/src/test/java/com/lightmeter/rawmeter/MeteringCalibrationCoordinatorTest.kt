@@ -96,5 +96,26 @@ class MeteringCalibrationCoordinatorTest {
         exposureTimeNs = 10_000_000,
         aperture = 2.0f,
         source = source,
+        calibrationSample = CalibrationMeasurementSample(
+            source = source,
+            cameraId = "review-camera",
+            signature = CalibrationSignature(
+                schemaVersion = CalibrationSignature.CURRENT_SCHEMA_VERSION,
+                algorithmVersion = CalibrationSignature.CURRENT_ALGORITHM_VERSION,
+                domain = CalibrationDomain.forSource(source),
+                buildFingerprintHash = "build",
+                cameraInfoVersion = null,
+                selectionRouteId = "0",
+                logicalCameraId = "0",
+                configuredPhysicalCameraId = null,
+                confirmedPhysicalCameraId = null,
+                routeKind = CameraRouteKind.LOGICAL_AUTO,
+                outputWidth = 100,
+                outputHeight = 100,
+                outputFormat = 0,
+            ),
+            ev100BeforeUserCalibration = 9.5,
+            appliedUserCorrectionEv = 0.0,
+        ),
     )
 }

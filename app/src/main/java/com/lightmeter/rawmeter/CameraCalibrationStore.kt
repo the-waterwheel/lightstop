@@ -308,36 +308,31 @@ class CameraCalibrationStore(context: Context) {
         signature: CalibrationSignature?,
         inputLuma: Double?,
         sample: CalibrationMeasurementSample?,
-    ): StreamCalibration = if (measurement == null) {
-        previous ?: StreamCalibration(correctionEv = null, measuredEv100 = null)
-    } else {
+    ): StreamCalibration {
+        if (measurement == null) {
+            return previous ?: StreamCalibration(correctionEv = null, measuredEv100 = null)
+        }
         val usableSample = sample?.takeIf {
             it.source == source && it.cameraId == cameraId && it.isUsableForSave()
         }
-        // A captured sample already excludes the exact offset/curve that was applied to its
-        // frame. Do not read the active session here: it may now be a later ISP-only stage.
-        val correction = usableSample?.let {
-            CalibrationMath.updatedUserCorrection(
-                currentCorrectionEv = 0.0,
-                referenceEv100 = referenceEv100,
-                measuredEv100 = it.ev100BeforeUserCalibration,
-            )
-        } ?: CalibrationMath.updatedUserCorrection(
-            currentCorrectionEv = userCorrection(cameraId, source),
+        if (usableSample == null) {
+            // No usable measurement evidence: keep the previous correction. Never reconstruct it
+            // from the active session, which may already be a later (ISP-only) calibration stage.
+            return previous ?: StreamCalibration(correctionEv = null, measuredEv100 = null)
+        }
+        val correction = CalibrationMath.updatedUserCorrection(
+            currentCorrectionEv = 0.0,
             referenceEv100 = referenceEv100,
-            measuredEv100 = measurement,
+            measuredEv100 = usableSample.ev100BeforeUserCalibration,
         )
-        StreamCalibration(
+        return StreamCalibration(
             correctionEv = correction,
             measuredEv100 = measurement,
-            // Prefer the signature captured at measurement time; the active context is only a
-            // fallback for callers that did not supply one.
-            signature = usableSample?.signature ?: signature ?: currentSignature(source),
-            // Processed streams accumulate a multi-point response; RAW keeps its single offset.
+            signature = usableSample.signature,
             response = responseForSource(
                 source,
                 previous,
-                usableSample?.inputLuma ?: inputLuma,
+                usableSample.inputLuma ?: inputLuma,
                 correction,
             ),
         )

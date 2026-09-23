@@ -52,7 +52,7 @@ class MeteringCalibrationRun(
     val hasFailures: Boolean get() = failedSources.isNotEmpty()
     val isComplete: Boolean get() = activeSource == null
 
-    /** Consumes the active stage and stores only the source actually reported by Camera2. */
+    /** Consumes the active stage and stores only a source with usable measurement evidence. */
     fun accept(
         reading: MeterReading,
         signature: CalibrationSignature? = null,
@@ -61,13 +61,19 @@ class MeteringCalibrationRun(
         activeIndex += 1
         if (reading.source != requested) failedSources += requested
         if (reading.source in sources) {
-            successfulMeasurements[reading.source] = reading.sceneEv100
-            reading.calibrationSample
+            val sample = reading.calibrationSample
                 ?.takeIf { it.source == reading.source && it.isUsableForSave() }
-                ?.let { sourceSamples[reading.source] = it }
-            signature?.let { sourceSignatures[reading.source] = it }
-            if (reading.rawLuma.isFinite() && reading.rawLuma > 0.0) {
-                sourceInputLuma[reading.source] = reading.rawLuma
+            if (sample != null) {
+                successfulMeasurements[reading.source] = reading.sceneEv100
+                sourceSamples[reading.source] = sample
+                signature?.let { sourceSignatures[reading.source] = it }
+                if (reading.rawLuma.isFinite() && reading.rawLuma > 0.0) {
+                    sourceInputLuma[reading.source] = reading.rawLuma
+                }
+            } else {
+                // A reading without usable calibration evidence must not occupy a successful
+                // slot, otherwise an all-invalid run would fall through to the legacy save path.
+                failedSources += reading.source
             }
         }
         return advancePastCompleted()
