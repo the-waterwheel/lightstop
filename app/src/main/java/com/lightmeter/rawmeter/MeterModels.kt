@@ -445,6 +445,8 @@ class MeterState(context: Context) {
     var lastReading: MeterReading? = null
     var lastNormalReading: MeterReading? = null
     var measuring: Boolean = false
+    /** A camera interaction is in flight (restore/reconfigure) but the spinner is not shown. */
+    var meteringInteractionBusy: Boolean = false
     internal var appliedFlashConfiguration: FlashConfiguration? = null
         private set
     internal var distanceMeasurementState: DistanceMeasurementState = DistanceMeasurementState()

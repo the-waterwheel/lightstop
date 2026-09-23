@@ -428,8 +428,8 @@ class MainActivity : Activity(), CameraControllerCallback {
             override fun onZoneMeasureRequested(
                 marker: ZoneMarker,
                 target: ZoneMeteringTarget?,
-            ) {
-                if (zoneMeasurementPending || meteringInteractionBusy) return
+            ): Boolean {
+                if (zoneMeasurementPending || meteringInteractionBusy) return false
                 zoneMeasurementPending = true
                 state.measuring = true
                 meterLayout.zoneView.invalidate()
@@ -452,7 +452,9 @@ class MainActivity : Activity(), CameraControllerCallback {
                     )
                     meterLayout.refresh()
                     clearTransientMessageLater()
+                    return false
                 }
+                return true
             }
 
             override fun onZoneRemeasureAllRequested(markerIds: List<Int>) {
@@ -1051,6 +1053,7 @@ class MainActivity : Activity(), CameraControllerCallback {
     override fun onMeteringRestoreStateChanged(restoring: Boolean) {
         if (!activityResumed) return
         zoneCameraRestorePending = restoring
+        state.meteringInteractionBusy = restoring
         if (restoring) {
             // Result delivery and Camera2 recovery are separate states: do not restart the
             // metering spinner merely because the resident preview is rebuilding.

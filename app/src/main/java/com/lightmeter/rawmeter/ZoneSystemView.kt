@@ -1388,24 +1388,26 @@ class ZoneSystemView(
     }
 
     private fun beginMarker() {
-        if (state.measuring) return
+        if (!canStartCapture()) return
         val marker = session.beginMarker(session.iso) ?: return
         haptic()
         listener?.onMarkRequested(marker)
     }
 
+    private fun canStartCapture(): Boolean = !state.measuring && !state.meteringInteractionBusy
+
     private fun scheduleMarkButtonLongPress() {
         cancelMarkButtonLongPress()
-        if (state.measuring || remeasureCandidateMarkerIds().isEmpty()) return
+        if (!canStartCapture() || remeasureCandidateMarkerIds().isEmpty()) return
         val holdPromptTask = Runnable {
             markButtonHoldPromptRunnable = null
-            if (touchTarget == TouchTarget.MARK_BUTTON && !state.measuring) {
+            if (touchTarget == TouchTarget.MARK_BUTTON && canStartCapture()) {
                 listener?.onRemeasureHoldPrompt()
             }
         }
         val triggerTask = Runnable {
             markButtonLongPressRunnable = null
-            if (touchTarget != TouchTarget.MARK_BUTTON || state.measuring) return@Runnable
+            if (touchTarget != TouchTarget.MARK_BUTTON || !canStartCapture()) return@Runnable
             val markerIds = remeasureCandidateMarkerIds()
             if (markerIds.isEmpty()) return@Runnable
             markButtonLongPressTriggered = true
@@ -1433,7 +1435,7 @@ class ZoneSystemView(
         .toList()
 
     private fun beginMarkerAt(x: Float, y: Float, frame: RectF) {
-        if (state.measuring || frame.width() <= 0f || frame.height() <= 0f) return
+        if (!canStartCapture() || frame.width() <= 0f || frame.height() <= 0f) return
         val marker = session.beginMarker(
             iso = session.iso,
             normalizedX = ((x - frame.left) / frame.width()).coerceIn(0f, 1f),

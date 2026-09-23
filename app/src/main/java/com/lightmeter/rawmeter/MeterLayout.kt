@@ -68,7 +68,7 @@ class MeterLayout @JvmOverloads constructor(
         fun onVignettingCalibrationRequested()
         fun onVignettingCalibrationResetRequested()
         fun onVignettingHistoryRestoreRequested(createdAtEpochMs: Long)
-        fun onZoneMeasureRequested(marker: ZoneMarker, target: ZoneMeteringTarget?)
+        fun onZoneMeasureRequested(marker: ZoneMarker, target: ZoneMeteringTarget?): Boolean
         fun onZoneRemeasureHoldPrompt()
         fun onZoneRemeasureAllRequested(markerIds: List<Int>)
         fun onZoneTrackingActiveChanged(active: Boolean)
@@ -461,18 +461,26 @@ class MeterLayout @JvmOverloads constructor(
                 }
 
                 override fun onMarkRequested(marker: ZoneMarker) {
-                    zoneMarkerTracker.addMarker(
-                        marker.id,
-                        marker.normalizedX,
-                        marker.normalizedY,
-                    )
                     val target = if (state.zoneMarkingMethod == ZoneMarkingMethod.TOUCH) {
                         zoneMeteringTarget(marker)
                     } else {
                         null
                     }
+                    val accepted = value?.onZoneMeasureRequested(marker, target) ?: false
+                    if (!accepted) {
+                        // The capture was refused after the point was created. Roll back the new
+                        // marker, its tracker entry and the pending id so the next point can start.
+                        zoneView.failMeasurement()
+                        zoneMarkerTracker.removeMarker(marker.id)
+                        zoneView.invalidate()
+                        return
+                    }
+                    zoneMarkerTracker.addMarker(
+                        marker.id,
+                        marker.normalizedX,
+                        marker.normalizedY,
+                    )
                     suspendZoneVisualTrackingForMetering()
-                    value?.onZoneMeasureRequested(marker, target)
                 }
 
                 override fun onRemeasureAllRequested(markerIds: List<Int>) {
