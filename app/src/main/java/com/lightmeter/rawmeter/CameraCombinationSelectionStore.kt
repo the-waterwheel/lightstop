@@ -8,6 +8,9 @@ internal enum class CombinationSelectionOrigin {
     /** The user explicitly accepted this workflow. */
     MANUAL,
 
+    /** The user accepted a manual probe that actually succeeded for this workflow. */
+    MANUAL_VERIFIED,
+
     /** This build's real system probe accepted this workflow. */
     SYSTEM_PROBE,
 
@@ -35,6 +38,15 @@ internal class CameraCombinationSelectionStore(context: Context) {
 
     fun save(cameraRouteId: String, planId: String) {
         writeSelection(cameraRouteId, systemMode = null, planId = planId, origin = CombinationSelectionOrigin.MANUAL)
+    }
+
+    fun saveVerified(cameraRouteId: String, planId: String) {
+        writeSelection(
+            cameraRouteId,
+            systemMode = null,
+            planId = planId,
+            origin = CombinationSelectionOrigin.MANUAL_VERIFIED,
+        )
     }
 
     fun saveSystem(

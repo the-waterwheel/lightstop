@@ -742,19 +742,23 @@ class CameraController(
         activeCombinationPlan = plan
         // Only a workflow whose own manual probe just succeeded may lock RAW; accepting an
         // arbitrary candidate (or a non-RAW plan) must not grant the confirmation lock.
-        rawWorkflowConfirmation = if (plan.id == manualProbeSucceededPlanId &&
+        val verified = plan.id == manualProbeSucceededPlanId &&
             plan.combinationClass == CameraCombinationClass.HIGH_ACCURACY_RAW
-        ) {
+        rawWorkflowConfirmation = if (verified) {
             CameraWorkflowConfirmationPolicy.confirm(
                 planId = plan.id,
-                routeId = cameraInfo.cameraId,
+                routeId = confirmationRouteId(),
                 origin = WorkflowConfirmationOrigin.MANUAL_PROBE,
             )
         } else {
             CameraWorkflowConfirmationPolicy.unverified()
         }
         manualProbeSucceededPlanId = null
-        combinationSelectionStore.save(cameraInfo.cameraId, plan.id)
+        if (verified) {
+            combinationSelectionStore.saveVerified(cameraInfo.cameraId, plan.id)
+        } else {
+            combinationSelectionStore.save(cameraInfo.cameraId, plan.id)
+        }
         cameraHandler?.post {
             if (started && !combinationWorkflowProbe.isActive && cameraDevice != null) {
                 val desired = desiredResidentSessionProfile()
@@ -1417,7 +1421,7 @@ class CameraController(
                         if (plan.combinationClass == CameraCombinationClass.HIGH_ACCURACY_RAW) {
                             rawWorkflowConfirmation = CameraWorkflowConfirmationPolicy.confirm(
                                 planId = plan.id,
-                                routeId = cameraInfo.cameraId,
+                                routeId = confirmationRouteId(),
                                 origin = WorkflowConfirmationOrigin.SYSTEM_PROBE,
                             )
                         }
@@ -2517,16 +2521,17 @@ class CameraController(
                         selectedPlan.id == effectiveCachedPlanId ->
                         CameraWorkflowConfirmationPolicy.confirm(
                             planId = selectedPlan.id,
-                            routeId = activeCameraId,
+                            routeId = confirmationRouteId(),
                             origin = WorkflowConfirmationOrigin.SYSTEM_PROBE,
                         )
 
                     selectedPlan != null && manualPlanRequested &&
                         selectedPlan.id == storedManualPlanId &&
-                        selectedPlan.combinationClass == CameraCombinationClass.HIGH_ACCURACY_RAW ->
+                        selectedPlan.combinationClass == CameraCombinationClass.HIGH_ACCURACY_RAW &&
+                        storedManualSelection?.origin == CombinationSelectionOrigin.MANUAL_VERIFIED ->
                         CameraWorkflowConfirmationPolicy.confirm(
                             planId = selectedPlan.id,
-                            routeId = activeCameraId,
+                            routeId = confirmationRouteId(),
                             origin = WorkflowConfirmationOrigin.MANUAL_PROBE,
                         )
 
@@ -3076,8 +3081,12 @@ class CameraController(
             CameraWorkflowConfirmationPolicy.isRawConfirmedFor(
                 confirmation = rawWorkflowConfirmation,
                 planId = activeCombinationPlan?.id,
-                routeId = cameraInfo.cameraId,
+                routeId = confirmationRouteId(),
             )
+
+    /** The actual HAL route identity, not the user-facing lens id, for confirmation scoping. */
+    private fun confirmationRouteId(): String =
+        activeOpenConfiguration?.confirmationRouteIdentity() ?: cameraInfo.cameraId
 
     private fun readyCameraStatus(): String {
         val size = "${cameraInfo.previewSize?.width}×${cameraInfo.previewSize?.height}"

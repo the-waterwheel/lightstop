@@ -80,6 +80,24 @@ internal data class CameraOpenConfiguration(
     }
 
     /**
+     * Stable identity of the actual HAL route for workflow confirmation. It differs from the
+     * user-facing lens id: it encodes the opened camera id, the configured physical id, the route
+     * kind and the key output geometry, so the same plan reached through a different transport or
+     * output configuration does not inherit a confirmation.
+     */
+    fun confirmationRouteIdentity(): String = listOf(
+        route.cameraIdToOpen,
+        route.physicalCameraId.orEmpty(),
+        route.kind.name,
+        previewSize.width,
+        previewSize.height,
+        rawSize?.width ?: 0,
+        rawSize?.height ?: 0,
+        trackingSize?.width ?: 0,
+        trackingSize?.height ?: 0,
+    ).joinToString("|")
+
+    /**
      * Builds the calibration capture context from the outputs this route/profile actually
      * configures. A source that the active profile does not attach is omitted rather than recorded
      * from its expected capability.

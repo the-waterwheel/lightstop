@@ -58,6 +58,14 @@ class CameraCombinationSelectionMigrationTest {
         )
         assertFalse(
             CombinationCacheMigrationPolicy.needsRawRevalidation(
+                selection = selection(origin = CombinationSelectionOrigin.MANUAL_VERIFIED),
+                mode = MeteringPipelineMode.AUTO,
+                cachedPlanIsRaw = false,
+                hasRawCandidate = true,
+            ),
+        )
+        assertFalse(
+            CombinationCacheMigrationPolicy.needsRawRevalidation(
                 selection = selection(),
                 mode = MeteringPipelineMode.ISOLATED,
                 cachedPlanIsRaw = false,
