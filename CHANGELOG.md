@@ -3,6 +3,18 @@
 All notable user-facing changes are recorded here. The project follows
 [Semantic Versioning](https://semver.org/) for public releases.
 
+## 0.5.0 - 2026-09-28
+
+- Made RAW combination checks more reliable across camera routes. A manually
+  approved RAW workflow keeps its selection through screen changes and app
+  restarts; failures offer a fresh retry instead of silently switching sources.
+- Improved Zone point handling and shortened the wait around isolated RAW
+  capture and preview recovery.
+- Added clearer metering source and confidence indicators, better calibration
+  checks, and more complete parameter records, including flash and distance.
+- Improved camera and settings accessibility, film search, and privacy controls
+  for saved records and backup.
+
 ## 0.4.0 - 2026-09-18
 
 - Kept one stable `TextureView`/`SurfaceTexture` transport geometry across

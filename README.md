@@ -5,8 +5,9 @@ English | [简体中文](README_ZH.md)
 lightstop is an Android reflected-light meter for manual exposure and film
 photography. It uses Camera2 for the live preview, prefers `RAW_SENSOR` data,
 measures Bayer samples in C++, and calculates EV100, aperture/shutter
-relationships, and Zone System placement in Kotlin. When RAW is unavailable,
-it automatically falls back to metering the ISP-processed preview.
+relationships, and Zone System placement in Kotlin. Automatic mode can fall
+back to ISP preview metering when RAW is unavailable; a manually approved RAW
+combination stays selected unless the user changes it or the camera fails.
 
 The app does not request Internet or shared-storage access and does not include
 analytics or advertising SDKs. It can save a user-requested parameter record in
@@ -23,6 +24,13 @@ documentation, and test preparation. Release candidates are built, inspected,
 and tested on a physical Android device, but contributors and users should
 still independently review critical camera, metering, privacy, and security
 code.
+
+### What changed in 0.5.0
+
+Compared with 0.4.0, RAW selection is steadier and a manually approved camera
+combination survives app restarts. Zone metering recovers its preview faster;
+metering sources, saved exposure details, accessibility, and privacy controls
+are clearer. See [Changelog](CHANGELOG.md) for details.
 
 ## Features
 
@@ -363,11 +371,9 @@ app/build/outputs/apk/release/app-release-unsigned.apk
 app/build/outputs/bundle/release/app-release.aab
 ```
 
-For version 0.4.0 with the slimmed r2 OpenCV runtime, the verified unsigned
-universal APK is 44,379,873 bytes (42.32 MiB), and the release AAB is
-20,996,140 bytes (20.02 MiB). Native libraries still dominate the universal
-APK; the increase from 0.3.0 includes the expanded tracking, calibration, and
-camera-coordinator implementation.
+The verified 0.5.0 unsigned universal APK is 44,479,873 bytes (42.42 MiB).
+The signed APK produced in Android Studio will have a different size and hash.
+Native libraries still account for most of the universal APK.
 
 The repository deliberately contains no signing key or signing password. The
 APK must be signed before installation or distribution. Android Studio's
@@ -386,15 +392,15 @@ $buildTools = (Get-ChildItem "$env:LOCALAPPDATA\Android\Sdk\build-tools" -Direct
 New-Item -ItemType Directory -Force dist | Out-Null
 & "$buildTools\zipalign.exe" -f -p 4 `
   app\build\outputs\apk\release\app-release-unsigned.apk `
-  dist\lightstop-v0.4.0-aligned.apk
+  dist\lightstop-v0.5.0-aligned.apk
 & "$buildTools\apksigner.bat" sign `
   --ks C:\secure\lightstop-release.jks `
   --ks-key-alias lightstop `
-  --out dist\lightstop-v0.4.0-universal.apk `
-  dist\lightstop-v0.4.0-aligned.apk
+  --out dist\lightstop-v0.5.0-universal.apk `
+  dist\lightstop-v0.5.0-aligned.apk
 & "$buildTools\apksigner.bat" verify --verbose --print-certs `
-  dist\lightstop-v0.4.0-universal.apk
-Get-FileHash dist\lightstop-v0.4.0-universal.apk -Algorithm SHA256 |
+  dist\lightstop-v0.5.0-universal.apk
+Get-FileHash dist\lightstop-v0.5.0-universal.apk -Algorithm SHA256 |
   Format-List Algorithm, Hash, Path
 ```
 
@@ -408,12 +414,12 @@ source, create an annotated tag, and push both commit and tag:
 
 ```powershell
 git status
-git tag -a v0.4.0 -m "lightstop 0.4.0"
+git tag -a v0.5.0 -m "lightstop 0.5.0"
 git push origin HEAD:main
-git push origin v0.4.0
+git push origin v0.5.0
 ```
 
-On GitHub, create a Release from `v0.4.0`, retain the generated source archives,
+On GitHub, create a Release from `v0.5.0`, retain the generated source archives,
 and upload the signed universal APK, a text file containing its SHA-256, plus
 `LICENSE`, `NOTICE`, and `THIRD_PARTY_NOTICES.md`. Verify the uploaded APK after
 downloading it once; a GitHub Release is a distribution record, while the

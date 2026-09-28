@@ -2,13 +2,17 @@
 
 [English](README.md) | 中文
 
-光档是一个面向手动曝光与胶片摄影的 Android 反射式测光表。应用通过 Camera2 显示自动曝光预览，优先读取 `RAW_SENSOR`，在 C++ 中完成 Bayer 像素统计，再由 Kotlin 计算 EV100、光圈/快门组合和 Zone System 分区。RAW 不可用时会自动改用 ISP 处理后的预览画面测光。
+光档是一个面向手动曝光与胶片摄影的 Android 反射式测光表。应用通过 Camera2 显示自动曝光预览，优先读取 `RAW_SENSOR`，在 C++ 中完成 Bayer 像素统计，再由 Kotlin 计算 EV100、光圈/快门组合和 Zone System 分区。自动模式下 RAW 不可用时可改用 ISP 预览测光；人工确认的 RAW 组合会保留，除非用户改选或相机真实故障需要恢复。
 
 项目当前是可在真实设备运行的高级原型：不访问网络，不包含统计或广告 SDK。用户主动保存参数记录时，应用会在私有存储中保存取景 JPEG、可选 DNG、曝光参数、备注和用户授权的位置；Android 或设备厂商的备份/换机服务可能按系统设置复制这些数据，开发者无法访问这些备份副本。
 
 ## 开发方式
 
 本项目采用 vibe coding 开发流程，在 AI 辅助下完成。AI 参与了方案讨论、功能实现、重构、文档和测试准备。发布候选版本会进行构建、检查并在真实 Android 设备上测试，但贡献者和用户仍应独立审查关键的相机、测光、隐私与安全代码。
+
+### 0.5.0 相比 0.4.0
+
+RAW 组合选择更稳定，手动确认后重开应用仍会保留；Zone 测光后预览恢复更快。测光来源、参数记录、无障碍操作和隐私控制也更清楚。详见[更新记录](CHANGELOG.md)。
 
 ## 当前功能
 
@@ -274,15 +278,15 @@ $buildTools = (Get-ChildItem "$env:LOCALAPPDATA\Android\Sdk\build-tools" -Direct
 New-Item -ItemType Directory -Force dist | Out-Null
 & "$buildTools\zipalign.exe" -f -p 4 `
   app\build\outputs\apk\release\app-release-unsigned.apk `
-  dist\lightstop-v0.4.0-aligned.apk
+  dist\lightstop-v0.5.0-aligned.apk
 & "$buildTools\apksigner.bat" sign `
   --ks C:\secure\lightstop-release.jks `
   --ks-key-alias lightstop `
-  --out dist\lightstop-v0.4.0-universal.apk `
-  dist\lightstop-v0.4.0-aligned.apk
+  --out dist\lightstop-v0.5.0-universal.apk `
+  dist\lightstop-v0.5.0-aligned.apk
 & "$buildTools\apksigner.bat" verify --verbose --print-certs `
-  dist\lightstop-v0.4.0-universal.apk
-Get-FileHash dist\lightstop-v0.4.0-universal.apk -Algorithm SHA256 |
+  dist\lightstop-v0.5.0-universal.apk
+Get-FileHash dist\lightstop-v0.5.0-universal.apk -Algorithm SHA256 |
   Format-List Algorithm, Hash, Path
 ```
 
@@ -290,12 +294,12 @@ Get-FileHash dist\lightstop-v0.4.0-universal.apk -Algorithm SHA256 |
 
 ```powershell
 git status
-git tag -a v0.4.0 -m "lightstop 0.4.0"
+git tag -a v0.5.0 -m "lightstop 0.5.0"
 git push origin HEAD:main
-git push origin v0.4.0
+git push origin v0.5.0
 ```
 
-然后在 GitHub 从 `v0.4.0` 创建 Release，保留 GitHub 自动生成的源码压缩包，并上传签名通用 APK、写有 SHA-256 的文本文件、`LICENSE`、`NOTICE` 与 `THIRD_PARTY_NOTICES.md`。上传后再下载一次 APK 并复验签名和哈希；GitHub Release 是可追溯的分发记录，签名 APK 与妥善保护的密钥则保证后续更新连续性。
+然后在 GitHub 从 `v0.5.0` 创建 Release，保留 GitHub 自动生成的源码压缩包，并上传签名通用 APK、写有 SHA-256 的文本文件、`LICENSE`、`NOTICE` 与 `THIRD_PARTY_NOTICES.md`。上传后再下载一次 APK 并复验签名和哈希；GitHub Release 是可追溯的分发记录，签名 APK 与妥善保护的密钥则保证后续更新连续性。
 
 ### 精简 OpenCV
 
@@ -309,7 +313,7 @@ git push origin v0.4.0
 
 ## Release 体积
 
-当前 release 已启用 R8 和资源收缩，并在一个通用 APK 中包含 `arm64-v8a`、`armeabi-v7a`、`x86_64` 三个 ABI。0.4.0 使用 r2 精简 OpenCV 后，实测 unsigned release 通用 APK 为 `44,379,873` bytes（约 42.32 MiB），release AAB 为 `20,996,140` bytes（约 20.02 MiB）。相较 0.3.0 的增长主要来自扩展后的跟踪、校准与相机协调代码。APK 内容按 ZIP 压缩后大小大致为：
+当前 release 已启用 R8 和资源收缩，并在一个通用 APK 中包含 `arm64-v8a`、`armeabi-v7a`、`x86_64` 三个 ABI。0.5.0 实测未签名通用 APK 为 `44,479,873` bytes（约 42.42 MiB）；Android Studio 生成的签名包大小与哈希会有所不同。原生库仍占主要空间。以下为 0.4.0 的压缩内容参考：
 
 | 内容 | 大小 |
 |---|---:|
@@ -322,11 +326,11 @@ git push origin v0.4.0
 
 与 r1 精简构建（通用 APK 约 72.53 MiB）及原先约 97.5 MiB 的完整 Maven OpenCV 通用 APK 相比，r2 已显著减少原生库占用。原生库仍占绝大多数体积，R8 和资源收缩主要压缩 Java/Kotlin DEX 与 Android 资源。当前水平与可进一步达到的目标：
 
-- 通用三 ABI APK，R8 + 资源收缩：实测约 40.15 MiB。
+- 通用三 ABI APK，R8 + 资源收缩：0.5.0 未签名包实测约 42.42 MiB。
 - 单独 arm64-v8a APK：约 14–15 MiB。
 - 单独 armeabi-v7a APK：约 11–12 MiB。
 - 单独 x86_64 APK：约 16–17 MiB。
-- Android App Bundle：当前上传包约 17.80 MiB；商店按 ABI 拆分后，每台设备只接收匹配的原生库，下载量约为上述单 ABI APK 大小。
+- Android App Bundle：商店按 ABI 拆分后，每台设备只接收匹配的原生库，下载量约为上述单 ABI APK 大小。
 
 ABI 是 CPU 架构标识而不是可安装文件；可安装的只有 APK。通用 APK 任何设备都能装但体积最大，分 ABI APK 体积约为三分之一但必须选对架构，AAB 不能直接安装、仅供商店按设备生成对应的分发 APK。
 
