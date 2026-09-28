@@ -81,6 +81,10 @@ class MainActivity : Activity(), CameraControllerCallback {
     private var manualCombinationProbeEvidence: ManualCombinationProbeEvidence? = null
     /** Rechecking an old saved choice must never overwrite it with a System fallback on cancel. */
     private var manualCombinationRevalidating = false
+    private var manualCombinationAccepting = false
+    private var manualApprovalSaved = false
+    private var manualRevalidationRequest: ManualCombinationRevalidationRequest? = null
+    private var manualVerificationDialog: AlertDialog? = null
     private val displayListener = object : DisplayManager.DisplayListener {
         override fun onDisplayAdded(displayId: Int) = Unit
 
@@ -263,6 +267,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             }
 
             override fun onManualCombinationLooksAbnormal() {
+                if (manualCombinationAccepting) return
                 manualCombinationIndex += 1
                 showNextManualCombination()
             }
@@ -606,6 +611,8 @@ class MainActivity : Activity(), CameraControllerCallback {
 
     override fun onPause() {
         activityResumed = false
+        manualVerificationDialog?.dismiss()
+        manualVerificationDialog = null
         foregroundCameraStartCoordinator.cancel()
         (getSystemService(DISPLAY_SERVICE) as DisplayManager)
             .unregisterDisplayListener(displayListener)
@@ -661,6 +668,9 @@ class MainActivity : Activity(), CameraControllerCallback {
     }
 
     private fun startManualCombinationSelection() {
+        manualVerificationDialog?.dismiss()
+        manualRevalidationRequest = null
+        manualApprovalSaved = false
         if (state.measuring || calibrationCoordinator.isActive ||
             vignettingCalibrationPending || zoneMeasurementPending
         ) {
@@ -694,7 +704,8 @@ class MainActivity : Activity(), CameraControllerCallback {
     }
 
     private fun showNextManualCombination() {
-        val generation = manualCombinationGeneration
+        if (!activityResumed || manualCombinationAccepting) return
+        val generation = ++manualCombinationGeneration
         val candidate = manualCombinationCandidates.getOrNull(manualCombinationIndex)
         manualCombinationProbeEvidence = null
         if (candidate == null) {
@@ -729,8 +740,8 @@ class MainActivity : Activity(), CameraControllerCallback {
                 "Testing every output stage with the real workflow…",
             ),
         )
-        val accepted = cameraController.probeManualCombination(candidate.plan.id) { result ->
-            if (generation != manualCombinationGeneration ||
+        val accepted = cameraController.probeManualCombination(candidate.plan.id, manualRevalidationRequest) { result ->
+            if (!activityResumed || generation != manualCombinationGeneration ||
                 !meterLayout.isCombinationSelectionOpen
             ) {
                 return@probeManualCombination
@@ -747,11 +758,16 @@ class MainActivity : Activity(), CameraControllerCallback {
             } else {
                 meterLayout.updateCombinationProbeState(
                     ready = false,
-                    status = localized(
-                        "该组合无法完成会话流程，正在跳过",
-                        "This combination could not complete its session workflow; skipping",
-                    ),
+                    status = if (manualCombinationRevalidating) {
+                        localized("验证失败；可重试或暂不验证", "Verification failed. Retry or defer")
+                    } else {
+                        localized("该组合无法完成会话流程，正在跳过", "This combination could not complete its session workflow; skipping")
+                    },
                 )
+                if (manualCombinationRevalidating) {
+                    showManualVerificationRetry()
+                    return@probeManualCombination
+                }
                 mainHandler.postDelayed(
                     {
                         if (generation == manualCombinationGeneration) {
@@ -763,6 +779,7 @@ class MainActivity : Activity(), CameraControllerCallback {
                 )
             }
         }
+        if (accepted) manualRevalidationRequest = null
         if (!accepted) {
             meterLayout.updateCombinationProbeState(
                 ready = false,
@@ -781,41 +798,109 @@ class MainActivity : Activity(), CameraControllerCallback {
         }
     }
 
+    /** Retry starts a new probe; never resubmit the evidence consumed by a failed acceptance. */
+    private fun showManualVerificationRetry() {
+        manualCombinationProbeEvidence = null
+        val generation = manualCombinationGeneration
+        val selection = state.selectedCameraId
+        fun current() = activityResumed && generation == manualCombinationGeneration &&
+            state.selectedCameraId == selection && meterLayout.isCombinationSelectionOpen
+        manualVerificationDialog?.dismiss()
+        manualVerificationDialog = AlertDialog.Builder(this)
+            .setTitle(localized("组合暂不可用", "Workflow temporarily unavailable"))
+            .setMessage(if (manualApprovalSaved) localized(
+                "选择已保存，但预览恢复失败。可重新验证同一组合，或暂时关闭；不会自动降低测光精度。",
+                "Your choice is saved, but preview restoration failed. Reverify this workflow or close; precision will not be downgraded.",
+            ) else localized(
+                "本轮凭证已失效。重试会重新检测当前组合，原保存记录不变。",
+                "This probe is no longer valid. Retry tests the current workflow again without changing the saved choice.",
+            ))
+            .setPositiveButton(localized("重新验证", "Reverify")) { _, _ ->
+                if (current()) showNextManualCombination()
+            }
+            .setNegativeButton(localized("暂不验证", "Not now")) { _, _ ->
+                if (current()) cancelManualCombinationSelection()
+            }
+            .setOnCancelListener { if (current()) cancelManualCombinationSelection() }
+            .show()
+    }
+
     private fun acceptCurrentManualCombination() {
+        if (manualCombinationAccepting) return
         val candidate = manualCombinationCandidates.getOrNull(manualCombinationIndex) ?: return
         val evidence = manualCombinationProbeEvidence
-        if (evidence == null || evidence.planId != candidate.plan.id ||
-            !cameraController.acceptManualCombination(candidate.plan.id, evidence.probeId)
-        ) {
+        if (evidence == null || evidence.planId != candidate.plan.id) {
             manualCombinationIndex += 1
             showNextManualCombination()
             return
         }
-        manualCombinationGeneration += 1
-        manualCombinationCandidates = emptyList()
-        manualCombinationIndex = -1
-        manualCombinationProbeEvidence = null
-        manualCombinationRevalidating = false
-        meterLayout.closeCombinationSelection()
-        meterLayout.refresh(frameChanged = true)
-        Toast.makeText(
-            this,
-            localized(
-                "已保存此摄像头的人工组合；系统升级后会要求重新筛选",
-                "Manual combination saved for this camera; an OS update will require a new check",
-            ),
-            Toast.LENGTH_LONG,
-        ).show()
+        manualCombinationAccepting = true
+        meterLayout.updateCombinationProbeState(
+            ready = false,
+            status = localized("正在恢复已确认的相机会话…", "Restoring the accepted camera workflow…"),
+        )
+        val acceptanceGeneration = manualCombinationGeneration
+        val queued = cameraController.acceptManualCombination(candidate.plan.id, evidence.probeId) { result ->
+            if (!activityResumed || acceptanceGeneration != manualCombinationGeneration ||
+                !meterLayout.isCombinationSelectionOpen
+            ) return@acceptManualCombination
+            manualCombinationAccepting = false
+            if (result != ManualAcceptanceOutcome.Accepted) {
+                manualApprovalSaved = when (result) {
+                    is ManualAcceptanceOutcome.RetryRequired -> result.approvalSaved
+                    is ManualAcceptanceOutcome.Cancelled -> result.approvalSaved
+                    else -> false
+                }
+                manualCombinationRevalidating = true
+                meterLayout.updateCombinationProbeState(
+                    ready = false,
+                    status = localized(
+                        "该组合恢复失败；可重试或暂不验证",
+                        "This workflow could not restore. Retry or defer verification",
+                    ),
+                )
+                showManualVerificationRetry()
+                return@acceptManualCombination
+            }
+            manualCombinationGeneration += 1
+            manualCombinationCandidates = emptyList()
+            manualCombinationIndex = -1
+            manualCombinationProbeEvidence = null
+            manualCombinationRevalidating = false
+            meterLayout.closeCombinationSelection()
+            meterLayout.refresh(frameChanged = true)
+            Toast.makeText(
+                this,
+                localized(
+                    "已保存此摄像头的人工组合；系统升级后会要求重新筛选",
+                    "Manual combination saved for this camera; an OS update will require a new check",
+                ),
+                Toast.LENGTH_LONG,
+            ).show()
+        }
+        if (!queued) {
+            manualCombinationAccepting = false
+            meterLayout.updateCombinationProbeState(
+                ready = false,
+                status = localized("相机正忙，请重试", "Camera is busy. Try again"),
+            )
+            showManualVerificationRetry()
+        }
     }
 
     private fun cancelManualCombinationSelection() {
+        manualVerificationDialog?.dismiss()
+        manualVerificationDialog = null
+        manualRevalidationRequest = null
         manualCombinationGeneration += 1
         manualCombinationCandidates = emptyList()
         manualCombinationIndex = -1
         manualCombinationProbeEvidence = null
+        manualCombinationAccepting = false
         meterLayout.closeCombinationSelection()
-        if (!manualCombinationRevalidating) restoreSystemCombinationSelection()
+        if (!manualCombinationRevalidating && !manualApprovalSaved) restoreSystemCombinationSelection()
         manualCombinationRevalidating = false
+        manualApprovalSaved = false
         cameraController.cancelManualCombinationSelection()
     }
 
@@ -1014,14 +1099,48 @@ class MainActivity : Activity(), CameraControllerCallback {
         }
     }
 
-    override fun onManualCombinationRevalidationNeeded(planId: String) {
-        if (!activityResumed || meterLayout.isCombinationSelectionOpen) return
+    override fun onManualCombinationRevalidationNeeded(request: ManualCombinationRevalidationRequest) {
+        if (!activityResumed || meterLayout.isCombinationSelectionOpen ||
+            state.selectedCameraId != request.selectionCameraId || !cameraController.isManualRevalidationCurrent(request)
+        ) return
+        if (!request.canStart || request.planId == null) {
+            Toast.makeText(
+                this,
+                localized(
+                    "保存的手动组合已不再受支持，请在设置中重新选择组合",
+                    "The saved manual workflow is unsupported. Choose a new workflow in Settings",
+                ),
+                Toast.LENGTH_LONG,
+            ).show()
+            return
+        }
+        manualVerificationDialog?.dismiss()
+        manualVerificationDialog = AlertDialog.Builder(this)
+            .setTitle(localized("需要重新验证相机组合", "Camera workflow needs revalidation"))
+            .setMessage(localized(
+                "已保留你的镜头和手动选择。开始后会测试完整 RAW/Zone 流程；在完成前不能测光。",
+                "Your lens and manual choice are preserved. Starting tests the complete RAW/Zone workflow; metering stays unavailable until it finishes.",
+            ))
+            .setPositiveButton(localized("开始验证", "Start")) { _, _ ->
+                startManualCombinationRevalidation(request)
+            }
+            .setNegativeButton(localized("暂不验证", "Not now"), null)
+            .show()
+    }
+
+    private fun startManualCombinationRevalidation(request: ManualCombinationRevalidationRequest) {
+        if (!activityResumed || state.selectedCameraId != request.selectionCameraId ||
+            meterLayout.isCombinationSelectionOpen || !cameraController.isManualRevalidationCurrent(request)
+        ) return
         val candidate = cameraController.manualCombinationCandidates()
-            .firstOrNull { it.plan.id == planId } ?: return
+            .firstOrNull { it.plan.id == request.planId } ?: return
         manualCombinationGeneration += 1
         manualCombinationCandidates = listOf(candidate)
         manualCombinationIndex = 0
         manualCombinationProbeEvidence = null
+        manualCombinationAccepting = false
+        manualApprovalSaved = false
+        manualRevalidationRequest = request
         manualCombinationRevalidating = true
         showNextManualCombination()
     }

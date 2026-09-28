@@ -18,6 +18,8 @@ import android.view.Surface
 /** One real-session traversal of every distinct stage in a camera workflow. */
 internal class CameraCombinationWorkflowProbe(
     val plan: CameraCombinationPlan,
+    val completeOnCameraThread: Boolean = false,
+    val validateOwner: () -> Boolean = { true },
     val completion: (Result<Unit>) -> Unit,
 ) {
     val stages: List<CameraSessionProfile> = stagesFor(plan)
@@ -84,10 +86,13 @@ internal class CameraCombinationWorkflowProbeRunner(
 
     fun begin(
         plan: CameraCombinationPlan,
+        completeOnCameraThread: Boolean = false,
+        validateOwner: () -> Boolean = { true },
         completion: (Result<Unit>) -> Unit,
     ): CameraCombinationWorkflowProbe {
         check(active == null) { "A camera combination probe is already active" }
-        return CameraCombinationWorkflowProbe(plan, completion).also { active = it }
+        return CameraCombinationWorkflowProbe(plan, completeOnCameraThread, validateOwner, completion)
+            .also { active = it }
     }
 
     fun onSessionConfigured(
@@ -98,6 +103,10 @@ internal class CameraCombinationWorkflowProbeRunner(
     ): Boolean {
         val probe = active ?: return false
         if (generation != currentGeneration()) return true
+        if (!probe.validateOwner()) {
+            fail(IllegalStateException("Probe route or owner changed"))
+            return true
+        }
         val expected = probe.currentStage
         if (expected == null || expected != currentProfile()) {
             fail(IllegalStateException("Unexpected probe profile=${currentProfile()}"))
@@ -326,11 +335,15 @@ internal class CameraCombinationWorkflowProbeRunner(
 
     private fun advance(probe: CameraCombinationWorkflowProbe) {
         if (active !== probe) return
+        if (!probe.validateOwner()) {
+            fail(IllegalStateException("Probe route or owner changed before completion"))
+            return
+        }
         clearRawStage()
         val next = probe.advance()
         if (next == null) {
             active = null
-            mainHandler.post { probe.completion(Result.success(Unit)) }
+            deliver(probe, Result.success(Unit))
             return
         }
         if (!reconfigure(next)) {
@@ -343,8 +356,13 @@ internal class CameraCombinationWorkflowProbeRunner(
         clearRawStage()
         active = null
         Log.w(TAG, "Camera combination probe failed plan=${probe.plan.id}", error)
-        mainHandler.post { probe.completion(Result.failure(error)) }
+        deliver(probe, Result.failure(error))
         return true
+    }
+
+    private fun deliver(probe: CameraCombinationWorkflowProbe, result: Result<Unit>) {
+        if (probe.completeOnCameraThread) probe.completion(result)
+        else mainHandler.post { probe.completion(result) }
     }
 
     private companion object {

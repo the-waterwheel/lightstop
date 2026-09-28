@@ -1,6 +1,7 @@
 package com.lightmeter.rawmeter
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.os.Build
 
 /** Where a persisted combination choice came from, so migration can treat it honestly. */
@@ -26,12 +27,56 @@ internal data class CombinationSelection(
     val routeIdentity: String? = null,
 )
 
+/** Manual records retain user intent across a compatible app/OS upgrade. */
+internal sealed interface ManualCombinationSelectionRead {
+    data object Missing : ManualCombinationSelectionRead
+    data class Valid(val selection: CombinationSelection) : ManualCombinationSelectionRead
+    data class NeedsRevalidation(val selection: CombinationSelection) : ManualCombinationSelectionRead
+    data class UnsupportedRecord(val reason: String) : ManualCombinationSelectionRead
+}
+
 /** Persists a human-approved workflow only for the same camera route and OS build. */
-internal class CameraCombinationSelectionStore(context: Context) {
-    private val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+internal class CameraCombinationSelectionStore(
+    private val preferences: SharedPreferences,
+    private val currentEnvironment: () -> String,
+) {
+    constructor(context: Context) : this(
+        context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE),
+        { Build.FINGERPRINT + "|" + COMPATIBILITY_POLICY_VERSION },
+    )
 
     fun selectedPlan(cameraRouteId: String): CombinationSelection? =
         readSelection(cameraRouteId, systemMode = null)
+
+    /**
+     * Unlike automatic caches, a manual choice is user intent.  A known old record is returned as
+     * needing revalidation rather than being silently erased when the environment changes.
+     */
+    fun readManualSelection(cameraRouteId: String): ManualCombinationSelectionRead {
+        if (cameraRouteId.isBlank()) return ManualCombinationSelectionRead.Missing
+        val prefix = keyPrefix(cameraRouteId)
+        val planId = preferences.getString("${prefix}_plan", null)?.takeIf(String::isNotBlank)
+            ?: return ManualCombinationSelectionRead.Missing
+        val schema = preferences.getInt("${prefix}_schema", 0)
+        if (schema > SCHEMA_VERSION) {
+            return ManualCombinationSelectionRead.UnsupportedRecord("newer schema=$schema")
+        }
+        val origin = preferences.getString("${prefix}_origin", null)
+            ?.let { runCatching { CombinationSelectionOrigin.valueOf(it) }.getOrNull() }
+            ?: CombinationSelectionOrigin.LEGACY_AUTO
+        val selection = CombinationSelection(
+            planId = planId,
+            origin = origin,
+            routeIdentity = preferences.getString("${prefix}_route", null)?.takeIf(String::isNotBlank),
+        )
+        return if (schema == SCHEMA_VERSION &&
+            preferences.getString("${prefix}_fingerprint", null) == environmentKey()
+        ) {
+            ManualCombinationSelectionRead.Valid(selection)
+        } else {
+            ManualCombinationSelectionRead.NeedsRevalidation(selection)
+        }
+    }
 
     fun selectedSystemPlan(
         cameraRouteId: String,
@@ -132,7 +177,7 @@ internal class CameraCombinationSelectionStore(context: Context) {
             .apply()
     }
 
-    private fun environmentKey(): String = Build.FINGERPRINT + "|" + COMPATIBILITY_POLICY_VERSION
+    private fun environmentKey(): String = currentEnvironment()
 
     private fun keyPrefix(cameraRouteId: String): String =
         "combination_${cameraRouteId.hashCode().toUInt().toString(16)}"

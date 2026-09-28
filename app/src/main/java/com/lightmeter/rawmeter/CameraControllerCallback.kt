@@ -6,7 +6,7 @@ interface CameraControllerCallback {
     fun onDistanceMeasurementState(state: DistanceMeasurementState) = Unit
     fun onCombinationSelectionFallbackToSystem() = Unit
     /** A legacy manual RAW choice may be kept, but must be re-probed before it can meter again. */
-    fun onManualCombinationRevalidationNeeded(planId: String) = Unit
+    fun onManualCombinationRevalidationNeeded(request: ManualCombinationRevalidationRequest) = Unit
     fun onRawUnavailable()
     fun tryReserveZoneTrackingFrame(): Boolean
     fun cancelZoneTrackingFrameReservation()
@@ -22,4 +22,15 @@ interface CameraControllerCallback {
     fun onVignettingCalibrationStarted()
     fun onVignettingCalibrationCompleted(info: VignettingCalibrationInfo)
     fun onVignettingCalibrationError(message: String)
+}
+
+data class ManualCombinationRevalidationRequest(
+    val selectionCameraId: String,
+    val planId: String?,
+    val ownerEpoch: Long,
+    val reason: String,
+    val canStart: Boolean,
+) {
+    fun belongsTo(selection: String?, epoch: Long): Boolean =
+        selectionCameraId == selection && ownerEpoch == epoch
 }

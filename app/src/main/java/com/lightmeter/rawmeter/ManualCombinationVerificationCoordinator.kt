@@ -52,6 +52,27 @@ internal class ManualCombinationVerificationCoordinator {
         return request.probeId
     }
 
+    /** Called after the probe's deliberate close/open resolved its actual transport. */
+    @Synchronized
+    fun bindRoute(probeId: Long, selectionCameraId: String, route: String, generation: Int, ownerEpoch: Long): Boolean {
+        val request = active ?: return false
+        if (state != ManualCombinationVerificationState.PROBING || request.probeId != probeId ||
+            request.selectionCameraId != selectionCameraId || request.ownerEpoch != ownerEpoch || route.isBlank()
+        ) return false
+        val bound = request.routeIdentity
+        if (bound != null) return bound == route && request.cameraGeneration == generation
+        active = request.copy(routeIdentity = route, cameraGeneration = generation)
+        return true
+    }
+
+    @Synchronized
+    fun matchesBoundRoute(probeId: Long, route: String?, generation: Int, ownerEpoch: Long): Boolean {
+        val request = active ?: return false
+        return state == ManualCombinationVerificationState.PROBING && request.probeId == probeId &&
+            request.ownerEpoch == ownerEpoch && request.routeIdentity != null &&
+            request.routeIdentity == route && request.cameraGeneration == generation
+    }
+
     @Synchronized
     fun complete(
         probeId: Long,
@@ -61,7 +82,8 @@ internal class ManualCombinationVerificationCoordinator {
     ): ManualCombinationProbeEvidence? {
         val request = active ?: return null
         if (state != ManualCombinationVerificationState.PROBING || request.probeId != probeId ||
-            request.ownerEpoch != ownerEpoch || routeIdentity.isNullOrBlank()
+            request.ownerEpoch != ownerEpoch || routeIdentity.isNullOrBlank() ||
+            !matchesBoundRoute(probeId, routeIdentity, completedCameraGeneration, ownerEpoch)
         ) {
             return null
         }
@@ -69,7 +91,7 @@ internal class ManualCombinationVerificationCoordinator {
             probeId = request.probeId,
             selectionCameraId = request.selectionCameraId,
             planId = request.planId,
-            routeIdentity = routeIdentity,
+            routeIdentity = request.routeIdentity!!,
             ownerEpoch = ownerEpoch,
             completedCameraGeneration = completedCameraGeneration,
         ).also {
@@ -85,22 +107,33 @@ internal class ManualCombinationVerificationCoordinator {
         selectionCameraId: String,
         routeIdentity: String?,
         ownerEpoch: Long,
+        currentCameraGeneration: Int,
     ): ManualCombinationProbeEvidence? {
         val evidence = acceptedEvidence ?: return null
         if (state != ManualCombinationVerificationState.AWAITING_ACCEPT ||
             evidence.probeId != probeId || evidence.planId != planId ||
             evidence.selectionCameraId != selectionCameraId || evidence.routeIdentity != routeIdentity ||
-            evidence.ownerEpoch != ownerEpoch
+            evidence.ownerEpoch != ownerEpoch ||
+            evidence.completedCameraGeneration != currentCameraGeneration
         ) return null
         state = ManualCombinationVerificationState.APPLYING
         return evidence
     }
 
     @Synchronized
-    fun confirm(evidence: ManualCombinationProbeEvidence) {
-        if (acceptedEvidence == evidence && state == ManualCombinationVerificationState.APPLYING) {
-            state = ManualCombinationVerificationState.CONFIRMED
-        }
+    fun confirm(
+        evidence: ManualCombinationProbeEvidence,
+        selectionCameraId: String?,
+        routeIdentity: String?,
+        ownerEpoch: Long,
+        currentCameraGeneration: Int,
+    ): Boolean {
+        if (acceptedEvidence != evidence || state != ManualCombinationVerificationState.APPLYING ||
+            evidence.selectionCameraId != selectionCameraId || evidence.routeIdentity != routeIdentity ||
+            evidence.ownerEpoch != ownerEpoch || evidence.completedCameraGeneration != currentCameraGeneration
+        ) return false
+        state = ManualCombinationVerificationState.CONFIRMED
+        return true
     }
 
     @Synchronized
@@ -117,7 +150,8 @@ internal class ManualCombinationVerificationCoordinator {
 
     @Synchronized
     fun invalidateExternal(ownerEpoch: Long) {
-        if (active?.ownerEpoch != ownerEpoch) {
+        // An older invalidation can arrive after another thread has started a newer owner.
+        if ((active?.ownerEpoch ?: Long.MIN_VALUE) < ownerEpoch) {
             active = null
             acceptedEvidence = null
             state = ManualCombinationVerificationState.FAILED
@@ -135,5 +169,7 @@ internal class ManualCombinationVerificationCoordinator {
         val planId: String,
         val selectionCameraId: String,
         val ownerEpoch: Long,
+        val routeIdentity: String? = null,
+        val cameraGeneration: Int? = null,
     )
 }

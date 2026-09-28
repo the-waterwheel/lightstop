@@ -26,6 +26,7 @@ import android.util.Size
 import android.view.Surface
 import android.view.TextureView
 import java.io.File
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.roundToInt
@@ -115,11 +116,14 @@ class CameraController(
                     return
                 }
                 pendingResidentSessionProfile = null
-                if (startPreview(device, session, preview, generation) &&
-                    transaction?.sessionState?.phase == ZoneRawSessionPhase.RESTORING
-                ) {
+                if (!startPreview(device, session, preview, generation)) {
+                    failManualAcceptance(IllegalStateException("Manual workflow preview failed to start"))
+                    return
+                }
+                if (transaction?.sessionState?.phase == ZoneRawSessionPhase.RESTORING) {
                     completeZoneRawTransaction(transaction)
                 }
+                if (pendingManualAcceptance != null) completeManualAcceptance()
             }
 
             override fun onSessionConfigurationFailed(generation: Int, error: Exception?) {
@@ -133,6 +137,12 @@ class CameraController(
                         error ?: IllegalStateException("Camera stream workflow was rejected"),
                     )
                 ) {
+                    return
+                }
+                if (pendingManualAcceptance != null) {
+                    failManualAcceptance(
+                        error ?: IllegalStateException("Manual workflow resident session failed"),
+                    )
                     return
                 }
                 if (handleZoneRawSessionFailure(error) || handleResidentSessionFailure(error)) {
@@ -428,10 +438,17 @@ class CameraController(
     @Volatile
     private var rawWorkflowConfirmation = CameraWorkflowConfirmationPolicy.unverified()
     private var manualProbePlanId: String? = null
+    private var manualProbeId: Long? = null
+    private var manualProbeTimeout: Runnable? = null
     private val manualVerification = ManualCombinationVerificationCoordinator()
-    @Volatile
-    private var manualVerificationOwnerEpoch = 0L
-    private var notifiedManualRevalidationPlanId: String? = null
+    private val manualVerificationEpoch = AtomicLong()
+    private val manualVerificationOwnerEpoch: Long get() = manualVerificationEpoch.get()
+    private var notifiedManualRevalidationKey: String? = null
+    private var manualSelectionRequiresChoice = false
+    @Volatile private var pendingManualRevalidation: ManualCombinationRevalidationRequest? = null
+    @Volatile private var manualAcceptanceRecoveryRequired = false
+    private var pendingManualAcceptance: ManualAcceptanceTransaction? = null
+    private var manualAcceptanceTimeout: Runnable? = null
     private val combinationWorkflowProbe = CameraCombinationWorkflowProbeRunner(
         mainHandler = mainHandler,
         cameraHandler = { cameraHandler },
@@ -636,7 +653,7 @@ class CameraController(
             if (trackingFramesEnabled == enabled) return@post
             trackingFramesEnabled = enabled
             if (!started || calibrationSessionProfile != null ||
-                zoneRawTransaction != null || meteringOperationActive
+                zoneRawTransaction != null || meteringOperationActive || combinationWorkflowProbe.isActive
             ) {
                 return@post
             }
@@ -692,19 +709,25 @@ class CameraController(
     /** Replays every distinct session stage of the workflow before asking the user to judge it. */
     internal fun probeManualCombination(
         planId: String,
+        revalidationRequest: ManualCombinationRevalidationRequest? = null,
         completion: (Result<ManualCombinationProbeEvidence>) -> Unit,
     ): Boolean {
         val candidate = currentCombinationCandidates.firstOrNull { it.plan.id == planId }
             ?: return false
         val handler = cameraHandler ?: return false
+        val selectionAtRequest = requestedCameraId
+        val epochAtRequest = manualVerificationOwnerEpoch
         if (!started || meteringOperationActive || calibrationStorageCameraId != null ||
             vignettingCapture.isActive || combinationWorkflowProbe.isActive
         ) {
             return false
         }
-        handler.post {
+        return handler.post {
             if (!started || meteringOperationActive || calibrationStorageCameraId != null ||
-                vignettingCapture.isActive || combinationWorkflowProbe.isActive
+                vignettingCapture.isActive || combinationWorkflowProbe.isActive ||
+                pendingManualAcceptance != null || selectionAtRequest != requestedCameraId ||
+                epochAtRequest != manualVerificationOwnerEpoch ||
+                (revalidationRequest != null && !isManualRevalidationCurrent(revalidationRequest))
             ) {
                 mainHandler.post {
                     completion(Result.failure(IllegalStateException("Camera is busy")))
@@ -719,6 +742,9 @@ class CameraController(
                 }
                 return@post
             }
+            // Close the old camera BEFORE owning the new probe. Later closes are external to it.
+            closeCamera(preserveExposurePreview = true)
+            pendingManualRevalidation = null
             manualProbePlanId = plan.id
             activeCombinationPlan = plan
             val probeId = manualVerification.begin(
@@ -726,39 +752,55 @@ class CameraController(
                 selectionCameraId = selectionCameraId,
                 ownerEpoch = manualVerificationOwnerEpoch,
             )
+            manualProbeId = probeId
+            val probeTimeout = Runnable {
+                if (manualProbeId == probeId) {
+                    combinationWorkflowProbe.cancel(IllegalStateException("Manual workflow probe timed out"))
+                }
+            }
+            manualProbeTimeout = probeTimeout
+            Log.i(TAG, "Manual probe started probe=$probeId plan=${plan.id} owner=$manualVerificationOwnerEpoch")
             combinationWorkflowProbe.begin(
                 plan = plan,
+                completeOnCameraThread = true,
+                validateOwner = {
+                    manualVerification.matchesBoundRoute(
+                        probeId, exactConfirmationRouteId(), cameraGeneration, manualVerificationOwnerEpoch,
+                    )
+                },
                 completion = { result ->
-                    cameraHandler?.post {
-                        val evidence = if (result.isSuccess && activeCombinationPlan?.id == plan.id) {
-                            manualVerification.complete(
-                                probeId = probeId,
-                                routeIdentity = exactConfirmationRouteId(),
-                                completedCameraGeneration = cameraGeneration,
-                                ownerEpoch = manualVerificationOwnerEpoch,
-                            )
-                        } else {
-                            null
-                        }
-                        if (evidence == null) manualVerification.failProbe(probeId)
-                        mainHandler.post {
-                            completion(
-                                evidence?.let { Result.success(it) } ?: Result.failure(
-                                    IllegalStateException(
-                                        if (result.isSuccess) {
-                                            "Manual probe completed without matching route evidence"
-                                        } else {
-                                            result.exceptionOrNull()?.message ?: "Manual probe failed"
-                                        },
-                                    ),
+                    val evidence = if (result.isSuccess && activeCombinationPlan?.id == plan.id) {
+                        manualVerification.complete(
+                            probeId = probeId,
+                            routeIdentity = exactConfirmationRouteId(),
+                            completedCameraGeneration = cameraGeneration,
+                            ownerEpoch = manualVerificationOwnerEpoch,
+                        )
+                    } else null
+                    if (evidence == null) manualVerification.failProbe(probeId)
+                    if (manualProbeId == probeId) {
+                        manualProbeId = null
+                        manualProbeTimeout?.let { handler.removeCallbacks(it) }
+                        manualProbeTimeout = null
+                    }
+                    Log.i(TAG, "Manual probe completed probe=$probeId success=${evidence != null}")
+                    mainHandler.post {
+                        completion(
+                            evidence?.let { Result.success(it) } ?: Result.failure(
+                                IllegalStateException(
+                                    if (result.isSuccess) "Manual probe completed without matching route evidence"
+                                    else result.exceptionOrNull()?.message ?: "Manual probe failed",
                                 ),
-                            )
-                        }
+                            ),
+                        )
                     }
                 },
             )
+            if (!handler.postDelayed(probeTimeout, 20_000L)) {
+                combinationWorkflowProbe.cancel(IllegalStateException("Camera handler rejected probe timeout"))
+                return@post
+            }
             manualSafePreviewActive = false
-            closeCamera(preserveExposurePreview = true)
             val texture = textureView?.surfaceTexture
             if (texture == null) {
                 combinationWorkflowProbe.cancel(
@@ -768,58 +810,89 @@ class CameraController(
                 openCamera(texture)
             }
         }
-        return true
     }
 
     internal fun acceptManualCombination(
         planId: String,
         probeId: Long,
+        completion: (ManualAcceptanceOutcome) -> Unit,
     ): Boolean {
-        val plan = currentCombinationCandidates.firstOrNull { it.plan.id == planId }?.plan
-            ?: return false
-        val selectedCameraId = requestedCameraId ?: return false
-        val routeIdentity = exactConfirmationRouteId() ?: return false
-        val evidence = manualVerification.beginApply(
-            probeId = probeId,
-            planId = plan.id,
-            selectionCameraId = selectedCameraId,
-            routeIdentity = routeIdentity,
-            ownerEpoch = manualVerificationOwnerEpoch,
-        ) ?: return false
-        combinationSelectionMode = MeteringCombinationSelectionMode.MANUAL
-        manualProbePlanId = null
-        activeCombinationPlan = plan
-        val verified = plan.combinationClass == CameraCombinationClass.HIGH_ACCURACY_RAW
-        rawWorkflowConfirmation = if (verified) {
-            CameraWorkflowConfirmationPolicy.confirm(
-                planId = plan.id,
-                routeId = evidence.routeIdentity,
-                origin = WorkflowConfirmationOrigin.MANUAL_PROBE,
-            )
-        } else {
-            CameraWorkflowConfirmationPolicy.unverified()
-        }
-        if (verified) {
-            combinationSelectionStore.saveVerified(cameraInfo.cameraId, plan.id, evidence.routeIdentity)
-        } else {
-            combinationSelectionStore.save(cameraInfo.cameraId, plan.id, evidence.routeIdentity)
-        }
-        manualVerification.confirm(evidence)
-        notifiedManualRevalidationPlanId = null
-        cameraHandler?.post {
-            if (started && !combinationWorkflowProbe.isActive && cameraDevice != null) {
+        val handler = cameraHandler ?: return false
+        if (!handler.post {
+                val plan = currentCombinationCandidates
+                    .firstOrNull { it.plan.id == planId }?.plan
+                val selectedCameraId = requestedCameraId
+                val routeIdentity = exactConfirmationRouteId()
+                val evidence = if (started && pendingManualAcceptance == null && plan != null && selectedCameraId != null) {
+                    manualVerification.beginApply(
+                        probeId = probeId,
+                        planId = plan.id,
+                        selectionCameraId = selectedCameraId,
+                        routeIdentity = routeIdentity,
+                        ownerEpoch = manualVerificationOwnerEpoch,
+                        currentCameraGeneration = cameraGeneration,
+                    )
+                } else {
+                    null
+                }
+                if (!started || plan == null || evidence == null) {
+                    mainHandler.post {
+                        completion(ManualAcceptanceOutcome.RetryRequired(false, "Manual verification evidence expired"))
+                    }
+                    return@post
+                }
+                // The evidence is consumed on the camera thread.  Keep APPLYING until the
+                // resident session is actually configured; no new capture can slip in between.
+                combinationSelectionMode = MeteringCombinationSelectionMode.MANUAL
+                manualProbePlanId = null
+                activeCombinationPlan = plan
+                val pending = ManualAcceptanceTransaction(evidence, plan) { outcome ->
+                    mainHandler.post { completion(outcome) }
+                }
+                pendingManualAcceptance = pending
+                try {
+                    if (plan.combinationClass == CameraCombinationClass.HIGH_ACCURACY_RAW) {
+                        combinationSelectionStore.saveVerified(evidence.selectionCameraId, plan.id, evidence.routeIdentity)
+                    } else {
+                        combinationSelectionStore.save(evidence.selectionCameraId, plan.id, evidence.routeIdentity)
+                    }
+                    pending.markSaved()
+                } catch (error: Exception) {
+                    failManualAcceptance(error)
+                    return@post
+                }
+                // Human approval survives a failed resident restore; never fall back to YUV.
+                rawWorkflowConfirmation = confirmationForManualAcceptance(pending)
+                val timeout = Runnable {
+                    if (pendingManualAcceptance === pending) {
+                        failManualAcceptance(IllegalStateException("Timed out restoring accepted workflow"))
+                    }
+                }
+                manualAcceptanceTimeout = timeout
+                if (!handler.postDelayed(timeout, 8_000L)) {
+                    failManualAcceptance(IllegalStateException("Camera handler rejected restore timeout"))
+                    return@post
+                }
                 val desired = desiredResidentSessionProfile()
-                if (desired != activeSessionProfile) switchResidentSession(desired)
+                if (cameraDevice == null || captureSession == null || desired != activeSessionProfile) {
+                    switchResidentSession(desired)
+                } else {
+                    completeManualAcceptance()
+                }
             }
+        ) {
+            return false
         }
         return true
     }
 
     internal fun cancelManualCombinationSelection() {
+        invalidateManualVerification()
         val handler = cameraHandler ?: return
         handler.post {
             combinationWorkflowProbe.cancel(IllegalStateException("Cancelled"))
             manualProbePlanId = null
+            failManualAcceptance(IllegalStateException("Manual selection cancelled"))
             manualVerification.fail()
             resetRecoveryState()
             if (!started) return@post
@@ -951,14 +1024,14 @@ class CameraController(
      */
     fun beginExposurePreviewCalibration(onReady: (Boolean) -> Unit): Boolean {
         if (meteringOperationActive || calibrationSessionProfile != null ||
-            vignettingCapture.isActive || rawRecordCapture.isActive
+            vignettingCapture.isActive || rawRecordCapture.isActive || manualRawCaptureBlocked()
         ) {
             return false
         }
         val handler = cameraHandler ?: return false
         handler.post {
             if (!started || captureSession == null || cameraDevice == null ||
-                meteringOperationActive || calibrationSessionProfile != null
+                meteringOperationActive || calibrationSessionProfile != null || manualRawCaptureBlocked()
             ) {
                 mainHandler.post { onReady(false) }
                 return@post
@@ -1012,6 +1085,7 @@ class CameraController(
         val handler = cameraHandler ?: return
         handler.post {
             if (!started || cameraInfo.cameraId == cameraId && cameraDevice != null) return@post
+            failManualAcceptance(IllegalStateException("Camera selection changed"))
             resetRecoveryState()
             closeCamera()
             val pending = cameraCatalog.discover().firstOrNull { it.cameraId == cameraId }
@@ -1060,6 +1134,7 @@ class CameraController(
         if (handler != null && thread != null) {
             stopInProgress = true
             handler.post {
+                failManualAcceptance(IllegalStateException("Camera stopped"))
                 closeCamera()
                 thread.quitSafely()
                 mainHandler.post {
@@ -1119,7 +1194,7 @@ class CameraController(
         requestedSource: MeteringSource? = null,
     ): Boolean {
         if (meteringOperationActive || combinationWorkflowProbe.isActive ||
-            manualVerification.blocksRawMetering()
+            manualRawCaptureBlocked()
         ) return false
         meteringOperationActive = true
         val screenAspect = if (frameLandscape) {
@@ -1167,6 +1242,11 @@ class CameraController(
             return true
         }
         handler.post {
+            if (manualRawCaptureBlocked()) {
+                meteringOperationActive = false
+                postMeterError(localized("手动 RAW 组合尚未完成验证", "Manual RAW workflow is not yet verified"))
+                return@post
+            }
             // Each metering pass gets a new AF distance acquisition. It is intentionally
             // independent of flash Auto so future distance consumers share the same result.
             distanceCapture.beginAutomaticSampling()
@@ -1185,7 +1265,7 @@ class CameraController(
         meteringAngleDegrees: Int = AngleMeteringMath.DEFAULT_DEGREES,
     ): Boolean {
         if (requests.isEmpty() || meteringOperationActive || combinationWorkflowProbe.isActive ||
-            manualVerification.blocksRawMetering()
+            manualRawCaptureBlocked()
         ) {
             return false
         }
@@ -1241,6 +1321,11 @@ class CameraController(
             return true
         }
         handler.post {
+            if (manualRawCaptureBlocked()) {
+                meteringOperationActive = false
+                postMeterError(localized("手动 RAW 组合尚未完成验证", "Manual RAW workflow is not yet verified"))
+                return@post
+            }
             if (!rawHardwareAvailable || manualSafePreviewActive) {
                 meteringOperationActive = false
                 postMeterError(
@@ -1259,6 +1344,11 @@ class CameraController(
 
     /** Routes calibration captures through single-source sessions before restoring neutral AE. */
     private fun startMeteringPlan(plan: MeteringPlan) {
+        if (manualRawCaptureBlocked()) {
+            meteringOperationActive = false
+            postMeterError(localized("手动 RAW 组合尚未完成验证", "Manual RAW workflow is not yet verified"))
+            return
+        }
         if (pendingResidentSessionProfile != null) {
             meteringOperationActive = false
             postMeterError(localized("相机会话正在切换，请稍候", "The camera session is switching"))
@@ -1391,6 +1481,7 @@ class CameraController(
         val calibrationProfile = calibrationSessionProfile
         if (calibrationProfile != null) return calibrationProfile
         if (manualSafePreviewActive) return CameraSessionProfile.PREVIEW_ONLY
+        if (manualSelectionRequiresChoice) return CameraSessionProfile.PREVIEW_ONLY
         activeCombinationPlan?.let { plan ->
             return if (trackingFramesEnabled) plan.zoneResidentProfile
             else plan.normalResidentProfile
@@ -1410,7 +1501,10 @@ class CameraController(
     }
 
     private fun switchResidentSession(profile: CameraSessionProfile) {
-        if (!started || cameraDevice == null) return
+        if (!started || cameraDevice == null) {
+            failManualAcceptance(IllegalStateException("Camera unavailable for resident restore"))
+            return
+        }
         pendingResidentSessionProfile = profile
         postInfo(
             cameraInfo.copy(
@@ -1424,10 +1518,61 @@ class CameraController(
         )
         if (!reconfigureSession(profile)) {
             val error = IllegalStateException("Unable to replace the resident camera session")
+            if (pendingManualAcceptance != null) {
+                failManualAcceptance(error)
+                return
+            }
             if (!handleResidentSessionFailure(error)) {
                 handleSessionFailure(cameraGeneration)
             }
         }
+    }
+
+    /** Completes an accepted manual workflow only after its resident Camera2 session is ready. */
+    private fun completeManualAcceptance() {
+        val pending = pendingManualAcceptance ?: return
+        if (!started || activeCombinationPlan?.id != pending.plan.id ||
+            activeSessionProfile != desiredResidentSessionProfile() ||
+            !manualVerification.confirm(
+                pending.evidence, requestedCameraId, exactConfirmationRouteId(),
+                manualVerificationOwnerEpoch, cameraGeneration,
+            )
+        ) {
+            failManualAcceptance(IllegalStateException("Manual acceptance owner or session changed"))
+            return
+        }
+        rawWorkflowConfirmation = confirmationForManualAcceptance(pending)
+        manualAcceptanceRecoveryRequired = false
+        manualSelectionRequiresChoice = false
+        notifiedManualRevalidationKey = null
+        Log.i(TAG, "Manual acceptance restored probe=${pending.evidence.probeId} " +
+            "plan=${pending.plan.id} route=${pending.evidence.routeIdentity} profile=$activeSessionProfile")
+        postInfo(cameraInfo.copy(status = readyCameraStatus()))
+        finishManualAcceptance(pending, ManualAcceptanceOutcome.Accepted)
+    }
+
+    private fun confirmationForManualAcceptance(pending: ManualAcceptanceTransaction) =
+        if (pending.plan.combinationClass == CameraCombinationClass.HIGH_ACCURACY_RAW) {
+            CameraWorkflowConfirmationPolicy.confirm(
+                pending.plan.id, pending.evidence.routeIdentity, WorkflowConfirmationOrigin.MANUAL_PROBE,
+            )
+        } else CameraWorkflowConfirmationPolicy.unverified()
+
+    private fun finishManualAcceptance(pending: ManualAcceptanceTransaction, outcome: ManualAcceptanceOutcome) {
+        if (pendingManualAcceptance !== pending) return
+        pendingManualAcceptance = null
+        manualAcceptanceTimeout?.let { cameraHandler?.removeCallbacks(it) }
+        manualAcceptanceTimeout = null
+        pending.finish(outcome)
+    }
+
+    /** A saved approval is never converted into a YUV fallback if the same workflow cannot restore. */
+    private fun failManualAcceptance(error: Throwable) {
+        val pending = pendingManualAcceptance ?: return
+        manualVerification.fail()
+        manualAcceptanceRecoveryRequired = true
+        Log.w(TAG, "Manual acceptance unavailable probe=${pending.evidence.probeId} saved=${pending.approvalSaved}", error)
+        finishManualAcceptance(pending, ManualAcceptanceOutcome.RetryRequired(pending.approvalSaved, error.message.orEmpty()))
     }
 
     private fun reconfigureSession(profile: CameraSessionProfile): Boolean {
@@ -1465,25 +1610,31 @@ class CameraController(
         }
         val planId = pendingSystemWorkflowProbePlanId ?: return false
         val plan = activeCombinationPlan?.takeIf { it.id == planId } ?: return false
+        val routeAtProbe = exactConfirmationRouteId() ?: return false
+        val selectionAtProbe = cameraInfo.cameraId
+        val modeAtProbe = meteringPipelineMode
         combinationWorkflowProbe.begin(
             plan = plan,
             completion = { result ->
                 cameraHandler?.post {
-                    if (pendingSystemWorkflowProbePlanId != plan.id) return@post
+                    if (pendingSystemWorkflowProbePlanId != plan.id || generation != cameraGeneration ||
+                        routeAtProbe != exactConfirmationRouteId() || selectionAtProbe != cameraInfo.cameraId ||
+                        modeAtProbe != meteringPipelineMode || combinationSelectionMode != MeteringCombinationSelectionMode.SYSTEM
+                    ) return@post
                     pendingSystemWorkflowProbePlanId = null
                     if (result.isSuccess) {
                         if (plan.combinationClass == CameraCombinationClass.HIGH_ACCURACY_RAW) {
                             rawWorkflowConfirmation = CameraWorkflowConfirmationPolicy.confirm(
                                 planId = plan.id,
-                                routeId = confirmationRouteId(),
+                                routeId = routeAtProbe,
                                 origin = WorkflowConfirmationOrigin.SYSTEM_PROBE,
                             )
                         }
                         combinationSelectionStore.saveSystem(
-                            cameraRouteId = cameraInfo.cameraId,
-                            mode = meteringPipelineMode,
+                            cameraRouteId = selectionAtProbe,
+                            mode = modeAtProbe,
                             planId = plan.id,
-                            routeIdentity = confirmationRouteId(),
+                            routeIdentity = routeAtProbe,
                         )
                         postInfo(cameraInfo.copy(status = readyCameraStatus()))
                     } else {
@@ -1831,6 +1982,12 @@ class CameraController(
             return
         }
         handler.post {
+            if (manualRawCaptureBlocked()) {
+                mainHandler.post {
+                    completion(Result.failure(IllegalStateException(localized("手动 RAW 组合尚未完成验证", "Manual RAW workflow is not yet verified"))))
+                }
+                return@post
+            }
             if (meteringOperationActive || rawMeter.isMeasuring || compatibleMeter.isMeasuring ||
                 vignettingCapture.isActive || rawRecordCapture.isActive
             ) {
@@ -1881,6 +2038,12 @@ class CameraController(
             return
         }
         handler.post {
+            if (manualRawCaptureBlocked()) {
+                mainHandler.post {
+                    completion(Result.failure(IllegalStateException(localized("手动 RAW 组合尚未完成验证", "Manual RAW workflow is not yet verified"))))
+                }
+                return@post
+            }
             if (meteringOperationActive || rawMeter.isMeasuring || compatibleMeter.isMeasuring ||
                 vignettingCapture.isActive || rawRecordCapture.isActive ||
                 colorTemperatureEstimator.isEstimating
@@ -2453,6 +2616,7 @@ class CameraController(
                 meteringPipelineMode = meteringPipelineMode,
             )
             if (configuration == null) {
+                combinationWorkflowProbe.cancel(IllegalStateException("No configuration for manual probe"))
                 postInfo(
                     CameraUiInfo(
                         status = localized("没有可用的摄像头", "No camera is available"),
@@ -2462,6 +2626,19 @@ class CameraController(
             }
             val descriptor = configuration.descriptor
             activeOpenConfiguration = configuration
+            manualAcceptanceRecoveryRequired = false
+            manualProbeId?.let { probeId ->
+                if (!manualVerification.bindRoute(
+                        probeId, descriptor.cameraId, configuration.confirmationRouteIdentity(),
+                        generation, manualVerificationOwnerEpoch,
+                    )
+                ) {
+                    combinationWorkflowProbe.cancel(IllegalStateException("Manual probe route changed"))
+                    closeCamera(preserveExposurePreview = true)
+                    return
+                }
+                Log.i(TAG, "Manual probe route bound probe=$probeId route=${configuration.confirmationRouteIdentity()} generation=$generation")
+            }
             val effectivePhysicalId = configuration.route.physicalCameraId
             val chars = configuration.streamCharacteristics
             // Keep the catalog selection stable even when a vendor camera must temporarily use
@@ -2505,27 +2682,33 @@ class CameraController(
             val systemCandidates = configuration.systemCandidates
             currentCombinationCandidates = matrixCandidates
             systemCombinationCandidates = systemCandidates
+            if (manualProbePlanId != null && matrixCandidates.none { it.plan.id == manualProbePlanId }) {
+                combinationWorkflowProbe.cancel(IllegalStateException("Requested manual candidate is no longer available"))
+                closeCamera(preserveExposurePreview = true)
+                return
+            }
             if (calibrationSessionProfile == null && !manualSafePreviewActive) {
-                val storedManualSelection = if (combinationSelectionMode ==
+                val manualRead = if (combinationSelectionMode ==
                     MeteringCombinationSelectionMode.MANUAL
-                ) {
-                    combinationSelectionStore.selectedPlan(activeCameraId)?.takeIf { selection ->
-                        matrixCandidates.any { it.plan.id == selection.planId }
-                    }
-                } else {
-                    null
-                }
-                val storedManualPlanId = storedManualSelection?.planId
+                ) combinationSelectionStore.readManualSelection(activeCameraId)
+                else ManualCombinationSelectionRead.Missing
+                val manualIntent = ManualCombinationIntentPolicy.resolve(
+                    manualRead, matrixCandidates.map { it.plan.id }.toSet(), manualProbePlanId,
+                )
+                val storedManualSelection = manualIntent.selection
+                val storedManualPlanId = storedManualSelection?.planId?.takeIf { it == manualIntent.planId }
+                val manualIntentUnresolved = manualIntent.requiresChoice
+                manualSelectionRequiresChoice = manualIntentUnresolved
                 val manualPlanRequested = manualProbePlanId != null || storedManualPlanId != null
                 if (combinationSelectionMode == MeteringCombinationSelectionMode.MANUAL &&
-                    !manualPlanRequested
+                    !manualPlanRequested && !manualIntentUnresolved
                 ) {
                     // A manual result is scoped to this route and OS build. Keep the visible
                     // setting aligned with the automatic workflow when that result expires.
                     combinationSelectionMode = MeteringCombinationSelectionMode.SYSTEM
                     mainHandler.post(callback::onCombinationSelectionFallbackToSystem)
                 }
-                val cachedSystemSelection = if (!manualPlanRequested) {
+                val cachedSystemSelection = if (!manualPlanRequested && !manualIntentUnresolved) {
                     combinationSelectionStore.selectedSystemPlan(
                         activeCameraId,
                         meteringPipelineMode,
@@ -2561,7 +2744,9 @@ class CameraController(
                 } else {
                     effectiveCachedPlanId
                 }
-                val candidatePool = if (manualPlanRequested) {
+                val candidatePool = if (manualIntentUnresolved) {
+                    emptyList()
+                } else if (manualPlanRequested) {
                     matrixCandidates
                 } else {
                     systemCandidates.filterNot { it.plan.id in rejectedSystemCombinationIds }
@@ -2596,14 +2781,15 @@ class CameraController(
 
                     else -> CameraWorkflowConfirmationPolicy.unverified()
                 }
-                if (ManualCombinationRevalidationPolicy.needsRevalidation(
+                if (manualProbePlanId == null && selectedPlan != null && storedManualPlanId != null &&
+                    (manualIntent.environmentExpired ||
+                    ManualCombinationRevalidationPolicy.needsRevalidation(
                         selection = storedManualSelection,
-                        isRawPlan = selectedPlan != null &&
-                            selectedPlan.combinationClass == CameraCombinationClass.HIGH_ACCURACY_RAW,
+                        isRawPlan = selectedPlan.combinationClass == CameraCombinationClass.HIGH_ACCURACY_RAW,
                         currentRouteId = exactConfirmationRouteId(),
-                    )
+                    ))
                 ) {
-                    val revalidationPlan = selectedPlan ?: return
+                    val revalidationPlan = selectedPlan
                     rawWorkflowConfirmation = CameraWorkflowConfirmation(
                         planId = revalidationPlan.id,
                         routeId = exactConfirmationRouteId().orEmpty(),
@@ -2619,12 +2805,30 @@ class CameraController(
                         "Legacy manual RAW selection needs re-verification " +
                             "route=$activeCameraId plan=${selectedPlan?.id}",
                     )
-                    if (notifiedManualRevalidationPlanId != revalidationPlan.id) {
-                        notifiedManualRevalidationPlanId = revalidationPlan.id
-                        mainHandler.post {
-                            callback.onManualCombinationRevalidationNeeded(revalidationPlan.id)
-                        }
-                    }
+                    publishManualRevalidation(
+                        ManualCombinationRevalidationRequest(
+                            selectionCameraId = activeCameraId,
+                            planId = revalidationPlan.id,
+                            ownerEpoch = manualVerificationOwnerEpoch,
+                            reason = "manual route or environment changed",
+                            canStart = true,
+                        ),
+                    )
+                }
+                if (manualIntentUnresolved) {
+                    profile = CameraSessionProfile.PREVIEW_ONLY
+                    publishManualRevalidation(
+                        ManualCombinationRevalidationRequest(
+                            selectionCameraId = activeCameraId,
+                            planId = storedManualSelection?.planId,
+                            ownerEpoch = manualVerificationOwnerEpoch,
+                            reason = when (manualRead) {
+                                is ManualCombinationSelectionRead.UnsupportedRecord -> manualRead.reason
+                                else -> "saved manual plan is unavailable"
+                            },
+                            canStart = false,
+                        ),
+                    )
                 }
                 pendingSystemWorkflowProbePlanId = if (!manualPlanRequested &&
                     selectedPlan != null && selectedPlan.id != effectiveCachedPlanId
@@ -2764,6 +2968,13 @@ class CameraController(
         generation: Int,
     ) {
         if (generation != cameraGeneration) return
+        if (pendingManualAcceptance != null || manualProbeId != null) {
+            val error = IllegalStateException("Camera failed during manual verification: $failure")
+            failManualAcceptance(error)
+            combinationWorkflowProbe.cancel(error)
+            finishCameraFailure(finalFailureMessage(failure))
+            return
+        }
         if (abortIsolatedCalibrationSessionIfActive()) return
         val decision = recoveryState.decideFailure(
             failure = failure,
@@ -3153,6 +3364,13 @@ class CameraController(
 
     private fun handlePreviewRequestFailure(generation: Int) {
         if (generation != cameraGeneration) return
+        if (pendingManualAcceptance != null || manualProbeId != null) {
+            val error = IllegalStateException("Preview failed during manual verification")
+            failManualAcceptance(error)
+            combinationWorkflowProbe.cancel(error)
+            finishCameraFailure(error.message.orEmpty())
+            return
+        }
         if (previewFpsRange != null && frameRateController.useNextCompatibilityCeiling()) {
             scheduleRecovery(
                 sessionProfile ?: CameraSessionProfile.PREVIEW_ONLY,
@@ -3175,6 +3393,15 @@ class CameraController(
                 routeId = confirmationRouteId(),
             )
 
+    /** A failed/cancelled revalidation must not accidentally grant RAW capture eligibility. */
+    private fun manualRawCaptureBlocked(): Boolean =
+        manualVerification.blocksRawMetering() ||
+            manualAcceptanceRecoveryRequired ||
+            manualSelectionRequiresChoice ||
+            (combinationSelectionMode == MeteringCombinationSelectionMode.MANUAL &&
+                activeCombinationPlan?.combinationClass == CameraCombinationClass.HIGH_ACCURACY_RAW &&
+                !isConfirmedRawWorkflow())
+
     /** The actual HAL route identity, not the user-facing lens id, for confirmation scoping. */
     private fun confirmationRouteId(): String =
         activeOpenConfiguration?.confirmationRouteIdentity() ?: cameraInfo.cameraId
@@ -3184,9 +3411,24 @@ class CameraController(
         activeOpenConfiguration?.confirmationRouteIdentity()
 
     private fun invalidateManualVerification() {
-        manualVerificationOwnerEpoch += 1L
-        manualVerification.invalidateExternal(manualVerificationOwnerEpoch)
-        notifiedManualRevalidationPlanId = null
+        manualVerification.invalidateExternal(manualVerificationEpoch.incrementAndGet())
+        notifiedManualRevalidationKey = null
+        pendingManualRevalidation = null
+    }
+
+    internal fun isManualRevalidationCurrent(request: ManualCombinationRevalidationRequest): Boolean =
+        started && combinationSelectionMode == MeteringCombinationSelectionMode.MANUAL &&
+            pendingManualRevalidation == request &&
+            request.belongsTo(requestedCameraId, manualVerificationOwnerEpoch)
+
+    private fun publishManualRevalidation(request: ManualCombinationRevalidationRequest) {
+        val key = "${request.selectionCameraId}|${request.ownerEpoch}|${request.planId}|${request.canStart}"
+        if (notifiedManualRevalidationKey == key) return
+        notifiedManualRevalidationKey = key
+        pendingManualRevalidation = request
+        mainHandler.post {
+            if (isManualRevalidationCurrent(request)) callback.onManualCombinationRevalidationNeeded(request)
+        }
     }
 
     private fun readyCameraStatus(): String {
@@ -3402,6 +3644,15 @@ class CameraController(
     }
 
     private fun closeCamera(preserveExposurePreview: Boolean = false) {
+        pendingManualAcceptance?.let {
+            finishManualAcceptance(it, ManualAcceptanceOutcome.Cancelled(it.approvalSaved))
+        }
+        if (manualProbeId != null) {
+            combinationWorkflowProbe.cancel(IllegalStateException("Camera closed during manual probe"))
+        }
+        manualProbeId = null
+        manualProbePlanId = null
+        invalidateManualVerification()
         cameraGeneration += 1
         previewSurfaceCoordinator.reset()
         cameraFailureStage = CameraFailureStage.OPENING
