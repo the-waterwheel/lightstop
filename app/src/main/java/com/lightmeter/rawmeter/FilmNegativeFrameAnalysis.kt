@@ -5,7 +5,7 @@ import kotlin.math.max
 
 internal data class FilmNegativeRegion(val left: Float, val top: Float, val right: Float, val bottom: Float)
 internal data class FilmNegativeFrozenFrame(val width: Int, val height: Int, val pixels: IntArray,
-    val evidence: FilmNegativeFrameEvidence)
+    val evidence: FilmNegativeFrameEvidence, val orientationToken: Long = 0)
 internal data class FilmBaseCandidate(val region: FilmNegativeRegion, val rgb: FloatArray, val confidence: Float)
 data class FilmNegativeDensityWindow(val lowRed: Float, val lowGreen: Float, val lowBlue: Float,
     val highRed: Float, val highGreen: Float, val highBlue: Float) {

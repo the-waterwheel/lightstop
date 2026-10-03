@@ -696,11 +696,7 @@ class CameraController(
         filmNegativeSettings = settings
         cameraHandler?.post {
             val latest = filmNegativeSettings
-            filmSampleReference?.let { sample ->
-                if ((0..2).any { kotlin.math.abs(latest.base(it) - sample.rgb[it]) > 0.0001f }) {
-                    filmSampleReference = null // User replaced the sampled reference manually.
-                }
-            }
+            // Manual colour/density edits still belong to the capture setup that supplied them.
             if (filmNegativeEnabled) filmNegativeRenderer?.update(latest)
         }
     }
@@ -761,7 +757,7 @@ class CameraController(
         }
     }
 
-    internal fun captureFilmNegativeFrame(completion: (FilmNegativeFrozenFrame?) -> Unit) {
+    internal fun captureFilmNegativeFrame(maxEdge: Int = 1280, completion: (FilmNegativeFrozenFrame?) -> Unit) {
         val handler = cameraHandler
         if (handler == null) { mainHandler.post { completion(null) }; return }
         handler.post {
@@ -769,7 +765,7 @@ class CameraController(
             val generation = cameraGeneration
             if (!filmNegativeEnabled || renderer == null || !filmNegativeLocked || filmLockCompletion != null) {
                 mainHandler.post { completion(null) }
-            } else renderer.captureFrame { frame -> handler.post {
+            } else renderer.captureFrame(maxEdge) { frame -> handler.post {
                 val accepted = frame?.takeIf { generation == cameraGeneration && filmNegativeEnabled &&
                     filmNegativeRenderer === renderer && filmNegativeLocked && filmEvidence?.compatible(it.evidence) == true }
                 if (frame != null && accepted == null) Log.i("FilmFrameDiagnostic",
@@ -779,29 +775,90 @@ class CameraController(
         }
     }
 
+    /** One small readback/analysis at a time; no analysis work can queue behind the video stream. */
+    internal fun selectFilmNegativeFrame(completion: (FilmNegativeSelection?) -> Unit) {
+        val handler = cameraHandler
+        if (handler == null) { mainHandler.post { completion(null) }; return }
+        handler.post {
+            val serial = ++filmSampleSerial
+            val generation = cameraGeneration
+            val renderer = filmNegativeRenderer
+            val snapshot = filmNegativeSettings
+            if (renderer == null || !filmNegativeEnabled || !filmNegativeLocked || filmLockCompletion != null) {
+                mainHandler.post { completion(null) }
+                return@post
+            }
+            val orientation = renderer.orientationToken
+            val window = FilmNegativeSelectionWindow()
+            val deadline = android.os.SystemClock.elapsedRealtime() + 6500L
+            var attempts = 0
+            var completed = false
+            var timeout: Runnable? = null
+            fun current() = serial == filmSampleSerial && generation == cameraGeneration &&
+                filmNegativeEnabled && filmNegativeLocked && filmNegativeRenderer === renderer
+            fun finish(result: FilmNegativeSelection?) {
+                if (completed) return
+                completed = true
+                timeout?.let { handler.removeCallbacks(it) }
+                if (!current()) return
+                val accepted = result?.takeIf { filmEvidence?.compatible(it.evidence) == true && renderer.orientationToken == it.orientationToken }
+                if (accepted != null) {
+                    filmSampleReference = FilmNegativeBaseSample(FloatArray(3) { accepted.settings.base(it) }, accepted.evidence)
+                    filmNegativeSettings = accepted.settings
+                    renderer.update(accepted.settings)
+                }
+                mainHandler.post { if (current()) completion(accepted?.takeIf { renderer.orientationToken == it.orientationToken }) }
+            }
+            fun next() {
+                if (!current() || completed) return
+                if (++attempts > 6 || android.os.SystemClock.elapsedRealtime() >= deadline) { finish(null); return }
+                renderer.captureFrame(FilmNegativeSelectionAnalysis.ANALYSIS_EDGE) { frame -> handler.post captureResult@{
+                    if (!current() || completed) return@captureResult
+                    if (frame == null || filmEvidence?.compatible(frame.evidence) != true ||
+                        frame.orientationToken != orientation || renderer.orientationToken != orientation) { finish(null); return@captureResult }
+                    Thread({
+                        val result = runCatching { FilmNegativeSelectionAnalysis.automatic(frame, snapshot) }.getOrNull()
+                        handler.post analysisResult@{
+                            if (!current() || completed) return@analysisResult
+                            if (filmEvidence?.compatible(frame.evidence) != true || result == null ||
+                                renderer.orientationToken != orientation) { finish(null); return@analysisResult }
+                            val verified = window.add(result)
+                            if (verified != null) finish(verified) else handler.postDelayed({ next() }, 120L)
+                        }
+                    }, "film-selection-analysis").start()
+                } }
+            }
+            timeout = Runnable { finish(null) }
+            handler.postDelayed(checkNotNull(timeout), 6500L)
+            next()
+        }
+    }
+
     internal fun acceptFilmNegativeFrame(frame: FilmNegativeFrozenFrame, settings: FilmNegativeSettings,
         completion: (Boolean) -> Unit) {
         val handler = cameraHandler
         if (handler == null) { mainHandler.post { completion(false) }; return }
         handler.post {
+            val generation = cameraGeneration
             val accepted = filmNegativeEnabled && filmNegativeLocked && filmEvidence?.compatible(frame.evidence) == true
+                && filmNegativeRenderer?.orientationToken == frame.orientationToken
+            val reference = if (accepted) FilmNegativeBaseSample(FloatArray(3) { settings.base(it) }, frame.evidence) else null
             if (accepted) {
-                filmSampleReference = FilmNegativeBaseSample(FloatArray(3) { settings.base(it) }, frame.evidence)
+                filmSampleReference = reference
                 filmNegativeSettings = settings
                 filmNegativeRenderer?.update(settings)
             }
-            mainHandler.post { completion(accepted) }
+            mainHandler.post { completion(accepted && generation == cameraGeneration && filmNegativeEnabled &&
+                filmNegativeLocked && filmSampleReference === reference && filmNegativeSettings === settings) }
         }
     }
 
     private fun invalidateFilmBase() {
-        if (filmSampleReference == null) return
+        ++filmSampleSerial
+        if (filmSampleReference == null && !filmNegativeSettings.inverted &&
+            filmNegativeSettings.referenceSource == FilmNegativeReferenceSource.DEFAULT) return
         filmSampleReference = null
-        val defaults = FilmNegativeSettings()
-        val resetSettings = filmNegativeSettings.copy(baseRed = defaults.baseRed,
-            baseGreen = if (filmNegativeSettings.monochrome) defaults.baseRed else defaults.baseGreen,
-            baseBlue = if (filmNegativeSettings.monochrome) defaults.baseRed else defaults.baseBlue,
-            densityWindow = null)
+        val resetSettings = filmNegativeSettings.withoutReference()
         filmNegativeSettings = resetSettings
         filmNegativeRenderer?.update(resetSettings)
         mainHandler.post { if (filmNegativeSettings === resetSettings) onFilmNegativeBaseInvalidated?.invoke() }
@@ -846,7 +903,11 @@ class CameraController(
             filmLockCompletion = null
             mainHandler.post { if (serial == filmLockSerial && filmNegativeLocked) pending?.invoke(true) }
         }
-        filmSampleReference?.let { if (!it.evidence.compatible(evidence)) invalidateFilmBase() }
+        filmSampleReference?.let { if (!it.evidence.compatible(evidence)) {
+            filmNegativeLocked = false
+            invalidateFilmBase()
+            previewRequests.update()
+        } }
         filmNegativeRenderer?.observe(evidence)
     }
 

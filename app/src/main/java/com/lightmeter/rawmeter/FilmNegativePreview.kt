@@ -26,11 +26,33 @@ data class FilmNegativeSettings(
     val densityWindow: FilmNegativeDensityWindow? = null,
     val warmth: Float = 0f,
     val tint: Float = 0f,
+    val regionTone: Boolean = false,
+    val colorCorrection: FilmNegativeColorCorrection? = null,
+    val colorStrength: Float = 0.7f,
+    val referenceSource: FilmNegativeReferenceSource = FilmNegativeReferenceSource.DEFAULT,
 ) {
     fun base(channel: Int): Float = when (channel) {
         0 -> baseRed
         1 -> baseGreen
         else -> baseBlue
+    }
+
+    /** A reference belongs to one capture setup. Resume must start with original camera colours. */
+    fun withoutReference() = FilmNegativeSettings(monochrome = monochrome,
+        baseGreen = if (monochrome) 0.9f else 0.6f,
+        baseBlue = if (monochrome) 0.9f else 0.35f)
+}
+
+enum class FilmNegativeReferenceSource { DEFAULT, FILM_BORDER, CONTENT_ESTIMATE }
+
+/** A bounded, monotone correction in density space, separate from shared luminance endpoints. */
+data class FilmNegativeColorCorrection(val redSlope: Float, val blueSlope: Float,
+    val redOffset: Float, val blueOffset: Float) {
+    fun apply(density: Double, channel: Int, strength: Float): Double {
+        val amount = strength.coerceIn(0f, 1f)
+        val slope = when (channel) { 0 -> redSlope; 2 -> blueSlope; else -> 1f }
+        val offset = when (channel) { 0 -> redOffset; 2 -> blueOffset; else -> 0f }
+        return density * (1 + (slope - 1) * amount) + offset * amount
     }
 }
 
@@ -44,7 +66,13 @@ internal object FilmNegativeMath {
     fun channel(encoded: Float, base: Float, settings: FilmNegativeSettings, channel: Int = 0): Float {
         val transmission = linearize(encoded).coerceAtLeast(1e-6)
         val reference = linearize(base).coerceAtLeast(1e-6)
-        val density = -log10(transmission / reference)
+        val rawDensity = -log10(transmission / reference)
+        val density = settings.colorCorrection?.apply(rawDensity, channel, settings.colorStrength) ?: rawDensity
+        if (settings.regionTone) {
+            val span = (settings.whiteDensity - settings.blackDensity).coerceAtLeast(0.05f)
+            return ((density - settings.blackDensity) / span).coerceIn(0.0, 4.0)
+                .pow(2.2).coerceAtMost(16.0).toFloat()
+        }
         settings.densityWindow?.let { window ->
             val low = window.low(channel) + settings.blackDensity
             val span = ((window.high(channel) - window.low(channel)) * settings.whiteDensity / 1.5f).coerceAtLeast(0.05f)

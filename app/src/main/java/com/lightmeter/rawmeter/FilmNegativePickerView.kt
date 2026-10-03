@@ -45,16 +45,17 @@ internal class FilmNegativePickerView(context: Context, private val english: Boo
             setOnClickListener { callback() }
         }
         actions.addView(action(word("取消", "Cancel"), cancel), LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f))
-        autoButton = action(word("自动找片基", "Find base"), findBase)
-        if (mode == FilmNegativePickMode.BASE) actions.addView(autoButton, LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.5f))
+        autoButton = action(if (mode == FilmNegativePickMode.BASE) word("自动找片基", "Find base")
+            else word("自动选区", "Auto region"), findBase)
+        actions.addView(autoButton, LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.5f))
         confirmButton = action(word("确认选区", "Use selection")) { confirm(image.region) }
         actions.addView(confirmButton, LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.5f))
         addView(actions)
         addView(image, LayoutParams(LayoutParams.MATCH_PARENT, 0, 1f))
         showMessage(if (mode == FilmNegativePickMode.BASE)
             word("静止原图：单指圈选均匀片边，双指放大 / 移动。", "Frozen original: drag over clear film; pinch to zoom / move.")
-        else word("静止原图：单指框选照片内容，避开片边、齿孔和背光板；双指放大 / 移动。",
-            "Frozen original: select image content, excluding borders, holes and backlight; pinch to zoom / move."))
+        else word("静止原图：框选一张照片内容，系统在选区附近找片基并估计 Dmin / Dmax；双指放大 / 移动。",
+            "Frozen original: select one photograph; nearby borders establish film base and Dmin / Dmax. Pinch to zoom / move."))
     }
 
     fun showMessage(value: String) { message.text = value }

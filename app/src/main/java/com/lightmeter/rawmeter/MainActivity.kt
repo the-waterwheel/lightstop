@@ -617,17 +617,23 @@ class MainActivity : Activity(), CameraControllerCallback {
                     if (!meterLayout.isFilmNegativeOpen || !view.isAutomaticBaseRecognitionCurrent(serial)) return@setFilmNegativeCameraLocked
                     if (!locked) {
                         view.finishAutomaticBaseRecognition(serial, null, localized(
-                            "无法确认曝光 / 白平衡锁定，请重试或手动圈选片基。", "Exposure / white balance lock unavailable. Retry or select film base manually."))
+                            "无法确认曝光 / 白平衡锁定，请重试或手动调整。", "Exposure / white balance lock unavailable. Retry or adjust manually."))
                         view.setCameraLocked(false)
                     } else {
                         view.setCameraLocked(true)
-                        cameraController.sampleFilmNegativeBase(automatic = true) { base ->
-                            if (!meterLayout.isFilmNegativeOpen) return@sampleFilmNegativeBase
-                            view.finishAutomaticBaseRecognition(serial, base, if (base == null) localized(
-                                "未识别到稳定片基，保留当前参数。请保留均匀未曝光片边，或截取原图手动圈选。",
-                                "No stable film base detected; settings kept. Include uniform clear borders, or freeze and select manually.")
-                            else localized("片基已自动识别并通过三帧验证，可点击「反相预览」。",
-                                "Film base detected and verified across three frames. Tap Invert preview."))
+                        cameraController.selectFilmNegativeFrame { selection ->
+                            if (!meterLayout.isFilmNegativeOpen) return@selectFilmNegativeFrame
+                            view.finishAutomaticBaseRecognition(serial, selection, if (selection == null) localized(
+                                "未找到可靠的照片范围与片基。请保留附近片边，或在静止帧手动框选照片。",
+                                "No reliable photograph and film base. Include nearby borders, or select a photograph in a frozen frame.")
+                            else if (selection.settings.monochrome) localized(
+                                "黑白胶片区域和片基已通过三帧验证，可调整 Dmin / Dmax。",
+                                "Monochrome photograph and film base verified across three frames. Adjust Dmin / Dmax.")
+                            else if (selection.settings.colorCorrection == null) localized(
+                                "胶片区域和片基已通过三帧验证，已去色罩；中性样本不足，可手调色温 / 色调。",
+                                "Photograph and film base verified across three frames; inversion applied. Few neutral samples; adjust temperature / tint.")
+                            else localized("胶片区域与片基已通过三帧验证，已自动去色罩和校色。",
+                                "Photograph and film base verified across three frames; inversion and colour applied."))
                         }
                     }
                 }

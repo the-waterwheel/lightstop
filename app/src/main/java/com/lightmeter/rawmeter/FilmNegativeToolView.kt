@@ -79,6 +79,7 @@ internal class FilmNegativeToolView(context: Context, private val state: MeterSt
     private var picker: FilmNegativePickerView? = null
     private var pickerSerial = 0
     private var automaticBaseBusy = false
+    private var referenceInvalidated = false
     private var handleDownY = 0f
     private var handleDownX = 0f
     private var drawerBounds = AdaptiveLayout.Drawer(false, 0, 0, 0, 0)
@@ -136,13 +137,10 @@ internal class FilmNegativeToolView(context: Context, private val state: MeterSt
             if (!updating) listener?.onCameraLockChanged(checked)
         }
         controls.addView(lock, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
-        controls.addView(button(localized("自动识别片基", "Detect film base")) {
+        controls.addView(button(localized("自动选择", "Auto select")) {
             listener?.onSampleBaseRequested()
         }, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
-        controls.addView(button(localized("截取画面圈选片基", "Freeze and select film base")) {
-            listener?.onFrameRequested(FilmNegativePickMode.BASE)
-        }, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
-        controls.addView(button(localized("按画面自动校色", "Auto colour from image")) {
+        controls.addView(button(localized("静止帧选择胶片区域", "Freeze and select photograph")) {
             listener?.onFrameRequested(FilmNegativePickMode.FRAME)
         }, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
         controls.addView(adjustments)
@@ -151,33 +149,39 @@ internal class FilmNegativeToolView(context: Context, private val state: MeterSt
         addSlider(localized("饱和度", "Saturation"), 0f, 2f, { it.saturation }) { value -> settings.copy(saturation = value) }
         addSlider(localized("色温（冷 ← → 暖）", "Temperature (cool ← → warm)"), -1f, 1f, { it.warmth }) { settings.copy(warmth = it) }
         addSlider(localized("色调（绿 ← → 洋红）", "Tint (green ← → magenta)"), -1f, 1f, { it.tint }) { settings.copy(tint = it) }
+        addSlider(localized("自动校色强度（0 为关闭）", "Auto colour strength (0 is off)"), 0f, 1f, { it.colorStrength }) { settings.copy(colorStrength = it) }
+        addSlider(localized("Dmin · 黑点密度", "Dmin · black density"), -0.5f, 2f, { it.blackDensity }) {
+            settings.copy(blackDensity = it.coerceAtMost(settings.whiteDensity - .05f)) }
+        addSlider(localized("Dmax · 白点密度", "Dmax · white density"), .1f, 4f, { it.whiteDensity }) {
+            settings.copy(whiteDensity = it.coerceAtLeast(settings.blackDensity + .05f)) }
         monochrome.text = localized("黑白负片", "Black and white negative")
         styleSwitch(monochrome)
         monochrome.setOnCheckedChangeListener { _, checked ->
             if (!updating) {
                 // Monochrome film has no orange base. Start with a neutral reference.
-                settings = if (checked) settings.copy(monochrome = true, baseRed = 0.90f,
-                    baseGreen = 0.90f, baseBlue = 0.90f, densityWindow = null)
-                    else settings.copy(monochrome = false, densityWindow = null)
+                settings = FilmNegativeSettings(monochrome = checked).withoutReference()
                 refreshSliders()
                 listener?.onSettingsChanged(settings)
             }
         }
-        adjustments.addView(monochrome, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
+        controls.addView(monochrome, controls.indexOfChild(adjustments),
+            LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
         adjustments.addView(button(localized("高级调整：片基 / 密度", "Advanced: film base / density")) {
             advanced.visibility = if (advanced.visibility == View.VISIBLE) View.GONE else View.VISIBLE
             requestLayout()
         })
         adjustments.addView(advanced)
-        addSlider(localized("片基红通道", "Film base red"), 0.02f, 1f, { it.baseRed }, advanced) { settings.copy(baseRed = it, densityWindow = null) }
-        addSlider(localized("片基绿通道", "Film base green"), 0.02f, 1f, { it.baseGreen }, advanced) { settings.copy(baseGreen = it, densityWindow = null) }
-        addSlider(localized("片基蓝通道", "Film base blue"), 0.02f, 1f, { it.baseBlue }, advanced) { settings.copy(baseBlue = it, densityWindow = null) }
-        addSlider(localized("黑点密度（向右压暗）", "Black density (right is darker)"), -0.5f, 1f, { it.blackDensity }, advanced) { settings.copy(blackDensity = it) }
-        addSlider(localized("白点密度（向右压暗）", "White density (right is darker)"), 0.2f, 4f, { it.whiteDensity }, advanced) { settings.copy(whiteDensity = it) }
-        addSlider(localized("胶片斜率（调整退出自动校色）", "Film slope (returns to manual model)"), 0.3f, 1.5f, { it.filmGamma }, advanced) { settings.copy(filmGamma = it, densityWindow = null) }
+        advanced.addView(button(localized("直接取样片基（备用）", "Sample film base (fallback)")) {
+            listener?.onFrameRequested(FilmNegativePickMode.BASE)
+        })
+        addSlider(localized("片基红通道", "Film base red"), 0.02f, 1f, { it.baseRed }, advanced) { settings.copy(baseRed = it, densityWindow = null, colorCorrection = null) }
+        addSlider(localized("片基绿通道", "Film base green"), 0.02f, 1f, { it.baseGreen }, advanced) { settings.copy(baseGreen = it, densityWindow = null, colorCorrection = null) }
+        addSlider(localized("片基蓝通道", "Film base blue"), 0.02f, 1f, { it.baseBlue }, advanced) { settings.copy(baseBlue = it, densityWindow = null, colorCorrection = null) }
+        addSlider(localized("胶片斜率（调整退出自动校色）", "Film slope (returns to manual model)"), 0.3f, 1.5f, { it.filmGamma }, advanced) {
+            settings.copy(filmGamma = it, densityWindow = null, regionTone = false, colorCorrection = null) }
         val actions = LinearLayout(context)
         actions.addView(button(localized("重置参数", "Reset")) {
-            settings = FilmNegativeSettings(inverted = settings.inverted)
+            settings = settings.withoutReference()
             refreshSliders()
             listener?.onSettingsChanged(settings)
         }, LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f))
@@ -195,8 +199,9 @@ internal class FilmNegativeToolView(context: Context, private val state: MeterSt
 
     fun openPage() {
         discardFrozenFrame()
-        discardFrozenFrame()
-        settings = settings.copy(inverted = false)
+        referenceInvalidated = false
+        controlledProcessing = null
+        settings = settings.withoutReference()
         advanced.visibility = View.GONE
         scroll.scrollTo(0, 0)
         refreshSliders()
@@ -212,7 +217,12 @@ internal class FilmNegativeToolView(context: Context, private val state: MeterSt
             false -> localized("相机处理近似模式", "Approximate camera processing")
             null -> localized("正在确认相机处理", "Checking camera processing")
         }
-        status.text = "$message\n$processing"
+        val reference = when (settings.referenceSource) {
+            FilmNegativeReferenceSource.DEFAULT -> localized("片基：默认参考", "Film base: default reference")
+            FilmNegativeReferenceSource.FILM_BORDER -> localized("片基：片边参考", "Film base: border reference")
+            FilmNegativeReferenceSource.CONTENT_ESTIMATE -> localized("片基：内容估计", "Film base: content estimate")
+        }
+        status.text = "$message\n$reference · $processing"
     }
 
     fun setProcessingControlled(controlled: Boolean) {
@@ -221,16 +231,15 @@ internal class FilmNegativeToolView(context: Context, private val state: MeterSt
     }
 
     fun invalidateSampledBase() {
+        referenceInvalidated = true
         discardFrozenFrame()
-        val defaults = FilmNegativeSettings()
-        settings = settings.copy(baseRed = defaults.baseRed,
-            baseGreen = if (settings.monochrome) defaults.baseRed else defaults.baseGreen,
-            baseBlue = if (settings.monochrome) defaults.baseRed else defaults.baseBlue, densityWindow = null)
+        settings = settings.withoutReference()
+        setCameraLocked(false)
         refreshSliders()
-        showStatus(localized("相机条件已改变，已清除旧片基；请重新采样", "Camera conditions changed. Old base cleared; sample again"))
+        showStatus(localized("相机条件已改变，已恢复原图；请重新自动选择或框选胶片区域。", "Camera conditions changed. Original view restored; select the photograph again."))
     }
 
-    fun showPreviewReady() { if (!automaticBaseBusy) showStatus(defaultStatus()) }
+    fun showPreviewReady() { if (!automaticBaseBusy && !referenceInvalidated && !settings.inverted) showStatus(defaultStatus()) }
 
     fun showPreviewError(message: String) {
         setCameraLocked(false)
@@ -256,17 +265,22 @@ internal class FilmNegativeToolView(context: Context, private val state: MeterSt
         discardFrozenFrame()
         automaticBaseBusy = true
         enableControls(controls, false)
-        showStatus(localized("正在锁定相机并识别片基，请保持胶片静止…", "Locking camera and detecting film base. Keep the film still…"))
+        showStatus(localized("正在锁定相机并选择胶片区域、片基和校色，请保持静止…", "Locking camera and selecting photograph, film base and colour. Keep still…"))
         return pickerSerial
     }
 
     fun isAutomaticBaseRecognitionCurrent(serial: Int) = automaticBaseBusy && serial == pickerSerial
 
-    fun finishAutomaticBaseRecognition(serial: Int, base: FloatArray?, message: String) {
+    fun finishAutomaticBaseRecognition(serial: Int, selection: FilmNegativeSelection?, message: String) {
         if (!isAutomaticBaseRecognitionCurrent(serial)) return
         automaticBaseBusy = false
         enableControls(controls, true)
-        if (base != null) setSampledBase(base)
+        if (selection != null) {
+            referenceInvalidated = false
+            settings = selection.settings
+            refreshSliders()
+            listener?.onSettingsChanged(settings)
+        }
         showStatus(message)
     }
 
@@ -276,8 +290,8 @@ internal class FilmNegativeToolView(context: Context, private val state: MeterSt
     }
 
     private fun defaultStatus() = localized(
-        "保留未曝光片边，点击「自动识别片基」；也可截取原图圈选，再反相或自动校色。",
-        "Include clear film borders and tap Detect film base, or freeze and select them manually; then invert or use auto colour.")
+        "保留照片附近的片边，点击「自动选择」；或在静止帧中框选照片内容，自动去色罩并校色。",
+        "Include borders near the photograph and tap Auto select, or select image content in a frozen frame for inversion and colour.")
 
     fun discardFrozenFrame() {
         pickerSerial++
@@ -312,12 +326,12 @@ internal class FilmNegativeToolView(context: Context, private val state: MeterSt
             cancel = { discardFrozenFrame() },
             confirm = { region ->
                 analyze({ if (mode == FilmNegativePickMode.BASE) FilmNegativeFrameAnalysis.base(frame, region)
-                    else FilmNegativeFrameAnalysis.window(frame, region, snapshotSettings) }) { value ->
+                    else FilmNegativeSelectionAnalysis.manual(frame, region, snapshotSettings) }) { value ->
                     val candidate = when (value) {
-                        is FloatArray -> snapshotSettings.copy(baseRed = value[0], baseGreen = value[1], baseBlue = value[2], densityWindow = null)
-                        is FilmNegativeDensityWindow -> snapshotSettings.copy(densityWindow = value,
-                            blackDensity = 0f, whiteDensity = 1.5f, gamma = 1f, exposureEv = 0f,
-                            saturation = 1f, warmth = 0f, tint = 0f, inverted = true)
+                        is FloatArray -> snapshotSettings.copy(baseRed = value[0], baseGreen = value[1], baseBlue = value[2],
+                            densityWindow = null, colorCorrection = null, regionTone = false,
+                            referenceSource = FilmNegativeReferenceSource.FILM_BORDER)
+                        is FilmNegativeSelection -> value.settings
                         else -> null
                     }
                     if (candidate == null) editor.showMessage(if (mode == FilmNegativePickMode.BASE)
@@ -328,6 +342,7 @@ internal class FilmNegativeToolView(context: Context, private val state: MeterSt
                         listener?.onFrozenSettingsAccepted(frame, candidate) { accepted ->
                             if (serial != pickerSerial || picker !== editor) return@onFrozenSettingsAccepted
                             if (accepted) {
+                                referenceInvalidated = false
                                 settings = candidate
                                 discardFrozenFrame()
                                 refreshSliders()
@@ -335,7 +350,15 @@ internal class FilmNegativeToolView(context: Context, private val state: MeterSt
                                 scroll.scrollTo(0, 0)
                                 showStatus(if (mode == FilmNegativePickMode.BASE)
                                     localized("片基已取样；对准照片后可反相或自动校色。", "Base sampled. Frame the photo, then invert or use auto colour.")
-                                else localized("已按选区自动校色，可微调亮度、色温和色调。", "Auto colour applied. Fine-tune brightness, temperature and tint."))
+                                else if (candidate.referenceSource == FilmNegativeReferenceSource.CONTENT_ESTIMATE)
+                                    localized("估计模式：附近未找到可靠片基，已按照片内容估计；可调整 Dmin / Dmax 和校色强度。",
+                                        "Estimate mode: no reliable nearby film base. Content-based inversion applied; adjust Dmin / Dmax and colour strength.")
+                                else if (candidate.monochrome) localized("已按照片范围和片基转换黑白负片，可调整 Dmin / Dmax。",
+                                    "Monochrome photograph and film base applied. Adjust Dmin / Dmax.")
+                                else if (candidate.colorCorrection == null) localized("已识别附近片基并去色罩；中性样本不足，可手调色温 / 色调。",
+                                    "Nearby film base detected; inversion applied. Few neutral samples; adjust temperature / tint.")
+                                else localized("已从选区附近识别片基并去色罩、校色；可调整 Dmin / Dmax 和校色强度。",
+                                    "Nearby film base detected; inversion and colour applied. Adjust Dmin / Dmax and colour strength."))
                             } else {
                                 discardFrozenFrame()
                                 showStatus(localized("相机条件已改变，请重新截取原图。", "Camera conditions changed. Capture a new original frame."))
@@ -344,9 +367,14 @@ internal class FilmNegativeToolView(context: Context, private val state: MeterSt
                     }
                 }
             }, findBase = {
-                analyze({ FilmNegativeFrameAnalysis.findBase(frame, snapshotSettings.monochrome) }) { value ->
+                analyze({ if (mode == FilmNegativePickMode.BASE) FilmNegativeFrameAnalysis.findBase(frame, snapshotSettings.monochrome)
+                    else FilmNegativeSelectionAnalysis.automatic(frame, snapshotSettings) }) { value ->
                     val candidate = value as? FilmBaseCandidate
-                    if (candidate == null) editor.showMessage(localized("没有找到可靠候选，请手动圈选均匀片边。", "No reliable candidate. Select clear film manually."))
+                    val selection = value as? FilmNegativeSelection
+                    if (selection != null) {
+                        editor.select(selection.region)
+                        editor.showMessage(localized("已标出照片区域；请检查范围并确认。", "Photograph marked. Check the region and confirm."))
+                    } else if (candidate == null) editor.showMessage(localized("没有找到可靠候选，请手动框选照片内容。", "No reliable candidate. Select image content manually."))
                     else {
                         editor.select(candidate.region)
                         editor.showMessage(localized("已标出片基候选，请检查是否是均匀无图像片边，再确认。", "Candidate marked. Check that it is uniform clear film, then confirm."))

@@ -16,6 +16,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Camera2 produces to inputTexture, ES 2.0 renders to the existing TextureView's outputTexture.
@@ -50,6 +51,8 @@ internal class FilmNegativeRenderer(
     @Volatile private var displayDegrees = 0
     @Volatile private var mirrored = false
     @Volatile private var zoom = 1f
+    private val orientationSerial = AtomicLong(0)
+    val orientationToken: Long get() = orientationSerial.get()
     private val outputDimensions = IntArray(2)
     private var hasFrame = false
     private var firstFrameReported = false
@@ -74,6 +77,10 @@ internal class FilmNegativeRenderer(
     private var frozenWidth = 0
     private var frozenHeight = 0
     private var frameStartTimestamp = 0L
+    private var frameMaxEdge = 1280
+    private var frameOrientation = 0 to false
+    private var frameOrientationToken = 0L
+    private val smallFrameBytes = ByteBuffer.allocateDirect(FilmNegativeSelectionAnalysis.ANALYSIS_EDGE * FilmNegativeSelectionAnalysis.ANALYSIS_EDGE * 4)
     private val frameTimeout = Runnable { finishFrame(null) }
     private val textureMatrix = FloatArray(16)
     private val vertices = ByteBuffer.allocateDirect(16 * 4).order(ByteOrder.nativeOrder())
@@ -105,6 +112,7 @@ internal class FilmNegativeRenderer(
     }
 
     fun orient(displayDegrees: Int, mirrored: Boolean, zoom: Float = 1f) {
+        if (this.displayDegrees != displayDegrees || this.mirrored != mirrored) orientationSerial.incrementAndGet()
         this.displayDegrees = displayDegrees
         this.mirrored = mirrored
         this.zoom = zoom
@@ -147,7 +155,7 @@ internal class FilmNegativeRenderer(
     }
 
     /** Original camera colors, without inversion or guides; metadata uses the same timestamp. */
-    fun captureFrame(completion: (FilmNegativeFrozenFrame?) -> Unit) {
+    fun captureFrame(maxEdge: Int = 1280, completion: (FilmNegativeFrozenFrame?) -> Unit) {
         handler.post {
             finishFrame(null)
             if (released.get() || !hasFrame || failureReported) {
@@ -155,6 +163,9 @@ internal class FilmNegativeRenderer(
                 return@post
             }
             frameStartTimestamp = inputTexture?.timestamp ?: 0L
+            frameMaxEdge = maxEdge.coerceIn(18, 1280)
+            frameOrientation = displayDegrees to mirrored
+            frameOrientationToken = orientationToken
             frameCompletion = completion
             handler.postDelayed(frameTimeout, 3000L)
         }
@@ -172,36 +183,43 @@ internal class FilmNegativeRenderer(
 
     private fun matchFrozenFrame() {
         val pixels = frozenPixels ?: return
+        if (frameOrientationToken != orientationToken || frameOrientation != (displayDegrees to mirrored)) { finishFrame(null); return }
         val evidence = frameEvidence[frozenTimestamp] ?: return
-        if (evidence.usable) finishFrame(FilmNegativeFrozenFrame(frozenWidth, frozenHeight, pixels, evidence))
+        if (evidence.usable) finishFrame(FilmNegativeFrozenFrame(frozenWidth, frozenHeight, pixels, evidence, frameOrientationToken))
         else frozenPixels = null // Wait for a later locked frame, never accept an unlocked image.
     }
 
     private fun captureFrozenFrame() {
         val timestamp = inputTexture?.timestamp ?: return
         if (frameCompletion == null || frozenPixels != null || timestamp <= frameStartTimestamp) return
+        if (frameOrientationToken != orientationToken || frameOrientation != (displayDegrees to mirrored)) { finishFrame(null); return }
         val swapped = kotlin.math.abs(textureMatrix[1]) > kotlin.math.abs(textureMatrix[0])
         val rotated = displayDegrees % 180 != 0
         val sourceWidth = if (swapped xor rotated) height else width
         val sourceHeight = if (swapped xor rotated) width else height
-        val scale = minOf(1f, 1280f / maxOf(sourceWidth, sourceHeight))
+        val scale = minOf(1f, frameMaxEdge.toFloat() / maxOf(sourceWidth, sourceHeight))
         frozenWidth = (sourceWidth * scale).toInt().coerceAtLeast(1)
         frozenHeight = (sourceHeight * scale).toInt().coerceAtLeast(1)
         val texture = IntArray(1)
         val framebuffer = IntArray(1)
+        val small = frameMaxEdge <= FilmNegativeSelectionAnalysis.ANALYSIS_EDGE
         try {
-            GLES20.glGenTextures(1, texture, 0)
-            configureTexture(GLES20.GL_TEXTURE_2D, texture[0])
-            GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, frozenWidth, frozenHeight,
-                0, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null)
-            GLES20.glGenFramebuffers(1, framebuffer, 0)
-            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, framebuffer[0])
-            GLES20.glFramebufferTexture2D(GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0,
-                GLES20.GL_TEXTURE_2D, texture[0], 0)
+            if (small) GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, sampleFramebuffer)
+            else {
+                GLES20.glGenTextures(1, texture, 0)
+                configureTexture(GLES20.GL_TEXTURE_2D, texture[0])
+                GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, frozenWidth, frozenHeight,
+                    0, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null)
+                GLES20.glGenFramebuffers(1, framebuffer, 0)
+                GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, framebuffer[0])
+                GLES20.glFramebufferTexture2D(GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0,
+                    GLES20.GL_TEXTURE_2D, texture[0], 0)
+            }
             check(GLES20.glCheckFramebufferStatus(GLES20.GL_FRAMEBUFFER) == GLES20.GL_FRAMEBUFFER_COMPLETE)
             GLES20.glViewport(0, 0, frozenWidth, frozenHeight)
             draw(2, frozenWidth, frozenHeight)
-            val bytes = ByteBuffer.allocateDirect(frozenWidth * frozenHeight * 4)
+            val bytes = if (small) smallFrameBytes else ByteBuffer.allocateDirect(frozenWidth * frozenHeight * 4)
+            bytes.clear()
             GLES20.glReadPixels(0, 0, frozenWidth, frozenHeight, GLES20.GL_RGBA,
                 GLES20.GL_UNSIGNED_BYTE, bytes)
             checkGl()
@@ -221,8 +239,10 @@ internal class FilmNegativeRenderer(
             finishFrame(null)
         } finally {
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
-            GLES20.glDeleteFramebuffers(1, framebuffer, 0)
-            GLES20.glDeleteTextures(1, texture, 0)
+            if (!small) {
+                GLES20.glDeleteFramebuffers(1, framebuffer, 0)
+                GLES20.glDeleteTextures(1, texture, 0)
+            }
         }
     }
 
@@ -380,7 +400,7 @@ internal class FilmNegativeRenderer(
         uploadLookup()
         configureTexture(GLES20.GL_TEXTURE_2D, sampleTexture)
         GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA,
-            FilmNegativeBaseDetector.ANALYSIS_EDGE, FilmNegativeBaseDetector.ANALYSIS_EDGE,
+            FilmNegativeSelectionAnalysis.ANALYSIS_EDGE, FilmNegativeSelectionAnalysis.ANALYSIS_EDGE,
             0, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null)
         val framebuffers = IntArray(1)
         GLES20.glGenFramebuffers(1, framebuffers, 0)
