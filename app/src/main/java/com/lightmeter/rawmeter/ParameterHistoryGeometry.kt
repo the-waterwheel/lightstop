@@ -21,6 +21,7 @@ internal data class ParameterHistoryGeometry(
 internal object ParameterHistoryGeometryCalculator {
     fun calculate(width: Int, height: Int, density: Float, safeTop: Float): ParameterHistoryGeometry {
         if (width <= 0 || height <= 0) return ParameterHistoryGeometry.EMPTY
+        val density = AdaptiveLayout.density(width, height, density, LayoutProfile.SCROLL)
         val w = width.toFloat()
         val h = height.toFloat()
         val pad = max(10f * density, min(w, h) * 0.018f)

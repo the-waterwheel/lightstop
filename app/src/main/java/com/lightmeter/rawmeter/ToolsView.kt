@@ -42,12 +42,8 @@ class ToolsView(
 
     private enum class TouchTarget { CLOSE, TOOL, NONE }
 
-    private val density = resources.displayMetrics.density
-    private val scaledDensity = TypedValue.applyDimension(
-        TypedValue.COMPLEX_UNIT_SP,
-        1f,
-        resources.displayMetrics,
-    )
+    private val density get() = layoutDensity(LayoutProfile.SCROLL)
+    private val scaledDensity get() = layoutTextDensity(LayoutProfile.SCROLL)
     private val lightBlack = Color.rgb(20, 20, 20)
     private val nightForeground = Color.rgb(210, 210, 206)
     private val background: Int get() = if (state.isDarkMode) Color.BLACK else Color.WHITE
@@ -111,7 +107,8 @@ class ToolsView(
         val pad = 10f * density
         val gap = 8f * density
         val headerHeight = min(76f * density, height * 0.15f).coerceAtLeast(58f * density)
-        val columns = 3
+        val columns = AdaptiveLayout.columns(width.toFloat(), pad, gap,
+            72f * resources.displayMetrics.density, 3)
         val cellSize = (width - pad * 2f - gap * (columns - 1)) / columns
         val rows = ceil(ToolsCatalog.tools.size.toFloat() / columns).toInt()
         val contentTop = headerHeight + gap
@@ -190,12 +187,35 @@ class ToolsView(
             toolIcons[spec.id]?.let { icon ->
                 drawIconFitCenter(canvas, icon, iconBox)
             }
+            if (spec.id == ToolId.FILM_NEGATIVE) drawNegativeIcon(canvas, iconBox)
             drawCellLabel(canvas, label, cell, lines)
         }
         canvas.restore()
         paint.style = Paint.Style.FILL
         paint.color = dividerColor
         canvas.drawRect(0f, g.headerHeight - 0.8f * density, width.toFloat(), g.headerHeight, paint)
+    }
+
+    private fun drawNegativeIcon(canvas: Canvas, box: RectF) {
+        val size = min(box.width(), box.height()) * 0.72f
+        val film = RectF(box.centerX() - size * 0.55f, box.centerY() - size * 0.36f,
+            box.centerX() + size * 0.55f, box.centerY() + size * 0.36f)
+        paint.color = Color.WHITE
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 2f * density
+        canvas.drawRoundRect(film, 3f * density, 3f * density, paint)
+        canvas.drawLine(film.centerX(), film.top + size * 0.14f,
+            film.centerX(), film.bottom - size * 0.14f, paint)
+        paint.style = Paint.Style.FILL
+        for (index in 0..3) {
+            val x = film.left + size * (0.13f + index * 0.25f)
+            canvas.drawRect(x, film.top + size * 0.04f, x + size * 0.07f,
+                film.top + size * 0.10f, paint)
+            canvas.drawRect(x, film.bottom - size * 0.10f, x + size * 0.07f,
+                film.bottom - size * 0.04f, paint)
+        }
+        canvas.drawRect(film.left + size * 0.13f, film.top + size * 0.19f,
+            film.centerX() - size * 0.08f, film.bottom - size * 0.19f, paint)
     }
 
     private fun drawCellLabel(canvas: Canvas, label: String, cell: RectF, lines: Int) {

@@ -70,8 +70,8 @@ internal class ParameterRecordEditorView(
 
     private enum class Target { CLOSE, FILM, ADD_NOTE, NOTE, APERTURE, SHUTTER, EI, SAVE, NONE }
 
-    private val density = resources.displayMetrics.density
-    private val scaledDensity = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 1f, resources.displayMetrics)
+    private val density get() = layoutDensity(LayoutProfile.EDITOR)
+    private val scaledDensity get() = layoutTextDensity(LayoutProfile.EDITOR)
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans-serif", Typeface.NORMAL) }
     private val boldPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans-serif", Typeface.BOLD) }
@@ -124,7 +124,7 @@ internal class ParameterRecordEditorView(
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
-        geometry = ParameterRecordEditorGeometryCalculator.calculate(w, h, density)
+        geometry = ParameterRecordEditorGeometryCalculator.calculate(w, h, resources.displayMetrics.density)
     }
 
     override fun onDraw(canvas: Canvas) {

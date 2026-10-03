@@ -19,6 +19,7 @@ internal data class ColorTemperatureGeometry(
 internal object ColorTemperatureGeometryCalculator {
     fun calculate(width: Int, height: Int, density: Float): ColorTemperatureGeometry {
         if (width <= 0 || height <= 0) return ColorTemperatureGeometry.EMPTY
+        val density = AdaptiveLayout.density(width, height, density, LayoutProfile.TOOL)
         val pad = (12f * density).coerceAtMost(min(width, height) * 0.06f)
         val header = (54f * density).coerceAtMost(height * 0.18f).coerceAtLeast(42f * density)
         val touch = 46f * density

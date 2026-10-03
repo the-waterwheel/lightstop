@@ -43,8 +43,8 @@ internal class FilmSelectorView(
 
     private enum class TouchTarget { BACK, ADD, FAVORITES, ROW_SELECT, ROW_RESET, ROW_FAVORITE, LIST, EMPTY_ADD, NONE }
 
-    private val density = resources.displayMetrics.density
-    private val scaledDensity = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 1f, resources.displayMetrics)
+    private val density get() = layoutDensity(LayoutProfile.SCROLL)
+    private val scaledDensity get() = layoutTextDensity(LayoutProfile.SCROLL)
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans", Typeface.NORMAL) }
     private val boldPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans", Typeface.BOLD) }
@@ -117,8 +117,8 @@ internal class FilmSelectorView(
         val width = MeasureSpec.getSize(widthMeasureSpec)
         val height = MeasureSpec.getSize(heightMeasureSpec)
         setMeasuredDimension(width, height)
-        val safeTop = rootWindowInsets?.systemWindowInsetTop?.toFloat() ?: 0f
-        geometry = FilmSelectorGeometryCalculator.calculate(width, height, density, safeTop)
+        // SafeAreaHost has already excluded system bars and cutouts for all pages.
+        geometry = FilmSelectorGeometryCalculator.calculate(width, height, resources.displayMetrics.density, 0f)
         searchField.measure(
             MeasureSpec.makeMeasureSpec(geometry.search.width().toInt().coerceAtLeast(1), MeasureSpec.EXACTLY),
             MeasureSpec.makeMeasureSpec(geometry.search.height().toInt().coerceAtLeast(1), MeasureSpec.EXACTLY),

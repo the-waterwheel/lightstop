@@ -22,7 +22,7 @@ internal class CameraCombinationSelectionView(
     }
 
     var listener: Listener? = null
-    private val density = resources.displayMetrics.density
+    private val density get() = layoutDensity(LayoutProfile.SCROLL)
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         typeface = Typeface.create("sans", Typeface.NORMAL)
     }

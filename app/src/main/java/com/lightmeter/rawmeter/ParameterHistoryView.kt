@@ -47,8 +47,8 @@ internal class ParameterHistoryView(
     private enum class Page { CATEGORIES, CATEGORY, DETAIL }
     private enum class Target { BACK, DELETE, GRID, IMAGE, DATA, METERING, NONE }
 
-    private val density = resources.displayMetrics.density
-    private val scaledDensity = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 1f, resources.displayMetrics)
+    private val density get() = layoutDensity(LayoutProfile.SCROLL)
+    private val scaledDensity get() = layoutTextDensity(LayoutProfile.SCROLL)
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans", Typeface.NORMAL) }
     private val bold = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans", Typeface.BOLD) }
@@ -63,7 +63,7 @@ internal class ParameterHistoryView(
     private val bitmapCache = object : LruCache<String, Bitmap>(12 * 1024) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount / 1024
     }
-    private val meteringRenderer = RecordedMeteringRenderer(density, state)
+    private val meteringRenderer = RecordedMeteringRenderer({ density }, state)
     private var geometry = ParameterHistoryGeometry.EMPTY
     private var page = Page.CATEGORIES
     private var categoryId: String? = null
@@ -128,8 +128,7 @@ internal class ParameterHistoryView(
 
     @Suppress("DEPRECATION")
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
-        val safeTop = rootWindowInsets?.systemWindowInsetTop?.toFloat() ?: 0f
-        geometry = ParameterHistoryGeometryCalculator.calculate(w, h, density, safeTop)
+        geometry = ParameterHistoryGeometryCalculator.calculate(w, h, resources.displayMetrics.density, 0f)
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -181,10 +180,10 @@ internal class ParameterHistoryView(
     private fun drawCategories(canvas: Canvas) {
         val categories = repository.categories()
         val gap = 10f * density
-        val columns = 2
-        val cellWidth = (geometry.content.width() - gap) / columns
+        val columns = categoryColumns()
+        val cellWidth = (geometry.content.width() - gap * (columns - 1)) / columns
         val cellHeight = cellWidth * 0.82f
-        val rows = (categories.size + 1) / 2
+        val rows = (categories.size + columns - 1) / columns
         val maxScroll = (rows * (cellHeight + gap) - geometry.content.height()).coerceAtLeast(0f)
         scroll = scroll.coerceIn(0f, maxScroll)
         canvas.save()
@@ -221,7 +220,7 @@ internal class ParameterHistoryView(
     private fun drawCategory(canvas: Canvas) {
         val category = repository.category(categoryId) ?: return
         val gap = 6f * density
-        val columns = 3
+        val columns = recordColumns()
         val cellWidth = (geometry.content.width() - gap * (columns - 1)) / columns
         val cellHeight = cellWidth * 0.76f
         val rows = (category.records.size + columns - 1) / columns
@@ -449,6 +448,8 @@ internal class ParameterHistoryView(
         val source = when (distance.source) {
             DistanceSource.FOCUS_CALIBRATED -> "AF"
             DistanceSource.FOCUS_APPROXIMATE -> localized("AF近似", "AF approx")
+            DistanceSource.MOTION_PARALLAX -> localized("运动视差", "Motion parallax")
+            DistanceSource.FUSED -> localized("融合", "Fused")
             DistanceSource.MANUAL -> localized("手动", "Manual")
             null -> localized("未知来源", "unknown source")
         }
@@ -810,31 +811,39 @@ internal class ParameterHistoryView(
         else -> false
     }
 
+    private fun categoryColumns() = AdaptiveLayout.columns(geometry.content.width(), 0f,
+        10f * density, 120f * resources.displayMetrics.density, 2)
+
+    private fun recordColumns() = AdaptiveLayout.columns(geometry.content.width(), 0f,
+        6f * density, 72f * resources.displayMetrics.density, 3)
+
     private fun categoryAt(x: Float, y: Float): String? {
         val categories = repository.categories()
         val gap = 10f * density
-        val width = (geometry.content.width() - gap) / 2f
+        val columns = categoryColumns()
+        val width = (geometry.content.width() - gap * (columns - 1)) / columns
         val height = width * 0.82f
         val column = ((x - geometry.content.left) / (width + gap)).toInt()
         val row = ((y - geometry.content.top + scroll) / (height + gap)).toInt()
-        if (column !in 0..1 || row < 0) return null
+        if (column !in 0 until columns || row < 0) return null
         val rect = RectF(
             geometry.content.left + column * (width + gap),
             geometry.content.top + row * (height + gap) - scroll,
             geometry.content.left + column * (width + gap) + width,
             geometry.content.top + row * (height + gap) - scroll + height,
         )
-        return categories.getOrNull(row * 2 + column)?.id?.takeIf { rect.contains(x, y) }
+        return categories.getOrNull(row * columns + column)?.id?.takeIf { rect.contains(x, y) }
     }
 
     private fun recordAt(x: Float, y: Float): Int? {
         val records = repository.category(categoryId)?.records.orEmpty()
         val gap = 6f * density
-        val width = (geometry.content.width() - gap * 2f) / 3f
+        val columns = recordColumns()
+        val width = (geometry.content.width() - gap * (columns - 1)) / columns
         val height = width * 0.76f
         val column = ((x - geometry.content.left) / (width + gap)).toInt()
         val row = ((y - geometry.content.top + scroll) / (height + gap)).toInt()
-        if (column !in 0..2 || row < 0) return null
+        if (column !in 0 until columns || row < 0) return null
         val rect = RectF(
             geometry.content.left + column * (width + gap),
             geometry.content.top + row * (height + gap) - scroll,
@@ -842,7 +851,7 @@ internal class ParameterHistoryView(
             geometry.content.top + row * (height + gap) - scroll + height,
         )
         if (!rect.contains(x, y)) return null
-        val index = row * 3 + column
+        val index = row * columns + column
         return index.takeIf { it in records.indices }
     }
 

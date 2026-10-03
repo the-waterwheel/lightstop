@@ -44,7 +44,7 @@ class InstrumentView(
 
     var listener: Listener? = null
 
-    private val density = resources.displayMetrics.density
+    private val density get() = layoutDensity(LayoutProfile.METER)
     private val lightBlack = Color.rgb(20, 20, 20)
     private val nightForeground = Color.rgb(210, 210, 206)
     private val black: Int get() = if (state.isDarkMode) nightForeground else lightBlack
@@ -63,10 +63,10 @@ class InstrumentView(
     private val boldPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         typeface = Typeface.create("sans", Typeface.BOLD)
     }
-    private val exposureRenderer = InstrumentExposureRenderer(state, density)
+    private val exposureRenderer = InstrumentExposureRenderer(state) { density }
     private val ev100BadgeRenderer = Ev100BadgeRenderer(
-        density = density,
-        scaledDensity = resources.displayMetrics.scaledDensity,
+        densityProvider = { density },
+        textDensityProvider = { layoutTextDensity(LayoutProfile.METER) },
     )
     private var geometry: LayoutGeometry? = null
     private val accessibilityHelper = CanvasAccessibilityHelper(this, ::handleAccessibilityClick)

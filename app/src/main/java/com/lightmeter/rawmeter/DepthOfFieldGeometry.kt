@@ -40,6 +40,7 @@ internal data class DepthOfFieldGeometry(
 internal object DepthOfFieldGeometryCalculator {
     fun calculate(width: Int, height: Int, density: Float): DepthOfFieldGeometry {
         if (width <= 0 || height <= 0) return DepthOfFieldGeometry.EMPTY
+        val density = AdaptiveLayout.density(width, height, density, LayoutProfile.TOOL)
         val w = width.toFloat()
         val h = height.toFloat()
         val shortest = min(w, h)

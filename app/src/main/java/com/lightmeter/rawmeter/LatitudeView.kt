@@ -41,8 +41,8 @@ internal class LatitudeView(
 
     private enum class TouchTarget { BACK, CLOSE, SHADOW, HIGHLIGHT, SELECT, APPLY, RESET, RECORD, NONE }
 
-    private val density = resources.displayMetrics.density
-    private val scaledDensity = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 1f, resources.displayMetrics)
+    private val density get() = layoutDensity(LayoutProfile.TOOL)
+    private val scaledDensity get() = layoutTextDensity(LayoutProfile.TOOL)
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         strokeCap = Paint.Cap.ROUND
@@ -101,7 +101,7 @@ internal class LatitudeView(
     }
 
     override fun onSizeChanged(width: Int, height: Int, oldWidth: Int, oldHeight: Int) {
-        geometry = LatitudeGeometryCalculator.calculate(width, height, density)
+        geometry = LatitudeGeometryCalculator.calculate(width, height, resources.displayMetrics.density)
     }
 
     override fun onDraw(canvas: Canvas) {

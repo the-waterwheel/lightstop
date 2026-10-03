@@ -39,7 +39,7 @@ internal class ExposurePreviewCalibrationView(
     )
 
     var listener: Listener? = null
-    private val density = resources.displayMetrics.density
+    private val density get() = layoutDensity(LayoutProfile.METER)
     private val foreground: Int get() = if (state.isDarkMode) Color.rgb(210, 210, 206) else Color.rgb(20, 20, 20)
     private val surface: Int get() = if (state.isDarkMode) Color.BLACK else Color.WHITE
     private val muted: Int get() = if (state.isDarkMode) Color.rgb(150, 150, 146) else Color.rgb(112, 112, 108)

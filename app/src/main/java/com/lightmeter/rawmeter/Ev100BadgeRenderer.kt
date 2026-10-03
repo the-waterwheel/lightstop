@@ -8,9 +8,11 @@ import android.graphics.Typeface
 
 /** Shared passive EV100 readout rendered beside Normal metering and Zone marking actions. */
 internal class Ev100BadgeRenderer(
-    private val density: Float,
-    private val scaledDensity: Float,
+    private val densityProvider: () -> Float,
+    private val textDensityProvider: () -> Float,
 ) {
+    private val density get() = densityProvider()
+    private val scaledDensity get() = textDensityProvider()
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val bold = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         typeface = Typeface.create("sans-serif", Typeface.BOLD)

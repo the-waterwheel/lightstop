@@ -84,7 +84,7 @@ class ZoneSystemView(
     val session = ZoneMeterSession()
     var listener: Listener? = null
 
-    private val density = resources.displayMetrics.density
+    private val density get() = layoutDensity(LayoutProfile.METER)
     private val lightBlack = Color.rgb(20, 20, 20)
     private val nightForeground = Color.rgb(210, 210, 206)
     private val foreground: Int get() = if (state.isDarkMode) nightForeground else lightBlack
@@ -105,8 +105,8 @@ class ZoneSystemView(
         typeface = Typeface.create("sans", Typeface.BOLD)
     }
     private val ev100BadgeRenderer = Ev100BadgeRenderer(
-        density = density,
-        scaledDensity = resources.displayMetrics.scaledDensity,
+        densityProvider = { density },
+        textDensityProvider = { layoutTextDensity(LayoutProfile.METER) },
     )
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
 
@@ -1681,7 +1681,7 @@ class ZoneSystemView(
     }
 
     private fun calculateGeometry(width: Int, height: Int): Geometry =
-        ZoneLayoutCalculator.calculate(width, height, density, state)
+        ZoneLayoutCalculator.calculate(width, height, resources.displayMetrics.density, state)
 
     private fun localized(chinese: String, english: String): String =
         if (state.menuLanguage == MenuLanguage.ENGLISH) english else chinese

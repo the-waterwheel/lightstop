@@ -41,7 +41,7 @@ class InformationView(
 
     var listener: Listener? = null
 
-    private val density = resources.displayMetrics.density
+    private val density get() = layoutDensity(LayoutProfile.SCROLL)
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         strokeCap = Paint.Cap.ROUND

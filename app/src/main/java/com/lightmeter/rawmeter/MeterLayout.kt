@@ -38,7 +38,7 @@ class MeterLayout @JvmOverloads constructor(
     private enum class CameraManagementOrigin { SETTINGS, CALIBRATION, PREVIEW_CALIBRATION, VIGNETTING }
     private enum class FilmSelectionTarget { LATITUDE, RECIPROCITY, PARAMETER_RECORD }
 
-    interface Listener {
+    internal interface Listener {
         fun onMeasureRequested()
         fun onOrientationToggle()
         fun onPreviewGeometryChanged(width: Int, height: Int)
@@ -74,6 +74,13 @@ class MeterLayout @JvmOverloads constructor(
         fun onZoneTrackingActiveChanged(active: Boolean)
         fun onParameterGpsEnableRequested()
         fun onColorTemperatureEstimateRequested()
+        fun onFilmNegativePreviewChanged(enabled: Boolean)
+        fun onFilmNegativeSettingsChanged(settings: FilmNegativeSettings)
+        fun onFilmNegativeCameraLockChanged(locked: Boolean)
+        fun onFilmNegativeBaseSampleRequested()
+        fun onFilmNegativeFrameRequested(mode: FilmNegativePickMode)
+        fun onFilmNegativeFrozenSettingsAccepted(frame: FilmNegativeFrozenFrame, settings: FilmNegativeSettings, completion: (Boolean) -> Unit)
+        fun onFilmNegativeRetryRequested()
         fun onParameterCaptureRequested(
             draftId: String,
             snapshot: ParameterMeterSnapshot,
@@ -97,6 +104,7 @@ class MeterLayout @JvmOverloads constructor(
     internal val combinationSelectionView = CameraCombinationSelectionView(context, state)
     val zoneView = ZoneSystemView(context, state)
     val toolsView = ToolsView(context, state)
+    internal val filmNegativeToolView = FilmNegativeToolView(context, state)
     private val filmLatitudeRepository = FilmLatitudeRepository(context)
     private val filmReciprocityRepository = FilmReciprocityRepository(context)
     private val flashExposureRepository = FlashExposureRepository(context)
@@ -162,6 +170,7 @@ class MeterLayout @JvmOverloads constructor(
     var isParameterHistoryOpen: Boolean = false
         private set
     private var activeToolId: ToolId? = null
+    val isFilmNegativeOpen: Boolean get() = isToolsOpen && activeToolId == ToolId.FILM_NEGATIVE
     private var filmSelectionTarget = FilmSelectionTarget.LATITUDE
     var isZoneMode: Boolean = false
         private set
@@ -192,7 +201,7 @@ class MeterLayout @JvmOverloads constructor(
             }
         }
     }
-    var listener: Listener? = null
+    internal var listener: Listener? = null
         set(value) {
             field = value
             instrumentView.listener = object : InstrumentView.Listener {
@@ -610,6 +619,8 @@ class MeterLayout @JvmOverloads constructor(
             ),
         )
         addView(toolsHost)
+        filmNegativeToolView.visibility = View.GONE
+        addView(filmNegativeToolView)
         angleMeteringDialView.visibility = View.GONE
         addView(angleMeteringDialView)
         flashDistanceDialView.visibility = View.GONE
@@ -668,6 +679,7 @@ class MeterLayout @JvmOverloads constructor(
                     ToolId.FLASH_INDEX -> showFlashExposure()
                     ToolId.PARAMETER_LOG -> showParameterRecord()
                     ToolId.COLOR_TEMPERATURE -> showColorTemperature()
+                    ToolId.FILM_NEGATIVE -> showFilmNegative()
                     else -> Log.i("lightstop", "Tool requested: ${spec.id}")
                 }
             }
@@ -830,6 +842,25 @@ class MeterLayout @JvmOverloads constructor(
                     )
             }
         }
+        filmNegativeToolView.listener = object : FilmNegativeToolView.Listener {
+            override fun onBackToToolsRequested() = leaveFilmNegative(backToTools = true)
+            override fun onCloseRequested() { closeTools() }
+            override fun onSettingsChanged(settings: FilmNegativeSettings) {
+                listener?.onFilmNegativeSettingsChanged(settings)
+            }
+            override fun onCameraLockChanged(locked: Boolean) {
+                listener?.onFilmNegativeCameraLockChanged(locked)
+            }
+            override fun onSampleBaseRequested() { listener?.onFilmNegativeBaseSampleRequested() }
+            override fun onFrameRequested(mode: FilmNegativePickMode) { listener?.onFilmNegativeFrameRequested(mode) }
+            override fun onFrozenSettingsAccepted(frame: FilmNegativeFrozenFrame, settings: FilmNegativeSettings, completion: (Boolean) -> Unit) {
+                listener?.onFilmNegativeFrozenSettingsAccepted(frame, settings, completion)
+            }
+            override fun onRetryRequested() {
+                filmNegativeToolView.setCameraLocked(false)
+                listener?.onFilmNegativeRetryRequested()
+            }
+        }
         parameterRecordEditorView.listener = object : ParameterRecordEditorView.Listener {
             override fun onCancelRequested(draft: ParameterCaptureDraft) {
                 if (!parameterCaptureGuard.cancel(activeCaptureToken, draft.id)) return
@@ -988,6 +1019,10 @@ class MeterLayout @JvmOverloads constructor(
             MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
         )
         val toolsRect = toolsPanelRect(width, height)
+        filmNegativeToolView.measure(
+            MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
+        )
         toolsHost.measure(
             MeasureSpec.makeMeasureSpec(toolsRect.width().roundToInt().coerceAtLeast(0), MeasureSpec.EXACTLY),
             MeasureSpec.makeMeasureSpec(toolsRect.height().roundToInt().coerceAtLeast(0), MeasureSpec.EXACTLY),
@@ -1004,7 +1039,7 @@ class MeterLayout @JvmOverloads constructor(
             state.frameLandscape,
             state.isLeftHanded,
         )
-        val cameraFrame = if (isCombinationSelectionOpen) {
+        val cameraFrame = if (isCombinationSelectionOpen || isFilmNegativeOpen) {
             RectF(0f, 0f, width.toFloat(), height.toFloat())
         } else if (isVignettingCalibrationOpen) {
             vignettingCalibrationView.calculatePreviewFrame(width, height)
@@ -1022,7 +1057,7 @@ class MeterLayout @JvmOverloads constructor(
             geometry.cameraFrame
         }
         val textureFrame = when {
-            isCombinationSelectionOpen || isVignettingCalibrationOpen ||
+            isFilmNegativeOpen || isCombinationSelectionOpen || isVignettingCalibrationOpen ||
                 isExposurePreviewCalibrationOpen || isCalibrationOpen ->
                 previewTextureFrame(
                     cameraFrame = cameraFrame,
@@ -1067,7 +1102,7 @@ class MeterLayout @JvmOverloads constructor(
             state.frameLandscape,
             state.isLeftHanded,
         )
-        val cameraFrame = if (isCombinationSelectionOpen) {
+        val cameraFrame = if (isCombinationSelectionOpen || isFilmNegativeOpen) {
             RectF(0f, 0f, width.toFloat(), height.toFloat())
         } else if (isVignettingCalibrationOpen) {
             vignettingCalibrationView.calculatePreviewFrame(width, height)
@@ -1085,7 +1120,7 @@ class MeterLayout @JvmOverloads constructor(
             geometry.cameraFrame
         }
         val textureFrame = when {
-            isCombinationSelectionOpen || isVignettingCalibrationOpen ||
+            isFilmNegativeOpen || isCombinationSelectionOpen || isVignettingCalibrationOpen ||
                 isExposurePreviewCalibrationOpen || isCalibrationOpen ->
                 previewTextureFrame(
                     cameraFrame = cameraFrame,
@@ -1125,6 +1160,7 @@ class MeterLayout @JvmOverloads constructor(
             isToolsOpen && activeToolId == ToolId.COLOR_TEMPERATURE,
         )
         layoutToolsPanel()
+        filmNegativeToolView.layout(0, 0, width, height)
         angleMeteringDialView.layout(0, 0, width, height)
         flashDistanceDialView.layout(0, 0, width, height)
         recordCaptureSliderView.layout(0, 0, width, height)
@@ -1379,6 +1415,10 @@ class MeterLayout @JvmOverloads constructor(
 
     fun closeTools(): Boolean {
         if (!isToolsOpen) return false
+        if (isFilmNegativeOpen) {
+            leaveFilmNegative(backToTools = false)
+            return true
+        }
         if (isFilmSelectorOpen) closeFilmSelector(animate = false)
         depthOfFieldView.pausePage()
         activeToolId = null
@@ -1441,6 +1481,53 @@ class MeterLayout @JvmOverloads constructor(
     private fun layoutToolsPanel() {
         val rect = toolsPanelRect(width, height)
         toolsHost.layout(rect.left.toInt(), rect.top.toInt(), rect.right.toInt(), rect.bottom.toInt())
+    }
+
+    private fun showFilmNegative() {
+        activeToolId = ToolId.FILM_NEGATIVE
+        pauseZoneTracking()
+        listener?.onZoneTrackingActiveChanged(false)
+        toolsHost.animate().cancel()
+        toolsHost.visibility = View.GONE
+        instrumentView.visibility = View.INVISIBLE
+        zoneView.visibility = View.INVISIBLE
+        grayCardGuideView.setGuide(RectF(), false)
+        filmNegativeToolView.openPage()
+        filmNegativeToolView.visibility = View.VISIBLE
+        filmNegativeToolView.bringToFront()
+        listener?.onFilmNegativeSettingsChanged(filmNegativeToolView.settings)
+        listener?.onFilmNegativePreviewChanged(true)
+        requestLayout()
+        Log.i("lightstop", "Film negative tool opened")
+    }
+
+    private fun leaveFilmNegative(backToTools: Boolean) {
+        if (!isFilmNegativeOpen) return
+        activeToolId = null
+        filmNegativeToolView.visibility = View.GONE
+        listener?.onFilmNegativePreviewChanged(false)
+        filmNegativeToolView.discardFrozenFrame()
+        instrumentView.visibility = if (isZoneMode) View.INVISIBLE else View.VISIBLE
+        zoneView.visibility = if (isZoneMode) View.VISIBLE else View.GONE
+        if (backToTools) {
+            toolsView.visibility = View.VISIBLE
+            toolsView.bringToFront()
+            toolsHost.translationX = 0f
+            toolsHost.translationY = 0f
+            toolsHost.visibility = View.VISIBLE
+            toolsHost.bringToFront()
+        } else {
+            isToolsOpen = false
+            toolsHost.visibility = View.GONE
+            instrumentView.setModeTransitionEnabled(true)
+            instrumentView.setParameterDialInteractionEnabled(true)
+            zoneView.setModeTransitionEnabled(true)
+        }
+        resumeZoneTracking()
+        listener?.onZoneTrackingActiveChanged(isZoneMode)
+        updateAngleMeteringControl()
+        requestLayout()
+        Log.i("lightstop", "Film negative tool closed")
     }
 
     private fun showDepthOfField() {
@@ -2424,7 +2511,7 @@ class MeterLayout @JvmOverloads constructor(
     }
 
     fun resumeZoneTracking() {
-        if (isZoneMode) zoneMarkerTracker.start(zoneView.session.markers)
+        if (isZoneMode && !isFilmNegativeOpen) zoneMarkerTracker.start(zoneView.session.markers)
     }
 
     fun offerZoneTrackingFrame(frame: ZoneTrackingFrame) {

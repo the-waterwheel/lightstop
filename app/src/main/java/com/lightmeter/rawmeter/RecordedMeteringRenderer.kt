@@ -11,9 +11,10 @@ import kotlin.math.roundToInt
 
 /** Meter-like, stateless scene-reproduction UI used by parameter-record history. */
 internal class RecordedMeteringRenderer(
-    private val density: Float,
+    private val densityProvider: () -> Float,
     private val state: MeterState,
 ) {
+    private val density get() = densityProvider()
     private data class Geometry(
         val normalMode: RectF,
         val zoneMode: RectF,

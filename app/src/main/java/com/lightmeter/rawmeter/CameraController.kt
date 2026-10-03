@@ -27,6 +27,7 @@ import android.view.Surface
 import android.view.TextureView
 import java.io.File
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.roundToInt
@@ -180,14 +181,24 @@ class CameraController(
         localized = ::localized,
     )
     private val distanceCapture: CameraDistanceCaptureCoordinator = CameraDistanceCaptureCoordinator(
+        context = context,
         cameraHandler = { cameraHandler },
         cameraDevice = { cameraDevice },
         captureSession = { captureSession },
         previewSurface = { sessionCoordinator.previewSurface },
         characteristics = { characteristics },
+        requestCharacteristics = { logicalCharacteristics ?: characteristics },
         cameraInfo = { cameraInfo },
         cameraGeneration = { cameraGeneration },
         previewCaptureCallback = { previewCaptureCallback },
+        motionGeometryAllowed = {
+            activeSessionProfile?.usesTracking == true &&
+                (!cameraInfo.isLogicalMultiCamera || selectedRouteKind == CameraRouteKind.FIXED_PHYSICAL)
+        },
+        onSamplingChanged = {
+            if (activeSessionProfile?.usesPreview == true && !meteringOperationActive &&
+                !combinationWorkflowProbe.isActive) updatePreviewRepeatingRequest()
+        },
         onStateChanged = { state ->
             // Camera results arrive on the camera thread. Keep the legacy field diagnostic-only.
             cameraInfo = cameraInfo.copy(focusDistanceMeters = state.estimate?.meters?.toFloat())
@@ -526,7 +537,9 @@ class CameraController(
         captureSession = { captureSession },
         previewSurface = { sessionCoordinator.previewSurface },
         trackingSurface = { trackingReader?.surface },
-        trackingFramesEnabled = { trackingFramesEnabled },
+        trackingFramesEnabled = {
+            trackingFramesEnabled || (activeSessionProfile?.usesTracking == true && distanceCapture.wantsFrames)
+        },
         combinationProbeActive = { combinationWorkflowProbe.isActive },
         cameraGeneration = { cameraGeneration },
         neutralBaselineGeneration = { previewBaseline.activeGeneration },
@@ -538,6 +551,9 @@ class CameraController(
         configureAutoFocus = distanceCapture::configureAutoFocus,
         captureCallback = { previewCaptureCallback },
         onRequestFailure = ::handlePreviewRequestFailure,
+        filmPreviewActive = { filmNegativeEnabled },
+        filmPreviewLocked = { filmNegativeLocked },
+        requestCharacteristics = { logicalCharacteristics ?: characteristics },
     )
     private var downgradeAfterCompatibleMeasurement = false
     @Volatile
@@ -566,6 +582,7 @@ class CameraController(
         previewSize = { previewSize },
         sensorOrientationDegrees = { cameraInfo.sensorOrientationDegrees },
         lensFacing = { cameraInfo.lensFacing },
+        processedPreview = { filmNegativeRenderer != null },
     )
     private val lastViewWidth: Int get() = previewSurfaceCoordinator.viewWidth
     private val lastViewHeight: Int get() = previewSurfaceCoordinator.viewHeight
@@ -640,6 +657,262 @@ class CameraController(
     fun attach(texture: TextureView) {
         textureView = texture
         texture.surfaceTextureListener = this
+    }
+
+    @Volatile private var filmNegativeEnabled = false
+    @Volatile private var filmNegativeSettings = FilmNegativeSettings()
+    @Volatile private var filmNegativeLocked = false
+    @Volatile private var filmNegativeRenderer: FilmNegativeRenderer? = null
+    private var filmNegativeRendererFailed = false
+    private val filmRendererReleases = AtomicInteger(0)
+    private var filmLockCompletion: ((Boolean) -> Unit)? = null
+    private var filmLockSerial = 0L
+    private var filmAwaitingConvergence = false
+    private var filmConvergedFrames = 0
+    private var filmSampleSerial = 0L
+    private var filmEvidence: FilmNegativeFrameEvidence? = null
+    private var filmSampleReference: FilmNegativeBaseSample? = null
+    private var filmControlledCurve: Boolean? = null
+    internal var onFilmNegativePreviewError: ((String) -> Unit)? = null
+    internal var onFilmNegativePreviewReady: (() -> Unit)? = null
+    internal var onFilmNegativeBaseInvalidated: (() -> Unit)? = null
+    internal var onFilmNegativeProcessingChanged: ((Boolean) -> Unit)? = null
+
+    internal fun setFilmNegativePreviewEnabled(enabled: Boolean) {
+        if (filmNegativeEnabled == enabled) return
+        filmNegativeEnabled = enabled
+        filmNegativeLocked = false
+        val handler = cameraHandler ?: return
+        handler.post {
+            closeCamera()
+            resetRecoveryState()
+            filmNegativeRendererFailed = false
+            releaseFilmRenderer()
+            if (started) openCamera(textureView?.surfaceTexture)
+        }
+    }
+
+    internal fun updateFilmNegativeSettings(settings: FilmNegativeSettings) {
+        filmNegativeSettings = settings
+        cameraHandler?.post {
+            val latest = filmNegativeSettings
+            filmSampleReference?.let { sample ->
+                if ((0..2).any { kotlin.math.abs(latest.base(it) - sample.rgb[it]) > 0.0001f }) {
+                    filmSampleReference = null // User replaced the sampled reference manually.
+                }
+            }
+            if (filmNegativeEnabled) filmNegativeRenderer?.update(latest)
+        }
+    }
+
+    internal fun setFilmNegativeCameraLocked(locked: Boolean, completion: (Boolean) -> Unit) {
+        val handler = cameraHandler
+        if (handler == null) { mainHandler.post { completion(false) }; return }
+        handler.post {
+            filmLockCompletion?.let { old -> mainHandler.post { old(false) } }
+            filmLockCompletion = null
+            val serial = ++filmLockSerial
+            val chars = logicalCharacteristics ?: characteristics
+            val supported = chars?.get(CameraCharacteristics.CONTROL_AE_LOCK_AVAILABLE) == true &&
+                chars.get(CameraCharacteristics.CONTROL_AWB_LOCK_AVAILABLE) == true
+            val accepted = filmNegativeEnabled && captureSession != null && (!locked || supported)
+            val waitForLock = locked && accepted
+            filmAwaitingConvergence = waitForLock && !filmNegativeLocked
+            filmConvergedFrames = 0
+            if (!waitForLock) { filmNegativeLocked = false; invalidateFilmBase() }
+            if (waitForLock) filmLockCompletion = completion
+            if (filmNegativeEnabled) previewRequests.update()
+            if (!waitForLock) mainHandler.post { if (serial == filmLockSerial) completion(accepted) }
+            else handler.postDelayed({
+                if (serial == filmLockSerial && filmLockCompletion != null) {
+                    val pending = filmLockCompletion
+                    filmLockCompletion = null
+                    filmAwaitingConvergence = false
+                    filmNegativeLocked = false
+                    invalidateFilmBase()
+                    previewRequests.update()
+                    mainHandler.post { if (serial == filmLockSerial) pending?.invoke(false) }
+                }
+            }, 2500L)
+        }
+    }
+
+    internal fun sampleFilmNegativeBase(automatic: Boolean = false, completion: (FloatArray?) -> Unit) {
+        val handler = cameraHandler
+        if (handler == null) { mainHandler.post { completion(null) }; return }
+        handler.post {
+            val sampleSerial = ++filmSampleSerial
+            val renderer = filmNegativeRenderer
+            val generation = cameraGeneration
+            if (!filmNegativeEnabled || renderer == null || !filmNegativeLocked || filmLockCompletion != null) {
+                mainHandler.post { completion(null) }
+            } else {
+                renderer.sampleBase(automatic) { sample -> handler.post sampleResult@{
+                    if (sampleSerial != filmSampleSerial || generation != cameraGeneration || !filmNegativeEnabled || filmNegativeRenderer !== renderer) return@sampleResult
+                    val accepted = sample?.takeIf { filmNegativeLocked && filmEvidence?.compatible(it.evidence) == true }
+                    if (accepted != null) filmSampleReference = accepted
+                    mainHandler.post {
+                        if (sampleSerial == filmSampleSerial && generation == cameraGeneration && filmNegativeEnabled && filmNegativeRenderer === renderer) {
+                            completion(accepted?.takeIf { filmSampleReference === it }?.rgb)
+                        }
+                    }
+                } }
+            }
+        }
+    }
+
+    internal fun captureFilmNegativeFrame(completion: (FilmNegativeFrozenFrame?) -> Unit) {
+        val handler = cameraHandler
+        if (handler == null) { mainHandler.post { completion(null) }; return }
+        handler.post {
+            val renderer = filmNegativeRenderer
+            val generation = cameraGeneration
+            if (!filmNegativeEnabled || renderer == null || !filmNegativeLocked || filmLockCompletion != null) {
+                mainHandler.post { completion(null) }
+            } else renderer.captureFrame { frame -> handler.post {
+                val accepted = frame?.takeIf { generation == cameraGeneration && filmNegativeEnabled &&
+                    filmNegativeRenderer === renderer && filmNegativeLocked && filmEvidence?.compatible(it.evidence) == true }
+                if (frame != null && accepted == null) Log.i("FilmFrameDiagnostic",
+                    "Frozen frame conditions changed: processing=${frame.evidence.processingKey}->${filmEvidence?.processingKey} locked=$filmNegativeLocked")
+                mainHandler.post { completion(accepted?.takeIf { generation == cameraGeneration && filmNegativeEnabled }) }
+            } }
+        }
+    }
+
+    internal fun acceptFilmNegativeFrame(frame: FilmNegativeFrozenFrame, settings: FilmNegativeSettings,
+        completion: (Boolean) -> Unit) {
+        val handler = cameraHandler
+        if (handler == null) { mainHandler.post { completion(false) }; return }
+        handler.post {
+            val accepted = filmNegativeEnabled && filmNegativeLocked && filmEvidence?.compatible(frame.evidence) == true
+            if (accepted) {
+                filmSampleReference = FilmNegativeBaseSample(FloatArray(3) { settings.base(it) }, frame.evidence)
+                filmNegativeSettings = settings
+                filmNegativeRenderer?.update(settings)
+            }
+            mainHandler.post { completion(accepted) }
+        }
+    }
+
+    private fun invalidateFilmBase() {
+        if (filmSampleReference == null) return
+        filmSampleReference = null
+        val defaults = FilmNegativeSettings()
+        val resetSettings = filmNegativeSettings.copy(baseRed = defaults.baseRed,
+            baseGreen = if (filmNegativeSettings.monochrome) defaults.baseRed else defaults.baseGreen,
+            baseBlue = if (filmNegativeSettings.monochrome) defaults.baseRed else defaults.baseBlue,
+            densityWindow = null)
+        filmNegativeSettings = resetSettings
+        filmNegativeRenderer?.update(resetSettings)
+        mainHandler.post { if (filmNegativeSettings === resetSettings) onFilmNegativeBaseInvalidated?.invoke() }
+    }
+
+    private fun observeFilmNegativeResult(request: CaptureRequest, result: CaptureResult, timestamp: Long?) {
+        if (!filmNegativeEnabled || timestamp == null) return
+        if (filmAwaitingConvergence) {
+            val converged = result.get(CaptureResult.CONTROL_AE_STATE) == CaptureResult.CONTROL_AE_STATE_CONVERGED &&
+                result.get(CaptureResult.CONTROL_AWB_STATE) == CaptureResult.CONTROL_AWB_STATE_CONVERGED
+            filmConvergedFrames = if (converged) filmConvergedFrames + 1 else 0
+            if (filmConvergedFrames >= 2) {
+                filmAwaitingConvergence = false
+                filmNegativeLocked = true
+                previewRequests.update()
+            }
+        }
+        val gains = result.get(CaptureResult.COLOR_CORRECTION_GAINS)
+        val controlled = FilmNegativeCameraProfile.controlled(result)
+        if (filmControlledCurve != controlled) {
+            filmControlledCurve = controlled
+            mainHandler.post { if (filmNegativeEnabled) onFilmNegativeProcessingChanged?.invoke(controlled) }
+        }
+        val evidence = FilmNegativeFrameEvidence(
+            timestampNs = timestamp,
+            cameraKey = "${cameraInfo.cameraId}:${cameraInfo.physicalCameraId}:${cameraGeneration}",
+            locked = filmNegativeLocked && request.get(CaptureRequest.CONTROL_AE_LOCK) == true &&
+                request.get(CaptureRequest.CONTROL_AWB_LOCK) == true &&
+                result.get(CaptureResult.CONTROL_AE_STATE) == CaptureResult.CONTROL_AE_STATE_LOCKED &&
+                result.get(CaptureResult.CONTROL_AWB_STATE) == CaptureResult.CONTROL_AWB_STATE_LOCKED,
+            exposureNs = result.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: 0L,
+            sensitivity = result.get(CaptureResult.SENSOR_SENSITIVITY) ?: 0,
+            colorGains = gains?.let { listOf(it.red, it.greenEven, it.greenOdd, it.blue) } ?: emptyList(),
+            processingKey = "${result.get(CaptureResult.TONEMAP_MODE)}:" +
+                "${result.get(CaptureResult.COLOR_CORRECTION_TRANSFORM)?.hashCode()}:${result.get(CaptureResult.CONTROL_POST_RAW_SENSITIVITY_BOOST)}",
+            processingCurve = FilmNegativeCameraProfile.signature(result.get(CaptureResult.TONEMAP_CURVE)),
+        )
+        filmEvidence = evidence
+        if (evidence.locked && filmLockCompletion != null) {
+            val pending = filmLockCompletion
+            val serial = filmLockSerial
+            filmLockCompletion = null
+            mainHandler.post { if (serial == filmLockSerial && filmNegativeLocked) pending?.invoke(true) }
+        }
+        filmSampleReference?.let { if (!it.evidence.compatible(evidence)) invalidateFilmBase() }
+        filmNegativeRenderer?.observe(evidence)
+    }
+
+    internal fun retryFilmNegativePreview() {
+        cameraHandler?.post {
+            if (!filmNegativeEnabled) return@post
+            closeCamera()
+            resetRecoveryState()
+            filmNegativeLocked = false
+            filmNegativeRendererFailed = false
+            releaseFilmRenderer()
+            if (started) openCamera(textureView?.surfaceTexture)
+        }
+    }
+
+    private fun releaseFilmRenderer() {
+        val renderer = filmNegativeRenderer ?: return
+        filmNegativeRenderer = null
+        filmRendererReleases.incrementAndGet()
+        renderer.release {
+            filmRendererReleases.decrementAndGet()
+            cameraHandler?.post {
+                if (started && filmRendererReleases.get() == 0) openCamera(textureView?.surfaceTexture)
+            }
+        }
+    }
+
+    private fun filmPreviewInput(output: SurfaceTexture): SurfaceTexture? {
+        if (filmNegativeRendererFailed || filmRendererReleases.get() > 0) return null
+        filmNegativeRenderer?.let { renderer ->
+            if (renderer.outputTexture === output) return renderer.inputTexture
+            releaseFilmRenderer()
+            return null
+        }
+        lateinit var renderer: FilmNegativeRenderer
+        renderer = FilmNegativeRenderer(output, if (filmNegativeEnabled) filmNegativeSettings
+            else FilmNegativeSettings(inverted = false, showGuide = false),
+            onReady = {
+                cameraHandler?.post {
+                    if (started && filmNegativeRenderer === renderer &&
+                        textureView?.surfaceTexture === output) openCamera(output)
+                }
+            },
+            onFirstFrame = {
+                mainHandler.post {
+                    if (filmNegativeEnabled && filmNegativeRenderer === renderer) {
+                        onFilmNegativePreviewReady?.invoke()
+                    }
+                }
+            },
+            onFailure = { error ->
+                cameraHandler?.post {
+                    if (filmNegativeRenderer !== renderer) return@post
+                    filmNegativeRendererFailed = true
+                    closeCamera()
+                    releaseFilmRenderer()
+                    val message = localized("取景渲染失败，请重启预览或应用", "Preview rendering failed. Restart the preview or app")
+                    Log.e(TAG, message, error)
+                    mainHandler.post { if (filmNegativeEnabled) onFilmNegativePreviewError?.invoke(message) }
+                    if (!filmNegativeEnabled) finishCameraFailure(message)
+                }
+            })
+        filmNegativeRenderer = renderer
+        orientFilmRenderer()
+        renderer.start()
+        return null
     }
 
     fun setTrackingFramesEnabled(enabled: Boolean) {
@@ -1112,6 +1385,7 @@ class CameraController(
         // SurfaceTexture recommit request.
         previewSurfaceCoordinator.armForFreshStart()
         started = true
+        filmNegativeRendererFailed = false
         previewHealth.refreshMonitoring()
         // A new foreground lifecycle is a fresh capability probe. Session downgrades remain
         // sticky only for the current run, preventing a transient HAL failure from permanently
@@ -1136,6 +1410,8 @@ class CameraController(
             handler.post {
                 failManualAcceptance(IllegalStateException("Camera stopped"))
                 closeCamera()
+                filmNegativeLocked = false
+                releaseFilmRenderer()
                 thread.quitSafely()
                 mainHandler.post {
                     if (cameraHandler !== handler) return@post
@@ -1150,6 +1426,8 @@ class CameraController(
             }
         } else {
             closeCamera()
+            filmNegativeLocked = false
+            releaseFilmRenderer()
             cameraThread = null
             cameraHandler = null
         }
@@ -1161,7 +1439,20 @@ class CameraController(
         displayRotation: Int,
         displayZoom: Float,
     ) {
-        previewSurfaceCoordinator.update(viewWidth, viewHeight, displayRotation, displayZoom)
+        previewSurfaceCoordinator.update(viewWidth, viewHeight, displayRotation,
+            if (filmNegativeEnabled) 1f else displayZoom)
+        orientFilmRenderer()
+    }
+
+    private fun orientFilmRenderer() {
+        val degrees = when (textureView?.display?.rotation ?: lastDisplayRotation) {
+            Surface.ROTATION_90 -> 90
+            Surface.ROTATION_180 -> 180
+            Surface.ROTATION_270 -> 270
+            else -> 0
+        }
+        filmNegativeRenderer?.orient(degrees, CameraPreviewTransform.shouldMirrorPreview(cameraInfo.lensFacing),
+            if (filmNegativeEnabled) 1f else lastDisplayZoom)
     }
 
     /**
@@ -1179,8 +1470,7 @@ class CameraController(
             viewWidth = viewWidth,
             viewHeight = viewHeight,
             displayRotation = displayRotation,
-            displayZoom = displayZoom,
-            cameraHandler = cameraHandler,
+            displayZoom = if (filmNegativeEnabled) 1f else displayZoom,
         )
     }
 
@@ -1193,7 +1483,8 @@ class CameraController(
         meteringAngleDegrees: Int = AngleMeteringMath.DEFAULT_DEGREES,
         requestedSource: MeteringSource? = null,
     ): Boolean {
-        if (meteringOperationActive || combinationWorkflowProbe.isActive ||
+        if (filmNegativeEnabled || filmRendererReleases.get() > 0 ||
+            meteringOperationActive || combinationWorkflowProbe.isActive ||
             manualRawCaptureBlocked()
         ) return false
         meteringOperationActive = true
@@ -1478,6 +1769,9 @@ class CameraController(
     }
 
     private fun desiredResidentSessionProfile(): CameraSessionProfile {
+        // The tool owns the preview producer. Resident restoration must obey the same
+        // constraint as openCamera, including callbacks arriving after a lifecycle change.
+        if (filmNegativeEnabled) return CameraSessionProfile.PREVIEW_ONLY
         val calibrationProfile = calibrationSessionProfile
         if (calibrationProfile != null) return calibrationProfile
         if (manualSafePreviewActive) return CameraSessionProfile.PREVIEW_ONLY
@@ -2581,7 +2875,10 @@ class CameraController(
     }
 
     override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
-        cameraHandler?.post { closeCamera() }
+        cameraHandler?.post {
+            closeCamera()
+            releaseFilmRenderer()
+        }
         return true
     }
 
@@ -2590,14 +2887,17 @@ class CameraController(
         previewHealth.onTextureUpdated(
             textureView = textureView,
             surface = surface,
-            samplingAllowed = !combinationWorkflowProbe.isActive &&
+            samplingAllowed = !filmNegativeEnabled &&
+                filmRendererReleases.get() == 0 && !combinationWorkflowProbe.isActive &&
                 combinationSelectionMode != MeteringCombinationSelectionMode.MANUAL,
         )
     }
 
     @SuppressLint("MissingPermission")
     private fun openCamera(surfaceTexture: SurfaceTexture?) {
-        if (!started || opening || cameraDevice != null || surfaceTexture == null) return
+        if (!started || opening || cameraDevice != null || surfaceTexture == null ||
+            filmRendererReleases.get() > 0) return
+        val cameraInputTexture = filmPreviewInput(surfaceTexture) ?: return
         if (context.checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             postInfo(
                 cameraInfo.copy(
@@ -2675,6 +2975,7 @@ class CameraController(
                 trackingSupported = trackingHardwareAvailable,
                 zoneYuvUnavailable = zoneYuvSessionUnavailable,
             )
+            if (filmNegativeEnabled) profile = CameraSessionProfile.PREVIEW_ONLY
             val availableRawSize = configuration.rawSize
             rawOutputSize = availableRawSize
             trackingOutputSize = trackingSize
@@ -2687,7 +2988,7 @@ class CameraController(
                 closeCamera(preserveExposurePreview = true)
                 return
             }
-            if (calibrationSessionProfile == null && !manualSafePreviewActive) {
+            if (calibrationSessionProfile == null && !manualSafePreviewActive && !filmNegativeEnabled) {
                 val manualRead = if (combinationSelectionMode ==
                     MeteringCombinationSelectionMode.MANUAL
                 ) combinationSelectionStore.readManualSelection(activeCameraId)
@@ -2855,7 +3156,7 @@ class CameraController(
             )
             val rawSize = availableRawSize.takeIf { profile.usesRaw }
             val configuredTrackingSize = trackingSize.takeIf { profile.usesTracking }
-            val chosenRange = frameRateController.requestCeiling?.let { ceiling ->
+            val chosenRange = previewFrameRateCeiling()?.let { ceiling ->
                 CameraStreamSelector.chooseFpsRange(
                     characteristics = chars,
                     previewSize = chosenPreview,
@@ -2875,8 +3176,9 @@ class CameraController(
             postInfo(cameraInfo)
             publishCalibrationContext()
 
+            filmNegativeRenderer?.resize(chosenPreview.width, chosenPreview.height)
             sessionCoordinator.configureOutputs(
-                surfaceTexture = surfaceTexture,
+                surfaceTexture = cameraInputTexture,
                 previewSize = chosenPreview,
                 rawSize = rawSize,
                 trackingSize = configuredTrackingSize,
@@ -2919,6 +3221,11 @@ class CameraController(
 
     private fun handleSessionFailure(generation: Int) {
         if (generation != cameraGeneration) return
+        if (filmNegativeEnabled) {
+            if (!tryNextCameraRoute()) finishCameraFailure(localized(
+                "负片预览无法启动，请重启预览或切换摄像头", "Negative preview could not start. Retry or select another camera"))
+            return
+        }
         if (abortIsolatedCalibrationSessionIfActive()) return
         if (isConfirmedRawWorkflow()) {
             scheduleRecovery(
@@ -3032,7 +3339,7 @@ class CameraController(
         message: String,
         delayMs: Long = SESSION_RECOVERY_DELAY_MS,
     ): Boolean {
-        if (combinationSelectionMode != MeteringCombinationSelectionMode.SYSTEM ||
+        if (filmNegativeEnabled || combinationSelectionMode != MeteringCombinationSelectionMode.SYSTEM ||
             isConfirmedRawWorkflow()
         ) return false
         val active = activeCombinationPlan ?: return false
@@ -3143,6 +3450,17 @@ class CameraController(
         previewHealth.clearConfirmation()
         closeCamera()
         postInfo(cameraInfo.copy(rawAvailable = false, status = message))
+        if (filmNegativeEnabled) {
+            filmNegativeLocked = false
+            filmNegativeRendererFailed = true
+            releaseFilmRenderer()
+            val generation = cameraGeneration
+            mainHandler.post {
+                if (filmNegativeEnabled && generation == cameraGeneration) {
+                    onFilmNegativePreviewError?.invoke(message)
+                }
+            }
+        }
     }
 
     private fun notifyInterruptedOperations() {
@@ -3238,6 +3556,7 @@ class CameraController(
         zoneYuvSessionUnavailable = false
         downgradeAfterCompatibleMeasurement = false
         frameRateController.resetForCamera()
+        if (filmNegativeEnabled) frameRateController.limitToStandardRate()
         previewHealth.resetRecoveryState()
     }
 
@@ -3259,7 +3578,7 @@ class CameraController(
             cameraInfo = readyInfo
             postInfo(readyInfo)
             if (!readyInfo.rawAvailable && !transientZoneRawAvailable() &&
-                !manualSafePreviewActive &&
+                !filmNegativeEnabled && !manualSafePreviewActive &&
                 meteringPipelineMode == MeteringPipelineMode.AUTO &&
                 calibrationSessionProfile == null
             ) {
@@ -3465,8 +3784,12 @@ class CameraController(
         }
     }
 
+    private fun previewFrameRateCeiling(): Int? = frameRateController.requestCeiling?.let {
+        if (filmNegativeEnabled) it.coerceAtMost(30) else it
+    }
+
     private fun choosePreviewFpsRange(profile: CameraSessionProfile): Range<Int>? {
-        val ceiling = frameRateController.requestCeiling ?: return null
+        val ceiling = previewFrameRateCeiling() ?: return null
         val chars = characteristics ?: return null
         val size = previewSize ?: return null
         return CameraStreamSelector.chooseFpsRange(
@@ -3551,6 +3874,9 @@ class CameraController(
             val timestamp = resolution.pairedTimestampNs
                 ?: effectiveResult.get(CaptureResult.SENSOR_TIMESTAMP)
             if (timestamp != null) previewResultStore.put(timestamp, effectiveResult)
+            if (session === captureSession && (request.tag as? PreviewRequestTag)?.cameraGeneration == cameraGeneration) {
+                observeFilmNegativeResult(request, effectiveResult, timestamp)
+            }
             runtimeMetadata.observeActualPreviewFps(timestamp, cameraInfo)
                 ?.let(::postRuntimeInfo)
             runtimeMetadata.observePreviewSensorViewport(
@@ -3628,6 +3954,7 @@ class CameraController(
             reader,
             cameraInfo.sensorOrientationDegrees,
             lastDisplayRotation,
+            observeImage = distanceCapture::onImage,
         )
     }
 
@@ -3644,6 +3971,15 @@ class CameraController(
     }
 
     private fun closeCamera(preserveExposurePreview: Boolean = false) {
+        ++filmLockSerial
+        ++filmSampleSerial
+        filmAwaitingConvergence = false
+        filmLockCompletion?.let { pending -> mainHandler.post { pending(false) } }
+        filmLockCompletion = null
+        filmNegativeLocked = false
+        filmEvidence = null
+        filmControlledCurve = null
+        invalidateFilmBase()
         pendingManualAcceptance?.let {
             finishManualAcceptance(it, ManualAcceptanceOutcome.Cancelled(it.approvalSaved))
         }

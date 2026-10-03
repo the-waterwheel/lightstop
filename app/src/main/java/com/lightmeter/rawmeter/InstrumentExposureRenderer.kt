@@ -17,8 +17,9 @@ import kotlin.math.roundToInt
  */
 internal class InstrumentExposureRenderer(
     private val state: MeterState,
-    private val density: Float,
+    private val densityProvider: () -> Float,
 ) {
+    private val density get() = densityProvider()
     private var appliedReciprocityMethod: ReciprocityMethod? = null
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         strokeCap = Paint.Cap.ROUND

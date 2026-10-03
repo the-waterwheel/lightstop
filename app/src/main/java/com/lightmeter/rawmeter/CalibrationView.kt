@@ -50,7 +50,7 @@ class CalibrationView(
     var isMeasuring: Boolean = false
         private set
 
-    private val density = resources.displayMetrics.density
+    private val density get() = layoutDensity(LayoutProfile.METER)
     private val foreground: Int
         get() = if (state.isDarkMode) Color.rgb(210, 210, 206) else Color.rgb(20, 20, 20)
     private val surfaceColor: Int

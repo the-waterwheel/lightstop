@@ -6,6 +6,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class Camera2FocusDistanceProviderTest {
@@ -110,5 +111,90 @@ class Camera2FocusDistanceProviderTest {
         val state = provider.start(context, capability.copy(calibration = null, resultKeyAvailable = false))
         assertEquals(DistanceMeasurementStatus.UNSUPPORTED, state.status)
         assertFalse(state.estimate?.isFresh ?: false)
+    }
+
+    private fun feed(provider: Camera2FocusDistanceProvider, firstTimestamp: Long, diopters: Float,
+        count: Int = 10): DistanceMeasurementState? {
+        var state: DistanceMeasurementState? = null
+        repeat(count) { index ->
+            state = provider.onFrame(context, firstTimestamp + index * 50_000_000L,
+                CameraMetadata.CONTROL_AF_STATE_PASSIVE_FOCUSED,
+                CameraMetadata.LENS_STATE_STATIONARY, diopters)
+        }
+        return state
+    }
+
+    @Test fun expiredProviderRecoversWithoutRestartAndWithoutMixingOldSamples() {
+        var now = 1_000_000_000L
+        val provider = Camera2FocusDistanceProvider(clock = { now })
+        provider.start(context, capability)
+        assertEquals(2.0, feed(provider, 100_000_000L, 0.5f)!!.estimate!!.meters, 0.0)
+        now += 3_000_000_000L
+        assertEquals(DistanceMeasurementStatus.SAMPLING, feed(provider, 3_100_000_000L, 1f, 1)!!.status)
+        assertEquals(1.0, feed(provider, 3_200_000_000L, 1f)!!.estimate!!.meters, 0.0)
+    }
+
+    @Test fun smallDistanceChangeUpdatesValueBoundsConfidenceAndTimestampTogether() {
+        val provider = Camera2FocusDistanceProvider()
+        provider.start(context, capability)
+        val old = feed(provider, 100_000_000L, 2f, 5)!!.estimate!!
+        val next = feed(provider, 500_000_000L, 1f/0.6f)!!.estimate!!
+        assertEquals(0.5, old.meters, 0.0)
+        assertEquals(0.6, next.meters, 1e-6)
+        assertTrue(next.lowerMeters!! > old.lowerMeters!!)
+        assertTrue(next.confidence > old.confidence)
+        assertTrue(next.timestampNs > old.timestampNs)
+        assertEquals(DistanceQuality.MEDIUM, next.quality)
+    }
+
+    @Test fun elapsedClockPreventsReuseEvenIfNoFramesArrived() {
+        var now = 1_000_000_000L
+        val provider = Camera2FocusDistanceProvider(clock = { now })
+        provider.start(context, capability)
+        feed(provider, 100_000_000L, 1f)
+        now += DISTANCE_TTL_NS + 1
+        assertEquals(DistanceMeasurementStatus.WAITING_FOR_FOCUS, provider.start(context, capability).status)
+    }
+
+    @Test fun unsupportedCapabilityCannotProduceSamplesLater() {
+        val provider = Camera2FocusDistanceProvider()
+        provider.start(context, capability.copy(calibration = null))
+        assertNull(feed(provider, 100_000_000L, 1f))
+    }
+
+    @Test fun farQuantisationWidensExposureUncertaintyAndReducesConfidence() {
+        val provider = Camera2FocusDistanceProvider()
+        provider.start(context, capability)
+        val near = feed(provider, 100_000_000L, 1f)!!.estimate!!
+        val far = feed(provider, 1_000_000_000L, 0.125f)!!.estimate!!
+        assertTrue(DistanceFusionEngine.uncertaintyEv(far) > DistanceFusionEngine.uncertaintyEv(near))
+        assertTrue(far.confidence < near.confidence)
+    }
+
+    @Test fun autofocusScanBreaksSampleWindowAndOutOfOrderFramesCannotRestoreIt() {
+        val provider = Camera2FocusDistanceProvider()
+        provider.start(context, capability)
+        feed(provider, 100_000_000L, 0.5f, 4)
+        provider.onFrame(context, 400_000_000L, CameraMetadata.CONTROL_AF_STATE_ACTIVE_SCAN,
+            CameraMetadata.LENS_STATE_MOVING, 0.5f)
+        assertNull(feed(provider, 300_000_000L, 0.5f, 1))
+        assertEquals(DistanceMeasurementStatus.SAMPLING, feed(provider, 500_000_000L, 1f, 1)!!.status)
+    }
+
+    @Test fun motionAndUncontrolledFocusTargetReduceTrustEvenForStableMetadata() {
+        val provider = Camera2FocusDistanceProvider()
+        provider.start(context, capability)
+        val stationary = feed(provider, 100_000_000L, 0.5f)!!.estimate!!
+        var moving: DistanceMeasurementState? = null
+        repeat(10) { index ->
+            moving = provider.onFrame(context, 1_000_000_000L + index * 50_000_000L,
+                CameraMetadata.CONTROL_AF_STATE_PASSIVE_FOCUSED,
+                CameraMetadata.LENS_STATE_STATIONARY, 0.5f, motionConfidence=0.2)
+        }
+        assertTrue(moving!!.estimate!!.confidence < stationary.confidence)
+        assertFalse(DistanceFusionEngine.usableForFlash(moving!!.estimate!!))
+        provider.start(context, capability.copy(targetConfidence=0.45))
+        val unknownTarget = feed(provider, 2_000_000_000L, 0.5f)!!.estimate!!
+        assertFalse(DistanceFusionEngine.usableForFlash(unknownTarget))
     }
 }

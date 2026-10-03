@@ -41,12 +41,8 @@ internal class FlashExposureView(
 
     private enum class TouchTarget { BACK, CLOSE, SCALE, AUTO_DISTANCE, SETTINGS, GUIDE_NUMBER, METERING_ISO, APPLY, NONE }
 
-    private val density = resources.displayMetrics.density
-    private val scaledDensity = TypedValue.applyDimension(
-        TypedValue.COMPLEX_UNIT_SP,
-        1f,
-        resources.displayMetrics,
-    )
+    private val density get() = layoutDensity(LayoutProfile.TOOL)
+    private val scaledDensity get() = layoutTextDensity(LayoutProfile.TOOL)
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         strokeCap = Paint.Cap.ROUND
@@ -130,7 +126,7 @@ internal class FlashExposureView(
     }
 
     override fun onSizeChanged(width: Int, height: Int, oldWidth: Int, oldHeight: Int) {
-        geometry = ReciprocityGeometryCalculator.calculate(width, height, density)
+        geometry = ReciprocityGeometryCalculator.calculate(width, height, resources.displayMetrics.density)
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -440,6 +436,7 @@ internal class FlashExposureView(
     private fun previewAdjustment(): FlashAdjustment = FlashExposureMath.adjustment(
         configuration = configuration,
         autofocusDistanceMeters = state.distanceMeasurementState.effectiveMetersForFlash,
+        distanceMeasurementState = state.distanceMeasurementState,
         meteringIso = configuration.iso,
         ambientEv100 = state.ambientEffectiveEv100,
         exposureCompensationEv = state.exposureCompEv,
@@ -450,10 +447,12 @@ internal class FlashExposureView(
 
     private fun currentDistanceLabel(): String {
         if (!configuration.isAutoDistance) return FlashDistanceScale.label(configuration.distanceMeters)
-        val estimate = state.distanceMeasurementState.estimate?.takeIf { it.isFresh } ?: return "Auto"
+        val estimate = state.distanceMeasurementState.estimate?.takeIf { it.isCurrent() } ?: return "Auto"
         val source = when (estimate.source) {
             DistanceSource.FOCUS_CALIBRATED -> localized("AF", "AF")
             DistanceSource.FOCUS_APPROXIMATE -> localized("AF近似", "AF approx")
+            DistanceSource.MOTION_PARALLAX -> localized("运动视差", "Motion parallax")
+            DistanceSource.FUSED -> localized("融合", "Fused")
             DistanceSource.MANUAL -> localized("手动", "Manual")
         }
         val quality = when (estimate.quality) {
@@ -466,7 +465,7 @@ internal class FlashExposureView(
 
     private fun distanceValueLabel(): String {
         val meters = configuration.distanceMeters
-            ?: state.distanceMeasurementState.estimate?.takeIf { it.isFresh }?.meters
+            ?: state.distanceMeasurementState.estimate?.takeIf { it.isCurrent() }?.meters
             ?: return "-- m"
         return when {
             meters < 1.0 -> "%.2f m".format(java.util.Locale.US, meters)

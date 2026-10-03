@@ -189,7 +189,7 @@ internal object ParameterRecordCaptureSnapshot {
         val effectiveDistance = when {
             adjustment.status != FlashAdjustmentStatus.APPLIED -> null
             configuration.distanceMeters != null -> configuration.distanceMeters
-            else -> state.distanceMeasurementState.effectiveMetersForFlash
+            else -> adjustment.effectiveDistanceMeters
         }
         return RecordedFlashSnapshot(
             guideNumberIso100 = configuration.guideNumber * sqrt(
@@ -229,7 +229,7 @@ internal object ParameterRecordCaptureSnapshot {
             confidence = estimate?.confidence,
             quality = estimate?.quality,
             source = estimate?.source,
-            isFreshAtCapture = estimate?.isFresh == true,
+            isFreshAtCapture = estimate?.isCurrent() == true,
             ageMsAtCapture = null,
             cameraIdentity = estimate?.cameraIdentity,
             targetX = estimate?.target?.x,

@@ -31,8 +31,8 @@ internal class FlashDistanceDialView(
 
     private enum class Gesture { NONE, TOGGLE, DIAL }
 
-    private val density = resources.displayMetrics.density
-    private val scaledDensity = resources.displayMetrics.scaledDensity
+    private val density get() = layoutDensity(LayoutProfile.SCROLL)
+    private val scaledDensity get() = layoutTextDensity(LayoutProfile.SCROLL)
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         strokeCap = Paint.Cap.ROUND
@@ -164,7 +164,7 @@ internal class FlashDistanceDialView(
             boldPaint.textSize = lerp(9f, 15.5f, expansion) * scaledDensity
             centeredText(canvas, "Auto", centerX, centerY - lerp(5f, 10f, expansion) * density, boldPaint)
             boldPaint.textSize = lerp(7.5f, 12.5f, expansion) * scaledDensity
-            val measured = when (val value = distanceState.estimate?.takeIf { it.isFresh }?.meters) {
+            val measured = when (val value = distanceState.estimate?.takeIf { it.isCurrent() }?.meters) {
                 null -> "--"
                 else -> compactLabel(value)
             }

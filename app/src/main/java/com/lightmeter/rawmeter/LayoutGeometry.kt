@@ -30,6 +30,10 @@ data class LayoutGeometry(
             frameLandscape: Boolean,
             leftHanded: Boolean,
         ): LayoutGeometry {
+            if (width <= 0 || height <= 0) return LayoutGeometry(false,
+                RectF(), RectF(), RectF(), RectF(), RectF(), RectF(), RectF(), RectF(),
+                RectF(), RectF(), RectF(), RectF(), RectF(), RectF(), RectF())
+            val density = AdaptiveLayout.density(width, height, density, LayoutProfile.METER)
             val w = width.toFloat()
             val h = height.toFloat()
             val pad = 10f * density

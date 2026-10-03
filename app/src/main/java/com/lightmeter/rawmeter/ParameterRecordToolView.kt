@@ -37,8 +37,8 @@ internal class ParameterRecordToolView(
 
     private enum class Target { BACK, CLOSE, HISTORY, GPS, TIME, RAW, RAW_HELP, FINISH, START_STOP, NONE }
 
-    private val density = resources.displayMetrics.density
-    private val scaledDensity = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 1f, resources.displayMetrics)
+    private val density get() = layoutDensity(LayoutProfile.TOOL)
+    private val scaledDensity get() = layoutTextDensity(LayoutProfile.TOOL)
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans-serif", Typeface.NORMAL) }
     private val boldPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans-serif", Typeface.BOLD) }
     private val path = Path()
@@ -82,7 +82,7 @@ internal class ParameterRecordToolView(
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
-        geometry = ParameterRecordToolGeometryCalculator.calculate(w, h, density)
+        geometry = ParameterRecordToolGeometryCalculator.calculate(w, h, resources.displayMetrics.density)
     }
 
     override fun onDraw(canvas: Canvas) {

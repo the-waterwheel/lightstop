@@ -44,12 +44,8 @@ class DepthOfFieldView(
         AUTO_DISTANCE, AUTO_DISTANCE_HELP, NONE
     }
 
-    private val density = resources.displayMetrics.density
-    private val scaledDensity = TypedValue.applyDimension(
-        TypedValue.COMPLEX_UNIT_SP,
-        1f,
-        resources.displayMetrics,
-    )
+    private val density get() = layoutDensity(LayoutProfile.TOOL)
+    private val scaledDensity get() = layoutTextDensity(LayoutProfile.TOOL)
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
@@ -153,7 +149,7 @@ class DepthOfFieldView(
 
     override fun onSizeChanged(width: Int, height: Int, oldWidth: Int, oldHeight: Int) {
         super.onSizeChanged(width, height, oldWidth, oldHeight)
-        geometry = DepthOfFieldGeometryCalculator.calculate(width, height, density)
+        geometry = DepthOfFieldGeometryCalculator.calculate(width, height, resources.displayMetrics.density)
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -762,7 +758,7 @@ class DepthOfFieldView(
 
 internal object DepthOfFieldAutomaticDistancePolicy {
     fun usableEstimate(state: DistanceMeasurementState): DistanceEstimate? = state.estimate?.takeIf {
-        state.status == DistanceMeasurementStatus.AVAILABLE && it.isFresh &&
+        state.status == DistanceMeasurementStatus.AVAILABLE && it.isCurrent() &&
             it.target == NormalizedPoint.CENTER && it.meters.isFinite() && it.meters > 0.0
     }
 }

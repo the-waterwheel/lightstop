@@ -31,8 +31,8 @@ internal class AngleMeteringDialView(
 
     private enum class Gesture { NONE, TOGGLE, DIAL }
 
-    private val density = resources.displayMetrics.density
-    private val scaledDensity = density * resources.configuration.fontScale
+    private val density get() = layoutDensity(LayoutProfile.SCROLL)
+    private val scaledDensity get() = layoutTextDensity(LayoutProfile.SCROLL)
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         strokeCap = Paint.Cap.ROUND

@@ -11,6 +11,7 @@ enum class ToolId {
     RECIPROCITY,
     FLASH_INDEX,
     COLOR_TEMPERATURE,
+    FILM_NEGATIVE,
     EXPOSURE_CORRECTION,
 }
 
@@ -27,5 +28,6 @@ object ToolsCatalog {
         ToolSpec(ToolId.RECIPROCITY, LocalizedLabel("倒易率计算", "Reciprocity")),
         ToolSpec(ToolId.FLASH_INDEX, LocalizedLabel("闪光曝光", "Flash exposure")),
         ToolSpec(ToolId.COLOR_TEMPERATURE, LocalizedLabel("色温估算", "Color temperature")),
+        ToolSpec(ToolId.FILM_NEGATIVE, LocalizedLabel("负片预览", "Negative preview")),
     )
 }

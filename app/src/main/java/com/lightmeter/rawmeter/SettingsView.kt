@@ -39,7 +39,7 @@ class SettingsView(
 
     var listener: Listener? = null
 
-    private val density = resources.displayMetrics.density
+    private val density get() = layoutDensity(LayoutProfile.SCROLL)
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         strokeCap = Paint.Cap.ROUND
@@ -155,7 +155,9 @@ class SettingsView(
                 }
                 drawCenteredText(
                     canvas,
-                    tabSection.label.resolve(state.menuLanguage),
+                    android.text.TextUtils.ellipsize(tabSection.label.resolve(state.menuLanguage),
+                        android.text.TextPaint(boldPaint), (rect.width() - 12f * density).coerceAtLeast(0f),
+                        android.text.TextUtils.TruncateAt.END).toString(),
                     rect.centerX(),
                     rect.centerY(),
                     boldPaint,

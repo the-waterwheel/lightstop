@@ -25,7 +25,7 @@ internal class ColorTemperatureView(
     }
 
     var listener: Listener? = null
-    private val density = resources.displayMetrics.density
+    private val density get() = layoutDensity(LayoutProfile.TOOL)
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         typeface = Typeface.create("sans", Typeface.NORMAL)
         strokeCap = Paint.Cap.ROUND
@@ -85,7 +85,7 @@ internal class ColorTemperatureView(
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
-        geometry = ColorTemperatureGeometryCalculator.calculate(w, h, density)
+        geometry = ColorTemperatureGeometryCalculator.calculate(w, h, resources.displayMetrics.density)
     }
 
     override fun onDraw(canvas: Canvas) {
