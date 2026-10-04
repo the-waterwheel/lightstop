@@ -11,9 +11,15 @@ cmake_common_vars = {
     "ANDROID_MIN_SDK_VERSION": os.environ.get(
         "ANDROID_MIN_SDK_VERSION", ANDROID_NATIVE_API_LEVEL
     ),
-    "ANDROID_GRADLE_PLUGIN_VERSION": "8.2.2",
-    "GRADLE_VERSION": "8.7",
-    "KOTLIN_PLUGIN_VERSION": "1.9.22",
+    "ANDROID_GRADLE_PLUGIN_VERSION": "8.10.0",
+    "GRADLE_VERSION": "8.13",
+    "KOTLIN_PLUGIN_VERSION": "2.1.20",
+    "ANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES": "ON",
+    "CMAKE_SHARED_LINKER_FLAGS": (
+        "-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384"
+    ),
+    "BUILD_TESTS": "OFF",
+    "INSTALL_TESTS": "OFF",
     # Keep the runtime algorithms, Java/JNI surface, SIMD and threading acceleration.
     # Only omit file-format backends that the application never decodes or encodes.
     "WITH_TBB": "ON",
