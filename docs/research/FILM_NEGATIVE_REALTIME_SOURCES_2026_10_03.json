@@ -1,0 +1,79 @@
+{
+  "retrievedOn": "2026-10-03",
+  "purpose": "Documentation and source comparison; not application dependencies or benchmarks.",
+  "projectAssessment": {
+    "gitBase": "66dbf50b4de4a775980f56b299b69df4ac930fb0",
+    "includesUncommittedFilmNegativeModulesInOriginalWorkspace": true,
+    "currentAppMinSdk": 28,
+    "currentOpenCvAarMinSdk": 28,
+    "proposedMainlineMinSdk": 21,
+    "api19To20": "Optional separate legacy variant; not implemented or verified."
+  },
+  "repositories": [
+    {
+      "repository": "https://github.com/darktable-org/darktable",
+      "revision": "bcc01d05186c3118e78de9d6b91b6dbe06663f60",
+      "license": "GPL-3.0 (check individual file headers)"
+    },
+    {
+      "repository": "https://github.com/RawTherapee/RawTherapee",
+      "revision": "94c3096e706d89a2325415d56af188ca0228ce34",
+      "license": "GPL-3.0 (check individual file headers)"
+    },
+    {
+      "repository": "https://github.com/marcinz606/NegPy",
+      "revision": "93b88f8999e4e1fd8f9cba17690da3f1212428c5",
+      "license": "GPL-3.0 (check individual file headers)"
+    },
+    {
+      "repository": "https://github.com/amoslu-photo/simple-inversion",
+      "revision": "40979806b88ff942f07c38655265e104a1af82ad",
+      "license": "MIT"
+    },
+    {
+      "repository": "https://github.com/wasabeef/android-gpuimage",
+      "revision": "ceea576ec931c2968431ad46f1fb2e6d68a542e2",
+      "license": "Apache-2.0 (README, build configuration and file headers)"
+    },
+    {
+      "repository": "https://github.com/wysaid/android-gpuimage-plus",
+      "revision": "32bf703b9ffe49036853d027bc3350491985feae",
+      "license": "MIT"
+    },
+    {
+      "repository": "https://github.com/google/grafika",
+      "revision": "b1df331e89cffeab621f02b102d4c2c25eb6088a",
+      "license": "Apache-2.0"
+    },
+    {
+      "repository": "https://github.com/toonoumi/FreeCCR",
+      "revision": "767c04f5607ebd8ab5947ac4090fae2518eb5f46",
+      "license": "AGPL-3.0"
+    },
+    {
+      "repository": "https://chromium.googlesource.com/libyuv/libyuv/",
+      "revision": "aa6cedb39c87910b4c28e5c71c2121fc45fd234b",
+      "license": "BSD-3-Clause"
+    },
+    {
+      "repository": "https://github.com/opencv/opencv",
+      "revision": "4.12.0",
+      "license": "Apache-2.0"
+    }
+  ],
+  "primaryDocumentation": [
+    "https://docs.darktable.org/usermanual/development/en/module-reference/processing-modules/negadoctor/",
+    "https://developer.android.com/reference/android/hardware/camera2/CameraCharacteristics",
+    "https://developer.android.com/reference/android/hardware/camera2/CameraDevice",
+    "https://developer.android.com/reference/android/hardware/camera2/params/SessionConfiguration",
+    "https://developer.android.com/reference/android/hardware/camera2/params/OutputConfiguration",
+    "https://developer.android.com/reference/android/opengl/EGL14",
+    "https://source.android.com/docs/core/graphics/arch-st",
+    "https://developer.android.com/develop/ui/views/graphics/opengl/about-opengl",
+    "https://registry.khronos.org/OpenGL/specs/es/3.0/es_spec_3.0.pdf",
+    "https://developer.android.com/ndk/guides/sdk-versions",
+    "https://developer.android.com/ndk/downloads/revision_history",
+    "https://developer.android.com/develop/ui/views/graphics/agsl",
+    "https://developer.android.com/guide/topics/renderscript/migrate"
+  ]
+}
