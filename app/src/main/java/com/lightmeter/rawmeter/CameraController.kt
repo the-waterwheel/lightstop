@@ -935,8 +935,16 @@ class CameraController(
         filmRendererReleases.incrementAndGet()
         renderer.release {
             filmRendererReleases.decrementAndGet()
-            cameraHandler?.post {
-                if (started && filmRendererReleases.get() == 0) openCamera(textureView?.surfaceTexture)
+            // GL cleanup may finish after stop() has retired the camera thread. Resolve
+            // the live handler on the lifecycle thread so a resumed session can reopen.
+            mainHandler.post {
+                if (!started || stopInProgress) return@post
+                val handler = cameraHandler ?: return@post
+                handler.post {
+                    if (started && cameraHandler === handler && filmRendererReleases.get() == 0) {
+                        openCamera(textureView?.surfaceTexture)
+                    }
+                }
             }
         }
     }
@@ -1355,7 +1363,13 @@ class CameraController(
     /** Applies the calibrated exposure represented by the currently displayed parameter rows. */
     fun updateExposurePreview(selection: ExposurePreviewSelection?) {
         exposurePreviewState.updateSelection(selection)
-        cameraHandler?.post(::applyRequestedExposurePreview)
+        // Closing the camera publishes a distance-state callback on the main thread.
+        // Preserve its selection, but do not enqueue work on the retiring camera thread.
+        if (!started || stopInProgress) return
+        val handler = cameraHandler ?: return
+        handler.post {
+            if (started && cameraHandler === handler) applyRequestedExposurePreview()
+        }
     }
 
     /**

@@ -67,6 +67,7 @@
 - 全项目 **513 项单元测试通过**（97 个测试类），失败、错误、跳过均为 0；在基线 498 项上新增 15 项测试，其中一个用例遍历 24 组几何条件。
 - Android Lint：**0 errors、66 warnings**，与基线警告总数一致。
 - Debug APK、Release APK 和 AAB 均构建成功，Release 使用 R8 与资源缩减。最终单帧版本执行上述完整命令，耗时 51 秒。
+- 单帧功能提交为 `a9f49f6`。随后修复后台关闭时曝光预览更新和 GPU 清理回调向已停止相机线程投递的问题，再执行完整命令成功（63 秒，`build/negative-review/lifecycle-build.log`），测试总数及 Lint 结果不变。
 - 测试包通过 SDK `apksigner verify --verbose --print-certs` 验证，APK v2 签名有效，使用本机 Android Debug 开发证书。
 - `git diff --check` 通过。没有加入机器学习组件或新运行时库。
 
@@ -74,13 +75,15 @@
 | --- | ---: | ---: | --- |
 | `dist/negative-preview-2026-10-04/lightstop-negative-preview-debug.apk` | 49,527,228 | 47.23 | 已签名通用实机测试包，三种 ABI，单帧识别 |
 | `app/build/outputs/apk/release/app-release-unsigned.apk` | 44,629,113 | 42.56 | 未签名通用 Release APK |
-| `app/build/outputs/bundle/release/app-release.aab` | 21,271,608 | 20.29 | 发布格式，不能直接安装；文件体积不等于设备下载量 |
+| `app/build/outputs/bundle/release/app-release.aab` | 21,273,638 | 20.29 | 发布格式，不能直接安装；文件体积不等于设备下载量 |
 
-测试包 SHA-256：`5e6fcc522c66c2f90cbf8f8d2836d838883389c0be8612d6ef1d92769127650d`。手机实际安装包已拉回核对，哈希一致。
+测试包 SHA-256：`78ad3594cd3e615bfb11c76e1c5dae934279dadb3a32cfb469fa82b70d990300`。该包包含后续生命周期修复；手机实际安装包已拉回核对，哈希一致。
 开发证书 SHA-256：`fb5c582ea2a5fb92f63eb467c35edae9257d6eccb3ff44b05f3b3be8ca557b7e`。
 详细产物哈希、原生库分布、ELF 对齐和关键源码哈希保留在 `dist/negative-preview-2026-10-04/verification.json`；安装包旁另有 `.apk.sha256` 校验文件。
 
 最初未连接设备，后续已在 V2405A / Android 16 完成部分实机验收：最终单帧版本四次识别完成，锁定后 808 / 399 / 513 / 392 毫秒，每次仅一帧；前两次固定画面，第三次附近画面方向和用户微调改变，第四次为后台恢复后重新识别，不能合并宣称固定场景四次准确或移动成功率。原图对比、校正保持、后台恢复、识别期间退出和 RAW 测光已复查；Zone 回归在前一测试包完成且后续未改动相关算法。详细证据及未测项目见实机验收文档；其他画幅、明显弯曲和严格连续十分钟性能仍不记为通过。
+
+生命周期修复后的交付包又完成两次单帧识别（锁定后 812 / 335 毫秒）和两轮后台退出；恢复后按钮可用，相机预览正常。应用自身两处向已停止线程投递的警告未再出现；Android 16 相机框架仍可能记录迟到 `onClosed` 回调的投递诊断，没有观察到崩溃。此结果不代替更长时间及其他机型验证。
 
 ## 安装包与 OpenCV 的后续工作
 
