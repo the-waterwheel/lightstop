@@ -6,7 +6,6 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.Path
 import android.graphics.RectF
 import android.view.Gravity
 import android.view.MotionEvent
@@ -60,8 +59,8 @@ internal class FilmNegativePickerView(context: Context, private val english: Boo
     }
 
     fun showMessage(value: String) { message.text = value }
-    fun select(region: FilmNegativeRegion, mask: FilmNegativeMask? = null) {
-        image.region = region; image.setMask(mask); image.invalidate()
+    fun select(region: FilmNegativeRegion) {
+        image.region = region; image.invalidate()
     }
     fun setBusy(busy: Boolean) {
         confirmButton.isEnabled = !busy; autoButton.isEnabled = !busy; image.isEnabled = !busy
@@ -80,24 +79,6 @@ internal class FilmNegativePickerView(context: Context, private val english: Boo
         }
         private val imageBounds = RectF()
         private val selectionBounds = RectF()
-        private var contour: Path? = null
-        private val contourTransform = android.graphics.Matrix()
-        private val displayContour = Path()
-        fun setMask(mask: FilmNegativeMask?) {
-            contour = mask?.let { shape -> Path().apply {
-                fun edge(x1: Float, y1: Float, x2: Float, y2: Float) {
-                    moveTo(x1 / shape.width, y1 / shape.height)
-                    lineTo(x2 / shape.width, y2 / shape.height)
-                }
-                for (y in 0 until shape.height) for (x in 0 until shape.width) {
-                    if (!shape.at(x, y)) continue
-                    if (!shape.at(x - 1, y)) edge(x.toFloat(), y.toFloat(), x.toFloat(), y + 1f)
-                    if (!shape.at(x + 1, y)) edge(x + 1f, y.toFloat(), x + 1f, y + 1f)
-                    if (!shape.at(x, y - 1)) edge(x.toFloat(), y.toFloat(), x + 1f, y.toFloat())
-                    if (!shape.at(x, y + 1)) edge(x.toFloat(), y + 1f, x + 1f, y + 1f)
-                }
-            } }
-        }
         var region = if (mode == FilmNegativePickMode.BASE) FilmNegativeRegion(.45f, .45f, .55f, .55f)
             else FilmNegativeRegion(.1f, .1f, .9f, .9f)
         private var scale = 1f
@@ -135,14 +116,9 @@ internal class FilmNegativePickerView(context: Context, private val english: Boo
                 originY + region.top * bitmap.height * scale,
                 originX + region.right * bitmap.width * scale, originY + region.bottom * bitmap.height * scale)
             if (mode == FilmNegativePickMode.BASE) canvas.drawOval(selectionBounds, boundary)
-            else if (contour != null) {
-                contourTransform.apply {
-                    setScale(bitmap.width * scale, bitmap.height * scale)
-                    postTranslate(originX, originY)
-                }
-                contour!!.transform(contourTransform, displayContour)
-                canvas.drawPath(displayContour, boundary)
-            } else canvas.drawRect(selectionBounds, boundary)
+            // The analysis mask can follow fine image detail. The editor exposes a crop,
+            // so always show its editable bounds rather than that internal pixel contour.
+            else canvas.drawRect(selectionBounds, boundary)
         }
 
         private fun constrain() {
@@ -174,7 +150,6 @@ internal class FilmNegativePickerView(context: Context, private val english: Boo
                     previousX = cx; previousY = cy
                     constrain(); invalidate()
                 } else if (!moving) {
-                    contour = null
                     val x = imageX(event.x); val y = imageY(event.y)
                     region = FilmNegativeRegion(min(startX, x), min(startY, y), max(startX, x), max(startY, y))
                     invalidate()

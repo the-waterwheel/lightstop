@@ -379,7 +379,7 @@ internal class FilmNegativeToolView(context: Context, private val state: MeterSt
                     val selection = value as? FilmNegativeSelection
                     automaticSelection = selection
                     if (selection != null) {
-                        editor.select(selection.region, selection.mask)
+                        editor.select(selection.region)
                         editor.showMessage(localized("已标出照片区域；请检查范围并确认。", "Photograph marked. Check the region and confirm."))
                     } else if (candidate == null) editor.showMessage(localized("没有找到可靠候选，请手动框选照片内容。", "No reliable candidate. Select image content manually."))
                     else {
