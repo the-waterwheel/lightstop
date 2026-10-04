@@ -674,7 +674,7 @@ class CameraController(
     private var filmSampleReference: FilmNegativeBaseSample? = null
     private var filmControlledCurve: Boolean? = null
     internal var onFilmNegativePreviewError: ((String) -> Unit)? = null
-    internal var onFilmNegativePreviewReady: (() -> Unit)? = null
+    internal var onFilmNegativePreviewReady: ((String) -> Unit)? = null
     internal var onFilmNegativeBaseInvalidated: (() -> Unit)? = null
     internal var onFilmNegativeProcessingChanged: ((Boolean) -> Unit)? = null
 
@@ -968,7 +968,7 @@ class CameraController(
             onFirstFrame = {
                 mainHandler.post {
                     if (filmNegativeEnabled && filmNegativeRenderer === renderer) {
-                        onFilmNegativePreviewReady?.invoke()
+                        onFilmNegativePreviewReady?.invoke(cameraInfo.cameraId)
                     }
                 }
             },
@@ -1442,6 +1442,10 @@ class CameraController(
             failManualAcceptance(IllegalStateException("Camera selection changed"))
             resetRecoveryState()
             closeCamera()
+            if (filmNegativeEnabled) {
+                filmNegativeLocked = false
+                releaseFilmRenderer()
+            }
             val pending = cameraCatalog.discover().firstOrNull { it.cameraId == cameraId }
             postInfo(
                 CameraUiInfo(

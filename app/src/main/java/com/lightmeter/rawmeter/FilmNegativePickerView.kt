@@ -23,7 +23,8 @@ internal enum class FilmNegativePickMode { BASE, FRAME }
 @SuppressLint("ViewConstructor")
 internal class FilmNegativePickerView(context: Context, private val english: Boolean,
     frame: FilmNegativeFrozenFrame, val mode: FilmNegativePickMode,
-    cancel: () -> Unit, confirm: (FilmNegativeRegion) -> Unit, findBase: () -> Unit) : LinearLayout(context) {
+    cancel: () -> Unit, confirm: (FilmNegativeRegion) -> Unit, findBase: () -> Unit,
+    darkMode: Boolean = true) : LinearLayout(context) {
     private val message = TextView(context)
     private val image = RegionImage(context, frame, mode)
     private val confirmButton: Button
@@ -31,9 +32,10 @@ internal class FilmNegativePickerView(context: Context, private val english: Boo
 
     init {
         orientation = VERTICAL
-        setBackgroundColor(Color.rgb(16, 16, 16))
+        val foreground = if (darkMode) Color.WHITE else Color.BLACK
+        setBackgroundColor(if (darkMode) Color.rgb(16, 16, 16) else Color.WHITE)
         isClickable = true
-        message.setTextColor(Color.WHITE)
+        message.setTextColor(foreground)
         message.textSize = 13f
         val padding = (12 * resources.displayMetrics.density).toInt()
         message.setPadding(padding, padding / 2, padding, padding / 2)
@@ -41,7 +43,7 @@ internal class FilmNegativePickerView(context: Context, private val english: Boo
         val actions = LinearLayout(context)
         fun action(label: String, callback: () -> Unit) = Button(context).apply {
             text = label; textSize = 12f; isAllCaps = false
-            setTextColor(Color.WHITE); setBackgroundColor(Color.rgb(48, 48, 48))
+            setTextColor(foreground); setBackgroundColor(if (darkMode) Color.rgb(48, 48, 48) else Color.rgb(235, 235, 235))
             setOnClickListener { callback() }
         }
         actions.addView(action(word("取消", "Cancel"), cancel), LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f))

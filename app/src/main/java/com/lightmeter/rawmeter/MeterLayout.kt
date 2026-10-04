@@ -81,6 +81,7 @@ class MeterLayout @JvmOverloads constructor(
         fun onFilmNegativeFrameRequested(mode: FilmNegativePickMode)
         fun onFilmNegativeFrozenSettingsAccepted(frame: FilmNegativeFrozenFrame, settings: FilmNegativeSettings, completion: (Boolean) -> Unit)
         fun onFilmNegativeRetryRequested()
+        fun onFilmNegativeCameraSelected(cameraId: String)
         fun onParameterCaptureRequested(
             draftId: String,
             snapshot: ParameterMeterSnapshot,
@@ -860,6 +861,7 @@ class MeterLayout @JvmOverloads constructor(
                 filmNegativeToolView.setCameraLocked(false)
                 listener?.onFilmNegativeRetryRequested()
             }
+            override fun onCameraSelected(cameraId: String) { listener?.onFilmNegativeCameraSelected(cameraId) }
         }
         parameterRecordEditorView.listener = object : ParameterRecordEditorView.Listener {
             override fun onCancelRequested(draft: ParameterCaptureDraft) {
@@ -1214,6 +1216,17 @@ class MeterLayout @JvmOverloads constructor(
 
     fun currentSurfaceTexture(): SurfaceTexture? = textureView.surfaceTexture
 
+    internal fun beginFilmNegativeCameraSwitch(cameraId: String) {
+        val snapshot = if (textureView.isAvailable && textureView.width > 0 && textureView.height > 0) {
+            val scale = min(1f, 384f / max(textureView.width, textureView.height))
+            runCatching { textureView.getBitmap((textureView.width * scale).roundToInt().coerceAtLeast(1),
+                (textureView.height * scale).roundToInt().coerceAtLeast(1)) }.getOrNull()
+        } else null
+        filmNegativeToolView.beginCameraSwitch(snapshot,
+            RectF(textureView.left.toFloat(), textureView.top.toFloat(),
+                textureView.right.toFloat(), textureView.bottom.toFloat()), cameraId)
+    }
+
     fun refresh(frameChanged: Boolean = false) {
         if (frameChanged) {
             zoneView.refreshGeometry()
@@ -1241,6 +1254,7 @@ class MeterLayout @JvmOverloads constructor(
         recordCaptureSliderView.invalidate()
         updateAngleMeteringControl()
         filmSelectorView.applyTheme()
+        filmNegativeToolView.applyTheme()
     }
 
     fun showSettings() {
@@ -1506,7 +1520,7 @@ class MeterLayout @JvmOverloads constructor(
         activeToolId = null
         filmNegativeToolView.visibility = View.GONE
         listener?.onFilmNegativePreviewChanged(false)
-        filmNegativeToolView.discardFrozenFrame()
+        filmNegativeToolView.closePage()
         instrumentView.visibility = if (isZoneMode) View.INVISIBLE else View.VISIBLE
         zoneView.visibility = if (isZoneMode) View.VISIBLE else View.GONE
         if (backToTools) {
