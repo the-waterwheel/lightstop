@@ -30,7 +30,16 @@ data class FilmNegativeSettings(
     val colorCorrection: FilmNegativeColorCorrection? = null,
     val colorStrength: Float = 0.7f,
     val referenceSource: FilmNegativeReferenceSource = FilmNegativeReferenceSource.DEFAULT,
+    val redAlignment: Float = 0f,
+    val greenAlignment: Float = 0f,
+    val blueAlignment: Float = 0f,
+    val redCurve: FilmNegativeCurve = FilmNegativeCurve(),
+    val greenCurve: FilmNegativeCurve = FilmNegativeCurve(),
+    val blueCurve: FilmNegativeCurve = FilmNegativeCurve(),
+    val contrast: Float = 1f,
 ) {
+    fun alignment(channel: Int) = when (channel) { 0 -> redAlignment; 1 -> greenAlignment; else -> blueAlignment }
+    fun curve(channel: Int) = when (channel) { 0 -> redCurve; 1 -> greenCurve; else -> blueCurve }
     fun base(channel: Int): Float = when (channel) {
         0 -> baseRed
         1 -> baseGreen
@@ -67,22 +76,24 @@ internal object FilmNegativeMath {
         val transmission = linearize(encoded).coerceAtLeast(1e-6)
         val reference = linearize(base).coerceAtLeast(1e-6)
         val rawDensity = -log10(transmission / reference)
-        val density = settings.colorCorrection?.apply(rawDensity, channel, settings.colorStrength) ?: rawDensity
+        val density = (settings.colorCorrection?.apply(rawDensity, channel, settings.colorStrength) ?: rawDensity) +
+            settings.alignment(channel).takeIf { it.isFinite() }?.coerceIn(-.5f, .5f).let { it ?: 0f }
+        fun curved(light: Double) = settings.curve(channel).evaluate(light.coerceAtLeast(0.0).pow(1.0 / 2.2))
+            .coerceAtLeast(0.0).pow(2.2).coerceAtMost(16.0).toFloat()
         if (settings.regionTone) {
             val span = (settings.whiteDensity - settings.blackDensity).coerceAtLeast(0.05f)
-            return ((density - settings.blackDensity) / span).coerceIn(0.0, 4.0)
-                .pow(2.2).coerceAtMost(16.0).toFloat()
+            return curved(((density - settings.blackDensity) / span).coerceIn(0.0, 4.0).pow(2.2))
         }
         settings.densityWindow?.let { window ->
             val low = window.low(channel) + settings.blackDensity
             val span = ((window.high(channel) - window.low(channel)) * settings.whiteDensity / 1.5f).coerceAtLeast(0.05f)
-            return ((density - low) / span).coerceIn(0.0, 4.0).pow(2.2).coerceAtMost(16.0).toFloat()
+            return curved(((density - low) / span).coerceIn(0.0, 4.0).pow(2.2))
         }
         val span = (settings.whiteDensity - settings.blackDensity).coerceAtLeast(0.05f)
         val slope = settings.filmGamma.coerceIn(0.3f, 1.5f)
         val black = 10.0.pow(-span / slope.toDouble())
         val light = 10.0.pow(((density - settings.blackDensity - span) / slope).coerceAtMost(2.0))
-        return ((light - black) / (1.0 - black)).coerceIn(0.0, 16.0).toFloat()
+        return curved(((light - black) / (1.0 - black)).coerceIn(0.0, 16.0))
     }
 
     fun lookup(settings: FilmNegativeSettings): ByteArray = ByteArray(256 * 3) { index ->
@@ -151,6 +162,11 @@ internal object FilmNegativeMath {
         var gray = color[0] * 0.2126 + color[1] * 0.7152 + color[2] * 0.0722
         val saturation = if (settings.monochrome) 0.0 else settings.saturation.coerceIn(0f, 2f).toDouble()
         color = DoubleArray(3) { gray + (color[it] - gray) * saturation }
+        if (abs(settings.contrast - 1f) > .0001f) {
+            val level = (.18 * (gray.coerceAtLeast(0.0) / .18).pow(settings.contrast.coerceIn(.5f, 2f).toDouble())).coerceAtMost(1024.0)
+            color = DoubleArray(3) { color[it] * level / max(gray, .0001) }
+            gray = level
+        }
         val mapped = if (gray <= 0.75) gray else 0.75 + 0.25 * (1 - exp(-(gray - 0.75) / 0.25))
         val scale = mapped / max(gray, 0.0001)
         color = DoubleArray(3) { color[it] * scale }

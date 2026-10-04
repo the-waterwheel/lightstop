@@ -211,6 +211,8 @@ internal object FilmNegativeSelectionAnalysis {
             whiteDensity = corrected[(corrected.size * .98f).toInt().coerceAtMost(corrected.lastIndex)],
             regionTone = true, densityWindow = null, colorCorrection = correction,
             gamma = 1f, exposureEv = 0f, warmth = 0f, tint = 0f, saturation = 1f, inverted = true,
+            redAlignment = 0f, greenAlignment = 0f, blueAlignment = 0f,
+            redCurve = FilmNegativeCurve(), greenCurve = FilmNegativeCurve(), blueCurve = FilmNegativeCurve(), contrast = 1f,
             referenceSource = if (reference == null) FilmNegativeReferenceSource.CONTENT_ESTIMATE else FilmNegativeReferenceSource.FILM_BORDER)
         return FilmNegativeSelection(r, reference?.region, adjusted, frame.evidence, frame.orientationToken, mask, baseSupport)
     }

@@ -139,7 +139,7 @@ internal class FilmNegativeRenderer(
     }
 
     private fun curveSettings(value: FilmNegativeSettings) = value.copy(gamma = 1f, exposureEv = 0f,
-        saturation = 1f, monochrome = false, warmth = 0f, tint = 0f, inverted = false, showGuide = false)
+        saturation = 1f, monochrome = false, warmth = 0f, tint = 0f, contrast = 1f, inverted = false, showGuide = false)
 
     fun observe(evidence: FilmNegativeFrameEvidence) {
         if (released.get()) return
@@ -385,7 +385,7 @@ internal class FilmNegativeRenderer(
         GLES20.glDeleteShader(vertex)
         GLES20.glDeleteShader(fragment)
         check(linked[0] != 0) { log }
-        for (name in listOf("uTextureMatrix", "uDisplayMatrix", "uSample", "uGuide", "uInverted", "uSaturation", "uMonochrome", "uCamera", "uLookup", "uGamma", "uExposure", "uColorShift")) {
+        for (name in listOf("uTextureMatrix", "uDisplayMatrix", "uSample", "uGuide", "uInverted", "uSaturation", "uMonochrome", "uCamera", "uLookup", "uGamma", "uExposure", "uColorShift", "uContrast")) {
             locations[name] = GLES20.glGetUniformLocation(program, name)
         }
         locations["aPosition"] = GLES20.glGetAttribLocation(program, "aPosition")
@@ -472,6 +472,7 @@ internal class FilmNegativeRenderer(
         GLES20.glUniform1f(locations.getValue("uSaturation"), settings.saturation.coerceIn(0f, 2f))
         GLES20.glUniform1f(locations.getValue("uGamma"), settings.gamma.coerceIn(0.3f, 3f))
         GLES20.glUniform1f(locations.getValue("uExposure"), settings.exposureEv.coerceIn(-3f, 3f))
+        GLES20.glUniform1f(locations.getValue("uContrast"), settings.contrast.coerceIn(.5f, 2f))
         GLES20.glUniform3f(locations.getValue("uColorShift"),
             0.5f * settings.warmth + 0.25f * settings.tint, -0.5f * settings.tint,
             -0.5f * settings.warmth + 0.25f * settings.tint)
@@ -566,6 +567,7 @@ internal class FilmNegativeRenderer(
             uniform float uSaturation;
             uniform float uGamma;
             uniform float uExposure;
+            uniform float uContrast;
             uniform vec3 uColorShift;
             varying mediump vec2 vUv;
             varying mediump vec2 vGuideUv;
@@ -593,6 +595,11 @@ internal class FilmNegativeRenderer(
                 color = min(pow(max(color, vec3(0.0)), vec3(1.0 / uGamma)), vec3(1024.0)) * exp2(vec3(uExposure) + uColorShift);
                 float gray = dot(color, vec3(0.2126, 0.7152, 0.0722));
                 color = uMonochrome == 1 ? vec3(gray) : mix(vec3(gray), color, uSaturation);
+                if (abs(uContrast - 1.0) > 0.0001) {
+                    float level = min(0.18 * pow(max(gray, 0.0) / 0.18, uContrast), 1024.0);
+                    color *= level / max(gray, 0.0001);
+                    gray = level;
+                }
                 float mapped = gray <= 0.75 ? gray : 0.75 + 0.25 * (1.0 - exp(-(gray - 0.75) / 0.25));
                 color *= mapped / max(gray, 0.0001);
                 float hi = max(color.r, max(color.g, color.b));
