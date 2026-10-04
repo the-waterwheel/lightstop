@@ -200,7 +200,7 @@ class ToolsView(
         val size = min(box.width(), box.height()) * 0.72f
         val film = RectF(box.centerX() - size * 0.55f, box.centerY() - size * 0.36f,
             box.centerX() + size * 0.55f, box.centerY() + size * 0.36f)
-        paint.color = Color.WHITE
+        paint.color = Color.BLACK
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 2f * density
         canvas.drawRoundRect(film, 3f * density, 3f * density, paint)
