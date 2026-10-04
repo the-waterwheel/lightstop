@@ -14,6 +14,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $openCvVersion = "4.12.0"
+$aarRevision = "r4-perf"
 $moduleList = "core,imgproc,imgcodecs,video,videoio,features2d,calib3d,java"
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 
@@ -244,7 +245,7 @@ if (-not (Test-Path -LiteralPath $generatedAar)) {
     throw "Generated OpenCV AAR is missing: $generatedAar"
 }
 
-$versionedAar = Join-Path $outputDir "opencv-slim-$openCvVersion-r1.aar"
+$versionedAar = Join-Path $outputDir "opencv-slim-$openCvVersion-$aarRevision.aar"
 Copy-Item -LiteralPath $generatedAar -Destination $versionedAar -Force
 $aarHash = Get-FileHash -Algorithm SHA256 -LiteralPath $versionedAar
 

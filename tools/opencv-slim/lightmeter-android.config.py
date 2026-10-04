@@ -14,6 +14,17 @@ cmake_common_vars = {
     "ANDROID_GRADLE_PLUGIN_VERSION": "8.2.2",
     "GRADLE_VERSION": "8.7",
     "KOTLIN_PLUGIN_VERSION": "1.9.22",
+    # Keep the runtime algorithms, Java/JNI surface, SIMD and threading acceleration.
+    # Only omit file-format backends that the application never decodes or encodes.
+    "WITH_TBB": "ON",
+    "BUILD_TBB": "ON",
+    "WITH_CAROTENE": "ON",
+    "WITH_OPENJPEG": "OFF",
+    "WITH_TIFF": "OFF",
+    "WITH_WEBP": "OFF",
+    "WITH_OPENEXR": "OFF",
+    "WITH_AVIF": "OFF",
+    "WITH_JASPER": "OFF",
 }
 
 # Match app/build.gradle.kts. Keep arm64 first because it is the primary device ABI.
@@ -23,7 +34,7 @@ ABIs = [
         "arm64-v8a",
         None,
         ndk_api_level=ANDROID_NATIVE_API_LEVEL,
-        cmake_vars=cmake_common_vars,
+        cmake_vars={**cmake_common_vars, "WITH_KLEIDICV": "ON"},
     ),
     ABI(
         "2",
@@ -37,6 +48,6 @@ ABIs = [
         "x86_64",
         None,
         ndk_api_level=ANDROID_NATIVE_API_LEVEL,
-        cmake_vars=cmake_common_vars,
+        cmake_vars={**cmake_common_vars, "WITH_IPP": "ON"},
     ),
 ]
