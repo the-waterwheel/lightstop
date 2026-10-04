@@ -10,6 +10,7 @@ import android.graphics.RectF
 import android.graphics.Typeface
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
+import android.view.Surface
 import android.view.View
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -50,7 +51,7 @@ class VignettingCalibrationView(
     var isCalibrating: Boolean = false
         private set
 
-    private val density = resources.displayMetrics.density
+    private val density get() = layoutDensity(LayoutProfile.METER)
     private val foreground: Int
         get() = if (state.isDarkMode) Color.rgb(210, 210, 206) else Color.rgb(20, 20, 20)
     private val surfaceColor: Int
@@ -80,7 +81,7 @@ class VignettingCalibrationView(
     }
 
     fun calculatePreviewFrame(width: Int, height: Int): RectF =
-        calculateGeometry(width, height).preview
+        calculateGeometry(width, height).also { geometry = it }.preview
 
     fun applyTheme() = invalidate()
 
@@ -141,7 +142,9 @@ class VignettingCalibrationView(
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        val g = geometry ?: calculateGeometry(width, height).also { geometry = it }
+        // Preview size can change after a camera/session switch without changing this View's
+        // bounds. Recalculate so the overlay, controls, history, and TextureView stay aligned.
+        val g = calculateGeometry(width, height).also { geometry = it }
         drawSurfaceOutsidePreview(canvas, g.preview)
         drawHeader(canvas, g)
         drawPreviewOverlay(canvas, g)
@@ -286,8 +289,8 @@ class VignettingCalibrationView(
         boldPaint.textSize = 11f * density
         val buttonText = when {
             !rawAvailable -> localized(
-                "无法输出 RAW，无需校准",
-                "RAW unavailable; no calibration needed",
+                "当前镜头不支持此项校准",
+                "This lens does not support this calibration",
             )
             isCalibrating -> localized("正在校准", "Calibrating")
             info != null -> localized("重新拍摄并矫正", "Capture and recalibrate")
@@ -321,7 +324,10 @@ class VignettingCalibrationView(
                 if (currentCameraRawAvailable()) {
                     localized("暂无矫正记录", "No correction history")
                 } else {
-                    localized("无法输出 RAW，无需校准", "RAW output unavailable; no calibration needed")
+                    localized(
+                        "当前镜头不支持此项校准",
+                        "This lens does not support this calibration",
+                    )
                 },
                 g.historyRows.first().centerX(),
                 g.historyRows.first().centerY(),
@@ -528,8 +534,8 @@ class VignettingCalibrationView(
             paint.textSize = 7f * density
             canvas.drawText(
                 localized(
-                    "无法输出 RAW，无需校准",
-                    "RAW output is unavailable; no calibration is needed",
+                    "当前镜头不支持此项校准",
+                    "This lens does not support this calibration",
                 ),
                 rect.left,
                 rect.bottom + 11f * density,
@@ -596,8 +602,8 @@ class VignettingCalibrationView(
                         listener?.onCalibrationRequested()
                     } else {
                         statusText = localized(
-                            "无法输出 RAW，无需校准",
-                            "RAW output is unavailable; no calibration is needed",
+                            "当前镜头不支持此项校准",
+                            "This lens does not support this calibration",
                         )
                         statusIsError = false
                         invalidate()
@@ -633,7 +639,7 @@ class VignettingCalibrationView(
             previewBounds = RectF(pad, headerHeight + gap, w - pad, h * 0.61f)
             controls = RectF(pad, h * 0.61f + gap, w - pad, h - pad)
         }
-        val preview = fitAspect(previewBounds, fullPreviewAspect(landscape))
+        val preview = fitAspect(previewBounds, fullPreviewAspect())
         val cameraWidth = minOf(preview.width() - 14f * density, 210f * density)
             .coerceAtLeast(96f * density)
         val camera = RectF(
@@ -662,15 +668,14 @@ class VignettingCalibrationView(
         return Geometry(preview, back, reset, camera, controls, historyRows, primary)
     }
 
-    private fun fullPreviewAspect(landscape: Boolean): Float {
-        val size = state.cameraInfo.previewSize
-        val longAspect = if (size != null && size.width > 0 && size.height > 0) {
-            max(size.width, size.height).toFloat() / min(size.width, size.height).toFloat()
-        } else {
-            4f / 3f
-        }
-        return if (landscape) longAspect else 1f / longAspect
-    }
+    private fun fullPreviewAspect(): Float = PreviewOutputGeometry.displayAspect(
+        landscapeAspect = state.currentPreviewLandscapeAspect(),
+        relativeRotationDegrees = CameraPreviewTransform.relativeRotationDegrees(
+            sensorOrientationDegrees = state.cameraInfo.sensorOrientationDegrees,
+            displayRotation = display?.rotation ?: Surface.ROTATION_0,
+            lensFacing = state.cameraInfo.lensFacing,
+        ),
+    )
 
     private fun fitAspect(bounds: RectF, aspect: Float): RectF {
         val boundsAspect = bounds.width() / bounds.height()

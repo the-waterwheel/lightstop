@@ -1,0 +1,401 @@
+{
+  "methods": [
+    {
+      "id": "ADOX-CMS20",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 0.1,
+      "officialMaximumSeconds": 10,
+      "evidence": "A",
+      "longExposureFilter": "无倒易率专用滤镜；1s +1/2 EV，10s +1 EV",
+      "filterRule": "未计入（非TTL时先折算EV入Tm）",
+      "algorithm": "厂家离散节点；在 log2(Tm)-log2(Tc/Tm) 补偿档位空间采用保形三次曲线拟合",
+      "warning": "官方 ADOTECH IV 资料给出 1s +1/2 EV、10s +1 EV；不同 ADOTECH 版本仍建议包围曝光。",
+      "confidence": "≤0.1s 无补偿(A)\n0.1s–10s A级\n>10s 仅曲线估算",
+      "sourceUrl": "https://www.fotoimpex.com/shop/images/products/media/30945_5_PDF-Datasheet.pdf",
+      "points": [
+        { "meteredSeconds": 1, "correctedSeconds": 1.414214, "filter": "无倒易率专用滤镜" },
+        { "meteredSeconds": 10, "correctedSeconds": 20, "filter": "无倒易率专用滤镜" }
+      ]
+    },
+    {
+      "id": "PUB-FUJI-PRO160NS",
+      "type": "FIXED_EV",
+      "parameter": 0.333333,
+      "noCompensationSeconds": 3.999999,
+      "officialMaximumSeconds": null,
+      "evidence": "A",
+      "longExposureFilter": "无需长曝CC滤镜；4s及以上 +1/3 EV",
+      "filterRule": "不适用（无需倒易率滤镜）",
+      "algorithm": "1/4000–2s：Tc=Tm；4s及以上按官方 +1/3 EV 换算为 Tc=Tm×2^(1/3)",
+      "warning": "官方表从 4s 起给出 +1/3 EV；2s 与 4s 之间没有单列节点，保持原测光时间。",
+      "confidence": "≤2s 无补偿(A)\n2s–4s 无单列节点\n≥4s +1/3 EV(A)",
+      "sourceUrl": "https://asset.fujifilm.com/www/jp/files/2024-04/6b75b1c1cb4253623fb2cd7a56ff7443/datasheet_pro160ns_01.pdf",
+      "points": []
+    },
+    {
+      "id": "PUB-VISION3-50D-LONG",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": 10,
+      "evidence": "B",
+      "longExposureFilter": "10s：CC10R，+1 EV",
+      "filterRule": "已计入（EV已换算为最终时间，勿重复叠加曝光因子）",
+      "algorithm": "品牌技术节点；log2(Tm)-log2(Tc/Tm) 补偿档位空间保形三次曲线拟合",
+      "warning": "SILBERSALZ35 对同一 VISION3 50D 乳剂公布的长曝指南；Reflx Lab 分装或不同冲洗工艺应包围曝光。",
+      "confidence": "≤1s Kodak官方无补偿(A)\n1s–10s 同乳剂品牌指南(B)\n>10s 仅曲线估算",
+      "sourceUrl": "https://silbersalz35.com/faq/",
+      "points": [
+        { "meteredSeconds": 10, "correctedSeconds": 20, "filter": "10s：CC10R，+1 EV" }
+      ]
+    },
+    {
+      "id": "PUB-VISION3-250D-LONG",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": 10,
+      "evidence": "B",
+      "longExposureFilter": "10s：CC10R，+1 EV",
+      "filterRule": "已计入（EV已换算为最终时间，勿重复叠加曝光因子）",
+      "algorithm": "品牌技术节点；log2(Tm)-log2(Tc/Tm) 补偿档位空间保形三次曲线拟合",
+      "warning": "SILBERSALZ35 对同一 VISION3 250D 乳剂公布的长曝指南；Reflx Lab 分装或不同冲洗工艺应包围曝光。",
+      "confidence": "≤1s Kodak官方无补偿(A)\n1s–10s 同乳剂品牌指南(B)\n>10s 仅曲线估算",
+      "sourceUrl": "https://silbersalz35.com/faq/",
+      "points": [
+        { "meteredSeconds": 10, "correctedSeconds": 20, "filter": "10s：CC10R，+1 EV" }
+      ]
+    },
+    {
+      "id": "PUB-VISION3-500T-LONG",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 0.1,
+      "officialMaximumSeconds": 10,
+      "evidence": "B",
+      "longExposureFilter": "1s/10s：CC10R；分别 +2/3 EV、+1 EV",
+      "filterRule": "已计入（EV已换算为最终时间，勿重复叠加曝光因子）",
+      "algorithm": "品牌技术节点；log2(Tm)-log2(Tc/Tm) 补偿档位空间保形三次曲线拟合",
+      "warning": "SILBERSALZ35 对同一 VISION3 500T 乳剂公布的长曝指南；Reflx Lab 分装或不同冲洗工艺应包围曝光。",
+      "confidence": "≤0.1s Kodak官方无补偿(A)\n0.1s–10s 同乳剂品牌指南(B)\n>10s 仅曲线估算",
+      "sourceUrl": "https://silbersalz35.com/faq/",
+      "points": [
+        { "meteredSeconds": 1, "correctedSeconds": 1.587401, "filter": "1s：CC10R，+2/3 EV" },
+        { "meteredSeconds": 10, "correctedSeconds": 20, "filter": "10s：CC10R，+1 EV" }
+      ]
+    },
+    {
+      "id": "PUB-VISION2-50D-LONG",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": 10,
+      "evidence": "A",
+      "longExposureFilter": "10s：CC10R，+1/3 EV",
+      "filterRule": "已计入（EV已换算为最终时间，勿重复叠加曝光因子）",
+      "algorithm": "Kodak 历史厂家节点；log2(Tm)-log2(Tc/Tm) 补偿档位空间保形三次曲线拟合",
+      "warning": "Kodak 2008 Cinematographer's Field Guide 历史节点；库存均已过期，另需按保存状态调整实际 EI。",
+      "confidence": "≤1s 厂家无补偿(A)\n1s–10s 厂家节点拟合(A)\n>10s 仅曲线估算",
+      "sourceUrl": "https://www.cinematography.net/Files/H2_Field-Guide_9-22-08.pdf",
+      "points": [
+        { "meteredSeconds": 10, "correctedSeconds": 12.59921, "filter": "10s：CC10R，+1/3 EV" }
+      ]
+    },
+    {
+      "id": "PUB-VISION2-200T-LONG",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 0.1,
+      "officialMaximumSeconds": 10,
+      "evidence": "A",
+      "longExposureFilter": "1s/10s：CC10R；分别 +2/3 EV、+1 EV",
+      "filterRule": "已计入（EV已换算为最终时间，勿重复叠加曝光因子）",
+      "algorithm": "Kodak 历史厂家节点；log2(Tm)-log2(Tc/Tm) 补偿档位空间保形三次曲线拟合",
+      "warning": "Kodak 2008 Cinematographer's Field Guide 历史节点；库存均已过期，另需按保存状态调整实际 EI。",
+      "confidence": "≤0.1s 厂家无补偿(A)\n0.1s–10s 厂家节点拟合(A)\n>10s 仅曲线估算",
+      "sourceUrl": "https://www.cinematography.net/Files/H2_Field-Guide_9-22-08.pdf",
+      "points": [
+        { "meteredSeconds": 1, "correctedSeconds": 1.587401, "filter": "1s：CC10R，+2/3 EV" },
+        { "meteredSeconds": 10, "correctedSeconds": 20, "filter": "10s：CC10R，+1 EV" }
+      ]
+    },
+    {
+      "id": "PUB-VISION2-250D-LONG",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 0.1,
+      "officialMaximumSeconds": 10,
+      "evidence": "A",
+      "longExposureFilter": "1s/10s：CC10R；分别 +2/3 EV、+1 EV",
+      "filterRule": "已计入（EV已换算为最终时间，勿重复叠加曝光因子）",
+      "algorithm": "Kodak 历史厂家节点；log2(Tm)-log2(Tc/Tm) 补偿档位空间保形三次曲线拟合",
+      "warning": "5205 单片技术表在 1s/10s 均列 CC10R；2008 Field Guide 的 1s 行列作 CC10Y，存在版本差异，实拍应包围曝光。",
+      "confidence": "≤0.1s 厂家无补偿(A)\n0.1s–10s 厂家节点拟合(A)\n>10s 仅曲线估算",
+      "sourceUrl": "https://125px.com/docs/motionpicture/kodak/5205-Vision2-250D-tech.pdf",
+      "points": [
+        { "meteredSeconds": 1, "correctedSeconds": 1.587401, "filter": "1s：CC10R，+2/3 EV" },
+        { "meteredSeconds": 10, "correctedSeconds": 20, "filter": "10s：CC10R，+1 EV" }
+      ]
+    },
+    {
+      "id": "PUB-VISION2-500T-LONG",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 0.1,
+      "officialMaximumSeconds": 10,
+      "evidence": "A",
+      "longExposureFilter": "1s/10s：CC10R；分别 +2/3 EV、+1 EV",
+      "filterRule": "已计入（EV已换算为最终时间，勿重复叠加曝光因子）",
+      "algorithm": "Kodak 历史厂家节点；log2(Tm)-log2(Tc/Tm) 补偿档位空间保形三次曲线拟合",
+      "warning": "Kodak H-1-5218t 历史技术资料节点；库存均已过期，另需按保存状态调整实际 EI。",
+      "confidence": "≤0.1s 厂家无补偿(A)\n0.1s–10s 厂家节点拟合(A)\n>10s 仅曲线估算",
+      "sourceUrl": "https://www.cinematography.net/Files/5218.pdf",
+      "points": [
+        { "meteredSeconds": 1, "correctedSeconds": 1.587401, "filter": "1s：CC10R，+2/3 EV" },
+        { "meteredSeconds": 10, "correctedSeconds": 20, "filter": "10s：CC10R，+1 EV" }
+      ]
+    },
+    {
+      "id": "PUB-VISION3-200T-LONG",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": 10,
+      "evidence": "B",
+      "longExposureFilter": "10s：+1/3 EV，无滤色片",
+      "filterRule": "已计入（EV已换算为最终时间，勿重复叠加曝光因子）",
+      "algorithm": "≤1s：Tc=Tm；在 log2(Tm)-log2(Tc/Tm) 补偿档位空间平滑拟合至 10s +1/3 EV 节点",
+      "warning": "Kodak 只公布至 1s 无补偿；10s 节点使用 SILBERSALZ35 对同一 VISION3 200T/5213 乳剂的品牌指南，按 B 级处理。",
+      "confidence": "≤1s Kodak厂家无补偿(A)\n1s–10s 同乳剂品牌节点拟合(B)\n>10s 仅曲线估算",
+      "sourceUrl": "https://silbersalz35.com/faq/",
+      "points": [
+        { "meteredSeconds": 10, "correctedSeconds": 12.59921, "filter": "10s：+1/3 EV，无滤色片" }
+      ]
+    },
+    {
+      "id": "PUB-ROLLEI-CROSSBIRD-200-LONG",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": 100,
+      "evidence": "B",
+      "longExposureFilter": "E-6：10s +1 EV/CC07.5Y；100s +2 EV/CC15Y+CC05C",
+      "filterRule": "EV 已计入最终时间；滤色片仅适用于 E-6 正冲，不适用于 C-41 负冲创意色偏",
+      "algorithm": "Agfa RSX II 200 厂家节点；log2(Tm)-log2(Tc/Tm) 补偿档位空间保形三次曲线拟合",
+      "warning": "Crossbird 可追溯为 Agfa Aviphot Chrome 200/RSX II 200 系分装；节点按同乳剂 B 级使用。C-41 负冲时仅参考曝光补偿，不显示为中性色彩保证。",
+      "confidence": "≤1s Agfa厂家无补偿(A)\n1s–100s 同乳剂继承(B)\n>100s 仅曲线估算",
+      "sourceUrl": "https://www.chrysis.net/wp-content/uploads/2020/08/Agfachrome_200_RSX-II.pdf",
+      "points": [
+        { "meteredSeconds": 10, "correctedSeconds": 20, "filter": "E-6 10s：CC07.5Y，+1 EV" },
+        { "meteredSeconds": 100, "correctedSeconds": 400, "filter": "E-6 100s：CC15Y + CC05C，+2 EV" }
+      ]
+    },
+    {
+      "id": "PUB-ROLLEI-RPX25",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": 50,
+      "evidence": "A",
+      "longExposureFilter": "无倒易率专用滤镜；拍摄滤镜另计",
+      "filterRule": "未计入（非TTL时先折算EV入Tm）",
+      "algorithm": "Rollei RPX 25 型号专用厂家节点；log2(Tm)-log2(Tc/Tm) 补偿档位空间保形三次曲线拟合",
+      "warning": "使用 Rollei RPX 25 型号专用数据表；超过厂家最后一个 50 秒节点仅作曲线估算。",
+      "confidence": "≤1s 无补偿(A)\n1s–50s 厂家节点拟合(A)\n>50s 仅曲线估算",
+      "sourceUrl": "https://www.rolleianalog.com/wp-content/uploads/2021/07/RPX25_Data-Sheet_EN_R210701.pdf",
+      "points": [
+        { "meteredSeconds": 2, "correctedSeconds": 3, "filter": "" },
+        { "meteredSeconds": 10, "correctedSeconds": 20, "filter": "" },
+        { "meteredSeconds": 20, "correctedSeconds": 50, "filter": "" },
+        { "meteredSeconds": 50, "correctedSeconds": 180, "filter": "" }
+      ]
+    },
+    {
+      "id": "PUB-ROLLEI-RPX100",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": 30,
+      "evidence": "A",
+      "longExposureFilter": "无倒易率专用滤镜；拍摄滤镜另计",
+      "filterRule": "未计入（非TTL时先折算EV入Tm）",
+      "algorithm": "Rollei RPX 100 型号专用厂家节点；log2(Tm)-log2(Tc/Tm) 补偿档位空间保形三次曲线拟合",
+      "warning": "使用 Rollei RPX 100 型号专用数据表；超过厂家最后一个 30 秒节点仅作曲线估算。",
+      "confidence": "≤1s 无补偿(A)\n1s–30s 厂家节点拟合(A)\n>30s 仅曲线估算",
+      "sourceUrl": "https://www.rolleianalog.com/wp-content/uploads/2021/07/RPX100_Data-Sheet_EN_R210701.pdf",
+      "points": [
+        { "meteredSeconds": 2, "correctedSeconds": 3, "filter": "" },
+        { "meteredSeconds": 5, "correctedSeconds": 8, "filter": "" },
+        { "meteredSeconds": 10, "correctedSeconds": 25, "filter": "" },
+        { "meteredSeconds": 20, "correctedSeconds": 75, "filter": "" },
+        { "meteredSeconds": 30, "correctedSeconds": 150, "filter": "" }
+      ]
+    },
+    {
+      "id": "PUB-ROLLEI-RPX400",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 0.5,
+      "officialMaximumSeconds": 20,
+      "evidence": "A",
+      "longExposureFilter": "无倒易率专用滤镜；拍摄滤镜另计",
+      "filterRule": "未计入（非TTL时先折算EV入Tm）",
+      "algorithm": "Rollei RPX 400 型号专用厂家节点；log2(Tm)-log2(Tc/Tm) 补偿档位空间保形三次曲线拟合",
+      "warning": "使用 Rollei RPX 400 型号专用数据表；超过厂家最后一个 20 秒节点仅作曲线估算。",
+      "confidence": "≤0.5s 无补偿(A)\n0.5s–20s 厂家节点拟合(A)\n>20s 仅曲线估算",
+      "sourceUrl": "https://www.rolleianalog.com/wp-content/uploads/2021/07/RPX400_Data-Sheet_EN_R210701.pdf",
+      "points": [
+        { "meteredSeconds": 1, "correctedSeconds": 2, "filter": "" },
+        { "meteredSeconds": 5, "correctedSeconds": 10, "filter": "" },
+        { "meteredSeconds": 10, "correctedSeconds": 30, "filter": "" },
+        { "meteredSeconds": 15, "correctedSeconds": 55, "filter": "" },
+        { "meteredSeconds": 20, "correctedSeconds": 80, "filter": "" }
+      ]
+    },
+    {
+      "id": "PUB-ROLLEI-80S",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 0.5,
+      "officialMaximumSeconds": 30,
+      "evidence": "B",
+      "longExposureFilter": "无倒易率专用滤镜；拍摄滤镜另计",
+      "filterRule": "未计入（非TTL时先折算EV入Tm）",
+      "algorithm": "Rollei Retro 80S 厂家节点；在 log2(Tm)-log2(Tc/Tm) 补偿档位空间采用保形三次曲线拟合",
+      "warning": "厂家在 1 秒和 2 秒处给出范围值，采用保守的较短端 1 秒→1 秒、2 秒→3 秒；建议包围曝光。",
+      "confidence": "≤0.5s 无补偿(A)\n0.5s–30s 厂家节点拟合(B)\n>30s 仅曲线估算",
+      "sourceUrl": "https://www.rolleianalog.com/wp-content/uploads/2021/07/Retro80S_Data-Sheet_EN_R210701.pdf",
+      "points": [
+        { "meteredSeconds": 1, "correctedSeconds": 1, "filter": "" },
+        { "meteredSeconds": 2, "correctedSeconds": 3, "filter": "" },
+        { "meteredSeconds": 4, "correctedSeconds": 8, "filter": "" },
+        { "meteredSeconds": 8, "correctedSeconds": 24, "filter": "" },
+        { "meteredSeconds": 15, "correctedSeconds": 60, "filter": "" },
+        { "meteredSeconds": 30, "correctedSeconds": 180, "filter": "" }
+      ]
+    },
+    {
+      "id": "PUB-ROLLEI-SUPERPAN",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 0.5,
+      "officialMaximumSeconds": 30,
+      "evidence": "B",
+      "longExposureFilter": "无倒易率专用滤镜；拍摄滤镜另计",
+      "filterRule": "未计入（非TTL时先折算EV入Tm）",
+      "algorithm": "Rollei Superpan 200 厂家节点；在 log2(Tm)-log2(Tc/Tm) 补偿档位空间采用保形三次曲线拟合",
+      "warning": "厂家在 1 秒和 2 秒处给出范围值，采用保守的较短端 1 秒→1 秒、2 秒→3 秒；建议包围曝光。",
+      "confidence": "≤0.5s 无补偿(A)\n0.5s–30s 厂家节点拟合(B)\n>30s 仅曲线估算",
+      "sourceUrl": "https://www.rolleianalog.com/wp-content/uploads/2021/07/SUPERPAN200_Data-Sheet_EN_R210701.pdf",
+      "points": [
+        { "meteredSeconds": 1, "correctedSeconds": 1, "filter": "" },
+        { "meteredSeconds": 2, "correctedSeconds": 3, "filter": "" },
+        { "meteredSeconds": 4, "correctedSeconds": 8, "filter": "" },
+        { "meteredSeconds": 8, "correctedSeconds": 24, "filter": "" },
+        { "meteredSeconds": 15, "correctedSeconds": 60, "filter": "" },
+        { "meteredSeconds": 30, "correctedSeconds": 180, "filter": "" }
+      ]
+    }
+  ],
+  "methodPatches": {
+    "PUB-KODAK-C41BW": {
+      "type": "BOUNDED_UNCHANGED",
+      "evidence": "A",
+      "algorithm": "Kodak BW400CN F-4036 厂家范围：1/10000–120s，Tc=Tm；超过 120s 不外推",
+      "warning": "Kodak 明确 1/10000–120 秒无需曝光或滤色补偿，并说明不建议超过 120 秒；计算器因此只开放到 120 秒。",
+      "confidence": "1/10000–120s 厂家明确无需补偿(A)\n>120s 厂家不建议且无数据",
+      "sourceUrl": "https://www.bw-reeltime.com/tech/BW400cn.pdf"
+    },
+    "LUCAS-P1.340-160": {
+      "evidence": "C",
+      "warning": "Portra 160/400 社区实拍曲线的幂律拟合；不是 Kodak 厂商公式，建议包围曝光。",
+      "sourceUrl": "https://www.flickr.com/groups/477426@N23/discuss/72157635197694957/"
+    },
+    "LUCAS-P1.340-400": {
+      "evidence": "C",
+      "warning": "Portra 160/400 社区实拍曲线的幂律拟合；不是 Kodak 厂商公式，建议包围曝光。",
+      "sourceUrl": "https://www.flickr.com/groups/477426@N23/discuss/72157635197694957/"
+    },
+    "LUCAS-P1.300-800": {
+      "evidence": "C",
+      "warning": "公开计算器的社区估算；没有 Kodak 厂商长曝公式，建议按 ±1 EV 包围曝光。",
+      "sourceUrl": "https://www.largeformatphotography.info/forum/showthread.php?106441-Portra-160-and-400-Reciprocity-Failure"
+    },
+    "ILF-PANF": {
+      "noCompensationSeconds": 1,
+      "evidence": "A",
+      "algorithm": "Tm≤1s：Tc=Tm；Tm>1s：Tc=Tm^1.33",
+      "warning": "ILFORD 2023 厂家公式；极长曝光还会受测光精度、场景反差和显影条件影响，建议包围曝光。",
+      "confidence": "≤1s 无补偿(A)\n>1s 厂家公式(A)",
+      "sourceUrl": "https://www.ilfordphoto.com/amfile/file/download/file/1964/product/681/"
+    },
+    "ILF-D400": {
+      "noCompensationSeconds": 1,
+      "evidence": "A",
+      "algorithm": "Tm≤1s：Tc=Tm；Tm>1s：Tc=Tm^1.41",
+      "warning": "ILFORD 2023 厂家公式；极长曝光还会受测光精度、场景反差和显影条件影响，建议包围曝光。",
+      "confidence": "≤1s 无补偿(A)\n>1s 厂家公式(A)",
+      "sourceUrl": "https://www.ilfordphoto.com/amfile/file/download/file/1964/product/681/"
+    },
+    "ILF-D3200": {
+      "noCompensationSeconds": 1,
+      "evidence": "A",
+      "algorithm": "Tm≤1s：Tc=Tm；Tm>1s：Tc=Tm^1.33",
+      "warning": "ILFORD 2023 厂家公式；极长曝光还会受测光精度、场景反差和显影条件影响，建议包围曝光。",
+      "confidence": "≤1s 无补偿(A)\n>1s 厂家公式(A)",
+      "sourceUrl": "https://www.ilfordphoto.com/amfile/file/download/file/1964/product/681/"
+    },
+    "ILF-FP4": {
+      "noCompensationSeconds": 1,
+      "evidence": "A",
+      "algorithm": "Tm≤1s：Tc=Tm；Tm>1s：Tc=Tm^1.26",
+      "warning": "ILFORD 2023 厂家公式；极长曝光还会受测光精度、场景反差和显影条件影响，建议包围曝光。",
+      "confidence": "≤1s 无补偿(A)\n>1s 厂家公式(A)",
+      "sourceUrl": "https://www.ilfordphoto.com/amfile/file/download/file/1964/product/681/"
+    },
+    "ILF-HP5": {
+      "noCompensationSeconds": 1,
+      "evidence": "A",
+      "algorithm": "Tm≤1s：Tc=Tm；Tm>1s：Tc=Tm^1.31",
+      "warning": "ILFORD 2023 厂家公式；极长曝光还会受测光精度、场景反差和显影条件影响，建议包围曝光。",
+      "confidence": "≤1s 无补偿(A)\n>1s 厂家公式(A)",
+      "sourceUrl": "https://www.ilfordphoto.com/amfile/file/download/file/1964/product/681/"
+    },
+    "ZLM-P1.10-Slide-OFF": {
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 10,
+      "officialMaximumSeconds": 1000,
+      "algorithm": "原社区 P=1.10 模型改为 log2 档位空间的连续保形曲线；10 秒边界不再跳变",
+      "warning": "社区估算模型；10 秒后平滑趋近原 P=1.10 曲线，建议按 ±1 EV 包围曝光。",
+      "confidence": "≤10s 无补偿(A)\n10s–1000s 社区平滑拟合(C)\n>1000s 仅曲线估算",
+      "points": [
+        { "meteredSeconds": 20, "correctedSeconds": 26.985657, "filter": "" },
+        { "meteredSeconds": 100, "correctedSeconds": 158.489319, "filter": "" },
+        { "meteredSeconds": 1000, "correctedSeconds": 1995.262315, "filter": "" }
+      ]
+    }
+  },
+  "filmMethodOverrides": {
+    "17": "LUCAS-P1.340-160",
+    "18": "LUCAS-P1.340-400",
+    "19": "LUCAS-P1.300-800",
+    "38": "PUB-VISION2-50D-LONG",
+    "39": "PUB-VISION2-200T-LONG",
+    "40": "PUB-VISION2-250D-LONG",
+    "41": "PUB-VISION2-500T-LONG",
+    "42": "PUB-VISION3-50D-LONG",
+    "43": "PUB-VISION3-200T-LONG",
+    "44": "PUB-VISION3-250D-LONG",
+    "45": "PUB-VISION3-500T-LONG",
+    "158": "PUB-ROLLEI-CROSSBIRD-200-LONG",
+    "187": "PUB-VISION3-50D-LONG",
+    "188": "PUB-VISION3-250D-LONG",
+    "189": "PUB-VISION3-500T-LONG",
+    "190": "PUB-VISION3-50D-LONG",
+    "191": "PUB-VISION3-200T-LONG",
+    "192": "PUB-VISION3-250D-LONG",
+    "193": "PUB-VISION3-500T-LONG"
+  }
+}

@@ -22,6 +22,8 @@ internal data class VignettingCalibrationMap(
     val activeBottom: Float,
     val gains: FloatArray,
     val createdAtEpochMs: Long = System.currentTimeMillis(),
+    /** RAW route/output signature; null for pre-signature files. */
+    val signature: CalibrationSignature? = null,
 ) {
     init {
         require(gridWidth >= 2 && gridHeight >= 2)
@@ -44,26 +46,52 @@ data class VignettingCalibrationInfo(
 )
 
 internal class VignettingCalibrationStore(context: Context) {
-    private val directory = File(context.filesDir, DIRECTORY_NAME)
+    private val appContext = context.applicationContext
+    private val directory = File(appContext.filesDir, DIRECTORY_NAME)
     private val cache = mutableMapOf<String, VignettingCalibrationMap>()
     private val historyInfoCache = mutableMapOf<String, List<VignettingCalibrationInfo>>()
+
+    @Volatile
+    private var activeContext: CalibrationCaptureContext? = null
+
+    fun setActiveContext(context: CalibrationCaptureContext?) {
+        activeContext = context
+    }
+
+    /** Whether the stored vignetting map describes the active RAW route/output. */
+    @Synchronized
+    fun signatureState(cameraId: String): CalibrationSignatureState {
+        val stored = load(cameraId)?.signature
+        val storedPresent = load(cameraId) != null
+        val current = activeContext?.vignettingSignature()
+            ?: stored?.copy(
+                buildFingerprintHash = CalibrationEnvironmentStore.buildFingerprintHash(),
+            )
+            ?: return if (storedPresent) {
+                CalibrationSignatureState.LEGACY_UNVERIFIED
+            } else {
+                CalibrationSignatureState.NONE
+            }
+        return CalibrationSignaturePolicy.classify(stored, storedPresent, current)
+    }
 
     @Synchronized
     fun save(cameraId: String, calibration: VignettingCalibrationMap) {
         if (cameraId.isBlank()) return
         directory.mkdirs()
+        val stamped = calibration.copy(signature = activeContext?.vignettingSignature())
         val previous = historyMaps(cameraId)
-        val updatedHistory = (listOf(calibration) + previous)
+        val updatedHistory = (listOf(stamped) + previous)
             .distinctBy { it.createdAtEpochMs }
             .take(HISTORY_LIMIT)
-        writeMap(fileFor(cameraId), calibration)
+        writeMap(fileFor(cameraId), stamped)
         updatedHistory.forEachIndexed { index, map ->
             writeMap(historyFileFor(cameraId, index), map)
         }
         (updatedHistory.size until HISTORY_LIMIT).forEach { index ->
             historyFileFor(cameraId, index).delete()
         }
-        cache[cameraId] = calibration
+        cache[cameraId] = stamped
         historyInfoCache[cameraId] = updatedHistory.map(::toInfo)
     }
 
@@ -80,6 +108,7 @@ internal class VignettingCalibrationStore(context: Context) {
             output.writeFloat(calibration.activeBottom)
             output.writeLong(calibration.createdAtEpochMs)
             calibration.gains.forEach(output::writeFloat)
+            output.writeUTF(calibration.signature?.serialize() ?: "")
         }
         if (!temporary.renameTo(destination)) {
             FileInputStream(temporary).use { input ->
@@ -92,7 +121,10 @@ internal class VignettingCalibrationStore(context: Context) {
     @Synchronized
     fun load(cameraId: String): VignettingCalibrationMap? {
         if (cameraId.isBlank()) return null
-        cache[cameraId]?.let { return it }
+        cache[cameraId]?.let { cached ->
+            if (isValid(cached.createdAtEpochMs)) return cached
+            cache.remove(cameraId)
+        }
         val file = fileFor(cameraId)
         val calibration = readMap(file)
         calibration?.let { cache[cameraId] = it }
@@ -103,7 +135,9 @@ internal class VignettingCalibrationStore(context: Context) {
         if (!file.isFile) return null
         return try {
             DataInputStream(BufferedInputStream(FileInputStream(file))).use { input ->
-                if (input.readInt() != FILE_MAGIC || input.readInt() != FILE_VERSION) return null
+                if (input.readInt() != FILE_MAGIC) return null
+                val version = input.readInt()
+                if (version != 1 && version != FILE_VERSION) return null
                 val width = input.readInt()
                 val height = input.readInt()
                 if (width !in 2..MAX_GRID_EDGE || height !in 2..MAX_GRID_EDGE) return null
@@ -112,11 +146,17 @@ internal class VignettingCalibrationStore(context: Context) {
                 val right = input.readFloat()
                 val bottom = input.readFloat()
                 val createdAt = input.readLong()
+                if (!isValid(createdAt)) return null
                 val gains = FloatArray(width * height) { input.readFloat() }
                 if (gains.any { !it.isFinite() || it !in MIN_STORED_GAIN..MAX_STORED_GAIN } ||
                     left !in 0f..1f || top !in 0f..1f || right !in 0f..1f ||
                     bottom !in 0f..1f || right <= left || bottom <= top
                 ) return null
+                val signature = if (version >= 2) {
+                    CalibrationSignature.parse(input.readUTF())
+                } else {
+                    null
+                }
                 VignettingCalibrationMap(
                     width,
                     height,
@@ -126,6 +166,7 @@ internal class VignettingCalibrationStore(context: Context) {
                     bottom,
                     gains,
                     createdAt,
+                    signature,
                 )
             }
         } catch (_: Exception) {
@@ -135,9 +176,16 @@ internal class VignettingCalibrationStore(context: Context) {
 
     @Synchronized
     fun history(cameraId: String): List<VignettingCalibrationInfo> {
-        historyInfoCache[cameraId]?.let { return it }
+        historyInfoCache[cameraId]?.let { cached ->
+            val valid = cached.filter { isValid(it.createdAtEpochMs) }
+            if (valid.size == cached.size) return valid
+            historyInfoCache[cameraId] = valid
+        }
         return historyMaps(cameraId).map(::toInfo).also { historyInfoCache[cameraId] = it }
     }
+
+    fun hasCalibrationArtifacts(): Boolean =
+        directory.listFiles()?.any { it.isFile && it.name.startsWith("vignette_") } == true
 
     @Synchronized
     fun restore(cameraId: String, createdAtEpochMs: Long): VignettingCalibrationInfo? {
@@ -204,6 +252,9 @@ internal class VignettingCalibrationStore(context: Context) {
         return listOfNotNull(load(cameraId))
     }
 
+    private fun isValid(timestamp: Long): Boolean =
+        CalibrationEnvironmentStore.isCalibrationTimestampValid(appContext, timestamp)
+
     fun gainAt(
         cameraId: String,
         sensorX: Float,
@@ -212,6 +263,7 @@ internal class VignettingCalibrationStore(context: Context) {
         imageHeight: Int,
     ): Double {
         val map = load(cameraId) ?: return 1.0
+        if (activeContext != null && !signatureState(cameraId).isApplicable) return 1.0
         if (imageWidth <= 0 || imageHeight <= 0) return 1.0
         val imageX = sensorX / imageWidth
         val imageY = sensorY / imageHeight
@@ -252,7 +304,7 @@ internal class VignettingCalibrationStore(context: Context) {
         private const val DIRECTORY_NAME = "vignetting-calibration"
         private const val HISTORY_LIMIT = 3
         private const val FILE_MAGIC = 0x5649474E
-        private const val FILE_VERSION = 1
+        private const val FILE_VERSION = 2
         private const val MAX_GRID_EDGE = 256
         private const val MIN_STORED_GAIN = 0.25f
         private const val MAX_STORED_GAIN = 6f

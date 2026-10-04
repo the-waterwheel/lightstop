@@ -2,6 +2,7 @@ package com.lightmeter.rawmeter
 
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import org.opencv.core.Point
 
 class ZoneCoordinateMapperTest {
     private val fullViewport = ZoneVisibleViewport(0f, 0f, 1f, 1f)
@@ -85,5 +86,35 @@ class ZoneCoordinateMapperTest {
 
         assertEquals(0.23f, portrait.first, 0.0001f)
         assertEquals(0.71f, portrait.second, 0.0001f)
+    }
+
+    @Test
+    fun `reference point survives analysis source coordinate changes`() {
+        val source = Point(120.0, 560.0)
+        val displayOriented = ZoneCoordinateMapper.remapAnalysisPoint(
+            source,
+            fromWidth = 400,
+            fromHeight = 800,
+            fromDisplayOriented = false,
+            fromDisplayRotationDegrees = 90,
+            toWidth = 800,
+            toHeight = 400,
+            toDisplayOriented = true,
+            toDisplayRotationDegrees = 0,
+        )
+        val roundTrip = ZoneCoordinateMapper.remapAnalysisPoint(
+            displayOriented,
+            fromWidth = 800,
+            fromHeight = 400,
+            fromDisplayOriented = true,
+            fromDisplayRotationDegrees = 0,
+            toWidth = 400,
+            toHeight = 800,
+            toDisplayOriented = false,
+            toDisplayRotationDegrees = 90,
+        )
+
+        assertEquals(source.x, roundTrip.x, 0.001)
+        assertEquals(source.y, roundTrip.y, 0.001)
     }
 }

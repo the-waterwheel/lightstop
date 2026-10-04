@@ -6,7 +6,6 @@ import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.DashPathEffect
 import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.Path
@@ -20,9 +19,11 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.view.animation.DecelerateInterpolator
 import kotlin.math.abs
+import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.math.sin
 
 private typealias Geometry = ZoneLayoutGeometry
 
@@ -34,12 +35,16 @@ class ZoneSystemView(
     interface Listener {
         fun onExitDrag(progress: Float, released: Boolean)
         fun onMarkRequested(marker: ZoneMarker)
+        fun onRemeasureHoldPrompt()
+        fun onRemeasureAllRequested(markerIds: List<Int>)
         fun onMarkerRemoved(markerId: Int)
         fun onMarkersCleared(markerIds: List<Int>)
         fun onOrientationToggle()
         fun onPreviewMappingChanged()
         fun onZoomMappingChanged(zoom: Float)
         fun onControlsChanged(frameChanged: Boolean)
+        fun onSettingsRequested()
+        fun onToolsRequested()
     }
 
     private enum class TouchTarget {
@@ -56,6 +61,8 @@ class ZoneSystemView(
         ZOOM,
         FORMAT,
         ORIENTATION,
+        SETTINGS,
+        TOOLS,
     }
 
     private data class MarkerDisplayMotion(
@@ -77,7 +84,7 @@ class ZoneSystemView(
     val session = ZoneMeterSession()
     var listener: Listener? = null
 
-    private val density = resources.displayMetrics.density
+    private val density get() = layoutDensity(LayoutProfile.METER)
     private val lightBlack = Color.rgb(20, 20, 20)
     private val nightForeground = Color.rgb(210, 210, 206)
     private val foreground: Int get() = if (state.isDarkMode) nightForeground else lightBlack
@@ -87,6 +94,8 @@ class ZoneSystemView(
     private val dividerColor: Int
         get() = if (state.isDarkMode) Color.rgb(84, 84, 80) else Color.rgb(190, 190, 186)
     private val red = Color.rgb(166, 27, 36)
+    private val latitudeOutsideRed: Int
+        get() = if (state.isDarkMode) Color.rgb(196, 116, 120) else Color.rgb(231, 151, 155)
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
@@ -95,9 +104,15 @@ class ZoneSystemView(
     private val boldPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         typeface = Typeface.create("sans", Typeface.BOLD)
     }
+    private val ev100BadgeRenderer = Ev100BadgeRenderer(
+        densityProvider = { density },
+        textDensityProvider = { layoutTextDensity(LayoutProfile.METER) },
+    )
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
 
     private var geometry: Geometry? = null
+    private var appliedLatitudeRange: FilmLatitudeRange? = null
+    private var appliedReciprocityMethod: ReciprocityMethod? = null
     private var touchTarget = TouchTarget.NONE
     private var touchStartX = 0f
     private var touchStartY = 0f
@@ -110,6 +125,7 @@ class ZoneSystemView(
     private var listGestureHorizontal = false
     private var clearDragDistance = 0f
     private var exitProgress = 0f
+    private var modeTransitionEnabled = true
     private var formatMenuOpen = false
     private var lastHapticAt = 0L
     private var lockSliderFraction = Float.NaN
@@ -117,6 +133,9 @@ class ZoneSystemView(
     private var lockDragStartFraction = 0f
     private var lockDragMoved = false
     private var lockAnimator: ValueAnimator? = null
+    private var markButtonLongPressTriggered = false
+    private var markButtonHoldPromptRunnable: Runnable? = null
+    private var markButtonLongPressRunnable: Runnable? = null
     private val markerDisplayMotions = mutableMapOf<Int, MarkerDisplayMotion>()
 
     init {
@@ -139,6 +158,16 @@ class ZoneSystemView(
         invalidate()
     }
 
+    /** Cancels and disables the covered Zone/Normal handle while the Tools host is visible. */
+    fun setModeTransitionEnabled(enabled: Boolean) {
+        modeTransitionEnabled = enabled
+        if (!enabled) {
+            if (touchTarget == TouchTarget.EXIT) touchTarget = TouchTarget.NONE
+            exitProgress = 0f
+        }
+        invalidate()
+    }
+
     fun completeMeasurement(reading: MeterReading): ZoneMarker? {
         val marker = session.completePending(reading, session.iso, state.exposureLockMode)
         session.syncLockedCoordinate(state)
@@ -150,6 +179,24 @@ class ZoneSystemView(
         val removed = session.cancelPending()
         invalidate()
         return removed
+    }
+
+    /** Marks an existing visible tracking point as pending while preserving it if capture fails. */
+    fun beginRemeasure(markerId: Int): ZoneMarker? {
+        val marker = session.beginRemeasure(markerId, session.iso) ?: return null
+        invalidate()
+        return marker
+    }
+
+    fun completeRemeasurements(results: List<ZoneMeteringResult>): List<ZoneMarker> {
+        val updated = session.completeRemeasurements(
+            results,
+            session.iso,
+            state.exposureLockMode,
+        )
+        session.syncLockedCoordinate(state)
+        invalidate()
+        return updated
     }
 
     fun updateMarkerTracking(id: Int, x: Float, y: Float, trackingState: ZoneTrackingState) {
@@ -164,19 +211,45 @@ class ZoneSystemView(
         session.updateTracking(id, x, y, trackingState)
         if (markerBeforeUpdate != null) {
             val updateInterval = existing?.let { now - it.lastTargetAtMs }
-                ?.coerceIn(MIN_MARKER_INTERPOLATION_MS, MAX_MARKER_INTERPOLATION_MS)
                 ?: DEFAULT_MARKER_INTERPOLATION_MS
+            // Span most of the observed tracking interval so a 60 Hz display receives more than
+            // one in-between frame, but still settle before the following tracking result. Long
+            // RAW gaps are capped separately so re-identification corrects without a hard jump.
+            val catchUpDuration = (updateInterval * MARKER_CATCH_UP_FRACTION).roundToInt().toLong()
+                .coerceIn(MIN_MARKER_INTERPOLATION_MS, MAX_MARKER_INTERPOLATION_MS)
             markerDisplayMotions[id] = MarkerDisplayMotion(
                 fromX = current.x,
                 fromY = current.y,
                 targetX = x,
                 targetY = y,
                 startedAtMs = now,
-                durationMs = updateInterval,
+                durationMs = catchUpDuration,
                 lastTargetAtMs = now,
             )
         }
         postInvalidateOnAnimation()
+    }
+
+    /** Keep overlays locked to the last rendered frozen-preview frame during isolated RAW. */
+    fun freezeMarkerDisplayPositions() {
+        val now = SystemClock.uptimeMillis()
+        session.markers.forEach { marker ->
+            val current = markerDisplayMotions[marker.id]?.sampleAt(now) ?: MarkerDisplaySample(
+                marker.normalizedX,
+                marker.normalizedY,
+                false,
+            )
+            markerDisplayMotions[marker.id] = MarkerDisplayMotion(
+                fromX = current.x,
+                fromY = current.y,
+                targetX = current.x,
+                targetY = current.y,
+                startedAtMs = now,
+                durationMs = 0L,
+                lastTargetAtMs = now,
+            )
+        }
+        invalidate()
     }
 
     /** Counter Android's forced app-orientation rotation while the physical camera stays still. */
@@ -203,6 +276,22 @@ class ZoneSystemView(
         markerDisplayMotions.clear()
     }
 
+    /** Rebuilds cached rectangles when a layout-affecting setting changes at the same View size. */
+    fun refreshGeometry() {
+        geometry = if (width > 0 && height > 0) calculateGeometry(width, height) else null
+        invalidate()
+    }
+
+    fun setAppliedLatitude(range: FilmLatitudeRange?) {
+        appliedLatitudeRange = range
+        invalidate()
+    }
+
+    internal fun setAppliedReciprocity(method: ReciprocityMethod?) {
+        appliedReciprocityMethod = method
+        invalidate()
+    }
+
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val g = geometry ?: calculateGeometry(width, height).also { geometry = it }
@@ -213,6 +302,30 @@ class ZoneSystemView(
         drawZoneScale(canvas, g)
         drawMarkerRail(canvas, g)
         drawRecords(canvas, g)
+        drawInformationLine(canvas)
+    }
+
+    private fun drawInformationLine(canvas: Canvas) {
+        val message = PreviewInformationLine.text(state)
+        if (message.isBlank()) return
+        paint.style = Paint.Style.FILL
+        paint.color = if (state.transientMessage != null) red else dividerColor
+        paint.textSize = 8f * density
+        paint.typeface = Typeface.DEFAULT
+        val availableWidth = width - 16f * density
+        val display = if (paint.measureText(message) <= availableWidth) {
+            message
+        } else {
+            val suffix = "…"
+            val count = paint.breakText(
+                message,
+                true,
+                (availableWidth - paint.measureText(suffix)).coerceAtLeast(0f),
+                null,
+            )
+            message.take(count.coerceAtLeast(0)) + suffix
+        }
+        drawCenteredText(canvas, display, width / 2f, height - 5f * density, paint)
     }
 
     private fun drawSurfaceOutsidePreview(canvas: Canvas, frame: RectF) {
@@ -244,27 +357,35 @@ class ZoneSystemView(
     }
 
     private fun drawCameraOverlay(canvas: Canvas, g: Geometry) {
-        val spotRadius = min(g.cameraFrame.width(), g.cameraFrame.height()) * 0.045f
-        if (state.zoneMarkingMethod == ZoneMarkingMethod.BUTTON) {
-            paint.style = Paint.Style.STROKE
-            paint.strokeWidth = 2f * density
-            paint.color = surface
-            canvas.drawCircle(
-                g.cameraFrame.centerX(),
-                g.cameraFrame.centerY(),
-                spotRadius + density,
-                paint,
-            )
-            paint.strokeWidth = 1f * density
-            paint.color = foreground
-            canvas.drawCircle(g.cameraFrame.centerX(), g.cameraFrame.centerY(), spotRadius, paint)
-            canvas.drawCircle(
-                g.cameraFrame.centerX(),
-                g.cameraFrame.centerY(),
-                1.4f * density,
-                paint,
-            )
+        val roiFraction = if (state.meteringMode == MeteringMode.ANGLE) {
+            state.angleMeteringIndicatorFraction() ?: DEFAULT_SPOT_DIAMETER_FRACTION
+        } else {
+            DEFAULT_SPOT_DIAMETER_FRACTION
         }
+        val spotRadius = (
+            min(g.cameraFrame.width(), g.cameraFrame.height()) * roiFraction / 2f
+            ).coerceAtLeast(4f * density)
+        canvas.save()
+        // Clip the fixed-angle guide rather than shrinking it when display crop zoom increases.
+        canvas.clipRect(g.cameraFrame)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 2f * density
+        paint.color = surface
+        canvas.drawCircle(
+            g.cameraFrame.centerX(),
+            g.cameraFrame.centerY(),
+            spotRadius + density,
+            paint,
+        )
+        paint.strokeWidth = 1f * density
+        paint.color = foreground
+        canvas.drawCircle(g.cameraFrame.centerX(), g.cameraFrame.centerY(), spotRadius, paint)
+        canvas.drawCircle(
+            g.cameraFrame.centerX(),
+            g.cameraFrame.centerY(),
+            1.4f * density,
+            paint,
+        )
 
         drawPreviewMarkers(canvas, g.cameraFrame)
         if (state.measuring) {
@@ -278,11 +399,24 @@ class ZoneSystemView(
             drawMeteringSpinner(canvas, centerX, centerY, spotRadius)
             postInvalidateOnAnimation()
         }
-        drawOutlinedButton(canvas, g.formatButton, shortFormatLabel(), formatMenuOpen)
-        drawOrientationButton(canvas, g.orientationButton)
+        canvas.restore()
+        drawOutlinedButton(
+            canvas,
+            g.formatButton,
+            shortFormatLabel(),
+            formatMenuOpen,
+            overlayAlpha(g.formatButton, g.cameraFrame),
+        )
+        drawOrientationButton(
+            canvas,
+            g.orientationButton,
+            overlayAlpha(g.orientationButton, g.cameraFrame),
+        )
+        drawSettingsButton(canvas, g.settingsButton, overlayAlpha(g.settingsButton, g.cameraFrame))
+        drawToolsButton(canvas, g.toolsButton, overlayAlpha(g.toolsButton, g.cameraFrame))
         drawZoom(canvas, g.zoomTrack)
         drawNormalHandle(canvas, g)
-        drawFocalInfo(canvas, g.cameraFrame)
+        drawFocalInfo(canvas, g)
         if (formatMenuOpen) drawFormatMenu(canvas, g)
     }
 
@@ -312,18 +446,18 @@ class ZoneSystemView(
         canvas.drawArc(bounds, phase * 360f - 90f, METERING_SPINNER_SWEEP_DEGREES, false, paint)
     }
 
-    private fun drawFocalInfo(canvas: Canvas, frame: RectF) {
-        val equivalent = state.equivalent35mm()
-        val focalText = buildString {
-            val focal = state.cameraInfo.focalLengthMm
-            if (focal > 0f) append("${"%.1f".format(focal)} mm")
-            if (equivalent != null) append("  ≈ $equivalent mm")
-        }
-        if (focalText.isBlank()) return
+    private fun drawFocalInfo(canvas: Canvas, g: Geometry) {
+        val frame = g.cameraFrame
+        val equivalent = state.equivalentFrameFocalMm() ?: return
+        val focalText = "≈ $equivalent mm (${shortFormatLabel()})"
 
         boldPaint.textSize = 10f * density
         val textWidth = boldPaint.measureText(focalText)
         val baseline = frame.bottom - 8f * density
+        val horizontalPadding = 6f * density
+        // Anchor the label to the viewfinder's bottom-right corner in every orientation;
+        // the clamp keeps it inside the frame on devices with narrow fitted images.
+        val left = max(frame.left, frame.right - textWidth - horizontalPadding * 2f)
         paint.style = Paint.Style.FILL
         paint.color = Color.argb(
             168,
@@ -333,9 +467,9 @@ class ZoneSystemView(
         )
         canvas.drawRoundRect(
             RectF(
-                frame.centerX() - textWidth / 2f - 6f * density,
+                left,
                 baseline - 13f * density,
-                frame.centerX() + textWidth / 2f + 6f * density,
+                left + textWidth + horizontalPadding * 2f,
                 baseline + 3f * density,
             ),
             4f * density,
@@ -343,7 +477,7 @@ class ZoneSystemView(
             paint,
         )
         boldPaint.color = foreground
-        canvas.drawText(focalText, frame.centerX() - textWidth / 2f, baseline, boldPaint)
+        canvas.drawText(focalText, left + horizontalPadding, baseline, boldPaint)
     }
 
     private fun drawNormalHandle(canvas: Canvas, g: Geometry) {
@@ -398,6 +532,9 @@ class ZoneSystemView(
         markerDisplayMotions.keys.retainAll(markerIds)
         var animationPending = false
         session.markers.forEach { marker ->
+            // A LOST marker may have a gyro-only predicted coordinate inside the frame. Keep it
+            // hidden until descriptor/visual evidence confirms the object has actually returned.
+            if (marker.trackingState == ZoneTrackingState.LOST) return@forEach
             val display = markerDisplayMotions[marker.id]?.sampleAt(now)
                 ?: MarkerDisplaySample(marker.normalizedX, marker.normalizedY, false)
             animationPending = animationPending || display.animating
@@ -408,24 +545,53 @@ class ZoneSystemView(
             val y = frame.top + display.y * frame.height()
             val radius = 9f * density
             val selected = marker.id == session.selectedMarkerId
-            paint.pathEffect = when (marker.trackingState) {
-                ZoneTrackingState.UNCERTAIN -> DashPathEffect(floatArrayOf(4f * density, 3f * density), 0f)
-                ZoneTrackingState.LOST -> DashPathEffect(floatArrayOf(2f * density, 4f * density), 0f)
-                else -> null
-            }
+            val outsideLatitude = isOutsideAppliedLatitude(marker)
+            // RAW capture temporarily freezes the preview and can make tracking report
+            // UNCERTAIN/LOST. Keep the marker geometry stable: every state uses a solid circle.
+            paint.pathEffect = null
             paint.style = Paint.Style.FILL
-            paint.color = if (selected) Color.argb(150, Color.red(red), Color.green(red), Color.blue(red)) else surface
+            paint.color = when {
+                outsideLatitude -> latitudeOutsideRed
+                selected -> Color.argb(150, Color.red(red), Color.green(red), Color.blue(red))
+                else -> surface
+            }
             canvas.drawCircle(x, y, radius, paint)
             paint.style = Paint.Style.STROKE
             paint.strokeWidth = 1f * density
-            paint.color = if (selected) red else foreground
+            paint.color = if (outsideLatitude || selected) red else foreground
             canvas.drawCircle(x, y, radius, paint)
-            paint.pathEffect = null
-            boldPaint.color = if (selected && !state.isDarkMode) Color.WHITE else foreground
+            drawSegmentedMarkerFrame(canvas, x, y, radius + 4f * density, paint.color)
+            boldPaint.color = if ((outsideLatitude || selected) && !state.isDarkMode) Color.WHITE else foreground
             boldPaint.textSize = 7f * density
             drawCenteredText(canvas, marker.id.toString(), x, y, boldPaint)
         }
         if (animationPending) postInvalidateOnAnimation()
+    }
+
+    /** Square targeting frame whose middle third is omitted from every side. */
+    private fun drawSegmentedMarkerFrame(
+        canvas: Canvas,
+        centerX: Float,
+        centerY: Float,
+        halfSize: Float,
+        color: Int,
+    ) {
+        val left = centerX - halfSize
+        val top = centerY - halfSize
+        val right = centerX + halfSize
+        val bottom = centerY + halfSize
+        val segment = halfSize * 2f / 3f
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 1f * density
+        paint.color = color
+        canvas.drawLine(left, top, left + segment, top, paint)
+        canvas.drawLine(right - segment, top, right, top, paint)
+        canvas.drawLine(left, bottom, left + segment, bottom, paint)
+        canvas.drawLine(right - segment, bottom, right, bottom, paint)
+        canvas.drawLine(left, top, left, top + segment, paint)
+        canvas.drawLine(left, bottom - segment, left, bottom, paint)
+        canvas.drawLine(right, top, right, top + segment, paint)
+        canvas.drawLine(right, bottom - segment, right, bottom, paint)
     }
 
     private fun MarkerDisplayMotion.sampleAt(nowMs: Long): MarkerDisplaySample {
@@ -468,11 +634,12 @@ class ZoneSystemView(
 
         val content = RectF(rect)
         if (state.isLeftHanded) content.left = lockTrack.right else content.right = lockTrack.left
-        val titleWidth = 40f * density
+        val titleWidth = EXPOSURE_TITLE_WIDTH_DP * density
         val scaleLeft = content.left + titleWidth
         val scaleRight = content.right - 5f * density
         val centerX = (scaleLeft + scaleRight) / 2f
-        val pixelsPerStop = max(25f * density, (scaleRight - scaleLeft) / 5.4f)
+        val pixelsPerStop = max(25f * density, (scaleRight - scaleLeft) / 5.4f) *
+            EXPOSURE_SCALE_SPACING_FACTOR
         val baselineY = rect.centerY() + rect.height() * 0.18f
 
         paint.style = Paint.Style.STROKE
@@ -505,18 +672,39 @@ class ZoneSystemView(
         paint.color = red
         canvas.drawRect(centerX - 1.1f * density, rect.top + 5f * density, centerX + 1.1f * density, rect.bottom - 5f * density, paint)
 
+        val shutterSeconds = if (aperture) null else {
+            ExposureMath.shutterValueForCoordinate(centerCoordinate, state.shutterStep)
+        }
         val value = if (aperture) {
             val number = ExposureMath.apertureValueForCoordinate(centerCoordinate, state.apertureStep)
             if (number >= 10.0 || abs(number - number.toInt()) < 0.02) number.toInt().toString() else "%.1f".format(number)
         } else {
-            ExposureMath.formatShutter(ExposureMath.shutterValueForCoordinate(centerCoordinate, state.shutterStep))
+            ExposureMath.formatShutter(shutterSeconds!!)
         }
         paint.color = scaleForeground
-        paint.textSize = 7.5f * density
+        paint.textSize = 11.5f * density
         paint.typeface = Typeface.DEFAULT_BOLD
-        canvas.drawText(title, content.left + 7f * density, rect.centerY() + 3f * density, paint)
-        paint.textSize = 6.5f * density
-        canvas.drawText(value, content.left + 18f * density, rect.centerY() + 3f * density, paint)
+        val titleX = content.left + 9f * density
+        val valueX = content.left + 40f * density
+        drawCenteredText(canvas, title, titleX, rect.centerY(), paint)
+        // Keep the current value more prominent than the neighboring scale labels.
+        paint.textSize = 14f * density
+        drawCenteredText(canvas, value, valueX, rect.centerY(), paint)
+        val reciprocity = shutterSeconds?.let { ReciprocityMath.calculate(appliedReciprocityMethod, it) }
+        if (reciprocity?.needsCorrection == true) {
+            val readoutX = valueX
+            drawReciprocityBadge(canvas, readoutX, rect.centerY() - 11f * density)
+            paint.color = red
+            paint.typeface = Typeface.DEFAULT
+            paint.textSize = 8.4f * density
+            drawCenteredText(
+                canvas,
+                ReciprocityTimeFormatter.resultReadout(reciprocity.correctedSeconds!!),
+                readoutX,
+                rect.centerY() + 12f * density,
+                paint,
+            )
+        }
     }
 
     private fun drawLock(canvas: Canvas, track: RectF) {
@@ -568,6 +756,26 @@ class ZoneSystemView(
         canvas.drawCircle(x, y + knobSize * 0.10f, 1.7f * density, paint)
     }
 
+    private fun drawReciprocityBadge(canvas: Canvas, centerX: Float, centerY: Float) {
+        val label = "Reciprocity"
+        paint.typeface = Typeface.DEFAULT_BOLD
+        paint.textSize = 4.4f * density
+        val halfWidth = paint.measureText(label) / 2f + 2f * density
+        val halfHeight = 3.8f * density
+        val badge = RectF(
+            centerX - halfWidth,
+            centerY - halfHeight,
+            centerX + halfWidth,
+            centerY + halfHeight,
+        )
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 0.8f * density
+        paint.color = red
+        canvas.drawRoundRect(badge, 1.8f * density, 1.8f * density, paint)
+        paint.style = Paint.Style.FILL
+        drawCenteredText(canvas, label, centerX, centerY, paint)
+    }
+
     private fun drawZoneScale(canvas: Canvas, g: Geometry) {
         val rect = g.zoneScale
         for (zone in 0..10) {
@@ -585,6 +793,7 @@ class ZoneSystemView(
         paint.strokeWidth = 1f * density
         paint.color = foreground
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
+        drawLatitudeBoundaries(canvas, rect, g.landscape)
     }
 
     private fun drawMarkerRail(canvas: Canvas, g: Geometry) {
@@ -595,6 +804,7 @@ class ZoneSystemView(
         paint.strokeWidth = 1f * density
         paint.color = foreground
         canvas.drawRect(g.markerRail, paint)
+        drawLatitudeBoundaries(canvas, g.markerRail, g.landscape)
         val meanZone = session.weightedMeanZone(session.iso)
         if (meanZone != null) {
             paint.color = red
@@ -619,14 +829,19 @@ class ZoneSystemView(
                 y = g.markerRail.centerY() + ((index % 3) - 1) * 6f * density
             }
             val radius = 7.5f * density
+            val outsideLatitude = isOutsideAppliedLatitude(marker)
             paint.style = Paint.Style.FILL
-            paint.color = if (marker.id == session.selectedMarkerId) Color.argb(170, Color.red(red), Color.green(red), Color.blue(red)) else surface
+            paint.color = when {
+                outsideLatitude -> latitudeOutsideRed
+                marker.id == session.selectedMarkerId -> Color.argb(170, Color.red(red), Color.green(red), Color.blue(red))
+                else -> surface
+            }
             canvas.drawCircle(x, y, radius, paint)
             paint.style = Paint.Style.STROKE
             paint.strokeWidth = 1f * density
-            paint.color = if (marker.id == session.selectedMarkerId) red else foreground
+            paint.color = if (outsideLatitude || marker.id == session.selectedMarkerId) red else foreground
             canvas.drawCircle(x, y, radius, paint)
-            boldPaint.color = foreground
+            boldPaint.color = if (outsideLatitude && !state.isDarkMode) Color.WHITE else foreground
             boldPaint.textSize = 6f * density
             drawCenteredText(canvas, marker.id.toString(), x, y, boldPaint)
         }
@@ -642,9 +857,15 @@ class ZoneSystemView(
         canvas.drawRect(g.recordPanel, paint)
 
         drawClearSlider(canvas, g)
-        if (state.zoneMarkingMethod == ZoneMarkingMethod.BUTTON) {
-            drawMarkButton(canvas, g.markButton)
-        }
+        ev100BadgeRenderer.draw(canvas, g.ev100Badge, Ev100Readouts.zone(session), state.isDarkMode, red)
+        ev100BadgeRenderer.drawFlashIndicator(
+            canvas,
+            g.ev100Badge,
+            state.appliedFlashConfiguration,
+            state.isDarkMode,
+            Color.rgb(38, 112, 184),
+        )
+        drawMarkButton(canvas, g.markButton)
 
         val rowHeight = 34f * density
         val totalHeight = session.markers.size * rowHeight
@@ -668,7 +889,7 @@ class ZoneSystemView(
             val evText = marker.ev100?.let { "%.2f".format(it) } ?: "…"
             val zoneText = session.formattedZone(marker, session.iso)
             paint.style = Paint.Style.FILL
-            paint.color = foreground
+            paint.color = if (isOutsideAppliedLatitude(marker)) latitudeOutsideRed else foreground
             paint.textSize = 8f * density
             paint.typeface = Typeface.DEFAULT_BOLD
             canvas.drawText("${marker.id}   EV100 $evText   $zoneText", shifted.left + 10f * density, shifted.centerY() + 3f * density, paint)
@@ -781,33 +1002,115 @@ class ZoneSystemView(
         drawCenteredText(canvas, "+", rect.centerX(), rect.centerY(), paint)
     }
 
-    private fun drawOutlinedButton(canvas: Canvas, rect: RectF, label: String, selected: Boolean) {
+    private fun drawOutlinedButton(
+        canvas: Canvas,
+        rect: RectF,
+        label: String,
+        selected: Boolean,
+        alpha: Int = 255,
+    ) {
         paint.style = Paint.Style.FILL
-        paint.color = if (selected) foreground else surface
+        paint.withAlpha(if (selected) foreground else surface, alpha)
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1f * density
-        paint.color = if (selected) red else foreground
+        paint.withAlpha(if (selected) red else foreground, alpha)
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
         paint.style = Paint.Style.FILL
-        paint.color = if (selected) surface else foreground
+        paint.withAlpha(if (selected) surface else foreground, alpha)
         paint.textSize = 7f * density
         paint.typeface = Typeface.DEFAULT_BOLD
         drawCenteredText(canvas, label, rect.centerX(), rect.centerY(), paint)
     }
 
-    private fun drawOrientationButton(canvas: Canvas, rect: RectF) {
+    /** Buttons overlapping the fitted viewfinder image become semi-transparent. */
+    private fun overlayAlpha(rect: RectF, cameraFrame: RectF): Int =
+        if (RectF.intersects(rect, cameraFrame)) OVERLAY_ALPHA else 255
+
+    private fun Paint.withAlpha(color: Int, alpha: Int) {
+        this.color = Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color))
+    }
+
+    private fun drawOrientationButton(canvas: Canvas, rect: RectF, alpha: Int = 255) {
         paint.style = Paint.Style.FILL
-        paint.color = surface
+        paint.withAlpha(surface, alpha)
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1f * density
-        paint.color = foreground
+        paint.withAlpha(foreground, alpha)
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
         val phone = RectF(rect.centerX() - 6f * density, rect.centerY() - 10f * density, rect.centerX() + 6f * density, rect.centerY() + 10f * density)
         canvas.drawRoundRect(phone, 2f * density, 2f * density, paint)
-        paint.color = red
+        paint.withAlpha(red, alpha)
         canvas.drawArc(RectF(rect.left + 6f * density, rect.top + 5f * density, rect.right - 6f * density, rect.bottom - 5f * density), 205f, 80f, false, paint)
+    }
+
+    private fun drawSettingsButton(canvas: Canvas, rect: RectF, alpha: Int = 255) {
+        paint.style = Paint.Style.FILL
+        paint.withAlpha(surface, alpha)
+        canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 1f * density
+        paint.withAlpha(foreground, alpha)
+        canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
+        val outerRadius = min(rect.width(), rect.height()) * 0.27f
+        val rootRadius = outerRadius * 0.78f
+        val innerRadius = outerRadius * 0.31f
+        val gear = Path()
+        repeat(16) { index ->
+            val angle = Math.toRadians((-90.0 + index * 22.5))
+            val radius = if (index % 2 == 0) outerRadius else rootRadius
+            val x = rect.centerX() + cos(angle).toFloat() * radius
+            val y = rect.centerY() + sin(angle).toFloat() * radius
+            if (index == 0) gear.moveTo(x, y) else gear.lineTo(x, y)
+        }
+        gear.close()
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 1f * density
+        paint.withAlpha(foreground, alpha)
+        canvas.drawPath(gear, paint)
+        canvas.drawCircle(rect.centerX(), rect.centerY(), innerRadius, paint)
+    }
+
+    /** Four hollow squares with the top-right one rotated 45 degrees around its own center. */
+    private fun drawToolsButton(canvas: Canvas, rect: RectF, alpha: Int = 255) {
+        paint.style = Paint.Style.FILL
+        paint.withAlpha(surface, alpha)
+        canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 1f * density
+        paint.withAlpha(foreground, alpha)
+        canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
+        val cell = rect.width() * 0.26f
+        val innerGap = rect.width() * 0.07f
+        val left = rect.centerX() - cell - innerGap / 2f
+        val top = rect.centerY() - cell - innerGap / 2f
+        paint.strokeWidth = 0.9f * density
+        canvas.drawRect(left, top, left + cell, top + cell, paint)
+        canvas.drawRect(
+            left,
+            top + cell + innerGap,
+            left + cell,
+            top + cell * 2f + innerGap,
+            paint,
+        )
+        canvas.drawRect(
+            left + cell + innerGap,
+            top + cell + innerGap,
+            left + cell * 2f + innerGap,
+            top + cell * 2f + innerGap,
+            paint,
+        )
+        val rotated = RectF(
+            left + cell + innerGap,
+            top,
+            left + cell * 2f + innerGap,
+            top + cell,
+        )
+        canvas.save()
+        canvas.rotate(45f, rotated.centerX(), rotated.centerY())
+        canvas.drawRect(rotated, paint)
+        canvas.restore()
     }
 
     private fun drawZoom(canvas: Canvas, track: RectF) {
@@ -847,7 +1150,12 @@ class ZoneSystemView(
     private fun drawFormatMenu(canvas: Canvas, g: Geometry) {
         formatOptionRects(g).forEachIndexed { index, rect ->
             val selected = index == state.frameIndex
-            drawOutlinedButton(canvas, rect, FrameFormat.ALL[index].label, selected)
+            drawOutlinedButton(
+                canvas,
+                rect,
+                FrameFormat.ALL[index].displayLabel(state.menuLanguage),
+                selected,
+            )
         }
     }
 
@@ -877,7 +1185,12 @@ class ZoneSystemView(
                         TouchTarget.FORMAT
                     g.orientationButton.containsAccessibleTarget(event.x, event.y, density) ->
                         TouchTarget.ORIENTATION
-                    g.normalHandle.containsAccessibleTarget(event.x, event.y, density) &&
+                    g.settingsButton.containsAccessibleTarget(event.x, event.y, density) ->
+                        TouchTarget.SETTINGS
+                    g.toolsButton.containsAccessibleTarget(event.x, event.y, density) ->
+                        TouchTarget.TOOLS
+                    modeTransitionEnabled &&
+                        g.normalHandle.containsAccessibleTarget(event.x, event.y, density) &&
                         !state.measuring -> TouchTarget.EXIT
                     g.zoomTrack.contains(event.x, event.y) -> TouchTarget.ZOOM
                     else -> TouchTarget.NONE
@@ -892,14 +1205,12 @@ class ZoneSystemView(
                     invalidate()
                     return true
                 }
-                val markerId = markerAt(event.x, event.y, g.cameraFrame)
-                if (markerId != null) {
-                    val alreadySelected = session.selectMarker(markerId)
-                    if (alreadySelected) removeMarker(markerId)
-                    haptic()
-                    invalidate()
+                // Marker taps are intentionally inert: no selection highlight and no
+                // double-tap deletion. Markers are removed from the record list.
+                if (markerAt(event.x, event.y, g.cameraFrame) != null) {
                     return true
-                } else if (g.cameraFrame.contains(event.x, event.y)) {
+                }
+                if (g.cameraFrame.contains(event.x, event.y)) {
                     session.selectMarker(null)
                     if (state.zoneMarkingMethod == ZoneMarkingMethod.TOUCH &&
                         !state.measuring
@@ -911,9 +1222,9 @@ class ZoneSystemView(
                 }
                 if (session.selectedMarkerId != null) session.selectMarker(null)
                 touchTarget = when {
-                    g.normalHandle.contains(event.x, event.y) && !state.measuring -> TouchTarget.EXIT
-                    state.zoneMarkingMethod == ZoneMarkingMethod.BUTTON &&
-                        g.markButton.contains(event.x, event.y) -> TouchTarget.MARK_BUTTON
+                    modeTransitionEnabled && g.normalHandle.contains(event.x, event.y) &&
+                        !state.measuring -> TouchTarget.EXIT
+                    g.markButton.contains(event.x, event.y) -> TouchTarget.MARK_BUTTON
                     g.clearHandle.contains(event.x, event.y) -> TouchTarget.CLEAR
                     g.lockTrack.contains(event.x, event.y) -> TouchTarget.LOCK
                     g.zoneScale.contains(event.x, event.y) || g.markerRail.contains(event.x, event.y) -> TouchTarget.ZONE_RAIL
@@ -939,6 +1250,7 @@ class ZoneSystemView(
                     TouchTarget.LOCK -> beginLockDrag(event.y)
                     TouchTarget.EXIT -> exitProgress = 0.02f
                     TouchTarget.ZOOM -> updateZoom(event.x, event.y, g.zoomTrack)
+                    TouchTarget.MARK_BUTTON -> scheduleMarkButtonLongPress()
                     else -> Unit
                 }
                 invalidate()
@@ -948,6 +1260,12 @@ class ZoneSystemView(
             MotionEvent.ACTION_MOVE -> {
                 val dx = event.x - touchStartX
                 val dy = event.y - touchStartY
+                if (touchTarget == TouchTarget.MARK_BUTTON &&
+                    (abs(dx) > touchSlop || abs(dy) > touchSlop ||
+                        !g.markButton.contains(event.x, event.y))
+                ) {
+                    cancelMarkButtonLongPress(resetTriggered = false)
+                }
                 when (touchTarget) {
                     TouchTarget.EXIT -> {
                         exitProgress = if (g.landscape) {
@@ -1004,6 +1322,8 @@ class ZoneSystemView(
 
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 val cancelled = event.actionMasked == MotionEvent.ACTION_CANCEL
+                val longPressTriggered = markButtonLongPressTriggered
+                cancelMarkButtonLongPress(resetTriggered = false)
                 when (touchTarget) {
                     TouchTarget.EXIT -> {
                         val commit = !cancelled && exitProgress >= 0.55f
@@ -1023,7 +1343,11 @@ class ZoneSystemView(
                     TouchTarget.LOCK -> finishLockDrag(event.y, g.lockTrack, cancelled)
                     TouchTarget.LIST -> finishListGesture(g)
                     TouchTarget.CLEAR -> finishClear(g)
-                    TouchTarget.MARK_BUTTON -> if (!cancelled && g.markButton.contains(event.x, event.y)) beginMarker()
+                    TouchTarget.MARK_BUTTON -> if (!cancelled && !longPressTriggered &&
+                        g.markButton.contains(event.x, event.y)
+                    ) {
+                        beginMarker()
+                    }
                     TouchTarget.PREVIEW_MARK -> if (!cancelled &&
                         g.cameraFrame.contains(event.x, event.y) &&
                         abs(event.x - touchStartX) <= touchSlop * 2f &&
@@ -1036,8 +1360,11 @@ class ZoneSystemView(
                         listener?.onPreviewMappingChanged()
                         listener?.onOrientationToggle()
                     }
+                    TouchTarget.SETTINGS -> if (!cancelled) listener?.onSettingsRequested()
+                    TouchTarget.TOOLS -> if (!cancelled) listener?.onToolsRequested()
                     else -> Unit
                 }
+                markButtonLongPressTriggered = false
                 touchTarget = TouchTarget.NONE
                 performClick()
                 invalidate()
@@ -1053,6 +1380,7 @@ class ZoneSystemView(
     }
 
     override fun onDetachedFromWindow() {
+        cancelMarkButtonLongPress()
         lockAnimator?.cancel()
         lockAnimator = null
         markerDisplayMotions.clear()
@@ -1060,14 +1388,54 @@ class ZoneSystemView(
     }
 
     private fun beginMarker() {
-        if (state.measuring) return
+        if (!canStartCapture()) return
         val marker = session.beginMarker(session.iso) ?: return
         haptic()
         listener?.onMarkRequested(marker)
     }
 
+    private fun canStartCapture(): Boolean = !state.measuring && !state.meteringInteractionBusy
+
+    private fun scheduleMarkButtonLongPress() {
+        cancelMarkButtonLongPress()
+        if (!canStartCapture() || remeasureCandidateMarkerIds().isEmpty()) return
+        val holdPromptTask = Runnable {
+            markButtonHoldPromptRunnable = null
+            if (touchTarget == TouchTarget.MARK_BUTTON && canStartCapture()) {
+                listener?.onRemeasureHoldPrompt()
+            }
+        }
+        val triggerTask = Runnable {
+            markButtonLongPressRunnable = null
+            if (touchTarget != TouchTarget.MARK_BUTTON || !canStartCapture()) return@Runnable
+            val markerIds = remeasureCandidateMarkerIds()
+            if (markerIds.isEmpty()) return@Runnable
+            markButtonLongPressTriggered = true
+            performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            listener?.onRemeasureAllRequested(markerIds)
+        }
+        markButtonHoldPromptRunnable = holdPromptTask
+        markButtonLongPressRunnable = triggerTask
+        postDelayed(holdPromptTask, REMEASURE_HOLD_PROMPT_MS)
+        postDelayed(triggerTask, REMEASURE_TRIGGER_MS)
+    }
+
+    private fun cancelMarkButtonLongPress(resetTriggered: Boolean = true) {
+        markButtonHoldPromptRunnable?.let(::removeCallbacks)
+        markButtonHoldPromptRunnable = null
+        markButtonLongPressRunnable?.let(::removeCallbacks)
+        markButtonLongPressRunnable = null
+        if (resetTriggered) markButtonLongPressTriggered = false
+    }
+
+    /** Visibility is deliberately checked later, immediately before each point is measured. */
+    private fun remeasureCandidateMarkerIds(): List<Int> = session.markers.asSequence()
+        .filter { marker -> marker.ev100 != null }
+        .map(ZoneMarker::id)
+        .toList()
+
     private fun beginMarkerAt(x: Float, y: Float, frame: RectF) {
-        if (state.measuring || frame.width() <= 0f || frame.height() <= 0f) return
+        if (!canStartCapture() || frame.width() <= 0f || frame.height() <= 0f) return
         val marker = session.beginMarker(
             iso = session.iso,
             normalizedX = ((x - frame.left) / frame.width()).coerceIn(0f, 1f),
@@ -1233,7 +1601,8 @@ class ZoneSystemView(
 
     private fun exposurePixelsPerStop(row: RectF, lock: RectF): Float {
         val available = if (state.isLeftHanded) row.right - lock.right else lock.left - row.left
-        return max(25f * density, (available - 45f * density) / 5.4f)
+        val scaleWidth = available - (EXPOSURE_TITLE_WIDTH_DP + EXPOSURE_SCALE_END_INSET_DP) * density
+        return max(25f * density, scaleWidth / 5.4f) * EXPOSURE_SCALE_SPACING_FACTOR
     }
 
     private fun zoneCell(rect: RectF, zone: Int, landscape: Boolean): RectF = if (landscape) {
@@ -1251,31 +1620,68 @@ class ZoneSystemView(
     private fun zonePositionY(rect: RectF, zone: Double): Float =
         rect.bottom - (zone.coerceIn(0.0, 10.0) / 10.0 * rect.height()).toFloat()
 
-    private fun shortFormatLabel(): String = when (state.frameFormat.id) {
-        "65x24" -> "65:24"
-        else -> state.frameFormat.id.uppercase()
-    }
-
-    private fun formatOptionRects(g: Geometry): List<RectF> {
-        val gap = 4f * density
-        val itemHeight = 28f * density
-        return FrameFormat.ALL.indices.map { index ->
-            if (g.landscape) {
-                RectF(
-                    g.formatButton.left,
-                    g.formatButton.bottom + gap + index * (itemHeight + gap),
-                    g.formatButton.left + 85f * density,
-                    g.formatButton.bottom + gap + index * (itemHeight + gap) + itemHeight,
-                )
-            } else {
-                val top = g.formatButton.bottom + gap + index * (itemHeight + gap)
-                RectF(g.formatButton.left, top, g.formatButton.left + 85f * density, top + itemHeight)
+    private fun drawLatitudeBoundaries(canvas: Canvas, rect: RectF, landscape: Boolean) {
+        val range = appliedLatitudeRange ?: return
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 2f * density
+        paint.color = red
+        if (landscape) {
+            listOf(range.lowerZone, range.upperZone).forEach { zone ->
+                val y = zonePositionY(rect, zone)
+                canvas.drawLine(rect.left, y, rect.right, y, paint)
+            }
+        } else {
+            listOf(range.lowerZone, range.upperZone).forEach { zone ->
+                val x = zonePositionX(rect, zone)
+                canvas.drawLine(x, rect.top, x, rect.bottom, paint)
             }
         }
     }
 
+    private fun isOutsideAppliedLatitude(marker: ZoneMarker): Boolean {
+        val range = appliedLatitudeRange ?: return false
+        val zone = session.zoneFor(marker, session.iso) ?: return false
+        return !range.containsZone(zone)
+    }
+
+    private fun shortFormatLabel(): String = InstrumentPresentation.formatShortLabel(
+        state.frameFormat,
+        state.menuLanguage,
+    )
+
+    private fun formatOptionRects(g: Geometry): List<RectF> {
+        val gap = 4f * density
+        val itemHeight = 28f * density
+        val itemWidth = 85f * density
+        val grid = InstrumentPresentation.formatMenuGridWithMaximumRows(
+            FrameFormat.ALL.size,
+            MAX_FORMAT_MENU_ROWS,
+        )
+        if (grid.columns == 0) return emptyList()
+        val menuWidth = grid.columns * itemWidth + (grid.columns - 1) * gap
+        val menuHeight = grid.rows * itemHeight + (grid.rows - 1) * gap
+        val menuLeft = if (g.formatButton.centerX() <= width / 2f) {
+            g.formatButton.left
+        } else {
+            g.formatButton.right - menuWidth
+        }.coerceIn(gap, (width - gap - menuWidth).coerceAtLeast(gap))
+        val belowTop = g.formatButton.bottom + gap
+        val menuTop = if (belowTop + menuHeight <= height - gap) {
+            belowTop
+        } else {
+            (g.formatButton.top - gap - menuHeight).coerceAtLeast(gap)
+        }
+        return FrameFormat.ALL.indices.map { index ->
+            val column = index / grid.rows
+            val row = index % grid.rows
+            val left = menuLeft + column * (itemWidth + gap)
+            val top = menuTop + row * (itemHeight + gap)
+            RectF(left, top, left + itemWidth, top + itemHeight)
+        }
+    }
+
     private fun calculateGeometry(width: Int, height: Int): Geometry =
-        ZoneLayoutCalculator.calculate(width, height, density, state)
+        ZoneLayoutCalculator.calculate(width, height, resources.displayMetrics.density, state)
 
     private fun localized(chinese: String, english: String): String =
         if (state.menuLanguage == MenuLanguage.ENGLISH) english else chinese
@@ -1294,11 +1700,53 @@ class ZoneSystemView(
         }
     }
 
+    fun currentApertureCoordinate(): Double = session.apertureCoordinate
+
+    fun currentShutterCoordinate(): Double = session.shutterCoordinate
+
+    fun currentMeanEv100(): Double? = if (session.markers.any { it.ev100 != null }) {
+        session.weightedMeanEv100()
+    } else {
+        state.effectiveEv100
+    }
+
+    fun currentPreviewCalibratedMeanEv100(): Double? {
+        val measured = session.markers.filter { it.ev100 != null && it.weight > 0.0 }
+        val totalWeight = measured.sumOf(ZoneMarker::weight)
+        if (totalWeight <= 0.0) return null
+        return measured.sumOf { marker ->
+            state.previewCalibratedSceneEv100(marker.ev100!!, marker.source) * marker.weight
+        } / totalWeight
+    }
+
+    fun recordedZonePoints(): List<RecordedZonePoint> = session.markers.map { marker ->
+        RecordedZonePoint(
+            id = marker.id,
+            normalizedX = marker.normalizedX,
+            normalizedY = marker.normalizedY,
+            ev100 = marker.ev100,
+            source = marker.source,
+        )
+    }
+
+    fun recordButtonRect(): RectF = RectF(
+        (geometry ?: calculateGeometry(width, height)).markButton,
+    )
+
     private companion object {
-        private const val MIN_MARKER_INTERPOLATION_MS = 12L
+        private const val EXPOSURE_TITLE_WIDTH_DP = 64f
+        private const val EXPOSURE_SCALE_END_INSET_DP = 5f
+        private const val EXPOSURE_SCALE_SPACING_FACTOR = 2f / 3f
+        private const val MAX_FORMAT_MENU_ROWS = 6
+        private const val MIN_MARKER_INTERPOLATION_MS = 16L
         private const val DEFAULT_MARKER_INTERPOLATION_MS = 33L
-        private const val MAX_MARKER_INTERPOLATION_MS = 48L
+        private const val MAX_MARKER_INTERPOLATION_MS = 72L
+        private const val MARKER_CATCH_UP_FRACTION = 0.82f
+        private const val REMEASURE_HOLD_PROMPT_MS = 600L
+        private const val REMEASURE_TRIGGER_MS = 1_000L
         private const val METERING_SPINNER_PERIOD_MS = 820L
         private const val METERING_SPINNER_SWEEP_DEGREES = 108f
+        private const val DEFAULT_SPOT_DIAMETER_FRACTION = 0.09f
+        private const val OVERLAY_ALPHA = 168
     }
 }

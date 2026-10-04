@@ -1,19 +1,31 @@
+import java.security.MessageDigest
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
 
+val buildAbiSplits = providers.gradleProperty("splitApks").map { it.toBooleanStrict() }.orElse(false).get()
+
 android {
     namespace = "com.lightmeter.rawmeter"
-    compileSdk = 34
-    ndkVersion = "25.1.8937393"
+    compileSdk {
+        version = release(36) {
+            minorApiLevel = 1
+        }
+    }
+    ndkVersion = "27.0.12077973"
+
+    buildFeatures {
+        buildConfig = true
+    }
 
     defaultConfig {
         applicationId = "com.lightmeter.rawmeter"
         minSdk = 28
-        targetSdk = 34
-        versionCode = 5
-        versionName = "0.2.1"
+        targetSdk = 36
+        versionCode = 10
+        versionName = "0.5.0"
 
         externalNativeBuild {
             cmake {
@@ -22,7 +34,17 @@ android {
         }
 
         ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+            if (!buildAbiSplits) abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+        }
+    }
+
+    // Optional smaller direct-download APKs; retain a universal APK for distribution fallback.
+    splits {
+        abi {
+            isEnable = buildAbiSplits
+            reset()
+            include("arm64-v8a", "armeabi-v7a", "x86_64")
+            isUniversalApk = true
         }
     }
 
@@ -30,6 +52,9 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
+            vcsInfo {
+                include = false
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
@@ -55,6 +80,25 @@ android {
 }
 
 dependencies {
-    implementation(files("libs/opencv-slim-4.12.0-r1.aar"))
+    implementation(files("libs/opencv-slim-4.12.0-r2.aar"))
     testImplementation("junit:junit:4.13.2")
 }
+
+// The slim OpenCV runtime is a pinned local artifact. Fail the build if the bytes change so a
+// swapped AAR cannot silently alter native behavior or licensing.
+val verifyOpenCvAar = tasks.register("verifyOpenCvAar") {
+    val aar = file("libs/opencv-slim-4.12.0-r2.aar")
+    val expected = "321c84621fe818e35cc7b6401953039bc784e4fe4cfb9d35690b4dbedf4d57cd"
+    inputs.file(aar)
+    doLast {
+        check(aar.isFile) { "Missing pinned OpenCV AAR: ${aar.absolutePath}" }
+        val hash = MessageDigest.getInstance("SHA-256")
+            .digest(aar.readBytes())
+            .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        check(hash == expected) {
+            "OpenCV AAR checksum mismatch: expected $expected but was $hash"
+        }
+    }
+}
+
+tasks.named("preBuild").configure { dependsOn(verifyOpenCvAar) }

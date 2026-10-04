@@ -2,6 +2,7 @@ package com.lightmeter.rawmeter
 
 import android.content.Context
 import android.graphics.Rect
+import android.hardware.camera2.CameraCharacteristics
 import android.util.Size
 import kotlin.math.abs
 import kotlin.math.ln
@@ -14,40 +15,102 @@ data class FrameFormat(
     val label: String,
     val widthMm: Double,
     val heightMm: Double,
+    val englishLabel: String = label,
 ) {
     val landscapeAspect: Float
         get() = (maxOf(widthMm, heightMm) / minOf(widthMm, heightMm)).toFloat()
 
+    /** Representative exposed-image diagonal used for cross-format focal-length equivalence. */
+    val diagonalMm: Double
+        get() = sqrt(widthMm * widthMm + heightMm * heightMm)
+
+    /** Converts a 135-equivalent field of view into a lens focal length for this format. */
+    fun focalLengthForFullFrameEquivalent(fullFrameEquivalentMm: Double): Int =
+        (fullFrameEquivalentMm * diagonalMm / FULL_FRAME_DIAGONAL_MM).roundToInt()
+
+    fun displayLabel(language: MenuLanguage): String =
+        if (language == MenuLanguage.ENGLISH) englishLabel else label
+
     companion object {
         val ALL = listOf(
             FrameFormat("135", "135 · 3:2", 36.0, 24.0),
-            FrameFormat("half", "半格 · 4:3", 24.0, 18.0),
+            FrameFormat("half", "半格 · 4:3", 24.0, 18.0, "Half-frame · 4:3"),
             FrameFormat("645", "6×4.5 · 4:3", 56.0, 42.0),
             FrameFormat("66", "6×6 · 1:1", 56.0, 56.0),
             FrameFormat("67", "6×7 · 5:4", 70.0, 56.0),
             FrameFormat("69", "6×9 · 3:2", 84.0, 56.0),
             FrameFormat("65x24", "65:24", 65.0, 24.0),
+            // Append new formats so persisted indices from earlier versions keep their meaning.
+            FrameFormat("612", "6×12 · 2:1", 112.0, 56.0),
+            FrameFormat("617", "6×17 · 3:1", 168.0, 56.0),
+            FrameFormat("45", "4×5 · 5:4", 120.0, 96.0),
+            FrameFormat("57", "5×7 · 7:5", 168.0, 120.0),
+            FrameFormat("810", "8×10 · 5:4", 240.0, 192.0),
         )
+
+        private const val FULL_FRAME_DIAGONAL_MM = 43.266615
     }
 }
 
 data class CameraUiInfo(
     val cameraId: String = "",
     val logicalCameraId: String = cameraId,
+    /** Actual route identity used for calibration when no physical id is confirmed yet. */
+    val runtimeCameraId: String = cameraId,
     val physicalCameraId: String? = null,
+    val activePhysicalCameraId: String? = physicalCameraId,
+    val lensFacing: Int = CameraCharacteristics.LENS_FACING_EXTERNAL,
+    /** Static RAW capability advertised by the active hardware route. */
+    val rawHardwareAvailable: Boolean = false,
+    /** Whether the current configured session actually includes a RAW output. */
     val rawAvailable: Boolean = false,
     val manualSensorAvailable: Boolean = false,
+    /** Whether static metadata guarantees, or a live result has confirmed, absolute exposure. */
+    val absoluteExposureMetadataAvailable: Boolean = false,
     val focalLengthMm: Float = 0f,
     val aperture: Float = 0f,
+    /** Camera2 focus distance converted from diopters; null means unavailable, +∞ means infinity. */
+    val focusDistanceMeters: Float? = null,
+    val minimumFocusDistanceDiopters: Float = 0f,
+    val focusDistanceCalibration: Int? = null,
+    /** Static key availability; a non-null calibration field alone is not sufficient. */
+    val focusDistanceResultAvailable: Boolean = false,
+    /** Logical multi-camera routes require a confirmed active physical result for AF distance. */
+    val isLogicalMultiCamera: Boolean = false,
     val sensorWidthMm: Float = 0f,
     val sensorHeightMm: Float = 0f,
     val sensorOrientationDegrees: Int = 90,
     val maxDisplayZoom: Float = 5f,
     val previewSize: Size? = null,
+    /** Changes whenever a preview-producing CameraCaptureSession starts, even at the same size. */
+    val previewStreamGeneration: Long = 0L,
     val previewFps: Int = 0,
+    val previewFpsLower: Int = previewFps,
+    val previewFpsUpper: Int = previewFps,
+    val actualPreviewFps: Float = 0f,
     val activeArray: Rect? = null,
+    val previewSensorViewport: NormalizedSensorViewport = NormalizedSensorViewport.FULL,
     val status: String = "",
-)
+) {
+    /**
+     * Storage identity for calibration and metering. Automatic logical routes keep their logical
+     * identity until API 29+ has reported a concrete active physical id; fixed routes already
+     * have that id from session configuration.
+     */
+    val calibrationCameraId: String
+        get() = activePhysicalCameraId?.let { "$logicalCameraId@$it" } ?: runtimeCameraId
+
+    val physicalCameraIdentityKnown: Boolean
+        get() = physicalCameraId != null || activePhysicalCameraId != null || !isLogicalMultiCamera
+
+    /** Uncalibrated or unspecified Camera2 focus units cannot drive a physical distance formula. */
+    val metricFocusDistanceAvailable: Boolean
+        get() = minimumFocusDistanceDiopters > 0f &&
+            focusDistanceCalibration in setOf(
+                CameraCharacteristics.LENS_INFO_FOCUS_DISTANCE_CALIBRATION_CALIBRATED,
+                CameraCharacteristics.LENS_INFO_FOCUS_DISTANCE_CALIBRATION_APPROXIMATE,
+            ) && focusDistanceResultAvailable && physicalCameraIdentityKnown
+}
 
 data class MeterReading(
     val sceneEv100: Double,
@@ -58,6 +121,8 @@ data class MeterReading(
     val exposureTimeNs: Long,
     val aperture: Float,
     val source: MeteringSource = MeteringSource.RAW,
+    /** Present only when this reading can be used for a calibration save. */
+    val calibrationSample: CalibrationMeasurementSample? = null,
 )
 
 /** A Zone touch expressed in both the film-frame viewport and the full preview TextureView. */
@@ -70,6 +135,18 @@ data class ZoneMeteringTarget(
     val previewFrameHeightFraction: Float,
 )
 
+/** One visible Zone marker frozen at the instant a batch remeasurement begins. */
+data class ZoneMeteringRequest(
+    val markerId: Int,
+    val target: ZoneMeteringTarget,
+)
+
+/** A reading produced for one marker from a RAW burst shared by the whole Zone batch. */
+data class ZoneMeteringResult(
+    val markerId: Int,
+    val reading: MeterReading,
+)
+
 internal data class PreviewLumaReference(
     val samples: FloatArray,
     val gridSize: Int,
@@ -80,10 +157,15 @@ internal data class RawMeterPoint(
     val sensorX: Float,
     val sensorY: Float,
     val matchScore: Double,
+    val visibleCropLeft: Float = Float.NaN,
+    val visibleCropTop: Float = Float.NaN,
+    val visibleCropRight: Float = Float.NaN,
+    val visibleCropBottom: Float = Float.NaN,
 )
 
 enum class MeteringSource {
     RAW,
+    YUV_PREVIEW,
     ISP_PREVIEW,
 }
 
@@ -101,6 +183,35 @@ enum class ExposureStep(val denominator: Int) {
 enum class MeteringMode {
     CENTER_WEIGHTED,
     SPOT,
+    ANGLE,
+}
+
+enum class MeteringPipelineMode {
+    /** Uses RAW when possible and automatically falls back when a device rejects it. */
+    AUTO,
+
+    /** Stable path: resident preview + YUV metering, without creating a RAW output. */
+    ISOLATED,
+
+    /** Compatibility path: uses one ISP-processed sample and never opens a RAW output. */
+    FAST,
+
+    ;
+
+    companion object {
+        fun fromStored(value: String?): MeteringPipelineMode = when (value) {
+            // COMPATIBLE was the old name of the no-RAW processed pipeline.
+            "COMPATIBLE" -> FAST
+            else -> entries.firstOrNull { it.name == value } ?: AUTO
+        }
+    }
+}
+
+/** Calibration is source-complete; it may open isolated RAW even when runtime metering uses YUV. */
+internal object CalibrationStreamPolicy {
+    @Suppress("UNUSED_PARAMETER")
+    fun includesRaw(mode: MeteringPipelineMode, rawSupported: Boolean): Boolean =
+        rawSupported
 }
 
 enum class MenuLanguage {
@@ -113,11 +224,36 @@ enum class AppTheme {
     DARK,
 }
 
+enum class PreviewHealthDetectionMode {
+    ON,
+    OFF,
+}
+
+enum class PreviewInformationBarMode {
+    ON,
+    OFF,
+}
+
+/** User preference for the regular Camera2 viewfinder request. */
+enum class PreviewFrameRateMode(val requestedCeiling: Int) {
+    /** Compatibility-first ceiling; low light may select a lower advertised AE range. */
+    LOW(30),
+
+    /** Try an advertised regular-session range up to 60 fps, with low-light/health fallback. */
+    HIGH(60),
+}
+
 enum class Handedness {
     RIGHT,
     LEFT,
 }
 
+/**
+ * Zone point placement methods. Constant names are persisted in preferences and must not be
+ * renamed. BUTTON is "button only" (仅按键): the mark button places points at the frame center.
+ * TOUCH is "button and touch" (按键与触屏): the mark button and direct preview taps both place
+ * points; touch points are refined on the RAW stream by template matching.
+ */
 enum class ZoneMarkingMethod {
     BUTTON,
     TOUCH,
@@ -239,7 +375,46 @@ class MeterState(context: Context) {
 
     var meteringMode: MeteringMode = preferences.enumValue(
         "metering_mode",
-        MeteringMode.SPOT,
+        MeteringMode.CENTER_WEIGHTED,
+    )
+
+    var angleMeteringDegrees: Int = AngleMeteringMath.nearestSelectableDegrees(
+        preferences.getInt(
+            angleMeteringKey(cameraSelectionStore.selectedCameraId.orEmpty()),
+            AngleMeteringMath.DEFAULT_DEGREES,
+        ),
+    )
+        private set
+
+    // Preserve the old no-RAW behavior instead of silently moving existing users to isolation.
+    var meteringPipelineMode: MeteringPipelineMode = MeteringPipelineMode.fromStored(
+        preferences.getString("metering_pipeline_mode", null),
+    )
+
+    var meteringCombinationSelectionMode: MeteringCombinationSelectionMode =
+        preferences.enumValue(
+            "metering_combination_selection_mode",
+            MeteringCombinationSelectionMode.SYSTEM,
+        )
+
+    var exposurePreviewMode: ExposurePreviewMode = preferences.enumValue(
+        "exposure_preview_mode",
+        ExposurePreviewMode.OFF,
+    )
+
+    var previewHealthDetectionMode: PreviewHealthDetectionMode = preferences.enumValue(
+        "preview_health_detection_mode",
+        PreviewHealthDetectionMode.ON,
+    )
+
+    var previewFrameRateMode: PreviewFrameRateMode = preferences.enumValue(
+        "preview_frame_rate_mode",
+        PreviewFrameRateMode.LOW,
+    )
+
+    var previewInformationBarMode: PreviewInformationBarMode = preferences.enumValue(
+        "preview_information_bar_mode",
+        PreviewInformationBarMode.OFF,
     )
 
     var zoneMarkingMethod: ZoneMarkingMethod = preferences.enumValue(
@@ -268,7 +443,13 @@ class MeterState(context: Context) {
 
     var sceneEv100: Double? = null
     var lastReading: MeterReading? = null
+    var lastNormalReading: MeterReading? = null
     var measuring: Boolean = false
+    /** A camera interaction is in flight (restore/reconfigure) but the spinner is not shown. */
+    var meteringInteractionBusy: Boolean = false
+    internal var appliedFlashConfiguration: FlashConfiguration? = null
+        private set
+    internal var distanceMeasurementState: DistanceMeasurementState = DistanceMeasurementState()
     var cameraInfo: CameraUiInfo = CameraUiInfo(
         status = if (menuLanguage == MenuLanguage.ENGLISH) {
             "Preparing camera"
@@ -282,8 +463,13 @@ class MeterState(context: Context) {
         private set
     var transientMessage: String? = null
 
-    val effectiveEv100: Double?
+    val ambientEffectiveEv100: Double?
         get() = sceneEv100?.minus(exposureCompEv)
+
+    val effectiveEv100: Double?
+        get() = ambientEffectiveEv100?.let { ambient ->
+            ambient + currentFlashAdjustment().compensationStops
+        }
 
     init {
         // Older builds stored coordinates derived from rounded display labels (for example
@@ -296,7 +482,31 @@ class MeterState(context: Context) {
             lockedShutterLogSeconds =
                 ExposureMath.nearestShutterLogSeconds(lockedShutterLogSeconds, shutterStep)
         }
+        meteringMode = MeteringAreaPolicy.resolveForPipeline(
+            meteringMode,
+            meteringPipelineMode,
+        )
         persist()
+    }
+
+    internal fun setAppliedFlashConfiguration(value: FlashConfiguration?) {
+        appliedFlashConfiguration = value?.normalized()
+    }
+
+    internal fun currentFlashAdjustment(): FlashAdjustment {
+        val configuration = appliedFlashConfiguration
+            ?: return FlashAdjustment(0.0, null, null, FlashAdjustmentStatus.INVALID)
+        return FlashExposureMath.adjustment(
+            configuration = configuration,
+            autofocusDistanceMeters = distanceMeasurementState.effectiveMetersForFlash,
+            distanceMeasurementState = distanceMeasurementState,
+            meteringIso = configuration.iso,
+            ambientEv100 = ambientEffectiveEv100,
+            exposureCompensationEv = exposureCompEv,
+            lockMode = exposureLockMode,
+            lockedApertureStop = lockedApertureStop,
+            lockedShutterLogSeconds = lockedShutterLogSeconds,
+        )
     }
 
     fun selectFrame(index: Int) {
@@ -377,7 +587,8 @@ class MeterState(context: Context) {
         persist()
     }
 
-    fun updateSetting(key: SettingKey, value: String) {
+    /** Returns false when a requested combination is deliberately unavailable. */
+    fun updateSetting(key: SettingKey, value: String): Boolean {
         when (key) {
             SettingKey.APERTURE_STEP -> apertureStep = enumValue(value, apertureStep)
             SettingKey.SHUTTER_STEP -> shutterStep = enumValue(value, shutterStep)
@@ -388,7 +599,31 @@ class MeterState(context: Context) {
                     exposureCompensationStep,
                 )
             }
-            SettingKey.METERING_MODE -> meteringMode = enumValue(value, meteringMode)
+            SettingKey.METERING_MODE -> {
+                val requested = enumValue(value, meteringMode)
+                if (!MeteringAreaPolicy.canSelect(requested, meteringPipelineMode)) return false
+                meteringMode = requested
+            }
+            SettingKey.METERING_PIPELINE -> {
+                meteringPipelineMode = enumValue(value, meteringPipelineMode)
+                meteringMode = MeteringAreaPolicy.resolveForPipeline(
+                    meteringMode,
+                    meteringPipelineMode,
+                )
+            }
+            SettingKey.COMBINATION_SELECTION ->
+                meteringCombinationSelectionMode = enumValue(
+                    value,
+                    meteringCombinationSelectionMode,
+                )
+            SettingKey.EXPOSURE_PREVIEW ->
+                exposurePreviewMode = enumValue(value, exposurePreviewMode)
+            SettingKey.PREVIEW_HEALTH_DETECTION ->
+                previewHealthDetectionMode = enumValue(value, previewHealthDetectionMode)
+            SettingKey.PREVIEW_FRAME_RATE ->
+                previewFrameRateMode = enumValue(value, previewFrameRateMode)
+            SettingKey.PREVIEW_INFORMATION_BAR ->
+                previewInformationBarMode = enumValue(value, previewInformationBarMode)
             SettingKey.ZONE_MARKING_METHOD ->
                 zoneMarkingMethod = enumValue(value, zoneMarkingMethod)
             SettingKey.LANGUAGE -> menuLanguage = enumValue(value, menuLanguage)
@@ -396,6 +631,17 @@ class MeterState(context: Context) {
             SettingKey.HANDEDNESS -> handedness = enumValue(value, handedness)
         }
         persist()
+        return true
+    }
+
+    fun selectAngleMeteringDegrees(value: Int): Boolean {
+        val next = AngleMeteringMath.nearestSelectableDegrees(value)
+        if (next == angleMeteringDegrees) return false
+        angleMeteringDegrees = next
+        preferences.edit()
+            .putInt(angleMeteringKey(selectedCameraId), angleMeteringDegrees)
+            .apply()
+        return true
     }
 
     fun updateCameraCatalog(cameras: List<CameraDescriptor>): String? {
@@ -415,6 +661,12 @@ class MeterState(context: Context) {
         selectedCameraId = selected?.cameraId.orEmpty()
         cameraSelectionStore.selectedCameraId = selectedCameraId
         zoom = preferences.getFloat(cameraZoomKey(selectedCameraId), 1f).coerceAtLeast(1f)
+        angleMeteringDegrees = AngleMeteringMath.nearestSelectableDegrees(
+            preferences.getInt(
+                angleMeteringKey(selectedCameraId),
+                AngleMeteringMath.DEFAULT_DEGREES,
+            ),
+        )
         return selectedCameraId.ifBlank { null }
     }
 
@@ -427,9 +679,18 @@ class MeterState(context: Context) {
         selectedCameraId = cameraId
         cameraSelectionStore.selectedCameraId = cameraId
         zoom = preferences.getFloat(cameraZoomKey(cameraId), 1f).coerceAtLeast(1f)
+        angleMeteringDegrees = AngleMeteringMath.nearestSelectableDegrees(
+            preferences.getInt(angleMeteringKey(cameraId), AngleMeteringMath.DEFAULT_DEGREES),
+        )
+        invalidateMeteringResults()
+        return true
+    }
+
+    /** Cached readings belong to the calibration revision that produced them. */
+    fun invalidateMeteringResults() {
         sceneEv100 = null
         lastReading = null
-        return true
+        lastNormalReading = null
     }
 
     fun currentCamera(): CameraDescriptor? =
@@ -440,8 +701,73 @@ class MeterState(context: Context) {
 
     fun cameraNote(cameraId: String): String = cameraSelectionStore.note(cameraId)
 
+    fun cameraOutputAspect(cameraId: String): Float? = preferences
+        .getFloat(cameraOutputAspectKey(cameraId), Float.NaN)
+        .takeIf { it.isFinite() && it in 1f..4f }
+
+    fun setCameraOutputAspect(cameraId: String, aspect: Float?) {
+        val editor = preferences.edit()
+        val key = cameraOutputAspectKey(cameraId)
+        if (aspect == null) editor.remove(key)
+        else editor.putFloat(key, maxOf(aspect, 1f / aspect).coerceIn(1f, 4f))
+        editor.apply()
+    }
+
+    fun aspectStorageCameraId(cameraId: String): String {
+        val descriptor = availableCameras.firstOrNull { it.cameraId == cameraId }
+        return CameraOutputAspectIdentity.resolve(
+            cameraId = cameraId,
+            selectedCameraId = selectedCameraId,
+            lensRole = descriptor?.lensRole,
+            runtimeCameraId = cameraInfo.cameraId,
+            activePhysicalCameraId = cameraInfo.activePhysicalCameraId,
+            runtimeCalibrationCameraId = cameraInfo.calibrationCameraId,
+        )
+    }
+
+    fun currentCameraOutputAspect(): Float? = cameraOutputAspect(
+        aspectStorageCameraId(selectedCameraId.ifBlank { cameraInfo.cameraId }),
+    )
+
+    fun currentPreviewLandscapeAspect(): Float {
+        val size = cameraInfo.previewSize
+        return PreviewOutputGeometry.landscapeAspect(
+            width = size?.width ?: 0,
+            height = size?.height ?: 0,
+            overrideAspect = currentCameraOutputAspect(),
+        )
+    }
+
     fun cameraCalibrationRecord(cameraId: String): CameraCalibrationRecord? =
         cameraCalibrationStore.record(cameraId)
+
+    fun cameraCalibrationSignatureState(
+        cameraId: String,
+        source: MeteringSource,
+    ): CalibrationSignatureState = cameraCalibrationStore.signatureState(cameraId, source)
+
+    fun previewCalibratedSceneEv100(sceneEv100: Double, source: MeteringSource): Double {
+        val cameraId = cameraInfo.calibrationCameraId.ifBlank { selectedCameraId }.ifBlank { "0" }
+        return ExposurePreviewMath.previewCalibratedSceneEv100(
+            measuredSceneEv100 = sceneEv100,
+            sourceCorrectionEv = cameraCalibrationStore.totalCorrection(cameraId, source),
+            previewCorrectionEv = cameraCalibrationStore.totalCorrection(
+                cameraId,
+                MeteringSource.ISP_PREVIEW,
+            ),
+        )
+    }
+
+    fun previewCameraCorrectionEv(): Double {
+        val cameraId = cameraInfo.calibrationCameraId.ifBlank { selectedCameraId }.ifBlank { "0" }
+        return cameraCalibrationStore.totalCorrection(cameraId, MeteringSource.ISP_PREVIEW)
+    }
+
+    fun exposurePreviewExecutionCorrectionEv(cameraId: String? = null): Double {
+        val resolvedCameraId = cameraId
+            ?: cameraInfo.calibrationCameraId.ifBlank { selectedCameraId }.ifBlank { "0" }
+        return cameraCalibrationStore.exposurePreviewCorrection(resolvedCameraId)
+    }
 
     fun cameraCalibrationHistory(cameraId: String): List<CameraCalibrationRecord> =
         cameraCalibrationStore.history(cameraId)
@@ -455,6 +781,13 @@ class MeterState(context: Context) {
     fun refreshVignettingCalibration(cameraId: String) {
         vignettingCalibrationStore.invalidate(cameraId)
     }
+
+    fun hasCalibrationArtifacts(): Boolean =
+        cameraCalibrationStore.hasCalibrationArtifacts() ||
+            vignettingCalibrationStore.hasCalibrationArtifacts()
+
+    fun hasMeteringCalibrationArtifacts(): Boolean =
+        cameraCalibrationStore.hasMeteringCalibrationArtifacts()
 
     fun setCameraNote(cameraId: String, note: String) {
         cameraSelectionStore.setNote(cameraId, note)
@@ -485,56 +818,123 @@ class MeterState(context: Context) {
 
     private fun preferredCamera(cameras: List<CameraDescriptor>): CameraDescriptor? =
         cameras.firstOrNull {
+            it.lensRole == CameraLensRole.AUTOMATIC && it.rawAvailable
+        } ?: cameras.firstOrNull {
             it.lensRole == CameraLensRole.MAIN && it.rawAvailable
         } ?: cameras.firstOrNull {
+            it.rawAvailable
+        } ?: cameras.firstOrNull {
+            it.lensRole == CameraLensRole.AUTOMATIC
+        } ?: cameras.firstOrNull {
             it.lensRole == CameraLensRole.MAIN
-        } ?: cameras.firstOrNull { it.rawAvailable }
-            ?: cameras.firstOrNull()
+        } ?: cameras.firstOrNull()
 
     private fun cameraZoomKey(cameraId: String) = "camera_zoom_$cameraId"
+
+    private fun cameraOutputAspectKey(cameraId: String) = "camera_output_aspect_$cameraId"
+
+    private fun angleMeteringKey(cameraId: String) = "angle_metering_degrees_$cameraId"
 
     fun settingValue(key: SettingKey): String = when (key) {
         SettingKey.APERTURE_STEP -> apertureStep.name
         SettingKey.SHUTTER_STEP -> shutterStep.name
         SettingKey.EXPOSURE_COMPENSATION_STEP -> exposureCompensationStep.name
         SettingKey.METERING_MODE -> meteringMode.name
+        SettingKey.COMBINATION_SELECTION -> meteringCombinationSelectionMode.name
+        SettingKey.METERING_PIPELINE -> meteringPipelineMode.name
+        SettingKey.EXPOSURE_PREVIEW -> exposurePreviewMode.name
+        SettingKey.PREVIEW_HEALTH_DETECTION -> previewHealthDetectionMode.name
+        SettingKey.PREVIEW_FRAME_RATE -> previewFrameRateMode.name
+        SettingKey.PREVIEW_INFORMATION_BAR -> previewInformationBarMode.name
         SettingKey.ZONE_MARKING_METHOD -> zoneMarkingMethod.name
         SettingKey.LANGUAGE -> menuLanguage.name
         SettingKey.THEME -> appTheme.name
         SettingKey.HANDEDNESS -> handedness.name
     }
 
-    fun equivalent35mm(): Int? {
+    private fun effectiveFullFrameEquivalentMm(): Double? {
         val info = cameraInfo
         if (info.focalLengthMm <= 0f || info.sensorWidthMm <= 0f || info.sensorHeightMm <= 0f) {
             return null
         }
-        val sensorAspect = info.sensorWidthMm / info.sensorHeightMm
-        val screenFrameAspect =
-            if (frameLandscape) frameFormat.landscapeAspect else 1f / frameFormat.landscapeAspect
+        val visible = currentVisibleSensorSizeMm() ?: return null
+        return PreviewOutputGeometry.fullFrameEquivalentFocalMm(
+            physicalFocalLengthMm = info.focalLengthMm.toDouble(),
+            visibleSensorSize = visible,
+        )
+    }
+
+    /** Conventional 135-equivalent focal length retained for compatibility and diagnostics. */
+    fun equivalent35mm(): Int? = effectiveFullFrameEquivalentMm()?.toInt()
+
+    /** Lens focal length on the selected film format that gives the current preview field of view. */
+    fun equivalentFrameFocalMm(): Int? = effectiveFullFrameEquivalentMm()
+        ?.let(frameFormat::focalLengthForFullFrameEquivalent)
+
+    fun maximumAngleMeteringDegrees(): Double? {
+        val info = cameraInfo
+        if (selectedCameraId.isNotBlank() && info.cameraId != selectedCameraId) return null
+        val previewVisible = previewVisibleSensorSizeMm() ?: return null
+        return AngleMeteringMath.maximumPhysicalSupportedDegrees(
+            focalLengthMm = info.focalLengthMm.toDouble(),
+            sensorWidthMm = previewVisible.width,
+            sensorHeightMm = previewVisible.height,
+            sensorFrameAspect = currentSensorFrameAspect(),
+        )
+    }
+
+    fun angleMeteringRoiFraction(): Float? {
+        val info = cameraInfo
+        if (selectedCameraId.isNotBlank() && info.cameraId != selectedCameraId) return null
+        val previewVisible = previewVisibleSensorSizeMm() ?: return null
+        return AngleMeteringMath.physicalRoiFraction(
+            angleDegrees = angleMeteringDegrees,
+            focalLengthMm = info.focalLengthMm.toDouble(),
+            sensorWidthMm = previewVisible.width,
+            sensorHeightMm = previewVisible.height,
+            sensorFrameAspect = currentSensorFrameAspect(),
+        )
+    }
+
+    /** Display-only size: the fixed physical circle grows as the viewfinder is electronically cropped. */
+    fun angleMeteringIndicatorFraction(): Float? = angleMeteringRoiFraction()
+        ?.times(zoom.coerceAtLeast(1f))
+
+    internal fun previewVisibleSensorSizeMm(): PreviewOutputGeometry.VisibleSensorSizeMm? {
+        val info = cameraInfo
+        if (info.sensorWidthMm <= 0f || info.sensorHeightMm <= 0f) return null
+        return PreviewOutputGeometry.VisibleSensorSizeMm(
+            width = info.sensorWidthMm * info.previewSensorViewport.width.toDouble(),
+            height = info.sensorHeightMm * info.previewSensorViewport.height.toDouble(),
+        )
+    }
+
+    private fun currentVisibleSensorSizeMm(): PreviewOutputGeometry.VisibleSensorSizeMm? {
+        val info = cameraInfo
+        return PreviewOutputGeometry.visibleSensorSizeMm(
+            sensorWidthMm = info.sensorWidthMm.toDouble(),
+            sensorHeightMm = info.sensorHeightMm.toDouble(),
+            sensorViewport = info.previewSensorViewport,
+            frameAspectInSensor = currentSensorFrameAspect(),
+            displayZoom = zoom.toDouble(),
+        )
+    }
+
+    private fun currentSensorFrameAspect(): Double {
+        val info = cameraInfo
+        val screenAspect = if (frameLandscape) {
+            frameFormat.landscapeAspect
+        } else {
+            1f / frameFormat.landscapeAspect
+        }
         val assumedDisplayDegrees = if (landscape) 90 else 0
         val relativeRotation =
             (info.sensorOrientationDegrees - assumedDisplayDegrees + 360) % 360
-        val frameAspect =
-            if (relativeRotation == 90 || relativeRotation == 270) {
-                1f / screenFrameAspect
-            } else {
-                screenFrameAspect
-            }
-        val effectiveWidth: Double
-        val effectiveHeight: Double
-        if (sensorAspect > frameAspect) {
-            effectiveHeight = info.sensorHeightMm.toDouble()
-            effectiveWidth = effectiveHeight * frameAspect
+        return if (relativeRotation == 90 || relativeRotation == 270) {
+            1.0 / screenAspect
         } else {
-            effectiveWidth = info.sensorWidthMm.toDouble()
-            effectiveHeight = effectiveWidth / frameAspect
+            screenAspect.toDouble()
         }
-        val effectiveDiagonal = sqrt(
-            effectiveWidth * effectiveWidth + effectiveHeight * effectiveHeight,
-        )
-        if (effectiveDiagonal <= 0.0) return null
-        return (info.focalLengthMm * 43.266615 / effectiveDiagonal * zoom).toInt()
     }
 
     private fun persist() {
@@ -557,6 +957,16 @@ class MeterState(context: Context) {
             .putString("shutter_step", shutterStep.name)
             .putString("exposure_compensation_step", exposureCompensationStep.name)
             .putString("metering_mode", meteringMode.name)
+            .putString("metering_pipeline_mode", meteringPipelineMode.name)
+            .putString(
+                "metering_combination_selection_mode",
+                meteringCombinationSelectionMode.name,
+            )
+            .putString("exposure_preview_mode", exposurePreviewMode.name)
+            .putString("preview_health_detection_mode", previewHealthDetectionMode.name)
+            .putString("preview_frame_rate_mode", previewFrameRateMode.name)
+            .putString("preview_information_bar_mode", previewInformationBarMode.name)
+            .putInt(angleMeteringKey(selectedCameraId), angleMeteringDegrees)
             .putString("zone_marking_method", zoneMarkingMethod.name)
             .putString("menu_language", menuLanguage.name)
             .putString("app_theme", appTheme.name)
@@ -662,7 +1072,14 @@ object ExposureMath {
     val minApertureStop: Double get() = apertureStops.first()
     val maxApertureStop: Double get() = apertureStops.last()
     val minShutterLogSeconds: Double get() = shutterLogSeconds.last()
-    val maxShutterLogSeconds: Double get() = shutterLogSeconds.first()
+    /** Last coordinate with a printed scale tick (30 seconds). */
+    val maxMarkedShutterLogSeconds: Double get() = shutterLogSeconds.first()
+
+    /**
+     * Long-exposure tail. It deliberately has no printed ticks after 30 seconds, but the
+     * centered value remains available and snaps at the configured stop interval.
+     */
+    val maxShutterLogSeconds: Double get() = maxMarkedShutterLogSeconds + 7.0
 
     fun primaryPair(
         ev100: Double?,
@@ -767,6 +1184,11 @@ object ExposureMath {
         step: ExposureStep = ExposureStep.THIRD,
     ): Double {
         val values = shutterStops(step)
+        val markedMaximum = values.maxOrNull() ?: return target
+        if (target > markedMaximum) {
+            return ((target.coerceAtMost(maxShutterLogSeconds) * step.denominator).roundToInt()
+                .toDouble() / step.denominator).coerceAtMost(maxShutterLogSeconds)
+        }
         return values.minByOrNull { abs(it - target) } ?: values.first()
     }
 

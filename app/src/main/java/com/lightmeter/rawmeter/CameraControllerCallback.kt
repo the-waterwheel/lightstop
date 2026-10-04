@@ -3,14 +3,34 @@ package com.lightmeter.rawmeter
 interface CameraControllerCallback {
     fun localized(chinese: String, english: String): String
     fun onCameraInfo(info: CameraUiInfo)
+    fun onDistanceMeasurementState(state: DistanceMeasurementState) = Unit
+    fun onCombinationSelectionFallbackToSystem() = Unit
+    /** A legacy manual RAW choice may be kept, but must be re-probed before it can meter again. */
+    fun onManualCombinationRevalidationNeeded(request: ManualCombinationRevalidationRequest) = Unit
     fun onRawUnavailable()
     fun tryReserveZoneTrackingFrame(): Boolean
     fun cancelZoneTrackingFrameReservation()
     fun onZoneTrackingFrame(frame: ZoneTrackingFrame)
     fun onMeteringStarted(source: MeteringSource, frameCount: Int)
     fun onMeterReading(reading: MeterReading)
+    fun onZoneMeteringBatchResult(results: List<ZoneMeteringResult>) = Unit
     fun onMeteringError(message: String)
+    /** Zone RAW can have a usable reading while the mutually-exclusive resident session restores. */
+    fun onMeteringRestoreStateChanged(restoring: Boolean) = Unit
+    fun onMeteringBaselineRestoring() = Unit
+    fun onExposurePreviewUnavailable() = Unit
     fun onVignettingCalibrationStarted()
     fun onVignettingCalibrationCompleted(info: VignettingCalibrationInfo)
     fun onVignettingCalibrationError(message: String)
+}
+
+data class ManualCombinationRevalidationRequest(
+    val selectionCameraId: String,
+    val planId: String?,
+    val ownerEpoch: Long,
+    val reason: String,
+    val canStart: Boolean,
+) {
+    fun belongsTo(selection: String?, epoch: Long): Boolean =
+        selectionCameraId == selection && ownerEpoch == epoch
 }

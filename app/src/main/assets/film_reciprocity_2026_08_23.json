@@ -1,0 +1,3146 @@
+{
+  "schemaVersion": 1,
+  "sourceWorkbook": "胶片宽容度数据库_公开资料深挖版_2026-08-23.xlsx",
+  "methods": [
+    {
+      "id": "NONE",
+      "type": "NONE",
+      "parameter": null,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": null,
+      "evidence": "D",
+      "longExposureFilter": "无厂家倒易率专用滤镜数据",
+      "filterRule": "不适用",
+      "algorithm": "无可靠参数时不自动计算；可在计算器手动输入试验指数 P，Tc=Tm^P",
+      "warning": "没有找到可审计的厂家长曝数据；默认必须包围曝光。",
+      "sourceUrl": "",
+      "points": []
+    },
+    {
+      "id": "KODAK-COLOR-R1",
+      "type": "RANGE",
+      "parameter": null,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": 1,
+      "evidence": "B",
+      "longExposureFilter": "在该范围内无需倒易率滤镜",
+      "filterRule": "不适用",
+      "algorithm": "1/10000–1 s：Tc=Tm；超过 1 s 厂家要求实拍测试",
+      "warning": "Portra 400 为直接厂家数据；同类 Portra/Ektar/Ektacolor 映射属于保守的家族范围继承，范围外不外推。",
+      "sourceUrl": "https://imaging.kodakalaris.com/sites/default/files/files/resources/e4050_portra_400.pdf",
+      "points": []
+    },
+    {
+      "id": "KODAK-MOTION-R1",
+      "type": "RANGE",
+      "parameter": null,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": 1,
+      "evidence": "B",
+      "longExposureFilter": "在该范围内无需滤镜或曝光修正",
+      "filterRule": "不适用",
+      "algorithm": "1/1000–1 s：Tc=Tm；范围外无厂家数值",
+      "warning": "VISION3 50D 为直接厂家数据；其他 VISION/改装卷属于家族继承。ECN-2/C-41 改制及去 remjet 可能改变表现。",
+      "sourceUrl": "https://www.kodak.com/content/products-brochures/Film/VISION3_50D_5203_TI-2657_Technical-Data_EN.pdf",
+      "points": []
+    },
+    {
+      "id": "KODAK-E100",
+      "type": "RANGE",
+      "parameter": null,
+      "noCompensationSeconds": 10,
+      "officialMaximumSeconds": 10,
+      "evidence": "A",
+      "longExposureFilter": "≤10 s 无倒易率滤镜或曝光修正",
+      "filterRule": "不适用",
+      "algorithm": "1/10000–10 s：Tc=Tm；更长时间测试",
+      "warning": "当前 E100 静态片资料的无补偿范围；不要与电影 100D 的 1 s 范围混用。",
+      "sourceUrl": "https://www.kodak.com/en/still-film/product/professional/ektachrome-e100-film/",
+      "points": []
+    },
+    {
+      "id": "KODAK-E100D",
+      "type": "RANGE",
+      "parameter": null,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": 1,
+      "evidence": "A",
+      "longExposureFilter": "≤1 s 无倒易率滤镜或曝光修正",
+      "filterRule": "不适用",
+      "algorithm": "1/10000–1 s：Tc=Tm；更长时间无厂家数值",
+      "warning": "电影 EKTACHROME 100D 5294/7294；与静态 E100 的公布范围不同。",
+      "sourceUrl": "https://www.kodak.com/content/products-brochures/Film/EKTACHROME-100D-sell-sheet-EN.pdf",
+      "points": []
+    },
+    {
+      "id": "KODAK-TMX100",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 0.1,
+      "officialMaximumSeconds": 100,
+      "evidence": "A",
+      "longExposureFilter": "无倒易率专用滤镜；黑白拍摄滤镜另计",
+      "filterRule": "否",
+      "algorithm": "厂家节点；节点间按 log(Tm)-log(Tc) 分段幂插值",
+      "warning": "1 s 的 +1/3 EV 以时间等效；10 s→15 s，100 s→200 s。范围外不外推。",
+      "sourceUrl": "https://www.kodakprofessional.com/sites/default/files/wysiwyg/pro/resources/f4016_TMax.pdf",
+      "points": [
+        {
+          "meteredSeconds": 1,
+          "correctedSeconds": 1.2599210498948732,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 10,
+          "correctedSeconds": 15,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 100,
+          "correctedSeconds": 200,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "KODAK-TMX400",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 0.1,
+      "officialMaximumSeconds": 100,
+      "evidence": "A",
+      "longExposureFilter": "无倒易率专用滤镜；黑白拍摄滤镜另计",
+      "filterRule": "否",
+      "algorithm": "厂家节点；节点间按 log(Tm)-log(Tc) 分段幂插值",
+      "warning": "1 s 的 +1/3 EV 以时间等效；10 s→15 s，100 s→300 s。范围外不外推。",
+      "sourceUrl": "https://www.kodakprofessional.com/sites/default/files/wysiwyg/pro/resources/f4016_TMax.pdf",
+      "points": [
+        {
+          "meteredSeconds": 1,
+          "correctedSeconds": 1.2599210498948732,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 10,
+          "correctedSeconds": 15,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 100,
+          "correctedSeconds": 300,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "KODAK-P3200-R1",
+      "type": "RANGE",
+      "parameter": null,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": 1,
+      "evidence": "A",
+      "longExposureFilter": "≤1 s 无倒易率修正；拍摄滤镜另计",
+      "filterRule": "否",
+      "algorithm": "1/10000–1 s：Tc=Tm；更长时间资料未给数值",
+      "warning": "不要用 T-MAX 400 的表替代 P3200。",
+      "sourceUrl": "https://www.kodakprofessional.com/sites/default/files/wysiwyg/pro/resources/f4001_tmax_3200_0.pdf",
+      "points": []
+    },
+    {
+      "id": "FUJI-ACROS",
+      "type": "FIXED_EV",
+      "parameter": 0.5,
+      "noCompensationSeconds": 119.999,
+      "officialMaximumSeconds": 1000,
+      "evidence": "A",
+      "longExposureFilter": "无倒易率专用滤镜",
+      "filterRule": "不适用",
+      "algorithm": "Tm<120 s：Tc=Tm；120–1000 s：Tc=Tm×2^0.5",
+      "warning": "厂家以开大 1/2 档表示；此处换算为等效时间。1000 s 以上不外推。",
+      "sourceUrl": "https://asset.fujifilm.com/www/ca/files/2020-07/c5e78177ce869ce1ded8c8c79799d93f/AF3-0259E_PIB-NEOPAN-100-ACROSII-120-3_data-sheet.pdf",
+      "points": []
+    },
+    {
+      "id": "FUJI-VELVIA50",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": 32,
+      "evidence": "A",
+      "longExposureFilter": "4s 5M；8s 7.5M；16s 10M；32s 12.5M；64s不建议",
+      "filterRule": "是（表中EV已包含CC滤镜因子）",
+      "algorithm": "厂家节点；节点间按 log(Tm)-log(Tc) 分段幂插值",
+      "warning": "以未装长曝CC滤镜的测光时间为 Tm；不要再次叠加该CC滤镜因子。",
+      "sourceUrl": "https://asset.fujifilm.com/www/in/files/2020-07/fcc8016d9ffc8503faacbc39c9b827c4/films_velvia-50_datasheet_01.pdf",
+      "points": [
+        {
+          "meteredSeconds": 4,
+          "correctedSeconds": 5.039684199579493,
+          "filter": "5M"
+        },
+        {
+          "meteredSeconds": 8,
+          "correctedSeconds": 11.313708498984761,
+          "filter": "7.5M"
+        },
+        {
+          "meteredSeconds": 16,
+          "correctedSeconds": 25.39841683149119,
+          "filter": "10M"
+        },
+        {
+          "meteredSeconds": 32,
+          "correctedSeconds": 64,
+          "filter": "12.5M"
+        }
+      ]
+    },
+    {
+      "id": "FUJI-VELVIA100",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 60,
+      "officialMaximumSeconds": 480,
+      "evidence": "A",
+      "longExposureFilter": "120s/240s/480s：2.5M；对应 +1/3/+1/2/+2/3 EV",
+      "filterRule": "是（表中EV已包含CC滤镜因子）",
+      "algorithm": "厂家节点；节点间按 log(Tm)-log(Tc) 分段幂插值",
+      "warning": "以未装长曝CC滤镜的测光时间为 Tm；厂家称数据为指导值，严谨工作应试拍。",
+      "sourceUrl": "https://asset.fujifilm.com/master/emea/files/2020-10/2f3c7f90a0b0c6e605e84f98b7d489c2/films_velvia-100_datasheet_01.pdf",
+      "points": [
+        {
+          "meteredSeconds": 120,
+          "correctedSeconds": 151.19052598738477,
+          "filter": "2.5M"
+        },
+        {
+          "meteredSeconds": 240,
+          "correctedSeconds": 339.4112549695428,
+          "filter": "2.5M"
+        },
+        {
+          "meteredSeconds": 480,
+          "correctedSeconds": 761.9525049447357,
+          "filter": "2.5M"
+        }
+      ]
+    },
+    {
+      "id": "FUJI-PROVIA100F",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 128,
+      "officialMaximumSeconds": 240,
+      "evidence": "A",
+      "longExposureFilter": "240s：2.5G +1/3 EV；480s不建议",
+      "filterRule": "是（表中EV已包含CC滤镜因子）",
+      "algorithm": "厂家节点；128–240 s 间按 log(Tm)-log(Tc) 分段幂插值",
+      "warning": "以未装长曝CC滤镜的测光时间为 Tm；240 s以上不外推。",
+      "sourceUrl": "https://asset.fujifilm.com/master/emea/files/2020-10/2c27854d5609945fbe7e48afc61f815d/films_provia-100f_datasheet_01.pdf",
+      "points": [
+        {
+          "meteredSeconds": 240,
+          "correctedSeconds": 302.38105197476955,
+          "filter": "2.5G"
+        }
+      ]
+    },
+    {
+      "id": "FUJI-C200",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 2,
+      "officialMaximumSeconds": 16,
+      "evidence": "A",
+      "longExposureFilter": "无长曝CC滤镜；4s +1/3 EV，16s +2/3 EV",
+      "filterRule": "不适用",
+      "algorithm": "厂家节点；节点间按 log(Tm)-log(Tc) 分段幂插值",
+      "warning": "16 s以上未公布，不外推。",
+      "sourceUrl": "https://asset.fujifilm.com/www/mx/files/2021-03/24979b6253ec34a6e4307b6a97589b12/films_c200_datasheet_01.pdf",
+      "points": [
+        {
+          "meteredSeconds": 4,
+          "correctedSeconds": 5.039684199579493,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 16,
+          "correctedSeconds": 25.39841683149119,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "FUJI-XTRA400",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 2,
+      "officialMaximumSeconds": 64,
+      "evidence": "A",
+      "longExposureFilter": "无长曝CC滤镜；4/16/64s：+1/3/+2/3/+1 EV",
+      "filterRule": "不适用",
+      "algorithm": "厂家节点；节点间按 log(Tm)-log(Tc) 分段幂插值",
+      "warning": "64 s以上未公布，不外推。",
+      "sourceUrl": "https://asset.fujifilm.com/www/ca/files/2025-06/cf8c16eba9f51331490b611136f20b59/films_superia-xtra400_datasheet_01.pdf",
+      "points": [
+        {
+          "meteredSeconds": 4,
+          "correctedSeconds": 5.039684199579493,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 16,
+          "correctedSeconds": 25.39841683149119,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 64,
+          "correctedSeconds": 128,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "FOMA-100",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 0.5,
+      "officialMaximumSeconds": 100,
+      "evidence": "A",
+      "longExposureFilter": "无倒易率专用滤镜；拍摄滤镜另计",
+      "filterRule": "否",
+      "algorithm": "厂家倍数节点；节点间按 log(Tm)-log(Tc) 分段幂插值",
+      "warning": "1s×2，10s×8，100s×16；100s以上不外推。",
+      "sourceUrl": "https://www.foma.cz/en/fomapan-100",
+      "points": [
+        {
+          "meteredSeconds": 1,
+          "correctedSeconds": 2,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 10,
+          "correctedSeconds": 80,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 100,
+          "correctedSeconds": 1600,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "FOMA-200",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 0.5,
+      "officialMaximumSeconds": 100,
+      "evidence": "A",
+      "longExposureFilter": "无倒易率专用滤镜；拍摄滤镜另计",
+      "filterRule": "否",
+      "algorithm": "厂家倍数节点；节点间按 log(Tm)-log(Tc) 分段幂插值",
+      "warning": "1s×3，10s×9，100s×18；100s以上不外推。",
+      "sourceUrl": "https://www.foma.cz/en/fomapan-200",
+      "points": [
+        {
+          "meteredSeconds": 1,
+          "correctedSeconds": 3,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 10,
+          "correctedSeconds": 90,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 100,
+          "correctedSeconds": 1800,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "FOMA-400",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 0.5,
+      "officialMaximumSeconds": 100,
+      "evidence": "A",
+      "longExposureFilter": "无倒易率专用滤镜；拍摄滤镜另计",
+      "filterRule": "否",
+      "algorithm": "厂家倍数节点；节点间按 log(Tm)-log(Tc) 分段幂插值",
+      "warning": "1s×1.5，10s×6，100s×8；同表适用于 Retropan 320；100s以上不外推。",
+      "sourceUrl": "https://www.foma.cz/en/fomapan-400",
+      "points": [
+        {
+          "meteredSeconds": 1,
+          "correctedSeconds": 1.5,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 10,
+          "correctedSeconds": 60,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 100,
+          "correctedSeconds": 800,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "CINESTILL-P13",
+      "type": "POWER",
+      "parameter": 1.3,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": null,
+      "evidence": "B",
+      "longExposureFilter": "无品牌公布的倒易率CC表；800T日光可选85（非倒易率滤镜）",
+      "filterRule": "否；用户滤镜因子先计入Tm",
+      "algorithm": "Tm≤1s：Tc=Tm；Tm>1s：Tc=Tm^1.3",
+      "warning": "品牌明确称为通用指南并建议包围曝光数档；彩色层间色偏无法由单一指数消除。",
+      "sourceUrl": "https://help.cinestillfilm.com/hc/en-us/articles/4407453578893-What-are-the-reciprocity-failure-details-for-CineStill-films",
+      "points": []
+    },
+    {
+      "id": "ADOX-CHS100II",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": 60,
+      "evidence": "A",
+      "longExposureFilter": "无倒易率专用滤镜；拍摄滤镜另计",
+      "filterRule": "否",
+      "algorithm": "厂家时间节点；节点间按 log(Tm)-log(Tc) 分段幂插值",
+      "warning": "2→3s，4→8s，8→20s，15→45s，30→120s，60→390s；范围外不外推。",
+      "sourceUrl": "https://www.adox.de/Technical_Informations/TA_CHS100II_EN.pdf",
+      "points": [
+        {
+          "meteredSeconds": 2,
+          "correctedSeconds": 3,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 4,
+          "correctedSeconds": 8,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 8,
+          "correctedSeconds": 20,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 15,
+          "correctedSeconds": 45,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 30,
+          "correctedSeconds": 120,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 60,
+          "correctedSeconds": 390,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "ADOX-CMS20",
+      "type": "RANGE",
+      "parameter": null,
+      "noCompensationSeconds": 0.1,
+      "officialMaximumSeconds": 1,
+      "evidence": "B",
+      "longExposureFilter": "无倒易率专用滤镜；1s建议 +1/2 EV",
+      "filterRule": "否",
+      "algorithm": "1/100–1/10s：Tc=Tm；1s仅给+1/2档节点，资料不足以拟合连续长曝曲线",
+      "warning": "1秒以时间等效约1.414秒；更长时间必须测试，且结果依赖 ADOTECH 版本。",
+      "sourceUrl": "https://www.adox.de/films/cms20ii-en/",
+      "points": []
+    },
+    {
+      "id": "BERGGER-P400",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 0.999,
+      "officialMaximumSeconds": 60,
+      "evidence": "A",
+      "longExposureFilter": "无倒易率专用滤镜；拍摄滤镜按滤镜厂家因子",
+      "filterRule": "否",
+      "algorithm": "厂家EV节点；节点间按 log(Tm)-log(Tc) 分段幂插值",
+      "warning": "1s +0.5EV，10s +1EV，60s +2EV；60s以上不外推。",
+      "sourceUrl": "https://bergger.com/en/index.php?controller=attachment&id_attachment=5",
+      "points": [
+        {
+          "meteredSeconds": 1,
+          "correctedSeconds": 1.4142135623730951,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 10,
+          "correctedSeconds": 20,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 60,
+          "correctedSeconds": 240,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "ILF-SFX",
+      "type": "POWER",
+      "parameter": 1.43,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": null,
+      "evidence": "A",
+      "longExposureFilter": "无倒易率专用滤镜；色彩/ND/偏振滤镜按厂家因子另计",
+      "filterRule": "否；非TTL时先把滤镜EV计入Tm",
+      "algorithm": "Tm≤1s：Tc=Tm；Tm>1s：Tc=Tm^1.43",
+      "warning": "ILFORD 2023 针对 SFX 200 的独立指数；极低照度仍建议试拍。",
+      "sourceUrl": "https://www.ilfordphoto.com/amfile/file/download/file/1964/product/681/",
+      "points": []
+    },
+    {
+      "id": "ILF-PANF",
+      "type": "POWER",
+      "parameter": 1.33,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": null,
+      "evidence": "A",
+      "longExposureFilter": "无倒易率专用滤镜；色彩/ND/偏振滤镜按厂家因子另计",
+      "filterRule": "否；非TTL时先把滤镜EV计入Tm",
+      "algorithm": "Tm≤1s：Tc=Tm；Tm>1s：Tc=Tm^1.33",
+      "warning": "ILFORD 2023 针对 PAN F PLUS 的独立指数；极低照度仍建议试拍。",
+      "sourceUrl": "https://www.ilfordphoto.com/amfile/file/download/file/1964/product/681/",
+      "points": []
+    },
+    {
+      "id": "ILF-D100",
+      "type": "POWER",
+      "parameter": 1.26,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": null,
+      "evidence": "A",
+      "longExposureFilter": "无倒易率专用滤镜；色彩/ND/偏振滤镜按厂家因子另计",
+      "filterRule": "否；非TTL时先把滤镜EV计入Tm",
+      "algorithm": "Tm≤1s：Tc=Tm；Tm>1s：Tc=Tm^1.26",
+      "warning": "ILFORD 2023 针对 DELTA 100 PROFESSIONAL 的独立指数；极低照度仍建议试拍。",
+      "sourceUrl": "https://www.ilfordphoto.com/amfile/file/download/file/1964/product/681/",
+      "points": []
+    },
+    {
+      "id": "ILF-D400",
+      "type": "POWER",
+      "parameter": 1.41,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": null,
+      "evidence": "A",
+      "longExposureFilter": "无倒易率专用滤镜；色彩/ND/偏振滤镜按厂家因子另计",
+      "filterRule": "否；非TTL时先把滤镜EV计入Tm",
+      "algorithm": "Tm≤1s：Tc=Tm；Tm>1s：Tc=Tm^1.41",
+      "warning": "ILFORD 2023 针对 DELTA 400 PROFESSIONAL 的独立指数；极低照度仍建议试拍。",
+      "sourceUrl": "https://www.ilfordphoto.com/amfile/file/download/file/1964/product/681/",
+      "points": []
+    },
+    {
+      "id": "ILF-D3200",
+      "type": "POWER",
+      "parameter": 1.33,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": null,
+      "evidence": "A",
+      "longExposureFilter": "无倒易率专用滤镜；色彩/ND/偏振滤镜按厂家因子另计",
+      "filterRule": "否；非TTL时先把滤镜EV计入Tm",
+      "algorithm": "Tm≤1s：Tc=Tm；Tm>1s：Tc=Tm^1.33",
+      "warning": "ILFORD 2023 针对 DELTA 3200 PROFESSIONAL 的独立指数；极低照度仍建议试拍。",
+      "sourceUrl": "https://www.ilfordphoto.com/amfile/file/download/file/1964/product/681/",
+      "points": []
+    },
+    {
+      "id": "ILF-FP4",
+      "type": "POWER",
+      "parameter": 1.26,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": null,
+      "evidence": "A",
+      "longExposureFilter": "无倒易率专用滤镜；色彩/ND/偏振滤镜按厂家因子另计",
+      "filterRule": "否；非TTL时先把滤镜EV计入Tm",
+      "algorithm": "Tm≤1s：Tc=Tm；Tm>1s：Tc=Tm^1.26",
+      "warning": "ILFORD 2023 针对 FP4 PLUS 的独立指数；极低照度仍建议试拍。",
+      "sourceUrl": "https://www.ilfordphoto.com/amfile/file/download/file/1964/product/681/",
+      "points": []
+    },
+    {
+      "id": "ILF-HP5",
+      "type": "POWER",
+      "parameter": 1.31,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": null,
+      "evidence": "A",
+      "longExposureFilter": "无倒易率专用滤镜；色彩/ND/偏振滤镜按厂家因子另计",
+      "filterRule": "否；非TTL时先把滤镜EV计入Tm",
+      "algorithm": "Tm≤1s：Tc=Tm；Tm>1s：Tc=Tm^1.31",
+      "warning": "ILFORD 2023 针对 HP5 PLUS 的独立指数；极低照度仍建议试拍。",
+      "sourceUrl": "https://www.ilfordphoto.com/amfile/file/download/file/1964/product/681/",
+      "points": []
+    },
+    {
+      "id": "ILF-XP2",
+      "type": "POWER",
+      "parameter": 1.31,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": null,
+      "evidence": "A",
+      "longExposureFilter": "无倒易率专用滤镜；色彩/ND/偏振滤镜按厂家因子另计",
+      "filterRule": "否；非TTL时先把滤镜EV计入Tm",
+      "algorithm": "Tm≤1s：Tc=Tm；Tm>1s：Tc=Tm^1.31",
+      "warning": "ILFORD 2023 针对 XP2 SUPER 400 的独立指数；极低照度仍建议试拍。",
+      "sourceUrl": "https://www.ilfordphoto.com/amfile/file/download/file/1964/product/681/",
+      "points": []
+    },
+    {
+      "id": "ILF-ORTHO",
+      "type": "POWER",
+      "parameter": 1.25,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": null,
+      "evidence": "A",
+      "longExposureFilter": "无倒易率专用滤镜；色彩/ND/偏振滤镜按厂家因子另计",
+      "filterRule": "否；非TTL时先把滤镜EV计入Tm",
+      "algorithm": "Tm≤1s：Tc=Tm；Tm>1s：Tc=Tm^1.25",
+      "warning": "ILFORD 2023 针对 ORTHO PLUS 80 的独立指数；极低照度仍建议试拍。",
+      "sourceUrl": "https://www.ilfordphoto.com/amfile/file/download/file/1964/product/681/",
+      "points": []
+    },
+    {
+      "id": "ILF-K100",
+      "type": "POWER",
+      "parameter": 1.26,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": null,
+      "evidence": "A",
+      "longExposureFilter": "无倒易率专用滤镜；色彩/ND/偏振滤镜按厂家因子另计",
+      "filterRule": "否；非TTL时先把滤镜EV计入Tm",
+      "algorithm": "Tm≤1s：Tc=Tm；Tm>1s：Tc=Tm^1.26",
+      "warning": "ILFORD 2023 针对 KENTMERE PAN 100 的独立指数；极低照度仍建议试拍。",
+      "sourceUrl": "https://www.ilfordphoto.com/amfile/file/download/file/1964/product/681/",
+      "points": []
+    },
+    {
+      "id": "ILF-K400",
+      "type": "POWER",
+      "parameter": 1.3,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": null,
+      "evidence": "A",
+      "longExposureFilter": "无倒易率专用滤镜；色彩/ND/偏振滤镜按厂家因子另计",
+      "filterRule": "否；非TTL时先把滤镜EV计入Tm",
+      "algorithm": "Tm≤1s：Tc=Tm；Tm>1s：Tc=Tm^1.3",
+      "warning": "ILFORD 2023 针对 KENTMERE PAN 400 的独立指数；极低照度仍建议试拍。",
+      "sourceUrl": "https://www.ilfordphoto.com/amfile/file/download/file/1964/product/681/",
+      "points": []
+    },
+    {
+      "id": "PUB-KODAK-BW-A",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 0.1,
+      "officialMaximumSeconds": 100,
+      "evidence": "A",
+      "longExposureFilter": "无倒易率专用滤镜；黑白拍摄滤镜另计",
+      "filterRule": "否",
+      "algorithm": "Kodak E-31历史厂家节点；log-log分段幂插值",
+      "warning": "PLUS-X/EKTAPAN：1→2s，10→50s，100→1200s；并建议显影-10%/-20%/-30%。仅适用于对应历史乳剂。",
+      "sourceUrl": "https://125px.com/docs/techpubs/kodak/e31-2002_07.pdf",
+      "points": [
+        {
+          "meteredSeconds": 1,
+          "correctedSeconds": 2,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 10,
+          "correctedSeconds": 50,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 100,
+          "correctedSeconds": 1200,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "PUB-KODAK-TRIX-B",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 0.1,
+      "officialMaximumSeconds": 100,
+      "evidence": "B",
+      "longExposureFilter": "无倒易率专用滤镜；黑白拍摄滤镜另计",
+      "filterRule": "否",
+      "algorithm": "Kodak E-31历史厂家节点；log-log分段幂插值",
+      "warning": "TRI-X 320/400历史表：1→2s，10→50s，100→1200s；现代批次可能不同，建议包围曝光。",
+      "sourceUrl": "https://125px.com/docs/techpubs/kodak/e31-2002_07.pdf",
+      "points": [
+        {
+          "meteredSeconds": 1,
+          "correctedSeconds": 2,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 10,
+          "correctedSeconds": 50,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 100,
+          "correctedSeconds": 1200,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "PUB-KODAK-TECHPAN",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": 100,
+      "evidence": "A",
+      "longExposureFilter": "无倒易率专用滤镜；拍摄滤镜另计",
+      "filterRule": "否",
+      "algorithm": "Kodak E-31 Technical Pan 节点；log-log分段幂插值",
+      "warning": "1s无需曝光补偿；10→15s；100s为+1.5EV，换算约282.84s。显影调整依TECHNIDOL/HC-110工艺。",
+      "sourceUrl": "https://125px.com/docs/techpubs/kodak/e31-2002_07.pdf",
+      "points": [
+        {
+          "meteredSeconds": 10,
+          "correctedSeconds": 15,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 100,
+          "correctedSeconds": 282.842712474619,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "PUB-KODAK-C41BW",
+      "type": "RANGE",
+      "parameter": null,
+      "noCompensationSeconds": 120,
+      "officialMaximumSeconds": 120,
+      "evidence": "B",
+      "longExposureFilter": "≤120s无倒易率专用滤镜或曝光补偿",
+      "filterRule": "不适用",
+      "algorithm": "历史T400 CN/Process C-41黑白资料：1/10000–120s，Tc=Tm",
+      "warning": "BW400CN按同类Kodak C-41黑白乳剂继承；不是该商品代次的独立曲线。",
+      "sourceUrl": "https://125px.com/docs/techpubs/kodak/e31-2002_07.pdf",
+      "points": []
+    },
+    {
+      "id": "PUB-KODAK-COLOR-P13",
+      "type": "POWER",
+      "parameter": 1.3,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": null,
+      "evidence": "C",
+      "longExposureFilter": "无可核实的长曝CC滤镜表；普通拍摄滤镜另计",
+      "filterRule": "否",
+      "algorithm": "Tm≤1s：Tc=Tm；Tm>1s：Tc=Tm^1.3",
+      "warning": "公开计算器明确标为未测试估计；适用于Gold/ColorPlus/Ultramax的起始试拍，不代表厂家曲线。",
+      "sourceUrl": "https://lucas.dev/reciprocity",
+      "points": []
+    },
+    {
+      "id": "PUB-KODAK-PROIMAGE",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 10,
+      "officialMaximumSeconds": 300,
+      "evidence": "C",
+      "longExposureFilter": "无公开长曝CC滤镜建议；普通拍摄滤镜另计",
+      "filterRule": "否",
+      "algorithm": "公开计算器模型 Tc=0.274×Tm^1.585；表内以节点插值复现",
+      "warning": "原站明确标为未测试；10s以上仅作包围曝光中心值。",
+      "sourceUrl": "https://lucas.dev/reciprocity/kodak-pro-image-100",
+      "points": [
+        {
+          "meteredSeconds": 30,
+          "correctedSeconds": 60.11567827617613,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 60,
+          "correctedSeconds": 180.35172256325333,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 120,
+          "correctedSeconds": 541.0692312594775,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 300,
+          "correctedSeconds": 2311.9995837099727,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "PUB-KODAK-E200",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": 10,
+      "evidence": "A",
+      "longExposureFilter": "10s：CC05R，+1/3EV；100s NR",
+      "filterRule": "是（厂家EV包含CC滤镜因子）",
+      "algorithm": "Kodak E-31历史反转片节点",
+      "warning": "以未装CC滤镜的测光时间为Tm；仅适用于E200/EPR历史乳剂。",
+      "sourceUrl": "https://125px.com/docs/techpubs/kodak/e31-2002_07.pdf",
+      "points": [
+        {
+          "meteredSeconds": 10,
+          "correctedSeconds": 12.599210498948732,
+          "filter": "CC05R"
+        }
+      ]
+    },
+    {
+      "id": "PUB-KODAK-EPN",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": 10,
+      "evidence": "A",
+      "longExposureFilter": "10s：CC05M，+1/3EV；100s NR",
+      "filterRule": "是（厂家EV包含CC滤镜因子）",
+      "algorithm": "Kodak E-31历史反转片节点",
+      "warning": "以未装CC滤镜的测光时间为Tm；100s不建议。",
+      "sourceUrl": "https://125px.com/docs/techpubs/kodak/e31-2002_07.pdf",
+      "points": [
+        {
+          "meteredSeconds": 10,
+          "correctedSeconds": 12.599210498948732,
+          "filter": "CC05M"
+        }
+      ]
+    },
+    {
+      "id": "PUB-KODAK-EPP",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 0.1,
+      "officialMaximumSeconds": 100,
+      "evidence": "A",
+      "longExposureFilter": "1/10/100s：CC025R/CC025R/CC10Y+CC025R",
+      "filterRule": "是（厂家EV包含CC滤镜因子）",
+      "algorithm": "Kodak E-31历史反转片节点",
+      "warning": "节点分别+1/3、+1、+2EV；以未装CC滤镜的测光时间为Tm。",
+      "sourceUrl": "https://125px.com/docs/techpubs/kodak/e31-2002_07.pdf",
+      "points": [
+        {
+          "meteredSeconds": 1,
+          "correctedSeconds": 1.2599210498948732,
+          "filter": "CC025R"
+        },
+        {
+          "meteredSeconds": 10,
+          "correctedSeconds": 20,
+          "filter": "CC025R"
+        },
+        {
+          "meteredSeconds": 100,
+          "correctedSeconds": 400,
+          "filter": "CC10Y+CC025R"
+        }
+      ]
+    },
+    {
+      "id": "PUB-KODAK-K64",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": 10,
+      "evidence": "A",
+      "longExposureFilter": "10s：CC05R，+1/3EV；100s NR",
+      "filterRule": "是（厂家EV包含CC滤镜因子）",
+      "algorithm": "Kodak E-31历史KODACHROME节点",
+      "warning": "K-14工艺已停产；过期片实际响应可明显偏离历史数据。",
+      "sourceUrl": "https://125px.com/docs/techpubs/kodak/e31-2002_07.pdf",
+      "points": [
+        {
+          "meteredSeconds": 10,
+          "correctedSeconds": 12.599210498948732,
+          "filter": "CC05R"
+        }
+      ]
+    },
+    {
+      "id": "PUB-KODAK-K200",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": 10,
+      "evidence": "A",
+      "longExposureFilter": "10s：CC10Y，+1/2EV；100s NR",
+      "filterRule": "是（厂家EV包含CC滤镜因子）",
+      "algorithm": "Kodak E-31历史KODACHROME节点",
+      "warning": "K-14工艺已停产；过期片实际响应可明显偏离历史数据。",
+      "sourceUrl": "https://125px.com/docs/techpubs/kodak/e31-2002_07.pdf",
+      "points": [
+        {
+          "meteredSeconds": 10,
+          "correctedSeconds": 14.142135623730951,
+          "filter": "CC10Y"
+        }
+      ]
+    },
+    {
+      "id": "PUB-FUJI-PRO400H",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": 16,
+      "evidence": "A",
+      "longExposureFilter": "无长曝CC滤镜；4s +1/2EV，16s +1EV",
+      "filterRule": "不适用",
+      "algorithm": "厂家曝光节点；log-log分段幂插值",
+      "warning": "4→5.657s，16→32s；16s以上不建议。",
+      "sourceUrl": "https://asset.fujifilm.com/master/emea/files/2020-10/a6cb96275e4957ddc7b3ca932b7755e5/films_pro-400h_datasheet_01.pdf",
+      "points": [
+        {
+          "meteredSeconds": 4,
+          "correctedSeconds": 5.656854249492381,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 16,
+          "correctedSeconds": 32,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "PUB-FUJI-REALA100",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": 64,
+      "evidence": "B",
+      "longExposureFilter": "无公开长曝CC滤镜要求",
+      "filterRule": "不适用",
+      "algorithm": "公开计算器按富士Professional Film Data Guide复现的节点",
+      "warning": "1s以上分段补偿；64s以上不建议。公开站对厂家表进行了连续化。",
+      "sourceUrl": "https://lucas.dev/reciprocity/fujifilm-superia-reala-100",
+      "points": [
+        {
+          "meteredSeconds": 4,
+          "correctedSeconds": 5.333333333333333,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 16,
+          "correctedSeconds": 32,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 64,
+          "correctedSeconds": 147.2,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "PUB-FUJI-100",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 2,
+      "officialMaximumSeconds": 64,
+      "evidence": "B",
+      "longExposureFilter": "无长曝CC滤镜",
+      "filterRule": "不适用",
+      "algorithm": "Fujicolor/Superia 100公开数据节点；log-log分段幂插值",
+      "warning": "Fujicolor 100由富士将Superia 100数据表列作参考；64s以上不外推。",
+      "sourceUrl": "https://lucas.dev/reciprocity/fujifilm-fujicolor-100",
+      "points": [
+        {
+          "meteredSeconds": 4,
+          "correctedSeconds": 5.333442468793171,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 16,
+          "correctedSeconds": 26.66753975034537,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 64,
+          "correctedSeconds": 128.0052385020722,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "PUB-FUJI-SUPERIA200",
+      "type": "POWER",
+      "parameter": 1.1667,
+      "noCompensationSeconds": 2,
+      "officialMaximumSeconds": 64,
+      "evidence": "C",
+      "longExposureFilter": "无可靠长曝CC滤镜表",
+      "filterRule": "不适用",
+      "algorithm": "Tm≤2s：Tc=Tm；Tm>2s：Tc≈Tm^1.1667",
+      "warning": "由公开资料对Superia 200/400厂家少量节点拟合；64s以上不建议。",
+      "sourceUrl": "https://roybijster.nl/2016/07/reciprocity-failure-the-science/",
+      "points": []
+    },
+    {
+      "id": "PUB-FUJI-SUPERIA400",
+      "type": "POWER",
+      "parameter": 1.1667,
+      "noCompensationSeconds": 2,
+      "officialMaximumSeconds": 64,
+      "evidence": "C",
+      "longExposureFilter": "无可靠长曝CC滤镜表",
+      "filterRule": "不适用",
+      "algorithm": "Tm≤2s：Tc=Tm；Tm>2s：Tc≈Tm^1.1667",
+      "warning": "普通Superia 400按Superia 200/X-TRA 400公开节点拟合作同系列参考；不是该包装型号独立曲线。",
+      "sourceUrl": "https://roybijster.nl/2016/07/reciprocity-failure-the-science/",
+      "points": []
+    },
+    {
+      "id": "PUB-FUJI-SUPERIA800",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 2,
+      "officialMaximumSeconds": 64,
+      "evidence": "C",
+      "longExposureFilter": "无可靠长曝CC滤镜表",
+      "filterRule": "不适用",
+      "algorithm": "公开资料拟合 Tc≈1.3662×Tm^1.2584；以节点复现",
+      "warning": "仅3个厂家节点拟合，适用于Superia 800/1600的试拍中心值。",
+      "sourceUrl": "https://roybijster.nl/2016/07/reciprocity-failure-the-science/",
+      "points": [
+        {
+          "meteredSeconds": 4,
+          "correctedSeconds": 7.8189164795027395,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 16,
+          "correctedSeconds": 44.7485396819203,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 64,
+          "correctedSeconds": 256.10093277166516,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "PUB-FUJI-PRO160NS",
+      "type": "RANGE",
+      "parameter": null,
+      "noCompensationSeconds": 2,
+      "officialMaximumSeconds": 2,
+      "evidence": "B",
+      "longExposureFilter": "≤2s无长曝CC滤镜或曝光补偿",
+      "filterRule": "不适用",
+      "algorithm": "1/4000–2s：Tc=Tm；更长无足够数值",
+      "warning": "公开技术分析只足以确认失调起点，不做长曝外推。",
+      "sourceUrl": "https://roybijster.nl/2016/07/reciprocity-failure-the-science/",
+      "points": []
+    },
+    {
+      "id": "PUB-FUJI-PROVIA400F",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 32,
+      "officialMaximumSeconds": 240,
+      "evidence": "A",
+      "longExposureFilter": "60s：5G；120–240s：7.5G；480s NR",
+      "filterRule": "是（厂家EV包含CC滤镜因子）",
+      "algorithm": "厂家节点；log-log分段幂插值",
+      "warning": "60s +1/3EV；120–240s +2/3EV；以未装CC滤镜的测光时间为Tm。",
+      "sourceUrl": "https://asset.fujifilm.com/www/jp/files/2024-04/13bf604980eadaeec94e72018d04a8d8/datasheet_provia400f_01.pdf",
+      "points": [
+        {
+          "meteredSeconds": 60,
+          "correctedSeconds": 75.59526299369239,
+          "filter": "5G"
+        },
+        {
+          "meteredSeconds": 120,
+          "correctedSeconds": 190.48812623618392,
+          "filter": "7.5G"
+        },
+        {
+          "meteredSeconds": 240,
+          "correctedSeconds": 380.97625247236783,
+          "filter": "7.5G"
+        }
+      ]
+    },
+    {
+      "id": "PUB-HARMAN-P131",
+      "type": "POWER",
+      "parameter": 1.31,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": null,
+      "evidence": "A",
+      "longExposureFilter": "无倒易率专用滤镜；普通滤镜按厂家因子另计",
+      "filterRule": "否；非TTL时先把滤镜EV计入Tm",
+      "algorithm": "Tm≤1s：Tc=Tm；Tm>1s：Tc=Tm^1.31",
+      "warning": "Phoenix/Phoenix II/Switch Azure厂家技术资料；Red为Phoenix乳剂反装继承。",
+      "sourceUrl": "https://www.harmanphoto.co.uk/amfile/file/download/file/1968/product/2208/",
+      "points": []
+    },
+    {
+      "id": "PUB-ILFORD-PAN141",
+      "type": "POWER",
+      "parameter": 1.41,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": null,
+      "evidence": "B",
+      "longExposureFilter": "无倒易率专用滤镜；拍摄滤镜另计",
+      "filterRule": "否",
+      "algorithm": "Tm≤1s：Tc=Tm；Tm>1s：Tc≈Tm^1.41",
+      "warning": "ILFORD历史通用曲线用于PAN 100/400；不是2023独立乳剂指数。",
+      "sourceUrl": "https://www.henrythomas.fr/logiciels/pinhole_assist_films/",
+      "points": []
+    },
+    {
+      "id": "PUB-KENTMERE200",
+      "type": "POWER",
+      "parameter": 1.26,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": null,
+      "evidence": "A",
+      "longExposureFilter": "无倒易率专用滤镜；拍摄滤镜另计",
+      "filterRule": "否",
+      "algorithm": "Tm≤1s：Tc=Tm；Tm>1s：Tc=Tm^1.26",
+      "warning": "Kentmere Pan 200厂家资料由公开计算器和Pinhole Assist索引。",
+      "sourceUrl": "https://www.ilfordphoto.com/amfile/file/download/file/1966/product/2176/",
+      "points": []
+    },
+    {
+      "id": "PUB-FOMA100-FAMILY",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 0.5,
+      "officialMaximumSeconds": 100,
+      "evidence": "C",
+      "longExposureFilter": "无倒易率专用滤镜；拍摄滤镜另计",
+      "filterRule": "否",
+      "algorithm": "按Fomapan 100 Classic家族节点继承",
+      "warning": "用于Cine 100/R100的试拍起点；反转工艺/乳剂版本可能改变结果。",
+      "sourceUrl": "https://www.fotoskoda.cz/fomapan-r-10013536/",
+      "points": [
+        {
+          "meteredSeconds": 1,
+          "correctedSeconds": 2,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 10,
+          "correctedSeconds": 80,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 100,
+          "correctedSeconds": 1600,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "PUB-FOMA400-FAMILY",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 0.5,
+      "officialMaximumSeconds": 100,
+      "evidence": "C",
+      "longExposureFilter": "无倒易率专用滤镜；拍摄滤镜另计",
+      "filterRule": "否",
+      "algorithm": "按Fomapan 400 Action家族节点继承",
+      "warning": "用于Cine/Ortho 400的试拍起点；并非对应型号独立实测。",
+      "sourceUrl": "https://www.foma.cz/en/fomapan-400",
+      "points": [
+        {
+          "meteredSeconds": 1,
+          "correctedSeconds": 1.5,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 10,
+          "correctedSeconds": 60,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 100,
+          "correctedSeconds": 800,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "PUB-LOMO100400",
+      "type": "POWER",
+      "parameter": 1.3,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": null,
+      "evidence": "C",
+      "longExposureFilter": "无品牌长曝CC滤镜数据；拍摄滤镜另计",
+      "filterRule": "否",
+      "algorithm": "Tm≤1s：Tc=Tm；Tm>1s：Tc≈Tm^1.3",
+      "warning": "公开计算器明确标为未测试估计，仅用于Lomography Color Negative 100/400包围曝光中心值。",
+      "sourceUrl": "https://lucas.dev/reciprocity",
+      "points": []
+    },
+    {
+      "id": "PUB-LOMO800",
+      "type": "POWER",
+      "parameter": 1.3,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": null,
+      "evidence": "C",
+      "longExposureFilter": "无品牌长曝CC滤镜数据；拍摄滤镜另计",
+      "filterRule": "否",
+      "algorithm": "Tm≤1s：Tc=Tm；Tm>1s：Tc≈Tm^1.3",
+      "warning": "Lomography未公布官方参数；公开资料为社区估计。",
+      "sourceUrl": "https://metergeist.com/film/lomography-color-800",
+      "points": []
+    },
+    {
+      "id": "PUB-ROLLEI-IR",
+      "type": "POWER",
+      "parameter": 1.526,
+      "noCompensationSeconds": 0.5,
+      "officialMaximumSeconds": null,
+      "evidence": "B",
+      "longExposureFilter": "无倒易率专用滤镜；红外滤镜因子高度依光源/植被，必须另测",
+      "filterRule": "否",
+      "algorithm": "Tm≤0.5s：Tc=Tm；更长 Tc≈Tm^1.526",
+      "warning": "源自Rollei Infrared公开曲线的公式化；Retro 400S/JCH StreetPan为同类航空乳剂继承时降为参考。",
+      "sourceUrl": "https://lucas.dev/reciprocity/rollei-infrared-400",
+      "points": []
+    },
+    {
+      "id": "PUB-ROLLEI-80S",
+      "type": "POWER",
+      "parameter": 1.526,
+      "noCompensationSeconds": 0.5,
+      "officialMaximumSeconds": null,
+      "evidence": "B",
+      "longExposureFilter": "无倒易率专用滤镜；拍摄滤镜另计",
+      "filterRule": "否",
+      "algorithm": "Tm≤0.5s：Tc=Tm；更长 Tc≈Tm^1.526",
+      "warning": "依据Rollei Retro 80S厂家曲线的公开复现。",
+      "sourceUrl": "https://lucas.dev/reciprocity/rollei-retro-80s",
+      "points": []
+    },
+    {
+      "id": "PUB-ROLLEI-SUPERPAN",
+      "type": "POWER",
+      "parameter": 1.526,
+      "noCompensationSeconds": 0.5,
+      "officialMaximumSeconds": null,
+      "evidence": "B",
+      "longExposureFilter": "无倒易率专用滤镜；拍摄滤镜另计",
+      "filterRule": "否",
+      "algorithm": "Tm≤0.5s：Tc=Tm；更长 Tc≈Tm^1.526",
+      "warning": "依据Rollei Superpan 200厂家曲线的公开复现。",
+      "sourceUrl": "https://lucas.dev/reciprocity/rollei-superpan-200",
+      "points": []
+    },
+    {
+      "id": "PUB-ROLLEI-RPX25",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": 60,
+      "evidence": "B",
+      "longExposureFilter": "无倒易率专用滤镜；拍摄滤镜另计",
+      "filterRule": "否",
+      "algorithm": "公开计算器对Rollei厂家曲线的分段幂复现；表内节点插值",
+      "warning": "60s以上不可靠。",
+      "sourceUrl": "https://lucas.dev/reciprocity/rollei-rpx-25",
+      "points": [
+        {
+          "meteredSeconds": 2,
+          "correctedSeconds": 2.9999947999010503,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 4,
+          "correctedSeconds": 6.071529514459414,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 15,
+          "correctedSeconds": 34.21642008668732,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 25,
+          "correctedSeconds": 71.70602868427062,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 60,
+          "correctedSeconds": 229.2076255707219,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "PUB-ROLLEI-RPX100",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": 30,
+      "evidence": "B",
+      "longExposureFilter": "无倒易率专用滤镜；拍摄滤镜另计",
+      "filterRule": "否",
+      "algorithm": "公开计算器对Rollei厂家曲线的分段幂复现；表内节点插值",
+      "warning": "30s以上不可靠。",
+      "sourceUrl": "https://lucas.dev/reciprocity/rollei-rpx-100",
+      "points": [
+        {
+          "meteredSeconds": 2,
+          "correctedSeconds": 2.9999947999010503,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 3,
+          "correctedSeconds": 4.134804447458044,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 6,
+          "correctedSeconds": 12.240770597477036,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 15,
+          "correctedSeconds": 49.529633390611345,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 22,
+          "correctedSeconds": 95.01481687391752,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 30,
+          "correctedSeconds": 150.05233037209337,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "PUB-ROLLEI-RPX400",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 0.5,
+      "officialMaximumSeconds": 100,
+      "evidence": "B",
+      "longExposureFilter": "无倒易率专用滤镜；拍摄滤镜另计",
+      "filterRule": "否",
+      "algorithm": "公开计算器复现Rollei曲线；10s前二次式，之后幂指数1.47，以节点插值",
+      "warning": "100s以上不外推。",
+      "sourceUrl": "https://lucas.dev/reciprocity/rollei-rpx-400",
+      "points": [
+        {
+          "meteredSeconds": 1,
+          "correctedSeconds": 2,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 3,
+          "correctedSeconds": 5.111111111111111,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 10,
+          "correctedSeconds": 30,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 30,
+          "correctedSeconds": 148.37756662979479,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 60,
+          "correctedSeconds": 411.0383447883767,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 100,
+          "correctedSeconds": 870.9635899560806,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "PUB-ROLLEI-ORTHO25",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 3,
+      "officialMaximumSeconds": 60,
+      "evidence": "B",
+      "longExposureFilter": "无倒易率专用滤镜；拍摄滤镜另计",
+      "filterRule": "否",
+      "algorithm": "公开计算器对Rollei厂家曲线的分段复现；表内节点插值",
+      "warning": "60s以上不可靠。",
+      "sourceUrl": "https://lucas.dev/reciprocity/rollei-ortho-25-plus",
+      "points": [
+        {
+          "meteredSeconds": 4,
+          "correctedSeconds": 5,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 20,
+          "correctedSeconds": 50,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 40,
+          "correctedSeconds": 100,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 60,
+          "correctedSeconds": 200,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "PUB-SHANGHAI-GP3",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 0.5,
+      "officialMaximumSeconds": 60,
+      "evidence": "C",
+      "longExposureFilter": "无倒易率专用滤镜；拍摄滤镜另计",
+      "filterRule": "否",
+      "algorithm": "独立实拍节点；log-log分段幂插值",
+      "warning": "4×5 GP3 100、HC-110实测；不同批次/135/120可能不同。1/2s对照，1→2，2→5，4→12，8→30，15→68，30→167，60→412s。",
+      "sourceUrl": "https://vaughanbromfield.com.au/2022/04/17/shanghai-gp3-100-reciprocity-failure-correction-tests/",
+      "points": [
+        {
+          "meteredSeconds": 1,
+          "correctedSeconds": 2,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 2,
+          "correctedSeconds": 5,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 4,
+          "correctedSeconds": 12,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 8,
+          "correctedSeconds": 30,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 15,
+          "correctedSeconds": 68,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 30,
+          "correctedSeconds": 167,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 60,
+          "correctedSeconds": 412,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "PUB-AGFA-APX25",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 0.1,
+      "officialMaximumSeconds": 100,
+      "evidence": "B",
+      "longExposureFilter": "无倒易率专用滤镜；拍摄滤镜另计",
+      "filterRule": "否",
+      "algorithm": "历史AGFA厂家手册节点的公开转录",
+      "warning": "APX25：1s +1EV，10s +1.5EV，100s +2EV；过期库存需额外测试。",
+      "sourceUrl": "https://www.galerie-photo.org/n4-f3,281100.html",
+      "points": [
+        {
+          "meteredSeconds": 1,
+          "correctedSeconds": 2,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 10,
+          "correctedSeconds": 28.284271247461902,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 100,
+          "correctedSeconds": 400,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "PUB-AGFA-APX100400",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 0.1,
+      "officialMaximumSeconds": 100,
+      "evidence": "B",
+      "longExposureFilter": "无倒易率专用滤镜；拍摄滤镜另计",
+      "filterRule": "否",
+      "algorithm": "历史AGFA厂家手册节点的公开转录",
+      "warning": "原版APX100/400：1s +1EV，10s +2EV，100s +3EV；并建议显影-10%/-25%/-35%。",
+      "sourceUrl": "https://www.galerie-photo.org/n4-f3,281100.html",
+      "points": [
+        {
+          "meteredSeconds": 1,
+          "correctedSeconds": 2,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 10,
+          "correctedSeconds": 40,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 100,
+          "correctedSeconds": 800,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "PUB-AGFAPHOTO-NEW100",
+      "type": "POWER",
+      "parameter": 1.26,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": null,
+      "evidence": "C",
+      "longExposureFilter": "无倒易率专用滤镜；拍摄滤镜另计",
+      "filterRule": "否",
+      "algorithm": "按公开的Harman/Kentmere同源判断，Tc≈Tm^1.26",
+      "warning": "仅适用于APX 100 NEW的家族继承，不可用于历史Agfapan APX100。",
+      "sourceUrl": "https://www.reddit.com/r/AnalogCommunity/comments/1fehx30",
+      "points": []
+    },
+    {
+      "id": "PUB-AGFAPHOTO-NEW400",
+      "type": "POWER",
+      "parameter": 1.3,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": null,
+      "evidence": "C",
+      "longExposureFilter": "无倒易率专用滤镜；拍摄滤镜另计",
+      "filterRule": "否",
+      "algorithm": "按公开的Harman/Kentmere同源判断，Tc≈Tm^1.30",
+      "warning": "仅适用于APX 400 NEW的家族继承，不可用于历史Agfapan APX400。",
+      "sourceUrl": "https://www.reddit.com/r/AnalogCommunity/comments/1fehx30",
+      "points": []
+    },
+    {
+      "id": "PUB-ADOX-HR50",
+      "type": "POWER",
+      "parameter": 1.3,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": 60,
+      "evidence": "B",
+      "longExposureFilter": "无倒易率专用滤镜；红外/拍摄滤镜另计",
+      "filterRule": "否",
+      "algorithm": "Tm≤1s：Tc=Tm；Tm>1s：Tc≈Tm^1.3",
+      "warning": "由ADOX表中多个EV节点反解，公开讨论核对约为1.3；60s以上建议测试。",
+      "sourceUrl": "https://www.reddit.com/r/AnalogCommunity/comments/14yictd",
+      "points": []
+    },
+    {
+      "id": "PUB-REFLX-AEROCOLOR",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 0.1,
+      "officialMaximumSeconds": 300,
+      "evidence": "C",
+      "longExposureFilter": "无可靠长曝CC滤镜表；拍摄滤镜另计",
+      "filterRule": "否",
+      "algorithm": "公开计算器按Aerocolor IV来源估计；1s约1.1s，之后Tc≈Tm^1.3",
+      "warning": "Reflx Lab PRO100被公开资料识别为Aerocolor IV分装；模型标为未测试。",
+      "sourceUrl": "https://lucas.dev/reciprocity/reflx-lab-pro100",
+      "points": [
+        {
+          "meteredSeconds": 1,
+          "correctedSeconds": 1.1,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 2,
+          "correctedSeconds": 2.4622888266898326,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 10,
+          "correctedSeconds": 19.952623149688797,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 60,
+          "correctedSeconds": 204.92579354278575,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 300,
+          "correctedSeconds": 1660.5716956880742,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "PUB-REFLX-800T",
+      "type": "POWER",
+      "parameter": 1.3,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": null,
+      "evidence": "C",
+      "longExposureFilter": "日光可选85滤镜（非倒易率滤镜）；普通滤镜另计",
+      "filterRule": "否",
+      "algorithm": "Tm≤1s：Tc=Tm；Tm>1s：Tc≈Tm^1.3",
+      "warning": "按去remjet的VISION3 500T/CineStill 800T家族指南继承；建议包围曝光。",
+      "sourceUrl": "https://help.cinestillfilm.com/hc/en-us/articles/4407453578893-What-are-the-reciprocity-failure-details-for-CineStill-films",
+      "points": []
+    },
+    {
+      "id": "HIST-KODAK-E100G-GX",
+      "type": "RANGE",
+      "parameter": null,
+      "noCompensationSeconds": 10,
+      "officialMaximumSeconds": 10,
+      "evidence": "B",
+      "longExposureFilter": "1/10000–10s无需CC滤镜或曝光补偿",
+      "filterRule": "不适用",
+      "algorithm": "厂家历史资料范围内 Tc=Tm；超过10s不自动外推",
+      "warning": "E100G/E100GX历史厂家数据；10s以外资料只要求试拍，没有可靠数值。",
+      "sourceUrl": "https://125px.com/docs/film/kodak/e4024-Ektachrome_E100G.pdf",
+      "points": []
+    },
+    {
+      "id": "HIST-KODAK-K25",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 0.1,
+      "officialMaximumSeconds": 1,
+      "evidence": "B",
+      "longExposureFilter": "1s：无滤镜；10s不建议",
+      "filterRule": "是（厂家曝光增加量已含所列滤镜因子；本节点无滤镜）",
+      "algorithm": "厂家历史节点；0.1–1s按log-log分段幂插值",
+      "warning": "KODACHROME 25/KM：1/10s无需补偿，1s +1/2EV，10s不建议；K-14已停产，过期乳剂必须实拍。",
+      "sourceUrl": "https://125px.com/docs/film/kodak/e88-2002_03.pdf",
+      "points": [
+        {
+          "meteredSeconds": 1,
+          "correctedSeconds": 1.4142135623730951,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "HIST-FUJI-T64",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 64,
+      "officialMaximumSeconds": 240,
+      "evidence": "A",
+      "longExposureFilter": "120/240s：无CC滤镜，+1/3/+1/2EV",
+      "filterRule": "不适用",
+      "algorithm": "富士历史厂家节点；log-log分段幂插值",
+      "warning": "64T Type II/T64长曝表；4min以上不外推。极短曝光另有独立限制。",
+      "sourceUrl": "https://asset.fujifilm.com/www/us/files/2020-03/85d928f44b0df3b2a95913e46608881d/ProfessionalFilmDataGuide.pdf",
+      "points": [
+        {
+          "meteredSeconds": 120,
+          "correctedSeconds": 151.19052598738477,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 240,
+          "correctedSeconds": 339.4112549695428,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "HIST-FUJI-ASTIA100F",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 60,
+      "officialMaximumSeconds": 480,
+      "evidence": "A",
+      "longExposureFilter": "120/240/480s：5B；+1/3/+1/2/+2/3EV",
+      "filterRule": "是（厂家EV包含CC滤镜因子）",
+      "algorithm": "富士历史厂家节点；log-log分段幂插值",
+      "warning": "以未装5B长曝CC滤镜的测光时间为Tm；不要再次叠加5B滤镜因子。",
+      "sourceUrl": "https://asset.fujifilm.com/www/us/files/2020-03/85d928f44b0df3b2a95913e46608881d/ProfessionalFilmDataGuide.pdf",
+      "points": [
+        {
+          "meteredSeconds": 120,
+          "correctedSeconds": 151.19052598738477,
+          "filter": "5B"
+        },
+        {
+          "meteredSeconds": 240,
+          "correctedSeconds": 339.4112549695428,
+          "filter": "5B"
+        },
+        {
+          "meteredSeconds": 480,
+          "correctedSeconds": 761.9525049447357,
+          "filter": "5B"
+        }
+      ]
+    },
+    {
+      "id": "HIST-FUJI-PROVIA400X",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 60,
+      "officialMaximumSeconds": 480,
+      "evidence": "A",
+      "longExposureFilter": "120s：2.5R；240–480s：5R",
+      "filterRule": "是（厂家EV包含CC滤镜因子）",
+      "algorithm": "富士厂家节点；log-log分段幂插值",
+      "warning": "120s +1/2EV；240–480s +1EV。以未装长曝CC滤镜的测光时间为Tm。",
+      "sourceUrl": "https://asset.fujifilm.com/www/jp/files/2024-04/cd34674ec5beb8ba062cd221a656bbd5/datasheet_provia400x_01.pdf",
+      "points": [
+        {
+          "meteredSeconds": 120,
+          "correctedSeconds": 169.7056274847714,
+          "filter": "2.5R"
+        },
+        {
+          "meteredSeconds": 240,
+          "correctedSeconds": 480,
+          "filter": "5R"
+        },
+        {
+          "meteredSeconds": 480,
+          "correctedSeconds": 960,
+          "filter": "5R"
+        }
+      ]
+    },
+    {
+      "id": "HIST-FUJI-SENSIA100",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 60,
+      "officialMaximumSeconds": 480,
+      "evidence": "A",
+      "longExposureFilter": "120/240/480s：5B；+1/3/+1/2/+2/3EV",
+      "filterRule": "是（厂家EV包含CC滤镜因子）",
+      "algorithm": "富士历史厂家节点；log-log分段幂插值",
+      "warning": "Sensia/Sensia III 100；以未装5B长曝CC滤镜的测光时间为Tm。",
+      "sourceUrl": "https://asset.fujifilm.com/www/us/files/2020-03/85d928f44b0df3b2a95913e46608881d/ProfessionalFilmDataGuide.pdf",
+      "points": [
+        {
+          "meteredSeconds": 120,
+          "correctedSeconds": 151.19052598738477,
+          "filter": "5B"
+        },
+        {
+          "meteredSeconds": 240,
+          "correctedSeconds": 339.4112549695428,
+          "filter": "5B"
+        },
+        {
+          "meteredSeconds": 480,
+          "correctedSeconds": 761.9525049447357,
+          "filter": "5B"
+        }
+      ]
+    },
+    {
+      "id": "HIST-FUJI-SENSIA200",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 32,
+      "officialMaximumSeconds": 240,
+      "evidence": "A",
+      "longExposureFilter": "64s：5G；120–240s：7.5G",
+      "filterRule": "是（厂家EV包含CC滤镜因子）",
+      "algorithm": "富士历史厂家节点；log-log分段幂插值",
+      "warning": "64s +2/3EV；120–240s +1EV；480s不建议。以未装CC滤镜的测光时间为Tm。",
+      "sourceUrl": "https://asset.fujifilm.com/www/us/files/2020-03/85d928f44b0df3b2a95913e46608881d/ProfessionalFilmDataGuide.pdf",
+      "points": [
+        {
+          "meteredSeconds": 64,
+          "correctedSeconds": 101.59366732596476,
+          "filter": "5G"
+        },
+        {
+          "meteredSeconds": 120,
+          "correctedSeconds": 240,
+          "filter": "7.5G"
+        },
+        {
+          "meteredSeconds": 240,
+          "correctedSeconds": 480,
+          "filter": "7.5G"
+        }
+      ]
+    },
+    {
+      "id": "HIST-FUJI-SENSIA400",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 32,
+      "officialMaximumSeconds": 240,
+      "evidence": "A",
+      "longExposureFilter": "64s：5G；120–240s：7.5G",
+      "filterRule": "是（厂家EV包含CC滤镜因子）",
+      "algorithm": "富士历史厂家节点；log-log分段幂插值",
+      "warning": "64s +2/3EV；120–240s +1EV；480s不建议。以未装CC滤镜的测光时间为Tm。",
+      "sourceUrl": "https://asset.fujifilm.com/www/us/files/2020-03/85d928f44b0df3b2a95913e46608881d/ProfessionalFilmDataGuide.pdf",
+      "points": [
+        {
+          "meteredSeconds": 64,
+          "correctedSeconds": 101.59366732596476,
+          "filter": "5G"
+        },
+        {
+          "meteredSeconds": 120,
+          "correctedSeconds": 240,
+          "filter": "7.5G"
+        },
+        {
+          "meteredSeconds": 240,
+          "correctedSeconds": 480,
+          "filter": "7.5G"
+        }
+      ]
+    },
+    {
+      "id": "HIST-FUJI-TREBI100C",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 128,
+      "officialMaximumSeconds": 240,
+      "evidence": "A",
+      "longExposureFilter": "240s：2.5G，+1/3EV；480s不建议",
+      "filterRule": "是（厂家EV包含CC滤镜因子）",
+      "algorithm": "富士厂家节点；128–240s按log-log插值",
+      "warning": "以未装2.5G长曝CC滤镜的测光时间为Tm。",
+      "sourceUrl": "https://asset.fujifilm.com/www/jp/files/2024-04/ae5aef947b043303bc18c218d7947f22/datasheet_trebi100c_01.pdf",
+      "points": [
+        {
+          "meteredSeconds": 240,
+          "correctedSeconds": 302.38105197476955,
+          "filter": "2.5G"
+        }
+      ]
+    },
+    {
+      "id": "HIST-FUJI-TREBI400",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 32,
+      "officialMaximumSeconds": 240,
+      "evidence": "A",
+      "longExposureFilter": "60s：5G；120–240s：7.5G",
+      "filterRule": "是（厂家EV包含CC滤镜因子）",
+      "algorithm": "富士厂家节点；log-log分段幂插值",
+      "warning": "60s +2/3EV；120–240s +1EV；480s不建议。以未装CC滤镜的测光时间为Tm。",
+      "sourceUrl": "https://asset.fujifilm.com/www/jp/files/2024-04/723037fb14c03cfc40bf55ac9719c8cd/datasheet_trebi400_01.pdf",
+      "points": [
+        {
+          "meteredSeconds": 60,
+          "correctedSeconds": 95.24406311809196,
+          "filter": "5G"
+        },
+        {
+          "meteredSeconds": 120,
+          "correctedSeconds": 240,
+          "filter": "7.5G"
+        },
+        {
+          "meteredSeconds": 240,
+          "correctedSeconds": 480,
+          "filter": "7.5G"
+        }
+      ]
+    },
+    {
+      "id": "HIST-FUJI-VELVIA100F",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 60,
+      "officialMaximumSeconds": 480,
+      "evidence": "A",
+      "longExposureFilter": "120/240/480s：2.5B；+1/3/+1/2/+2/3EV",
+      "filterRule": "是（厂家EV包含CC滤镜因子）",
+      "algorithm": "富士历史厂家节点；log-log分段幂插值",
+      "warning": "注意100F使用2.5B，而Velvia100使用2.5M；以未装长曝CC滤镜的测光时间为Tm。",
+      "sourceUrl": "https://asset.fujifilm.com/www/us/files/2020-03/85d928f44b0df3b2a95913e46608881d/ProfessionalFilmDataGuide.pdf",
+      "points": [
+        {
+          "meteredSeconds": 120,
+          "correctedSeconds": 151.19052598738477,
+          "filter": "2.5B"
+        },
+        {
+          "meteredSeconds": 240,
+          "correctedSeconds": 339.4112549695428,
+          "filter": "2.5B"
+        },
+        {
+          "meteredSeconds": 480,
+          "correctedSeconds": 761.9525049447357,
+          "filter": "2.5B"
+        }
+      ]
+    },
+    {
+      "id": "HIST-FUJI-NATURA1600",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 2,
+      "officialMaximumSeconds": 64,
+      "evidence": "A",
+      "longExposureFilter": "至64s无长曝CC滤镜",
+      "filterRule": "不适用",
+      "algorithm": "富士厂家节点；log-log分段幂插值",
+      "warning": "4/16/64s分别+2/3/+1.5/+2EV；64s以上不外推。",
+      "sourceUrl": "https://asset.fujifilm.com/www/jp/files/2024-04/96b634a89ec6a5abda6b70437f4d75a4/datasheet_natura1600_01.pdf",
+      "points": [
+        {
+          "meteredSeconds": 4,
+          "correctedSeconds": 6.3496042078727974,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 16,
+          "correctedSeconds": 45.254833995939045,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 64,
+          "correctedSeconds": 256,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "HIST-FUJI-NEOPAN-CLASSIC",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 0.5,
+      "officialMaximumSeconds": 100,
+      "evidence": "A",
+      "longExposureFilter": "无倒易率专用滤镜；黑白拍摄滤镜另计",
+      "filterRule": "否",
+      "algorithm": "富士日文厂家节点；log-log分段幂插值",
+      "warning": "400 PRESTO、1600 SUPER PRESTO及SS的日文资料均列1/10/100s为+1/2/+1/+2EV；不同EI/显影反差仍应试拍。",
+      "sourceUrl": "https://www.fujifilm.com/jp/ja/consumer/support/films/negative-and-reversal/datasheet",
+      "points": [
+        {
+          "meteredSeconds": 1,
+          "correctedSeconds": 1.4142135623730951,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 10,
+          "correctedSeconds": 20,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 100,
+          "correctedSeconds": 400,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "HIST-FUJI-PRO160C-NC",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 2,
+      "officialMaximumSeconds": 32,
+      "evidence": "B",
+      "longExposureFilter": "无长曝CC滤镜",
+      "filterRule": "不适用",
+      "algorithm": "合并型号采用较保守历史节点；log-log分段幂插值",
+      "warning": "数据库把PRO160C与160NC合并：160C在4s需+1/3EV，后期160NC资料称4s内无需补偿；此处保守采用160C节点，32s +1EV。",
+      "sourceUrl": "https://asset.fujifilm.com/www/jp/files/2024-04/580aa23b1083768640aa3885942918dc/datasheet_pro160nc_01.pdf",
+      "points": [
+        {
+          "meteredSeconds": 4,
+          "correctedSeconds": 5.039684199579493,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 32,
+          "correctedSeconds": 64,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "HIST-FUJI-PRO160NH",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 2,
+      "officialMaximumSeconds": 4,
+      "evidence": "A",
+      "longExposureFilter": "至4s无长曝CC滤镜",
+      "filterRule": "不适用",
+      "algorithm": "富士厂家节点；2–4s按log-log插值",
+      "warning": "4s +1/3EV；厂家未给更长数值，不外推。",
+      "sourceUrl": "https://asset.fujifilm.com/www/jp/files/2024-04/bae096c3cfae4c41066de30038ea6ddf/datasheet_pro160nh_01.pdf",
+      "points": [
+        {
+          "meteredSeconds": 4,
+          "correctedSeconds": 5.039684199579493,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "HIST-FUJI-PRO160NPC",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": 16,
+      "evidence": "A",
+      "longExposureFilter": "至16s无长曝CC滤镜",
+      "filterRule": "不适用",
+      "algorithm": "富士厂家节点；log-log分段幂插值",
+      "warning": "4s +1/2EV；16s +1EV；16s以上不建议。",
+      "sourceUrl": "https://asset.fujifilm.com/www/jp/files/2024-04/6cc43e223cf542ef0ecc6eed551459ee/datasheet_160npc_01.pdf",
+      "points": [
+        {
+          "meteredSeconds": 4,
+          "correctedSeconds": 5.656854249492381,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 16,
+          "correctedSeconds": 32,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "HIST-FUJI-PRO800-NPZ",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 2,
+      "officialMaximumSeconds": 64,
+      "evidence": "B",
+      "longExposureFilter": "无长曝CC滤镜",
+      "filterRule": "不适用",
+      "algorithm": "PRO800/NPZ历史厂家节点；log-log分段幂插值",
+      "warning": "4/16/64s分别+2/3/+1.5/+2EV；数据库合并不同市场命名，过期片和后期PRO800Z不可直接视为相同。",
+      "sourceUrl": "https://asset.fujifilm.com/www/jp/files/2019-12/9b41c4aaa31d1d293a858b0b0ffdd8e6/datasheet_pro800_01.pdf",
+      "points": [
+        {
+          "meteredSeconds": 4,
+          "correctedSeconds": 6.3496042078727974,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 16,
+          "correctedSeconds": 45.254833995939045,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 64,
+          "correctedSeconds": 256,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "ADOX-SILVER-SCALA160",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 0.5,
+      "officialMaximumSeconds": 100,
+      "evidence": "A",
+      "longExposureFilter": "无倒易率专用滤镜；黑白拍摄滤镜另计",
+      "filterRule": "否",
+      "algorithm": "ADOX厂家节点；log-log分段幂插值",
+      "warning": "Silvermax100与Scala160厂家页均列1/10/100s为+1/2/+1/+2EV；100s以上不外推。",
+      "sourceUrl": "https://www.adoxphoto.com/Photo/scala160-en/",
+      "points": [
+        {
+          "meteredSeconds": 1,
+          "correctedSeconds": 1.4142135623730951,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 10,
+          "correctedSeconds": 20,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 100,
+          "correctedSeconds": 400,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "ADOX-COLORIMP-P120",
+      "type": "POWER",
+      "parameter": 1.2,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": null,
+      "evidence": "C",
+      "longExposureFilter": "无可核实的长曝CC滤镜数据；普通滤镜另计",
+      "filterRule": "否",
+      "algorithm": "公开数据库估计：Tm≤1s时Tc=Tm；Tm>1s时Tc≈Tm^1.20",
+      "warning": "非厂家测试；该实验彩负本身色彩耦合不稳定，只能作为包围曝光中心值。",
+      "sourceUrl": "https://zonelightmeter.com/films/adox-color-implosion-100/",
+      "points": []
+    },
+    {
+      "id": "ADOX-SCALA50-HR50",
+      "type": "POWER",
+      "parameter": 1.3,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": 60,
+      "evidence": "B",
+      "longExposureFilter": "无倒易率专用滤镜；黑白拍摄滤镜另计",
+      "filterRule": "否",
+      "algorithm": "按厂家确认与HR-50技术同源：Tm≤1s时Tc=Tm；之后Tc≈Tm^1.30",
+      "warning": "Scala50/HR-50技术同源，但1.30是对HR-50厂家节点的公开反解；60s以上不外推。",
+      "sourceUrl": "https://www.adox.de/Technical_Informations/TA_HR-50_EN.pdf",
+      "points": []
+    },
+    {
+      "id": "HIST-AGFA-SCALA200X",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 0.5,
+      "officialMaximumSeconds": 100,
+      "evidence": "B",
+      "longExposureFilter": "无倒易率专用滤镜；黑白拍摄滤镜另计",
+      "filterRule": "否",
+      "algorithm": "AGFA历史厂家节点；log-log分段幂插值",
+      "warning": "1/10/100s分别+1/2/+1/+2EV；资料镜像为厂家原表，过期库存须另测。",
+      "sourceUrl": "https://125px.com/docs/film/agfa/Datasheet_F_PF_E4.pdf",
+      "points": [
+        {
+          "meteredSeconds": 1,
+          "correctedSeconds": 1.4142135623730951,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 10,
+          "correctedSeconds": 20,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 100,
+          "correctedSeconds": 400,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "HIST-AGFA-CT100",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": 10,
+      "evidence": "B",
+      "longExposureFilter": "10s：CC05Y，+1/2EV",
+      "filterRule": "是（厂家EV包含CC滤镜因子）",
+      "algorithm": "AGFA历史厂家节点；1–10s按log-log插值",
+      "warning": "适用于AGFACHROME/早期AgfaPhoto CTprecisa100资料代次；后期换供方批次可能不同。",
+      "sourceUrl": "https://pixls-discuss.s3.dualstack.us-east-1.amazonaws.com/original/3X/d/7/d7e48196d8cbed1b113474864c6db16606702a46.pdf",
+      "points": [
+        {
+          "meteredSeconds": 10,
+          "correctedSeconds": 14.142135623730951,
+          "filter": "CC05Y"
+        }
+      ]
+    },
+    {
+      "id": "HIST-AGFA-VISTA100",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": 10,
+      "evidence": "B",
+      "longExposureFilter": "10s无厂家CC滤镜要求，+1/2EV",
+      "filterRule": "不适用",
+      "algorithm": "AGFA历史厂家节点；1–10s按log-log插值",
+      "warning": "原版Vista100历史表；AgfaPhoto后期授权/换供方产品可能不同。",
+      "sourceUrl": "https://pixls-discuss.s3.dualstack.us-east-1.amazonaws.com/original/3X/d/7/d7e48196d8cbed1b113474864c6db16606702a46.pdf",
+      "points": [
+        {
+          "meteredSeconds": 10,
+          "correctedSeconds": 14.142135623730951,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "HIST-AGFA-VISTA200400",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": 10,
+      "evidence": "B",
+      "longExposureFilter": "10s无厂家CC滤镜要求，+1EV",
+      "filterRule": "不适用",
+      "algorithm": "AGFA历史厂家节点；1–10s按log-log插值",
+      "warning": "原版Vista200/400历史表；数据库含Vista Plus，后期授权/换供方产品可能不同。",
+      "sourceUrl": "https://pixls-discuss.s3.dualstack.us-east-1.amazonaws.com/original/3X/d/7/d7e48196d8cbed1b113474864c6db16606702a46.pdf",
+      "points": [
+        {
+          "meteredSeconds": 10,
+          "correctedSeconds": 20,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "PUB-LOMO-BABYLON",
+      "type": "POWER",
+      "parameter": 1,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": null,
+      "evidence": "C",
+      "longExposureFilter": "无倒易率专用滤镜；普通滤镜另计",
+      "filterRule": "否",
+      "algorithm": "公开数据库：Tc=Tm（P=1.00）",
+      "warning": "公开数据库按ORWO DN21来源给出；未找到Lomography厂家长曝测试，上限未知，长曝仍需包围。",
+      "sourceUrl": "https://zonelightmeter.com/films/lomography-babylon-kino-13/",
+      "points": []
+    },
+    {
+      "id": "PUB-ORWO-BW-P131",
+      "type": "POWER",
+      "parameter": 1.31,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": null,
+      "evidence": "C",
+      "longExposureFilter": "无倒易率专用滤镜；普通滤镜另计",
+      "filterRule": "否",
+      "algorithm": "公开数据库估计：Tm≤1s时Tc=Tm；之后Tc≈Tm^1.31",
+      "warning": "用于ORWO N74 Plus/UN54及其明确换标品；不是Filmotec厂家长曝曲线，必须包围曝光。",
+      "sourceUrl": "https://zonelightmeter.com/films/lomography-berlin-kino-400/",
+      "points": []
+    },
+    {
+      "id": "PUB-LOMO-EARL-FOMA100",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 0.5,
+      "officialMaximumSeconds": 100,
+      "evidence": "C",
+      "longExposureFilter": "无倒易率专用滤镜；普通滤镜另计",
+      "filterRule": "否",
+      "algorithm": "按公开换标识别继承Fomapan100厂家离散节点",
+      "warning": "当前批次被公开资料识别为Fomapan100；早期批次可能不同。1→2、10→80、100→1600s。",
+      "sourceUrl": "https://zonelightmeter.com/films/lomography-earl-grey-100/",
+      "points": [
+        {
+          "meteredSeconds": 1,
+          "correctedSeconds": 2,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 10,
+          "correctedSeconds": 80,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 100,
+          "correctedSeconds": 1600,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "PUB-LOMO-LADY-FOMA400",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 0.5,
+      "officialMaximumSeconds": 100,
+      "evidence": "C",
+      "longExposureFilter": "无倒易率专用滤镜；普通滤镜另计",
+      "filterRule": "否",
+      "algorithm": "按公开换标识别继承Fomapan400厂家离散节点",
+      "warning": "当前批次/部分规格被公开资料识别为Fomapan400；早期35mm批次可能不同。1→1.5、10→60、100→800s。",
+      "sourceUrl": "https://zonelightmeter.com/films/lomography-lady-grey-400/",
+      "points": [
+        {
+          "meteredSeconds": 1,
+          "correctedSeconds": 1.5,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 10,
+          "correctedSeconds": 60,
+          "filter": "无"
+        },
+        {
+          "meteredSeconds": 100,
+          "correctedSeconds": 800,
+          "filter": "无"
+        }
+      ]
+    },
+    {
+      "id": "PUB-LOMO-STYLIZED-P13",
+      "type": "POWER",
+      "parameter": 1.3,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": null,
+      "evidence": "C",
+      "longExposureFilter": "无可靠长曝CC滤镜表；普通滤镜另计",
+      "filterRule": "否",
+      "algorithm": "公开品牌家族试拍值：Tm≤1s时Tc=Tm；之后Tc≈Tm^1.30",
+      "warning": "用于LomoChrome/Redscale等风格化彩负的包围曝光中心值；不同批次与三层色偏不可由单一P精确描述。",
+      "sourceUrl": "https://lucas.dev/reciprocity",
+      "points": []
+    },
+    {
+      "id": "PUB-LOMO-XPRO-P110",
+      "type": "POWER",
+      "parameter": 1.1,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": null,
+      "evidence": "C",
+      "longExposureFilter": "无可靠长曝CC滤镜表；普通滤镜另计",
+      "filterRule": "否",
+      "algorithm": "公开数据库：Tm≤1s时Tc=Tm；之后Tc≈Tm^1.10",
+      "warning": "非厂家数据；交叉冲洗与过期状态会显著改变色偏，长曝必须包围。",
+      "sourceUrl": "https://zonelightmeter.com/films/lomography-x-pro-slide-200/",
+      "points": []
+    },
+    {
+      "id": "PUB-FERRANIA-P30-10S",
+      "type": "TABLE",
+      "parameter": null,
+      "noCompensationSeconds": 1,
+      "officialMaximumSeconds": 10,
+      "evidence": "C",
+      "longExposureFilter": "无倒易率专用滤镜；Y2黄镜约1EV须先计入Tm",
+      "filterRule": "否",
+      "algorithm": "公开摄影资料单点：10s测光约需28s；1–10s按log-log插值",
+      "warning": "非厂家受控测试，仅保留一个可量化公开节点；P30批次/配方曾变化，超过10s不外推。",
+      "sourceUrl": "https://cameramarket.fr/products/ferrania-p30-35mm",
+      "points": [
+        {
+          "meteredSeconds": 10,
+          "correctedSeconds": 28,
+          "filter": "无"
+        }
+      ]
+    }
+  ],
+  "films": [
+    {
+      "filmId": 1,
+      "methodId": "KODAK-MOTION-R1"
+    },
+    {
+      "filmId": 2,
+      "methodId": "PUB-KODAK-C41BW"
+    },
+    {
+      "filmId": 3,
+      "methodId": "NONE"
+    },
+    {
+      "filmId": 4,
+      "methodId": "PUB-KODAK-BW-A"
+    },
+    {
+      "filmId": 5,
+      "methodId": "KODAK-COLOR-R1"
+    },
+    {
+      "filmId": 6,
+      "methodId": "PUB-KODAK-TECHPAN"
+    },
+    {
+      "filmId": 7,
+      "methodId": "PUB-KODAK-COLOR-P13"
+    },
+    {
+      "filmId": 8,
+      "methodId": "PUB-KODAK-PROIMAGE"
+    },
+    {
+      "filmId": 9,
+      "methodId": "PUB-KODAK-COLOR-P13"
+    },
+    {
+      "filmId": 10,
+      "methodId": "HIST-KODAK-E100G-GX"
+    },
+    {
+      "filmId": 11,
+      "methodId": "HIST-KODAK-E100G-GX"
+    },
+    {
+      "filmId": 12,
+      "methodId": "PUB-KODAK-E200"
+    },
+    {
+      "filmId": 13,
+      "methodId": "KODAK-E100D"
+    },
+    {
+      "filmId": 14,
+      "methodId": "KODAK-E100"
+    },
+    {
+      "filmId": 15,
+      "methodId": "PUB-KODAK-EPN"
+    },
+    {
+      "filmId": 16,
+      "methodId": "PUB-KODAK-EPP"
+    },
+    {
+      "filmId": 17,
+      "methodId": "KODAK-COLOR-R1"
+    },
+    {
+      "filmId": 18,
+      "methodId": "KODAK-COLOR-R1"
+    },
+    {
+      "filmId": 19,
+      "methodId": "KODAK-COLOR-R1"
+    },
+    {
+      "filmId": 20,
+      "methodId": "PUB-KODAK-BW-A"
+    },
+    {
+      "filmId": 21,
+      "methodId": "PUB-KODAK-BW-A"
+    },
+    {
+      "filmId": 22,
+      "methodId": "PUB-KODAK-BW-A"
+    },
+    {
+      "filmId": 23,
+      "methodId": "KODAK-COLOR-R1"
+    },
+    {
+      "filmId": 24,
+      "methodId": "PUB-KODAK-COLOR-P13"
+    },
+    {
+      "filmId": 25,
+      "methodId": "HIST-KODAK-K25"
+    },
+    {
+      "filmId": 26,
+      "methodId": "PUB-KODAK-K64"
+    },
+    {
+      "filmId": 27,
+      "methodId": "PUB-KODAK-K200"
+    },
+    {
+      "filmId": 28,
+      "methodId": "NONE"
+    },
+    {
+      "filmId": 29,
+      "methodId": "NONE"
+    },
+    {
+      "filmId": 30,
+      "methodId": "KODAK-COLOR-R1"
+    },
+    {
+      "filmId": 31,
+      "methodId": "KODAK-COLOR-R1"
+    },
+    {
+      "filmId": 32,
+      "methodId": "KODAK-COLOR-R1"
+    },
+    {
+      "filmId": 33,
+      "methodId": "KODAK-TMX100"
+    },
+    {
+      "filmId": 34,
+      "methodId": "KODAK-TMX400"
+    },
+    {
+      "filmId": 35,
+      "methodId": "KODAK-P3200-R1"
+    },
+    {
+      "filmId": 36,
+      "methodId": "PUB-KODAK-TRIX-B"
+    },
+    {
+      "filmId": 37,
+      "methodId": "PUB-KODAK-TRIX-B"
+    },
+    {
+      "filmId": 38,
+      "methodId": "KODAK-MOTION-R1"
+    },
+    {
+      "filmId": 39,
+      "methodId": "KODAK-MOTION-R1"
+    },
+    {
+      "filmId": 40,
+      "methodId": "KODAK-MOTION-R1"
+    },
+    {
+      "filmId": 41,
+      "methodId": "KODAK-MOTION-R1"
+    },
+    {
+      "filmId": 42,
+      "methodId": "KODAK-MOTION-R1"
+    },
+    {
+      "filmId": 43,
+      "methodId": "KODAK-MOTION-R1"
+    },
+    {
+      "filmId": 44,
+      "methodId": "KODAK-MOTION-R1"
+    },
+    {
+      "filmId": 45,
+      "methodId": "KODAK-MOTION-R1"
+    },
+    {
+      "filmId": 46,
+      "methodId": "NONE"
+    },
+    {
+      "filmId": 47,
+      "methodId": "HIST-FUJI-T64"
+    },
+    {
+      "filmId": 48,
+      "methodId": "HIST-FUJI-ASTIA100F"
+    },
+    {
+      "filmId": 49,
+      "methodId": "FUJI-PROVIA100F"
+    },
+    {
+      "filmId": 50,
+      "methodId": "PUB-FUJI-PROVIA400F"
+    },
+    {
+      "filmId": 51,
+      "methodId": "HIST-FUJI-PROVIA400X"
+    },
+    {
+      "filmId": 52,
+      "methodId": "HIST-FUJI-SENSIA100"
+    },
+    {
+      "filmId": 53,
+      "methodId": "HIST-FUJI-SENSIA200"
+    },
+    {
+      "filmId": 54,
+      "methodId": "HIST-FUJI-SENSIA400"
+    },
+    {
+      "filmId": 55,
+      "methodId": "HIST-FUJI-TREBI100C"
+    },
+    {
+      "filmId": 56,
+      "methodId": "HIST-FUJI-TREBI400"
+    },
+    {
+      "filmId": 57,
+      "methodId": "FUJI-VELVIA50"
+    },
+    {
+      "filmId": 58,
+      "methodId": "FUJI-VELVIA100"
+    },
+    {
+      "filmId": 59,
+      "methodId": "HIST-FUJI-VELVIA100F"
+    },
+    {
+      "filmId": 60,
+      "methodId": "PUB-FUJI-100"
+    },
+    {
+      "filmId": 61,
+      "methodId": "FUJI-C200"
+    },
+    {
+      "filmId": 62,
+      "methodId": "FUJI-C200"
+    },
+    {
+      "filmId": 63,
+      "methodId": "FUJI-XTRA400"
+    },
+    {
+      "filmId": 64,
+      "methodId": "HIST-FUJI-NATURA1600"
+    },
+    {
+      "filmId": 65,
+      "methodId": "FUJI-ACROS"
+    },
+    {
+      "filmId": 66,
+      "methodId": "FUJI-ACROS"
+    },
+    {
+      "filmId": 67,
+      "methodId": "HIST-FUJI-NEOPAN-CLASSIC"
+    },
+    {
+      "filmId": 68,
+      "methodId": "HIST-FUJI-NEOPAN-CLASSIC"
+    },
+    {
+      "filmId": 69,
+      "methodId": "HIST-FUJI-NEOPAN-CLASSIC"
+    },
+    {
+      "filmId": 70,
+      "methodId": "HIST-FUJI-PRO160C-NC"
+    },
+    {
+      "filmId": 71,
+      "methodId": "HIST-FUJI-PRO160NH"
+    },
+    {
+      "filmId": 72,
+      "methodId": "HIST-FUJI-PRO160NPC"
+    },
+    {
+      "filmId": 73,
+      "methodId": "PUB-FUJI-PRO160NS"
+    },
+    {
+      "filmId": 74,
+      "methodId": "PUB-FUJI-PRO400H"
+    },
+    {
+      "filmId": 75,
+      "methodId": "HIST-FUJI-PRO800-NPZ"
+    },
+    {
+      "filmId": 76,
+      "methodId": "PUB-FUJI-REALA100"
+    },
+    {
+      "filmId": 77,
+      "methodId": "PUB-FUJI-100"
+    },
+    {
+      "filmId": 78,
+      "methodId": "PUB-FUJI-SUPERIA200"
+    },
+    {
+      "filmId": 79,
+      "methodId": "PUB-FUJI-SUPERIA400"
+    },
+    {
+      "filmId": 80,
+      "methodId": "PUB-FUJI-SUPERIA800"
+    },
+    {
+      "filmId": 81,
+      "methodId": "PUB-FUJI-SUPERIA800"
+    },
+    {
+      "filmId": 82,
+      "methodId": "FUJI-XTRA400"
+    },
+    {
+      "filmId": 83,
+      "methodId": "FUJI-XTRA400"
+    },
+    {
+      "filmId": 84,
+      "methodId": "PUB-FUJI-SUPERIA800"
+    },
+    {
+      "filmId": 85,
+      "methodId": "FUJI-XTRA400"
+    },
+    {
+      "filmId": 86,
+      "methodId": "ILF-D100"
+    },
+    {
+      "filmId": 87,
+      "methodId": "ILF-D400"
+    },
+    {
+      "filmId": 88,
+      "methodId": "ILF-D3200"
+    },
+    {
+      "filmId": 89,
+      "methodId": "PUB-HARMAN-P131"
+    },
+    {
+      "filmId": 90,
+      "methodId": "PUB-HARMAN-P131"
+    },
+    {
+      "filmId": 91,
+      "methodId": "PUB-HARMAN-P131"
+    },
+    {
+      "filmId": 92,
+      "methodId": "PUB-HARMAN-P131"
+    },
+    {
+      "filmId": 93,
+      "methodId": "ILF-XP2"
+    },
+    {
+      "filmId": 94,
+      "methodId": "ILF-ORTHO"
+    },
+    {
+      "filmId": 95,
+      "methodId": "ILF-SFX"
+    },
+    {
+      "filmId": 96,
+      "methodId": "PUB-ILFORD-PAN141"
+    },
+    {
+      "filmId": 97,
+      "methodId": "PUB-ILFORD-PAN141"
+    },
+    {
+      "filmId": 98,
+      "methodId": "ILF-FP4"
+    },
+    {
+      "filmId": 99,
+      "methodId": "ILF-HP5"
+    },
+    {
+      "filmId": 100,
+      "methodId": "ILF-PANF"
+    },
+    {
+      "filmId": 101,
+      "methodId": "ILF-K100"
+    },
+    {
+      "filmId": 102,
+      "methodId": "PUB-KENTMERE200"
+    },
+    {
+      "filmId": 103,
+      "methodId": "ILF-K400"
+    },
+    {
+      "filmId": 104,
+      "methodId": "PUB-FOMA100-FAMILY"
+    },
+    {
+      "filmId": 105,
+      "methodId": "PUB-FOMA400-FAMILY"
+    },
+    {
+      "filmId": 106,
+      "methodId": "PUB-FOMA400-FAMILY"
+    },
+    {
+      "filmId": 107,
+      "methodId": "PUB-FOMA400-FAMILY"
+    },
+    {
+      "filmId": 108,
+      "methodId": "FOMA-100"
+    },
+    {
+      "filmId": 109,
+      "methodId": "FOMA-200"
+    },
+    {
+      "filmId": 110,
+      "methodId": "FOMA-400"
+    },
+    {
+      "filmId": 111,
+      "methodId": "PUB-FOMA100-FAMILY"
+    },
+    {
+      "filmId": 112,
+      "methodId": "FOMA-400"
+    },
+    {
+      "filmId": 113,
+      "methodId": "CINESTILL-P13"
+    },
+    {
+      "filmId": 114,
+      "methodId": "CINESTILL-P13"
+    },
+    {
+      "filmId": 115,
+      "methodId": "CINESTILL-P13"
+    },
+    {
+      "filmId": 116,
+      "methodId": "CINESTILL-P13"
+    },
+    {
+      "filmId": 117,
+      "methodId": "CINESTILL-P13"
+    },
+    {
+      "filmId": 118,
+      "methodId": "PUB-LOMO-BABYLON"
+    },
+    {
+      "filmId": 119,
+      "methodId": "PUB-ORWO-BW-P131"
+    },
+    {
+      "filmId": 120,
+      "methodId": "PUB-LOMO-EARL-FOMA100"
+    },
+    {
+      "filmId": 121,
+      "methodId": "NONE"
+    },
+    {
+      "filmId": 122,
+      "methodId": "PUB-LOMO-LADY-FOMA400"
+    },
+    {
+      "filmId": 123,
+      "methodId": "PUB-ORWO-BW-P131"
+    },
+    {
+      "filmId": 124,
+      "methodId": "PUB-LOMO100400"
+    },
+    {
+      "filmId": 125,
+      "methodId": "PUB-LOMO100400"
+    },
+    {
+      "filmId": 126,
+      "methodId": "PUB-LOMO800"
+    },
+    {
+      "filmId": 127,
+      "methodId": "PUB-LOMO-STYLIZED-P13"
+    },
+    {
+      "filmId": 128,
+      "methodId": "PUB-LOMO-STYLIZED-P13"
+    },
+    {
+      "filmId": 129,
+      "methodId": "PUB-LOMO-STYLIZED-P13"
+    },
+    {
+      "filmId": 130,
+      "methodId": "PUB-LOMO-STYLIZED-P13"
+    },
+    {
+      "filmId": 131,
+      "methodId": "PUB-LOMO-STYLIZED-P13"
+    },
+    {
+      "filmId": 132,
+      "methodId": "PUB-LOMO-STYLIZED-P13"
+    },
+    {
+      "filmId": 133,
+      "methodId": "PUB-LOMO-STYLIZED-P13"
+    },
+    {
+      "filmId": 134,
+      "methodId": "PUB-LOMO-XPRO-P110"
+    },
+    {
+      "filmId": 135,
+      "methodId": "PUB-ORWO-BW-P131"
+    },
+    {
+      "filmId": 136,
+      "methodId": "PUB-ORWO-BW-P131"
+    },
+    {
+      "filmId": 137,
+      "methodId": "NONE"
+    },
+    {
+      "filmId": 138,
+      "methodId": "NONE"
+    },
+    {
+      "filmId": 139,
+      "methodId": "NONE"
+    },
+    {
+      "filmId": 140,
+      "methodId": "ADOX-CHS100II"
+    },
+    {
+      "filmId": 141,
+      "methodId": "ADOX-CMS20"
+    },
+    {
+      "filmId": 142,
+      "methodId": "PUB-ADOX-HR50"
+    },
+    {
+      "filmId": 143,
+      "methodId": "ADOX-SILVER-SCALA160"
+    },
+    {
+      "filmId": 144,
+      "methodId": "ADOX-COLORIMP-P120"
+    },
+    {
+      "filmId": 145,
+      "methodId": "NONE"
+    },
+    {
+      "filmId": 146,
+      "methodId": "ADOX-SCALA50-HR50"
+    },
+    {
+      "filmId": 147,
+      "methodId": "ADOX-SILVER-SCALA160"
+    },
+    {
+      "filmId": 148,
+      "methodId": "PUB-ROLLEI-IR"
+    },
+    {
+      "filmId": 149,
+      "methodId": "PUB-ROLLEI-ORTHO25"
+    },
+    {
+      "filmId": 150,
+      "methodId": "PUB-ROLLEI-80S"
+    },
+    {
+      "filmId": 151,
+      "methodId": "PUB-ROLLEI-IR"
+    },
+    {
+      "filmId": 152,
+      "methodId": "PUB-ROLLEI-RPX25"
+    },
+    {
+      "filmId": 153,
+      "methodId": "PUB-ROLLEI-RPX100"
+    },
+    {
+      "filmId": 154,
+      "methodId": "PUB-ROLLEI-RPX400"
+    },
+    {
+      "filmId": 155,
+      "methodId": "NONE"
+    },
+    {
+      "filmId": 156,
+      "methodId": "NONE"
+    },
+    {
+      "filmId": 157,
+      "methodId": "NONE"
+    },
+    {
+      "filmId": 158,
+      "methodId": "NONE"
+    },
+    {
+      "filmId": 159,
+      "methodId": "PUB-ROLLEI-SUPERPAN"
+    },
+    {
+      "filmId": 160,
+      "methodId": "PUB-SHANGHAI-GP3"
+    },
+    {
+      "filmId": 161,
+      "methodId": "NONE"
+    },
+    {
+      "filmId": 162,
+      "methodId": "NONE"
+    },
+    {
+      "filmId": 163,
+      "methodId": "NONE"
+    },
+    {
+      "filmId": 164,
+      "methodId": "NONE"
+    },
+    {
+      "filmId": 165,
+      "methodId": "NONE"
+    },
+    {
+      "filmId": 166,
+      "methodId": "NONE"
+    },
+    {
+      "filmId": 167,
+      "methodId": "HIST-AGFA-SCALA200X"
+    },
+    {
+      "filmId": 168,
+      "methodId": "PUB-AGFA-APX25"
+    },
+    {
+      "filmId": 169,
+      "methodId": "PUB-AGFA-APX100400"
+    },
+    {
+      "filmId": 170,
+      "methodId": "PUB-AGFA-APX100400"
+    },
+    {
+      "filmId": 171,
+      "methodId": "HIST-AGFA-CT100"
+    },
+    {
+      "filmId": 172,
+      "methodId": "PUB-AGFAPHOTO-NEW100"
+    },
+    {
+      "filmId": 173,
+      "methodId": "PUB-AGFAPHOTO-NEW400"
+    },
+    {
+      "filmId": 174,
+      "methodId": "HIST-AGFA-VISTA100"
+    },
+    {
+      "filmId": 175,
+      "methodId": "HIST-AGFA-VISTA200400"
+    },
+    {
+      "filmId": 176,
+      "methodId": "HIST-AGFA-VISTA200400"
+    },
+    {
+      "filmId": 177,
+      "methodId": "BERGGER-P400"
+    },
+    {
+      "filmId": 178,
+      "methodId": "NONE"
+    },
+    {
+      "filmId": 179,
+      "methodId": "PUB-FERRANIA-P30-10S"
+    },
+    {
+      "filmId": 180,
+      "methodId": "NONE"
+    },
+    {
+      "filmId": 181,
+      "methodId": "NONE"
+    },
+    {
+      "filmId": 182,
+      "methodId": "NONE"
+    },
+    {
+      "filmId": 183,
+      "methodId": "NONE"
+    },
+    {
+      "filmId": 184,
+      "methodId": "PUB-ROLLEI-IR"
+    },
+    {
+      "filmId": 185,
+      "methodId": "PUB-REFLX-AEROCOLOR"
+    },
+    {
+      "filmId": 186,
+      "methodId": "PUB-REFLX-800T"
+    },
+    {
+      "filmId": 187,
+      "methodId": "KODAK-MOTION-R1"
+    },
+    {
+      "filmId": 188,
+      "methodId": "KODAK-MOTION-R1"
+    },
+    {
+      "filmId": 189,
+      "methodId": "KODAK-MOTION-R1"
+    },
+    {
+      "filmId": 190,
+      "methodId": "KODAK-MOTION-R1"
+    },
+    {
+      "filmId": 191,
+      "methodId": "KODAK-MOTION-R1"
+    },
+    {
+      "filmId": 192,
+      "methodId": "KODAK-MOTION-R1"
+    },
+    {
+      "filmId": 193,
+      "methodId": "KODAK-MOTION-R1"
+    }
+  ]
+}

@@ -15,10 +15,14 @@ import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
+import android.view.accessibility.AccessibilityManager
+import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityNodeProvider
 import android.view.animation.DecelerateInterpolator
 import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
+import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.roundToInt
@@ -33,18 +37,20 @@ class InstrumentView(
         fun onMeasureRequested()
         fun onOrientationToggle()
         fun onMoreRequested()
+        fun onToolsRequested()
         fun onZoneEntryDrag(progress: Float, released: Boolean)
         fun onControlsChanged(frameChanged: Boolean)
     }
 
     var listener: Listener? = null
 
-    private val density = resources.displayMetrics.density
+    private val density get() = layoutDensity(LayoutProfile.METER)
     private val lightBlack = Color.rgb(20, 20, 20)
     private val nightForeground = Color.rgb(210, 210, 206)
     private val black: Int get() = if (state.isDarkMode) nightForeground else lightBlack
     private val surfaceColor: Int get() = if (state.isDarkMode) Color.BLACK else Color.WHITE
     private val red = Color.rgb(166, 27, 36)
+    private val flashBlue = Color.rgb(38, 112, 184)
     private val paleGray: Int
         get() = if (state.isDarkMode) Color.rgb(38, 38, 36) else Color.rgb(232, 232, 229)
     private val middleGray = Color.rgb(130, 130, 126)
@@ -57,8 +63,15 @@ class InstrumentView(
     private val boldPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         typeface = Typeface.create("sans", Typeface.BOLD)
     }
-    private val exposureRenderer = InstrumentExposureRenderer(state, density)
+    private val exposureRenderer = InstrumentExposureRenderer(state) { density }
+    private val ev100BadgeRenderer = Ev100BadgeRenderer(
+        densityProvider = { density },
+        textDensityProvider = { layoutTextDensity(LayoutProfile.METER) },
+    )
     private var geometry: LayoutGeometry? = null
+    private val accessibilityHelper = CanvasAccessibilityHelper(this, ::handleAccessibilityClick)
+    private val accessibilityManager: AccessibilityManager?
+        get() = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager
     private var touchTarget = TouchTarget.NONE
     private var lastDialAngle = 0f
     private var dialStepAccumulator = 0f
@@ -81,6 +94,8 @@ class InstrumentView(
     private var exposureLockDragStartFraction = 0f
     private var exposureLockDragMoved = false
     private var zoneTransitionFraction = 0f
+    private var modeTransitionEnabled = true
+    private var parameterDialInteractionEnabled = true
     private var zoneDragStartX = 0f
     private var zoneDragStartY = 0f
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
@@ -95,6 +110,11 @@ class InstrumentView(
         ZONE_ENTRY,
     }
 
+    internal fun setAppliedReciprocity(method: ReciprocityMethod?) {
+        exposureRenderer.setAppliedReciprocity(method)
+        invalidate()
+    }
+
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val g = LayoutGeometry.calculate(
@@ -106,11 +126,20 @@ class InstrumentView(
             state.isLeftHanded,
         )
         geometry = g
+        accessibilityHelper.update(accessibilityNodes(g))
         drawSurfaceOutsidePreview(canvas, g.cameraFrame)
         drawPanels(canvas, g)
         drawCameraOverlay(canvas, g)
         drawExposureRows(canvas, g)
         drawDial(canvas, g)
+        ev100BadgeRenderer.draw(canvas, g.ev100Badge, Ev100Readouts.normal(state), state.isDarkMode, red)
+        ev100BadgeRenderer.drawFlashIndicator(
+            canvas,
+            g.ev100Badge,
+            state.appliedFlashConfiguration,
+            state.isDarkMode,
+            flashBlue,
+        )
         drawMeterButton(canvas, g)
         drawStatus(canvas, g)
     }
@@ -144,7 +173,17 @@ class InstrumentView(
     }
 
     private fun drawCameraOverlay(canvas: Canvas, g: LayoutGeometry) {
-        val spotRadius = min(g.cameraFrame.width(), g.cameraFrame.height()) * 0.045f
+        val roiFraction = if (state.meteringMode == MeteringMode.ANGLE) {
+            state.angleMeteringIndicatorFraction() ?: DEFAULT_SPOT_DIAMETER_FRACTION
+        } else {
+            DEFAULT_SPOT_DIAMETER_FRACTION
+        }
+        val spotRadius = (
+            min(g.cameraFrame.width(), g.cameraFrame.height()) * roiFraction / 2f
+            ).coerceAtLeast(4f * density)
+        canvas.save()
+        // A fixed physical angle can extend outside an electronically cropped viewfinder.
+        canvas.clipRect(g.cameraFrame)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1.1f * density
         paint.color = surfaceColor
@@ -158,26 +197,34 @@ class InstrumentView(
             drawMeteringSpinner(canvas, g.cameraFrame, spotRadius)
             postInvalidateOnAnimation()
         }
+        canvas.restore()
 
         drawOutlinedButton(
             canvas,
             g.formatButton,
-            InstrumentPresentation.formatShortLabel(state.frameFormat),
+            InstrumentPresentation.formatShortLabel(state.frameFormat, state.menuLanguage),
             formatMenuOpen,
+            overlayAlpha(g.formatButton, g.cameraFrame),
         )
         if (formatMenuOpen) drawFormatMenu(canvas, g)
-        drawOrientationButton(canvas, g.orientationButton, g.landscape)
+        drawOrientationButton(
+            canvas,
+            g.orientationButton,
+            g.landscape,
+            overlayAlpha(g.orientationButton, g.cameraFrame),
+        )
         drawZoom(canvas, g.zoomTrack)
-        drawSettingsButton(canvas, g.moreButton)
+        drawSettingsButton(canvas, g.moreButton, overlayAlpha(g.moreButton, g.cameraFrame))
+        drawToolsButton(canvas, g.toolsButton, overlayAlpha(g.toolsButton, g.cameraFrame))
         drawZoneEntryHandle(canvas, g)
 
-        val equivalent = state.equivalent35mm()
-        val focalText = buildString {
-            val focal = state.cameraInfo.focalLengthMm
-            if (focal > 0f) append("${"%.1f".format(focal)} mm")
-            if (equivalent != null) append("  ≈ ${equivalent} mm")
-        }
-        if (focalText.isNotBlank()) {
+        val equivalent = state.equivalentFrameFocalMm()
+        if (equivalent != null) {
+            val format = InstrumentPresentation.formatShortLabel(
+                state.frameFormat,
+                state.menuLanguage,
+            )
+            val focalText = "≈ $equivalent mm ($format)"
             paint.style = Paint.Style.FILL
             paint.color = Color.argb(
                 168,
@@ -189,11 +236,18 @@ class InstrumentView(
             paint.typeface = Typeface.DEFAULT_BOLD
             val textWidth = paint.measureText(focalText)
             val baseline = g.cameraFrame.bottom - 8f * density
+            val horizontalPadding = 6f * density
+            // Anchor to the viewfinder's bottom-right corner; the clamp keeps the label inside
+            // the frame on devices with narrow fitted images.
+            val left = max(
+                g.cameraFrame.left,
+                g.cameraFrame.right - textWidth - horizontalPadding * 2f,
+            )
             canvas.drawRoundRect(
                 RectF(
-                    g.cameraFrame.centerX() - textWidth / 2f - 6f * density,
+                    left,
                     baseline - 13f * density,
-                    g.cameraFrame.centerX() + textWidth / 2f + 6f * density,
+                    left + textWidth + horizontalPadding * 2f,
                     baseline + 3f * density,
                 ),
                 4f * density,
@@ -201,7 +255,7 @@ class InstrumentView(
                 paint,
             )
             paint.color = black
-            canvas.drawText(focalText, g.cameraFrame.centerX() - textWidth / 2f, baseline, paint)
+            canvas.drawText(focalText, left + horizontalPadding, baseline, paint)
         }
     }
 
@@ -229,6 +283,25 @@ class InstrumentView(
     fun setZoneTransitionFraction(fraction: Float) {
         zoneTransitionFraction = fraction.coerceIn(0f, 1f)
         invalidate()
+    }
+
+    /** Prevents the covered Normal/Zone handle from retaining a partial drag under Tools. */
+    fun setModeTransitionEnabled(enabled: Boolean) {
+        modeTransitionEnabled = enabled
+        if (!enabled) {
+            if (touchTarget == TouchTarget.ZONE_ENTRY) touchTarget = TouchTarget.NONE
+            zoneTransitionFraction = 0f
+        }
+        invalidate()
+    }
+
+    /** Keeps the exposed Normal dial from receiving touches beneath a Tools overlay. */
+    fun setParameterDialInteractionEnabled(enabled: Boolean) {
+        parameterDialInteractionEnabled = enabled
+        if (!enabled && touchTarget == TouchTarget.DIAL) {
+            touchTarget = TouchTarget.NONE
+            dialStepAccumulator = 0f
+        }
     }
 
     private fun drawZoneEntryHandle(canvas: Canvas, g: LayoutGeometry) {
@@ -299,7 +372,10 @@ class InstrumentView(
             paint.typeface = Typeface.DEFAULT_BOLD
             drawCenteredText(
                 canvas,
-                InstrumentPresentation.formatShortLabel(FrameFormat.ALL[index]),
+                InstrumentPresentation.formatShortLabel(
+                    FrameFormat.ALL[index],
+                    state.menuLanguage,
+                ),
                 rect.centerX(),
                 rect.centerY(),
                 paint,
@@ -307,13 +383,18 @@ class InstrumentView(
         }
     }
 
-    private fun drawOrientationButton(canvas: Canvas, rect: RectF, landscape: Boolean) {
+    private fun drawOrientationButton(
+        canvas: Canvas,
+        rect: RectF,
+        landscape: Boolean,
+        alpha: Int = 255,
+    ) {
         paint.style = Paint.Style.FILL
-        paint.color = surfaceColor
+        paint.withAlpha(surfaceColor, alpha)
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1.3f * density
-        paint.color = black
+        paint.withAlpha(black, alpha)
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
         val iconW = if (landscape) rect.width() * 0.52f else rect.width() * 0.36f
         val iconH = if (landscape) rect.height() * 0.36f else rect.height() * 0.52f
@@ -334,17 +415,17 @@ class InstrumentView(
             rect.right - 5f * density,
             rect.bottom - 5f * density,
         )
-        paint.color = red
+        paint.withAlpha(red, alpha)
         canvas.drawArc(arc, 205f, 86f, false, paint)
     }
 
-    private fun drawSettingsButton(canvas: Canvas, rect: RectF) {
+    private fun drawSettingsButton(canvas: Canvas, rect: RectF, alpha: Int = 255) {
         paint.style = Paint.Style.FILL
-        paint.color = surfaceColor
+        paint.withAlpha(surfaceColor, alpha)
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1.2f * density
-        paint.color = black
+        paint.withAlpha(black, alpha)
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
         val outerRadius = min(rect.width(), rect.height()) * 0.27f
         val rootRadius = outerRadius * 0.78f
@@ -358,11 +439,52 @@ class InstrumentView(
             if (index == 0) gear.moveTo(x, y) else gear.lineTo(x, y)
         }
         gear.close()
-        paint.style = Paint.Style.FILL
-        paint.color = black
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 1.2f * density
+        paint.withAlpha(black, alpha)
         canvas.drawPath(gear, paint)
-        paint.color = surfaceColor
         canvas.drawCircle(rect.centerX(), rect.centerY(), innerRadius, paint)
+    }
+
+    /** Four hollow squares with the top-right one rotated 45 degrees around its own center. */
+    private fun drawToolsButton(canvas: Canvas, rect: RectF, alpha: Int = 255) {
+        paint.style = Paint.Style.FILL
+        paint.withAlpha(surfaceColor, alpha)
+        canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 1.2f * density
+        paint.withAlpha(black, alpha)
+        canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
+        val cell = rect.width() * 0.26f
+        val innerGap = rect.width() * 0.07f
+        val left = rect.centerX() - cell - innerGap / 2f
+        val top = rect.centerY() - cell - innerGap / 2f
+        paint.strokeWidth = 1.1f * density
+        canvas.drawRect(left, top, left + cell, top + cell, paint)
+        canvas.drawRect(
+            left,
+            top + cell + innerGap,
+            left + cell,
+            top + cell * 2f + innerGap,
+            paint,
+        )
+        canvas.drawRect(
+            left + cell + innerGap,
+            top + cell + innerGap,
+            left + cell * 2f + innerGap,
+            top + cell * 2f + innerGap,
+            paint,
+        )
+        val rotated = RectF(
+            left + cell + innerGap,
+            top,
+            left + cell * 2f + innerGap,
+            top + cell,
+        )
+        canvas.save()
+        canvas.rotate(45f, rotated.centerX(), rotated.centerY())
+        canvas.drawRect(rotated, paint)
+        canvas.restore()
     }
 
     private fun drawZoom(canvas: Canvas, track: RectF) {
@@ -406,6 +528,37 @@ class InstrumentView(
         }
         exposureRenderer.draw(canvas, g, centers, exposureLockSliderFraction)
     }
+
+    fun currentApertureCoordinate(): Double = InstrumentPresentation.exposureCenters(
+        state = state,
+        evAtIso = animatedExposureValue(),
+        lockedDisplayCoordinate = lockedScaleDisplayCoordinate,
+        frozenDependentCoordinate = frozenDependentCoordinate,
+        releasedDependentCoordinate = releasedDependentCoordinate,
+    ).aperture
+
+    fun currentShutterCoordinate(): Double = InstrumentPresentation.exposureCenters(
+        state = state,
+        evAtIso = animatedExposureValue(),
+        lockedDisplayCoordinate = lockedScaleDisplayCoordinate,
+        frozenDependentCoordinate = frozenDependentCoordinate,
+        releasedDependentCoordinate = releasedDependentCoordinate,
+    ).shutter
+
+    fun recordButtonRect(): RectF = RectF(
+        // Do not reuse [geometry] here. During an orientation change the parent lays this View
+        // out before the next draw pass, so the cached geometry can still describe the previous
+        // orientation. Overlay controls (notably the angle-metering dial) need the new anchor
+        // immediately, before drawing or a later zoom gesture refreshes the cache.
+        LayoutGeometry.calculate(
+            width,
+            height,
+            density,
+            state.frameFormat,
+            state.frameLandscape,
+            state.isLeftHanded,
+        ).meterButton,
+    )
 
     private fun animatedExposureValue(): Double {
         val fallback = state.lockedApertureStop - state.lockedShutterLogSeconds
@@ -720,7 +873,7 @@ class InstrumentView(
     }
 
     private fun drawStatus(canvas: Canvas, g: LayoutGeometry) {
-        val message = state.transientMessage ?: state.cameraInfo.status
+        val message = PreviewInformationLine.text(state)
         if (message.isBlank()) return
         paint.style = Paint.Style.FILL
         paint.color = if (state.transientMessage != null) red else middleGray
@@ -736,18 +889,27 @@ class InstrumentView(
         rect: RectF,
         text: String,
         accented: Boolean,
+        alpha: Int = 255,
     ) {
         paint.style = Paint.Style.FILL
-        paint.color = surfaceColor
+        paint.withAlpha(surfaceColor, alpha)
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1.2f * density
-        paint.color = if (accented) red else black
+        paint.withAlpha(if (accented) red else black, alpha)
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
         paint.style = Paint.Style.FILL
         paint.textSize = 9f * density
         paint.typeface = Typeface.DEFAULT_BOLD
         drawCenteredText(canvas, text, rect.centerX(), rect.centerY(), paint)
+    }
+
+    /** Buttons overlapping the fitted viewfinder image become semi-transparent. */
+    private fun overlayAlpha(rect: RectF, cameraFrame: RectF): Int =
+        if (RectF.intersects(rect, cameraFrame)) OVERLAY_ALPHA else 255
+
+    private fun Paint.withAlpha(color: Int, alpha: Int) {
+        this.color = Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color))
     }
 
     private fun drawCenteredText(
@@ -779,7 +941,8 @@ class InstrumentView(
                     }
                 }
                 when {
-                    g.zoneEntryHandle.containsAccessibleTarget(event.x, event.y, density) &&
+                    modeTransitionEnabled &&
+                        g.zoneEntryHandle.containsAccessibleTarget(event.x, event.y, density) &&
                         !state.measuring -> {
                         formatMenuOpen = false
                         touchTarget = TouchTarget.ZONE_ENTRY
@@ -791,6 +954,12 @@ class InstrumentView(
                         formatMenuOpen = false
                         haptic()
                         listener?.onMoreRequested()
+                        return true
+                    }
+                    g.toolsButton.containsAccessibleTarget(event.x, event.y, density) -> {
+                        formatMenuOpen = false
+                        haptic()
+                        listener?.onToolsRequested()
                         return true
                     }
                     g.orientationButton.containsAccessibleTarget(event.x, event.y, density) -> {
@@ -805,7 +974,16 @@ class InstrumentView(
                         invalidate()
                         return true
                     }
-                    g.isoModeButton.containsAccessibleTarget(event.x, event.y, density) -> {
+                    !parameterDialInteractionEnabled &&
+                        (g.isoModeButton.containsAccessibleTarget(event.x, event.y, density) ||
+                            g.dial.contains(event.x, event.y)) -> {
+                        // Tools can be smaller than Normal's parameter panel on some devices.
+                        // Consume the covered dial touch instead of letting it leak through.
+                        formatMenuOpen = false
+                        return true
+                    }
+                    parameterDialInteractionEnabled &&
+                        g.isoModeButton.containsAccessibleTarget(event.x, event.y, density) -> {
                         formatMenuOpen = false
                         state.isoAdjustMode = !state.isoAdjustMode
                         haptic()
@@ -843,7 +1021,7 @@ class InstrumentView(
                             beginLockedScaleDrag(TouchTarget.SHUTTER, event.x)
                         }
                     }
-                    g.dial.contains(event.x, event.y) -> {
+                    parameterDialInteractionEnabled && g.dial.contains(event.x, event.y) -> {
                         formatMenuOpen = false
                         touchTarget = TouchTarget.DIAL
                         lastDialAngle = angleFor(event.x, event.y, g.dial)
@@ -913,6 +1091,100 @@ class InstrumentView(
         super.performClick()
         return true
     }
+
+    override fun getAccessibilityNodeProvider(): AccessibilityNodeProvider = accessibilityHelper.provider
+
+    override fun onInitializeAccessibilityNodeInfo(info: AccessibilityNodeInfo) {
+        super.onInitializeAccessibilityNodeInfo(info)
+        info.className = "android.view.View"
+        info.contentDescription = localized(
+            "测光仪表。当前 ISO ${state.iso}，曝光补偿 ${"%.1f".format(state.exposureCompEv)} EV",
+            "Meter. Current ISO ${state.iso}, exposure compensation ${"%.1f".format(state.exposureCompEv)} EV",
+        )
+    }
+
+    override fun dispatchHoverEvent(event: MotionEvent): Boolean {
+        if (accessibilityHelper.handleHoverEvent(event, accessibilityManager)) return true
+        return super.dispatchHoverEvent(event)
+    }
+
+    private fun accessibilityNodes(g: LayoutGeometry): List<CanvasAccessibilityHelper.VirtualNode> =
+        listOf(
+            CanvasAccessibilityHelper.VirtualNode(
+                ACCESSIBILITY_ISO,
+                g.isoModeButton,
+                localized("ISO 或曝光补偿", "ISO or exposure compensation"),
+                selected = state.isoAdjustMode,
+            ),
+            CanvasAccessibilityHelper.VirtualNode(
+                ACCESSIBILITY_FORMAT,
+                g.formatButton,
+                localized("画幅格式", "Frame format"),
+            ),
+            CanvasAccessibilityHelper.VirtualNode(
+                ACCESSIBILITY_METER,
+                g.meterButton,
+                localized("测光", "Measure"),
+            ),
+            CanvasAccessibilityHelper.VirtualNode(
+                ACCESSIBILITY_MORE,
+                g.moreButton,
+                localized("更多设置", "More settings"),
+            ),
+            CanvasAccessibilityHelper.VirtualNode(
+                ACCESSIBILITY_TOOLS,
+                g.toolsButton,
+                localized("工具", "Tools"),
+            ),
+            CanvasAccessibilityHelper.VirtualNode(
+                ACCESSIBILITY_ORIENTATION,
+                g.orientationButton,
+                localized("左右手布局", "Handedness"),
+            ),
+        )
+
+    private fun handleAccessibilityClick(virtualViewId: Int): Boolean {
+        if (state.measuring && virtualViewId != ACCESSIBILITY_METER) return false
+        return when (virtualViewId) {
+            ACCESSIBILITY_ISO -> {
+                state.isoAdjustMode = !state.isoAdjustMode
+                listener?.onControlsChanged(false)
+                invalidate()
+                true
+            }
+
+            ACCESSIBILITY_FORMAT -> {
+                formatMenuOpen = !formatMenuOpen
+                invalidate()
+                true
+            }
+
+            ACCESSIBILITY_METER -> {
+                if (!state.measuring) listener?.onMeasureRequested()
+                true
+            }
+
+            ACCESSIBILITY_MORE -> {
+                listener?.onMoreRequested()
+                true
+            }
+
+            ACCESSIBILITY_TOOLS -> {
+                listener?.onToolsRequested()
+                true
+            }
+
+            ACCESSIBILITY_ORIENTATION -> {
+                listener?.onOrientationToggle()
+                true
+            }
+
+            else -> false
+        }
+    }
+
+    private fun localized(chinese: String, english: String): String =
+        if (state.menuLanguage == MenuLanguage.ENGLISH) english else chinese
 
     private fun updateZoom(y: Float, track: RectF) {
         val top = track.top + 22f * density
@@ -1187,11 +1459,20 @@ class InstrumentView(
         dependentAnimator?.cancel()
         exposureLockAnimator?.cancel()
         lockedScaleAnimator?.cancel()
+        accessibilityHelper.clearFocusForHostExit()
         super.onDetachedFromWindow()
     }
 
     private companion object {
         private const val METERING_SPINNER_PERIOD_MS = 820L
         private const val METERING_SPINNER_SWEEP_DEGREES = 108f
+        private const val DEFAULT_SPOT_DIAMETER_FRACTION = 0.09f
+        private const val OVERLAY_ALPHA = 168
+        private const val ACCESSIBILITY_ISO = 1
+        private const val ACCESSIBILITY_FORMAT = 2
+        private const val ACCESSIBILITY_METER = 3
+        private const val ACCESSIBILITY_MORE = 4
+        private const val ACCESSIBILITY_TOOLS = 5
+        private const val ACCESSIBILITY_ORIENTATION = 6
     }
 }

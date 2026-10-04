@@ -3,6 +3,7 @@ package com.lightmeter.rawmeter
 enum class SettingsSectionKey {
     METERING,
     GENERAL,
+    MORE,
     CALIBRATION,
 }
 
@@ -11,6 +12,12 @@ enum class SettingKey {
     SHUTTER_STEP,
     EXPOSURE_COMPENSATION_STEP,
     METERING_MODE,
+    COMBINATION_SELECTION,
+    METERING_PIPELINE,
+    EXPOSURE_PREVIEW,
+    PREVIEW_HEALTH_DETECTION,
+    PREVIEW_FRAME_RATE,
+    PREVIEW_INFORMATION_BAR,
     ZONE_MARKING_METHOD,
     LANGUAGE,
     THEME,
@@ -19,8 +26,12 @@ enum class SettingKey {
 
 enum class SettingActionKey {
     MANAGE_CAMERAS,
+    MANAGE_OUTPUT_ASPECTS,
+    SHOW_MORE_SETTINGS,
+    USE_SAFE_PREVIEW,
     SHOW_ABOUT,
     START_METERING_CALIBRATION,
+    START_EXPOSURE_PREVIEW_CALIBRATION,
     START_VIGNETTING_CALIBRATION,
 }
 
@@ -48,6 +59,8 @@ data class SettingsSectionSpec(
     val label: LocalizedLabel,
     val items: List<SettingItemSpec>,
     val actions: List<SettingActionSpec> = emptyList(),
+    /** Actions inserted after the given one-based item count. */
+    val inlineActions: Map<Int, List<SettingActionSpec>> = emptyMap(),
     val enabled: Boolean = true,
 )
 
@@ -80,7 +93,7 @@ object SettingsCatalog {
                 ),
                 SettingItemSpec(
                     key = SettingKey.METERING_MODE,
-                    label = LocalizedLabel("测光方式", "Metering mode"),
+                    label = LocalizedLabel("测光区域", "Metering area"),
                     options = listOf(
                         option(
                             MeteringMode.CENTER_WEIGHTED,
@@ -88,24 +101,118 @@ object SettingsCatalog {
                             "Center-weighted",
                         ),
                         option(MeteringMode.SPOT, "点测光", "Spot"),
+                        option(MeteringMode.ANGLE, "按角度测光", "Angle"),
+                    ),
+                ),
+                SettingItemSpec(
+                    key = SettingKey.COMBINATION_SELECTION,
+                    label = LocalizedLabel("测光组合选择", "Metering combination selection"),
+                    options = listOf(
+                        option(
+                            MeteringCombinationSelectionMode.SYSTEM,
+                            "系统设置",
+                            "System",
+                        ),
+                        option(
+                            MeteringCombinationSelectionMode.MANUAL,
+                            "手动选择",
+                            "Manual",
+                        ),
+                    ),
+                ),
+                SettingItemSpec(
+                    key = SettingKey.METERING_PIPELINE,
+                    label = LocalizedLabel("系统测光模式", "System metering mode"),
+                    options = listOf(
+                        option(
+                            MeteringPipelineMode.AUTO,
+                            "高精度（推荐）",
+                            "High accuracy (recommended)",
+                        ),
+                        option(
+                            MeteringPipelineMode.ISOLATED,
+                            "稳定模式",
+                            "Stable",
+                        ),
+                        option(
+                            MeteringPipelineMode.FAST,
+                            "兼容模式",
+                            "Compatibility mode",
+                        ),
+                    ),
+                ),
+                SettingItemSpec(
+                    key = SettingKey.EXPOSURE_PREVIEW,
+                    label = LocalizedLabel("曝光预览", "Exposure preview"),
+                    options = listOf(
+                        option(ExposurePreviewMode.OFF, "关闭", "Off"),
+                        option(ExposurePreviewMode.ON, "开启", "On"),
                     ),
                 ),
                 SettingItemSpec(
                     key = SettingKey.ZONE_MARKING_METHOD,
                     label = LocalizedLabel("标点方式", "Marking method"),
                     options = listOf(
-                        option(ZoneMarkingMethod.BUTTON, "按键标点", "Button marking"),
-                        option(ZoneMarkingMethod.TOUCH, "触屏标点", "Touch marking"),
+                        option(ZoneMarkingMethod.TOUCH, "按键与触屏", "Button and touch"),
+                        option(ZoneMarkingMethod.BUTTON, "仅按键", "Button only"),
+                    ),
+                ),
+            ),
+            inlineActions = mapOf(
+                3 to listOf(
+                    SettingActionSpec(
+                        key = SettingActionKey.MANAGE_CAMERAS,
+                        label = LocalizedLabel("选择与管理摄像头", "Select and manage cameras"),
+                        description = LocalizedLabel(
+                            "选择测光摄像头、添加备注或隐藏不用的摄像头",
+                            "Select a metering camera, add notes, or hide unused cameras",
+                        ),
                     ),
                 ),
             ),
             actions = listOf(
                 SettingActionSpec(
-                    key = SettingActionKey.MANAGE_CAMERAS,
-                    label = LocalizedLabel("选择与管理摄像头", "Select and manage cameras"),
+                    key = SettingActionKey.SHOW_MORE_SETTINGS,
+                    label = LocalizedLabel("更多设置", "More settings"),
+                ),
+            ),
+        ),
+        SettingsSectionSpec(
+            key = SettingsSectionKey.MORE,
+            label = LocalizedLabel("更多设置", "More"),
+            items = listOf(
+                SettingItemSpec(
+                    key = SettingKey.PREVIEW_HEALTH_DETECTION,
+                    label = LocalizedLabel("预览异常检测", "Preview health detection"),
+                    options = listOf(
+                        option(PreviewHealthDetectionMode.ON, "开启（推荐）", "On (recommended)"),
+                        option(PreviewHealthDetectionMode.OFF, "关闭", "Off"),
+                    ),
+                ),
+                SettingItemSpec(
+                    key = SettingKey.PREVIEW_INFORMATION_BAR,
+                    label = LocalizedLabel("信息栏", "Information bar"),
+                    options = listOf(
+                        option(PreviewInformationBarMode.OFF, "关闭（默认）", "Off (default)"),
+                        option(PreviewInformationBarMode.ON, "开启", "On"),
+                    ),
+                ),
+            ),
+            actions = listOf(
+                SettingActionSpec(
+                    key = SettingActionKey.MANAGE_OUTPUT_ASPECTS,
+                    label = LocalizedLabel("设置传感器输出画面", "Set sensor output aspect"),
                     description = LocalizedLabel(
-                        "选择测光摄像头、添加备注或隐藏不用的摄像头",
-                        "Select a metering camera, add notes, or hide unused cameras",
+                        "按镜头修正被拉伸的取景画面",
+                        "Correct a stretched viewfinder separately for each lens",
+                    ),
+                ),
+                SettingActionSpec(
+                    key = SettingActionKey.USE_SAFE_PREVIEW,
+                    label = LocalizedLabel("手动切换到安全预览", "Switch to safe preview"),
+                    description = LocalizedLabel(
+                        "本次运行仅保留显示预览；重新选择摄像头或重启后恢复自动流配置",
+                        "Use display preview only for this run; selecting a camera or restarting restores automatic stream setup",
                     ),
                 ),
             ),
@@ -114,6 +221,14 @@ object SettingsCatalog {
             key = SettingsSectionKey.GENERAL,
             label = LocalizedLabel("通用设置", "General"),
             items = listOf(
+                SettingItemSpec(
+                    key = SettingKey.PREVIEW_FRAME_RATE,
+                    label = LocalizedLabel("取景帧率", "Viewfinder frame rate"),
+                    options = listOf(
+                        option(PreviewFrameRateMode.LOW, "标准（最高 30 fps）", "Standard (up to 30 fps)"),
+                        option(PreviewFrameRateMode.HIGH, "流畅（最高 60 fps）", "Smooth (up to 60 fps)"),
+                    ),
+                ),
                 SettingItemSpec(
                     key = SettingKey.LANGUAGE,
                     label = LocalizedLabel("语言 / Language", "Language / 语言"),
@@ -160,11 +275,19 @@ object SettingsCatalog {
                     ),
                 ),
                 SettingActionSpec(
+                    key = SettingActionKey.START_EXPOSURE_PREVIEW_CALIBRATION,
+                    label = LocalizedLabel("预览曝光校准", "Preview exposure calibration"),
+                    description = LocalizedLabel(
+                        "把当前画面调整为你期望的 0 EV 视觉亮度",
+                        "Adjust the current view to your expected visual brightness at 0 EV",
+                    ),
+                ),
+                SettingActionSpec(
                     key = SettingActionKey.START_VIGNETTING_CALIBRATION,
                     label = LocalizedLabel("暗角矫正", "Vignetting correction"),
                     description = LocalizedLabel(
-                        "拍摄亮度均匀画面，为当前镜头生成 RAW 二维矫正图",
-                        "Capture a uniform scene and build a 2D RAW map for this lens",
+                        "拍摄亮度均匀的画面，为当前镜头校正边缘亮度",
+                        "Capture a uniformly lit scene to correct edge brightness for this lens",
                     ),
                 ),
             ),

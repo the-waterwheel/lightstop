@@ -1,52 +1,196 @@
 package com.lightmeter.rawmeter
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
 import android.content.res.Configuration
+import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
+import android.hardware.display.DisplayManager
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
+import android.text.SpannableString
+import android.text.Spanned
+import android.text.TextPaint
+import android.text.method.LinkMovementMethod
+import android.text.style.ClickableSpan
+import android.text.style.ForegroundColorSpan
 import android.view.Surface
 import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
+import android.window.OnBackInvokedCallback
+import android.window.OnBackInvokedDispatcher
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.TextView
 import android.widget.Toast
+import java.io.File
+import java.util.ArrayDeque
 
 class MainActivity : Activity(), CameraControllerCallback {
     private lateinit var state: MeterState
     private lateinit var meterLayout: MeterLayout
     private lateinit var cameraController: CameraController
+    private lateinit var calibrationEnvironmentStore: CalibrationEnvironmentStore
     private val mainHandler = Handler(Looper.getMainLooper())
     private var rawDialogVisible = false
+    private var compatibilityModeDialogVisible = false
+    private var angleCompatibilityDialogVisible = false
     private var calibrationResetDialogVisible = false
     private var vignettingDialogVisible = false
     private var vignettingResetDialogVisible = false
-    private var calibrationMeasurementPending = false
     private var vignettingCalibrationPending = false
-    private var calibrationReferenceEv100 = Double.NaN
+    private var firstCalibrationPromptShownThisProcess = false
+    private var firstCalibrationPromptVisible = false
+    private val calibrationCoordinator = MeteringCalibrationCoordinator()
     private var zoneMeasurementPending = false
+    private var zoneRemeasureActive = false
+    private var zoneRemeasureUpdated = 0
+    private var zoneRemeasureTotal = 0
+    /** A Zone value may be visible while Camera2 rebuilds the resident preview/YUV session. */
+    private var zoneCameraRestorePending = false
+    /** Camera2 may still be rebuilding its resident session after a result is already visible. */
+    private val meteringInteractionBusy: Boolean
+        get() = state.measuring || zoneCameraRestorePending
+    private var activityResumed = false
+    private var appliedPipelineMode: MeteringPipelineMode? = null
+    private var cameraPermissionDialogVisible = false
+    private var cameraPermissionRequestInFlight = false
+    private var pendingCalibrationEnvironmentChange: CalibrationEnvironmentChange? = null
+    private var calibrationDisplayCameraId: String? = null
+    private var calibrationDisplaySelectionId: String? = null
+    private lateinit var foregroundCameraStartCoordinator: ForegroundCameraStartCoordinator
+    private var backInvokedCallback: OnBackInvokedCallback? = null
+    private var lastOverlayBackHandledAtMs = 0L
+    private var lastDistanceDiagnosticAtMs = -2000L
+    private var lastDistanceDiagnosticStatus: DistanceMeasurementStatus? = null
+    private lateinit var parameterLocationCoordinator: ParameterLocationCoordinator
+    private var manualCombinationCandidates: List<CameraCombinationCandidate> = emptyList()
+    private var manualCombinationIndex = -1
+    private var manualCombinationGeneration = 0
+    /** Present only after CameraController has frozen route-bound manual probe evidence. */
+    private var manualCombinationProbeEvidence: ManualCombinationProbeEvidence? = null
+    /** Rechecking an old saved choice must never overwrite it with a System fallback on cancel. */
+    private var manualCombinationRevalidating = false
+    private var manualCombinationAccepting = false
+    private var manualApprovalSaved = false
+    private var manualRevalidationRequest: ManualCombinationRevalidationRequest? = null
+    private var manualVerificationDialog: AlertDialog? = null
+    private val displayListener = object : DisplayManager.DisplayListener {
+        override fun onDisplayAdded(displayId: Int) = Unit
+
+        override fun onDisplayRemoved(displayId: Int) = Unit
+
+        override fun onDisplayChanged(displayId: Int) {
+            val preview = meterLayout.textureView
+            if (preview.display?.displayId == displayId) {
+                updatePreviewTransform(preview.width, preview.height)
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        state = MeterState(this)
-        requestedOrientation = if (state.landscape) {
-            ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-        } else {
-            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        window.attributes = window.attributes.apply {
+            layoutInDisplayCutoutMode = if (Build.VERSION.SDK_INT >= 30) {
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+            } else WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
         }
+        state = MeterState(this)
+        calibrationEnvironmentStore = CalibrationEnvironmentStore(this)
+        applyRequestedOrientationFromState()
 
         meterLayout = MeterLayout(this, state)
+        parameterLocationCoordinator = ParameterLocationCoordinator(
+            context = this,
+            mainHandler = mainHandler,
+            onFixChanged = { fix ->
+                meterLayout.setParameterLocationState(
+                    when {
+                        fix == null -> ParameterLocationDisplayState.NO_FIX
+                        fix.isCoarse -> ParameterLocationDisplayState.COARSE_FIX
+                        else -> ParameterLocationDisplayState.FINE_FIX
+                    },
+                )
+            },
+            onProviderUnavailable = {
+                meterLayout.setParameterLocationState(ParameterLocationDisplayState.NO_FIX)
+            },
+        )
         cameraController = CameraController(this, this)
-        val selectedCamera = state.updateCameraCatalog(cameraController.availableCameras())
-        selectedCamera?.let(cameraController::selectCamera)
+        appliedPipelineMode = state.meteringPipelineMode
+        cameraController.setMeteringPipelineMode(state.meteringPipelineMode)
+        cameraController.setCombinationSelectionMode(state.meteringCombinationSelectionMode)
+        cameraController.setPreviewHealthDetectionEnabled(
+            state.previewHealthDetectionMode == PreviewHealthDetectionMode.ON,
+        )
+        cameraController.setPreviewFrameRateMode(state.previewFrameRateMode)
+        cameraController.setPreviewOutputAspectOverride(state.currentCameraOutputAspect())
+        val cameraPermissionGranted =
+            checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+        val selectedCamera = if (cameraPermissionGranted) {
+            refreshCameraCatalog()
+        } else {
+            // Preserve the stored route until permission-sensitive CameraCharacteristics can be
+            // queried. An incomplete pre-permission catalog must not overwrite a physical lens.
+            state.selectedCameraId.ifBlank { null }
+        }
+        selectedCamera?.let(::activateCameraRoute)
         cameraController.attach(meterLayout.textureView)
+        cameraController.onFilmNegativePreviewError = { message ->
+            if (meterLayout.isFilmNegativeOpen) meterLayout.filmNegativeToolView.showPreviewError(message)
+        }
+        cameraController.onFilmNegativePreviewReady = {
+            if (meterLayout.isFilmNegativeOpen) meterLayout.filmNegativeToolView.showPreviewReady()
+        }
+        cameraController.onFilmNegativeBaseInvalidated = {
+            meterLayout.filmNegativeToolView.invalidateSampledBase()
+        }
+        cameraController.onFilmNegativeProcessingChanged = { controlled ->
+            if (meterLayout.isFilmNegativeOpen) meterLayout.filmNegativeToolView.setProcessingControlled(controlled)
+        }
+        foregroundCameraStartCoordinator = ForegroundCameraStartCoordinator(
+            mainHandler = mainHandler,
+            isEligible = {
+                activityResumed &&
+                    checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+            },
+            sampleGeometry = {
+                val preview = meterLayout.textureView
+                val focused = hasWindowFocus()
+                val width = preview.width
+                val height = preview.height
+                ForegroundPreviewGeometry(
+                    width = width,
+                    height = height,
+                    displayRotation = preview.display?.rotation ?: Surface.ROTATION_0,
+                    ready = focused && preview.isAttachedToWindow && width > 0 && height > 0,
+                    keepSampling = focused,
+                )
+            },
+            onReady = { geometry ->
+                val zoom = if (meterLayout.isVignettingCalibrationOpen) 1f else state.zoom
+                cameraController.prepareForForegroundPreview(
+                    geometry.width,
+                    geometry.height,
+                    geometry.displayRotation,
+                    zoom,
+                )
+                cameraController.start()
+            },
+        )
         meterLayout.listener = object : MeterLayout.Listener {
             override fun onMeasureRequested() {
                 cameraController.measure(
@@ -54,16 +198,27 @@ class MainActivity : Activity(), CameraControllerCallback {
                     state.frameLandscape,
                     state.zoom,
                     state.meteringMode,
+                    meteringAngleDegrees = state.angleMeteringDegrees,
                 )
             }
 
             override fun onOrientationToggle() {
-                state.landscape = !state.landscape
-                requestedOrientation = if (state.landscape) {
-                    ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-                } else {
-                    ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                if (!canControlWindowOrientation()) {
+                    state.landscape = resources.configuration.orientation ==
+                        Configuration.ORIENTATION_LANDSCAPE
+                    Toast.makeText(
+                        this@MainActivity,
+                        localized(
+                            "大屏设备的方向由系统窗口控制",
+                            "Window orientation is controlled by the system on large screens",
+                        ),
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                    meterLayout.refresh(frameChanged = true)
+                    return
                 }
+                state.landscape = !state.landscape
+                applyRequestedOrientationFromState()
             }
 
             override fun onPreviewGeometryChanged(width: Int, height: Int) {
@@ -71,6 +226,26 @@ class MainActivity : Activity(), CameraControllerCallback {
             }
 
             override fun onControlsChanged(frameChanged: Boolean) {
+                val previousMode = appliedPipelineMode
+                val currentMode = state.meteringPipelineMode
+                appliedPipelineMode = currentMode
+                cameraController.setMeteringPipelineMode(currentMode)
+                cameraController.setPreviewHealthDetectionEnabled(
+                    state.previewHealthDetectionMode == PreviewHealthDetectionMode.ON,
+                )
+                cameraController.setPreviewFrameRateMode(state.previewFrameRateMode)
+                if (previousMode != null && previousMode != currentMode) {
+                    refreshCalibrationCorrections()
+                    if (currentMode == MeteringPipelineMode.FAST) {
+                        // Some vendor window managers can consume a dialog opened inside the
+                        // option's ACTION_UP dispatch. Post it after this touch sequence finishes.
+                        mainHandler.post {
+                            if (appliedPipelineMode == MeteringPipelineMode.FAST) {
+                                showCompatibilityModeWarning()
+                            }
+                        }
+                    }
+                }
                 meterLayout.refresh(frameChanged)
                 if (!frameChanged) {
                     updatePreviewTransform(
@@ -78,16 +253,74 @@ class MainActivity : Activity(), CameraControllerCallback {
                         meterLayout.textureView.height,
                     )
                 }
+                updateExposurePreviewFromMeter()
+            }
+
+            override fun onAutomaticDistanceRequested() {
+                cameraController.requestAutomaticDistance()
+            }
+
+            override fun onAutomaticDistanceStopped() {
+                cameraController.stopAutomaticDistance()
+            }
+
+            override fun onSettingRejected(key: SettingKey, value: String) {
+                if (key == SettingKey.METERING_MODE && value == MeteringMode.ANGLE.name) {
+                    showAngleCompatibilityWarning()
+                }
+            }
+
+            override fun onCombinationSelectionModeChanged(
+                mode: MeteringCombinationSelectionMode,
+            ) {
+                cameraController.setCombinationSelectionMode(mode)
+                if (mode == MeteringCombinationSelectionMode.MANUAL) {
+                    startManualCombinationSelection()
+                } else {
+                    cameraController.cancelManualCombinationSelection()
+                }
+            }
+
+            override fun onManualCombinationLooksNormal() {
+                acceptCurrentManualCombination()
+            }
+
+            override fun onManualCombinationLooksAbnormal() {
+                if (manualCombinationAccepting) return
+                manualCombinationIndex += 1
+                showNextManualCombination()
+            }
+
+            override fun onManualCombinationSelectionCancelled() {
+                cancelManualCombinationSelection()
             }
 
             override fun onCalibrationOpened() {
-                meterLayout.calibrationView.setCurrentCorrection(
-                    cameraController.currentUserCalibrationEv(),
-                )
+                refreshCalibrationCorrections()
+            }
+
+            override fun onSafePreviewRequested() {
+                val accepted = cameraController.switchToSafePreview()
+                if (accepted) meterLayout.closeSettings()
+                Toast.makeText(
+                    this@MainActivity,
+                    if (accepted) {
+                        localized(
+                            "正在切换到安全预览；重新选择摄像头或重启后恢复",
+                            "Switching to safe preview; select a camera or restart to restore",
+                        )
+                    } else {
+                        localized(
+                            "请等待当前测量或校准完成后再切换",
+                            "Wait for the current measurement or calibration before switching",
+                        )
+                    },
+                    Toast.LENGTH_SHORT,
+                ).show()
             }
 
             override fun onCameraSelected(cameraId: String) {
-                if (state.measuring || calibrationMeasurementPending ||
+                if (state.measuring || calibrationCoordinator.isActive ||
                     vignettingCalibrationPending || zoneMeasurementPending
                 ) {
                     Toast.makeText(
@@ -101,12 +334,16 @@ class MainActivity : Activity(), CameraControllerCallback {
                 if (state.selectCamera(cameraId)) {
                     state.transientMessage = localized("正在切换摄像头", "Switching camera")
                     meterLayout.refresh(frameChanged = true)
-                    cameraController.selectCamera(cameraId)
+                    activateCameraRoute(cameraId)
                 }
             }
 
             override fun onCameraNoteRequested(cameraId: String) {
                 showCameraNoteDialog(cameraId)
+            }
+
+            override fun onCameraAspectRequested(cameraId: String) {
+                showCameraOutputAspectDialog(cameraId)
             }
 
             override fun onCameraVisibilityRequested(cameraId: String, hidden: Boolean) {
@@ -121,23 +358,16 @@ class MainActivity : Activity(), CameraControllerCallback {
                 if (hidden && cameraId == state.selectedCameraId) {
                     state.availableCameras.firstOrNull { !state.isCameraHidden(it.cameraId) }
                         ?.let { replacement ->
-                            state.selectCamera(replacement.cameraId)
-                            cameraController.selectCamera(replacement.cameraId)
+                            if (state.selectCamera(replacement.cameraId)) {
+                                activateCameraRoute(replacement.cameraId)
+                            }
                         }
                 }
                 meterLayout.refresh(frameChanged = true)
             }
 
             override fun onCalibrationMeasureRequested(referenceEv100: Double) {
-                calibrationMeasurementPending = true
-                calibrationReferenceEv100 = referenceEv100
-                meterLayout.calibrationView.setMeasuring(true)
-                cameraController.measure(
-                    state.frameFormat,
-                    state.frameLandscape,
-                    state.zoom,
-                    state.meteringMode,
-                )
+                startMeteringCalibration(referenceEv100)
             }
 
             override fun onCalibrationResetRequested() {
@@ -145,9 +375,59 @@ class MainActivity : Activity(), CameraControllerCallback {
             }
 
             override fun onCalibrationHistoryRestoreRequested(updatedAtEpochMs: Long) {
-                val restored = cameraController.restoreUserCalibration(updatedAtEpochMs) ?: return
+                val cameraId = calibrationDisplayCameraId
+                    ?: cameraController.currentCalibrationCameraId()
+                val restored = cameraController.restoreUserCalibration(
+                    updatedAtEpochMs = updatedAtEpochMs,
+                    cameraId = cameraId,
+                ) ?: return
+                invalidateMeteringAfterCalibrationChange()
                 meterLayout.calibrationView.showHistoryRestored(restored)
                 meterLayout.refresh()
+            }
+
+            override fun onExposurePreviewCalibrationStarted() {
+                val accepted = cameraController.beginExposurePreviewCalibration { ready ->
+                    if (activityResumed) {
+                        if (!ready) cameraController.updateExposurePreview(null)
+                        meterLayout.exposurePreviewCalibrationView.setReady(ready)
+                    }
+                }
+                if (!accepted) {
+                    cameraController.updateExposurePreview(null)
+                    meterLayout.exposurePreviewCalibrationView.setReady(false)
+                }
+            }
+
+            override fun onExposurePreviewCalibrationComparisonRequested(
+                correctionEv: Double?,
+            ) {
+                cameraController.updateExposurePreviewCalibrationComparison(correctionEv)
+            }
+
+            override fun onExposurePreviewCalibrationSaveRequested(correctionEv: Double) {
+                val saved = cameraController.saveExposurePreviewCalibration(correctionEv)
+                cameraController.finishExposurePreviewCalibration()
+                meterLayout.completeExposurePreviewCalibration(saved)
+                Toast.makeText(
+                    this@MainActivity,
+                    localized("预览曝光校准已保存", "Preview exposure calibration saved"),
+                    Toast.LENGTH_SHORT,
+                ).show()
+                meterLayout.refresh()
+                updateExposurePreviewFromMeter()
+            }
+
+            override fun onExposurePreviewCalibrationResetRequested() {
+                val cameraId = calibrationDisplayCameraId
+                    ?: cameraController.currentCalibrationCameraId()
+                cameraController.resetExposurePreviewCalibration(cameraId)
+                meterLayout.exposurePreviewCalibrationView.showReset()
+            }
+
+            override fun onExposurePreviewCalibrationCancelled() {
+                cameraController.finishExposurePreviewCalibration()
+                if (activityResumed) updateExposurePreviewFromMeter()
             }
 
             override fun onVignettingCalibrationOpened() {
@@ -155,7 +435,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             }
 
             override fun onVignettingCalibrationRequested() {
-                if (!vignettingCalibrationPending && !calibrationMeasurementPending) {
+                if (!vignettingCalibrationPending && !calibrationCoordinator.isActive) {
                     startVignettingCalibration()
                 }
             }
@@ -167,7 +447,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             override fun onVignettingHistoryRestoreRequested(createdAtEpochMs: Long) {
                 val restored = cameraController.restoreVignettingCalibration(createdAtEpochMs)
                     ?: return
-                val cameraId = state.cameraInfo.cameraId.ifBlank { state.selectedCameraId }
+                val cameraId = state.cameraInfo.calibrationCameraId.ifBlank { state.selectedCameraId }
                 state.refreshVignettingCalibration(cameraId)
                 meterLayout.vignettingCalibrationView.showHistoryRestored(restored)
                 meterLayout.refresh()
@@ -176,40 +456,268 @@ class MainActivity : Activity(), CameraControllerCallback {
             override fun onZoneMeasureRequested(
                 marker: ZoneMarker,
                 target: ZoneMeteringTarget?,
-            ) {
-                if (zoneMeasurementPending || state.measuring) return
+            ): Boolean {
+                if (zoneMeasurementPending || meteringInteractionBusy) return false
                 zoneMeasurementPending = true
                 state.measuring = true
                 meterLayout.zoneView.invalidate()
-                cameraController.measure(
+                val accepted = cameraController.measure(
                     state.frameFormat,
                     state.frameLandscape,
                     state.zoom,
                     state.meteringMode,
                     target,
+                    meteringAngleDegrees = state.angleMeteringDegrees,
                 )
+                if (!accepted) {
+                    zoneMeasurementPending = false
+                    state.measuring = false
+                    meterLayout.failZoneMeasurement()
+                    meterLayout.resumeZoneVisualTrackingAfterMetering()
+                    state.transientMessage = localized(
+                        "请等待当前测量完成",
+                        "Wait for the current measurement to finish",
+                    )
+                    meterLayout.refresh()
+                    clearTransientMessageLater()
+                    return false
+                }
+                return true
+            }
+
+            override fun onZoneRemeasureAllRequested(markerIds: List<Int>) {
+                if (zoneMeasurementPending || meteringInteractionBusy || zoneRemeasureActive) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        localized("请等待当前测量完成", "Wait for the current measurement"),
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                    return
+                }
+                if (markerIds.isEmpty()) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        localized("没有可重新测光的跟踪点", "No tracked points can be remeasured"),
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                    return
+                }
+                val requests = meterLayout.beginZoneRemeasureBatch(markerIds)
+                if (requests.isEmpty()) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        localized(
+                            "跟踪点当前都在画面外，未进行重新测光",
+                            "All tracked points are outside the frame; nothing was remeasured",
+                        ),
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                    return
+                }
+                zoneRemeasureActive = true
+                zoneRemeasureUpdated = 0
+                zoneRemeasureTotal = markerIds.size
+                mainHandler.removeCallbacksAndMessages(TRANSIENT_TOKEN)
+                state.measuring = true
+                state.transientMessage = localized(
+                    "请稳住设备，正在用同一组 RAW 重新测量 ${requests.size} 个点",
+                    "Hold steady · remeasuring ${requests.size} points from one RAW burst",
+                )
+                meterLayout.refresh()
+                val accepted = cameraController.measureZoneBatch(
+                    state.frameFormat,
+                    state.frameLandscape,
+                    state.zoom,
+                    state.meteringMode,
+                    requests,
+                    meteringAngleDegrees = state.angleMeteringDegrees,
+                )
+                if (!accepted) {
+                    meterLayout.failZoneRemeasureBatch()
+                    meterLayout.resumeZoneVisualTrackingAfterMetering()
+                    finishZoneRemeasureBatch(interrupted = true)
+                }
+            }
+
+            override fun onZoneRemeasureHoldPrompt() {
+                if (zoneMeasurementPending || meteringInteractionBusy || zoneRemeasureActive) return
+                state.transientMessage = localized(
+                    "请稳住设备，继续按住以重新测量全部跟踪点",
+                    "Hold the device steady; keep pressing to remeasure all points",
+                )
+                Toast.makeText(
+                    this@MainActivity,
+                    localized("请稳住设备", "Hold the device steady"),
+                    Toast.LENGTH_SHORT,
+                ).show()
+                meterLayout.refresh()
+                clearTransientMessageLater()
             }
 
             override fun onZoneTrackingActiveChanged(active: Boolean) {
                 cameraController.setTrackingFramesEnabled(active)
+                if (active && state.appliedFlashConfiguration?.isAutoDistance == true) {
+                    // Entering Zone does not necessarily recreate the preview stream, so it may
+                    // not pass through onCameraInfo's stream-generation trigger. Start AF distance
+                    // sampling here rather than waiting for the first, session-switching RAW pass.
+                    cameraController.requestAutomaticDistance()
+                }
+            }
+
+            override fun onParameterGpsEnableRequested() {
+                enableParameterGps()
+            }
+
+            override fun onColorTemperatureEstimateRequested() {
+                val screenAspect = if (state.frameLandscape) {
+                    state.frameFormat.landscapeAspect
+                } else {
+                    1f / state.frameFormat.landscapeAspect
+                }
+                cameraController.estimateColorTemperature(
+                    screenAspect = screenAspect,
+                    zoom = state.zoom,
+                ) { result ->
+                    result.onSuccess(meterLayout::showColorTemperatureReading)
+                        .onFailure { error ->
+                            meterLayout.showColorTemperatureError(
+                                error.message ?: localized("色温估算失败，请重试", "Unable to estimate color temperature"),
+                            )
+                        }
+                }
+            }
+
+            override fun onFilmNegativePreviewChanged(enabled: Boolean) {
+                cameraController.setFilmNegativePreviewEnabled(enabled)
+                if (enabled) cameraController.stopAutomaticDistance()
+                updateExposurePreviewFromMeter()
+            }
+
+            override fun onFilmNegativeSettingsChanged(settings: FilmNegativeSettings) {
+                cameraController.updateFilmNegativeSettings(settings)
+            }
+
+            override fun onFilmNegativeCameraLockChanged(locked: Boolean) {
+                if (locked) meterLayout.filmNegativeToolView.showStatus(localized("正在等待相机确认锁定…", "Waiting for camera lock…"))
+                cameraController.setFilmNegativeCameraLocked(locked) { accepted ->
+                    if (!meterLayout.isFilmNegativeOpen) return@setFilmNegativeCameraLocked
+                    meterLayout.filmNegativeToolView.setCameraLocked(locked && accepted)
+                    if (!accepted) meterLayout.filmNegativeToolView.showStatus(localized(
+                        "相机未确认锁定，可重试或手调 RGB", "Camera lock was not confirmed. Retry or adjust RGB manually"))
+                    else meterLayout.filmNegativeToolView.showStatus(localized(
+                        if (locked) "相机已确认锁定" else "相机已解锁",
+                        if (locked) "Camera lock confirmed" else "Camera unlocked"))
+                }
+            }
+
+            override fun onFilmNegativeBaseSampleRequested() {
+                val view = meterLayout.filmNegativeToolView
+                val serial = view.beginAutomaticBaseRecognition()
+                cameraController.setFilmNegativeCameraLocked(true) { locked ->
+                    if (!meterLayout.isFilmNegativeOpen || !view.isAutomaticBaseRecognitionCurrent(serial)) return@setFilmNegativeCameraLocked
+                    if (!locked) {
+                        view.finishAutomaticBaseRecognition(serial, null, localized(
+                            "无法确认曝光 / 白平衡锁定，请重试或手动调整。", "Exposure / white balance lock unavailable. Retry or adjust manually."))
+                        view.setCameraLocked(false)
+                    } else {
+                        view.setCameraLocked(true)
+                        cameraController.selectFilmNegativeFrame { selection ->
+                            if (!meterLayout.isFilmNegativeOpen) return@selectFilmNegativeFrame
+                            view.finishAutomaticBaseRecognition(serial, selection, if (selection == null) localized(
+                                "这次未能可靠识别。保留照片附近片边、保持稳定后，再点「一键识别并校正」。",
+                                "Detection was inconclusive. Include nearby film borders, hold still and tap Auto detect and correct again.")
+                            else if (selection.settings.monochrome) localized(
+                                "已完成黑白负片反相与影调校正，可在下方微调。",
+                                "Black-and-white inversion and tone correction applied. Fine-tune below.")
+                            else if (selection.settings.colorCorrection == null) localized(
+                                "已完成去色罩、反相与影调校正；颜色采用保守处理，可在下方微调。",
+                                "Film base, inversion and tone corrected; colour kept conservative. Fine-tune below.")
+                            else localized("已完成彩色负片反相与校正，可在下方微调。",
+                                "Colour negative inversion and correction applied. Fine-tune below."))
+                        }
+                    }
+                }
+            }
+
+            override fun onFilmNegativeRetryRequested() {
+                meterLayout.filmNegativeToolView.showStatus(localized("正在重启预览…", "Restarting preview…"))
+                cameraController.retryFilmNegativePreview()
+            }
+
+            override fun onFilmNegativeFrameRequested(mode: FilmNegativePickMode) {
+                meterLayout.filmNegativeToolView.showStatus(localized("正在锁定相机并截取原图…", "Locking camera and capturing original…"))
+                cameraController.setFilmNegativeCameraLocked(true) { locked ->
+                    if (!meterLayout.isFilmNegativeOpen) return@setFilmNegativeCameraLocked
+                    meterLayout.filmNegativeToolView.setCameraLocked(locked)
+                    if (!locked) meterLayout.filmNegativeToolView.showStatus(localized(
+                        "无法确认曝光 / 白平衡锁定，请重试。", "Exposure / white balance lock unavailable. Retry."))
+                    else cameraController.captureFilmNegativeFrame { frame ->
+                        if (!meterLayout.isFilmNegativeOpen) return@captureFilmNegativeFrame
+                        if (frame == null) meterLayout.filmNegativeToolView.showStatus(localized(
+                            "未取得可靠原图，请重试。", "No reliable original frame. Retry."))
+                        else meterLayout.filmNegativeToolView.showFrozenFrame(frame, mode)
+                    }
+                }
+            }
+
+            override fun onFilmNegativeFrozenSettingsAccepted(frame: FilmNegativeFrozenFrame,
+                settings: FilmNegativeSettings, completion: (Boolean) -> Unit) {
+                cameraController.acceptFilmNegativeFrame(frame, settings, completion)
+            }
+
+            override fun onParameterCaptureRequested(
+                draftId: String,
+                snapshot: ParameterMeterSnapshot,
+                options: ParameterRecordOptions,
+                previewPath: String,
+                previewAspect: Float,
+                zoom: Float,
+            ) {
+                captureParameterRecord(draftId, snapshot, options, previewPath, previewAspect, zoom)
             }
         }
-        setContentView(meterLayout)
+        setContentView(SafeAreaHost(this).apply { addView(meterLayout,
+            android.widget.FrameLayout.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT)) })
+        registerPredictiveBackCallback()
         window.decorView.post { hideSystemBars() }
         ensureCameraPermission()
     }
 
     override fun onResume() {
         super.onResume()
+        activityResumed = true
+        (getSystemService(DISPLAY_SERVICE) as DisplayManager)
+            .registerDisplayListener(displayListener, mainHandler)
         hideSystemBars()
+        if (meterLayout.isFilmNegativeOpen) meterLayout.filmNegativeToolView.setCameraLocked(false)
         meterLayout.resumeZoneTracking()
-        cameraController.setTrackingFramesEnabled(meterLayout.isZoneMode)
+        cameraController.setTrackingFramesEnabled(meterLayout.isZoneMode && !meterLayout.isFilmNegativeOpen)
         if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-            cameraController.start()
+            refreshCameraCatalog()?.let(::activateCameraRoute)
+            scheduleCameraStartAfterForegroundLayout()
+            maybeShowCalibrationEnvironmentChange()
+            mainHandler.post(::maybeShowFirstMeteringCalibrationPrompt)
+        } else {
+            ensureCameraPermission()
+        }
+        if (meterLayout.isParameterGpsEnabled() &&
+            (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+                checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED)
+        ) {
+            parameterLocationCoordinator.ensureFreshFix(foreground = true, enabled = true)
         }
     }
 
     override fun onPause() {
+        activityResumed = false
+        manualVerificationDialog?.dismiss()
+        manualVerificationDialog = null
+        foregroundCameraStartCoordinator.cancel()
+        (getSystemService(DISPLAY_SERVICE) as DisplayManager)
+            .unregisterDisplayListener(displayListener)
+        parameterLocationCoordinator.cancel()
         cameraController.setTrackingFramesEnabled(false)
         meterLayout.pauseZoneTracking()
         if (zoneMeasurementPending) {
@@ -217,31 +725,353 @@ class MainActivity : Activity(), CameraControllerCallback {
             state.measuring = false
             meterLayout.failZoneMeasurement()
         }
+        if (zoneRemeasureActive) meterLayout.failZoneRemeasureBatch()
+        clearZoneRemeasureState()
+        zoneCameraRestorePending = false
+        // A restore transaction is torn down on pause; a late restore-finished callback is dropped
+        // by the resumed guard. Keep the View's resource-busy flag in sync so it cannot stay stuck.
+        state.meteringInteractionBusy = false
+        // The auxiliary preview comparison is tied to live AE metadata and cannot survive pause.
+        meterLayout.closeExposurePreviewCalibration()
+        if (calibrationCoordinator.isActive) {
+            clearCalibrationRun()
+            meterLayout.calibrationView.showError(
+                localized("校准已中止，请重新测量", "Calibration was interrupted. Measure again"),
+            )
+        }
         if (vignettingCalibrationPending) {
             vignettingCalibrationPending = false
             meterLayout.vignettingCalibrationView.showError(
                 localized("暗角校准已中止", "Vignetting calibration was interrupted"),
             )
         }
+        if (state.measuring) {
+            state.measuring = false
+            state.transientMessage = null
+            meterLayout.refresh()
+        }
+        if (meterLayout.isCombinationSelectionOpen) {
+            cancelManualCombinationSelection()
+        }
         cameraController.stop()
         super.onPause()
     }
 
-    @Suppress("DEPRECATION")
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (!hasFocus) return
+        hideSystemBars()
+        if (activityResumed &&
+            checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+        ) {
+            scheduleCameraStartAfterForegroundLayout()
+        }
+    }
+
+    private fun startManualCombinationSelection() {
+        manualVerificationDialog?.dismiss()
+        manualRevalidationRequest = null
+        manualApprovalSaved = false
+        if (state.measuring || calibrationCoordinator.isActive ||
+            vignettingCalibrationPending || zoneMeasurementPending
+        ) {
+            restoreSystemCombinationSelection()
+            Toast.makeText(
+                this,
+                localized("请等待当前操作完成", "Wait for the current operation"),
+                Toast.LENGTH_SHORT,
+            ).show()
+            return
+        }
+        val candidates = cameraController.manualCombinationCandidates()
+        if (candidates.isEmpty()) {
+            restoreSystemCombinationSelection()
+            Toast.makeText(
+                this,
+                localized(
+                    "相机尚未完成组合初筛，请稍后再试",
+                    "The camera has not finished combination preflight. Try again shortly",
+                ),
+                Toast.LENGTH_SHORT,
+            ).show()
+            return
+        }
+        manualCombinationGeneration += 1
+        manualCombinationCandidates = candidates
+        manualCombinationIndex = 0
+        manualCombinationProbeEvidence = null
+        manualCombinationRevalidating = false
+        showNextManualCombination()
+    }
+
+    private fun showNextManualCombination() {
+        if (!activityResumed || manualCombinationAccepting) return
+        val generation = ++manualCombinationGeneration
+        val candidate = manualCombinationCandidates.getOrNull(manualCombinationIndex)
+        manualCombinationProbeEvidence = null
+        if (candidate == null) {
+            val revalidating = manualCombinationRevalidating
+            meterLayout.closeCombinationSelection()
+            if (!revalidating) restoreSystemCombinationSelection()
+            manualCombinationRevalidating = false
+            cameraController.cancelManualCombinationSelection()
+            Toast.makeText(
+                this,
+                if (revalidating) {
+                    localized(
+                        "原组合未通过重新验证，已保留选择但不会用于测光",
+                        "The saved combination did not pass revalidation and remains disabled",
+                    )
+                } else {
+                    localized(
+                        "没有找到用户确认正常的组合，已恢复系统设置",
+                        "No combination was confirmed; System selection was restored",
+                    )
+                },
+                Toast.LENGTH_LONG,
+            ).show()
+            return
+        }
+        meterLayout.showCombinationSelection(
+            index = manualCombinationIndex,
+            count = manualCombinationCandidates.size,
+            ready = false,
+            status = localized(
+                "正在按真实流程测试各路输出…",
+                "Testing every output stage with the real workflow…",
+            ),
+        )
+        val accepted = cameraController.probeManualCombination(candidate.plan.id, manualRevalidationRequest) { result ->
+            if (!activityResumed || generation != manualCombinationGeneration ||
+                !meterLayout.isCombinationSelectionOpen
+            ) {
+                return@probeManualCombination
+            }
+            if (result.isSuccess) {
+                manualCombinationProbeEvidence = result.getOrNull()
+                meterLayout.updateCombinationProbeState(
+                    ready = true,
+                    status = localized(
+                        "请检查画面是否有闪烁、卡顿、黑屏、绿屏或条纹",
+                        "Check the preview for flicker, stalls, black, green, or stripes",
+                    ),
+                )
+            } else {
+                meterLayout.updateCombinationProbeState(
+                    ready = false,
+                    status = if (manualCombinationRevalidating) {
+                        localized("验证失败；可重试或暂不验证", "Verification failed. Retry or defer")
+                    } else {
+                        localized("该组合无法完成会话流程，正在跳过", "This combination could not complete its session workflow; skipping")
+                    },
+                )
+                if (manualCombinationRevalidating) {
+                    showManualVerificationRetry()
+                    return@probeManualCombination
+                }
+                mainHandler.postDelayed(
+                    {
+                        if (generation == manualCombinationGeneration) {
+                            manualCombinationIndex += 1
+                            showNextManualCombination()
+                        }
+                    },
+                    650L,
+                )
+            }
+        }
+        if (accepted) manualRevalidationRequest = null
+        if (!accepted) {
+            meterLayout.updateCombinationProbeState(
+                ready = false,
+                status = localized("相机正忙，请稍后重试", "Camera is busy. Try again shortly"),
+            )
+            mainHandler.postDelayed(
+                {
+                    if (generation == manualCombinationGeneration &&
+                        meterLayout.isCombinationSelectionOpen
+                    ) {
+                        showNextManualCombination()
+                    }
+                },
+                500L,
+            )
+        }
+    }
+
+    /** Retry starts a new probe; never resubmit the evidence consumed by a failed acceptance. */
+    private fun showManualVerificationRetry() {
+        manualCombinationProbeEvidence = null
+        val generation = manualCombinationGeneration
+        val selection = state.selectedCameraId
+        fun current() = activityResumed && generation == manualCombinationGeneration &&
+            state.selectedCameraId == selection && meterLayout.isCombinationSelectionOpen
+        manualVerificationDialog?.dismiss()
+        manualVerificationDialog = AlertDialog.Builder(this)
+            .setTitle(localized("组合暂不可用", "Workflow temporarily unavailable"))
+            .setMessage(if (manualApprovalSaved) localized(
+                "选择已保存，但预览恢复失败。可重新验证同一组合，或暂时关闭；不会自动降低测光精度。",
+                "Your choice is saved, but preview restoration failed. Reverify this workflow or close; precision will not be downgraded.",
+            ) else localized(
+                "本轮凭证已失效。重试会重新检测当前组合，原保存记录不变。",
+                "This probe is no longer valid. Retry tests the current workflow again without changing the saved choice.",
+            ))
+            .setPositiveButton(localized("重新验证", "Reverify")) { _, _ ->
+                if (current()) showNextManualCombination()
+            }
+            .setNegativeButton(localized("暂不验证", "Not now")) { _, _ ->
+                if (current()) cancelManualCombinationSelection()
+            }
+            .setOnCancelListener { if (current()) cancelManualCombinationSelection() }
+            .show()
+    }
+
+    private fun acceptCurrentManualCombination() {
+        if (manualCombinationAccepting) return
+        val candidate = manualCombinationCandidates.getOrNull(manualCombinationIndex) ?: return
+        val evidence = manualCombinationProbeEvidence
+        if (evidence == null || evidence.planId != candidate.plan.id) {
+            manualCombinationIndex += 1
+            showNextManualCombination()
+            return
+        }
+        manualCombinationAccepting = true
+        meterLayout.updateCombinationProbeState(
+            ready = false,
+            status = localized("正在恢复已确认的相机会话…", "Restoring the accepted camera workflow…"),
+        )
+        val acceptanceGeneration = manualCombinationGeneration
+        val queued = cameraController.acceptManualCombination(candidate.plan.id, evidence.probeId) { result ->
+            if (!activityResumed || acceptanceGeneration != manualCombinationGeneration ||
+                !meterLayout.isCombinationSelectionOpen
+            ) return@acceptManualCombination
+            manualCombinationAccepting = false
+            if (result != ManualAcceptanceOutcome.Accepted) {
+                manualApprovalSaved = when (result) {
+                    is ManualAcceptanceOutcome.RetryRequired -> result.approvalSaved
+                    is ManualAcceptanceOutcome.Cancelled -> result.approvalSaved
+                    else -> false
+                }
+                manualCombinationRevalidating = true
+                meterLayout.updateCombinationProbeState(
+                    ready = false,
+                    status = localized(
+                        "该组合恢复失败；可重试或暂不验证",
+                        "This workflow could not restore. Retry or defer verification",
+                    ),
+                )
+                showManualVerificationRetry()
+                return@acceptManualCombination
+            }
+            manualCombinationGeneration += 1
+            manualCombinationCandidates = emptyList()
+            manualCombinationIndex = -1
+            manualCombinationProbeEvidence = null
+            manualCombinationRevalidating = false
+            meterLayout.closeCombinationSelection()
+            meterLayout.refresh(frameChanged = true)
+            Toast.makeText(
+                this,
+                localized(
+                    "已保存此摄像头的人工组合；系统升级后会要求重新筛选",
+                    "Manual combination saved for this camera; an OS update will require a new check",
+                ),
+                Toast.LENGTH_LONG,
+            ).show()
+        }
+        if (!queued) {
+            manualCombinationAccepting = false
+            meterLayout.updateCombinationProbeState(
+                ready = false,
+                status = localized("相机正忙，请重试", "Camera is busy. Try again"),
+            )
+            showManualVerificationRetry()
+        }
+    }
+
+    private fun cancelManualCombinationSelection() {
+        manualVerificationDialog?.dismiss()
+        manualVerificationDialog = null
+        manualRevalidationRequest = null
+        manualCombinationGeneration += 1
+        manualCombinationCandidates = emptyList()
+        manualCombinationIndex = -1
+        manualCombinationProbeEvidence = null
+        manualCombinationAccepting = false
+        meterLayout.closeCombinationSelection()
+        if (!manualCombinationRevalidating && !manualApprovalSaved) restoreSystemCombinationSelection()
+        manualCombinationRevalidating = false
+        manualApprovalSaved = false
+        cameraController.cancelManualCombinationSelection()
+    }
+
+    private fun restoreSystemCombinationSelection() {
+        state.updateSetting(
+            SettingKey.COMBINATION_SELECTION,
+            MeteringCombinationSelectionMode.SYSTEM.name,
+        )
+        cameraController.setCombinationSelectionMode(MeteringCombinationSelectionMode.SYSTEM)
+        meterLayout.refresh()
+    }
+
+    @SuppressLint("GestureBackNavigation")
+    @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
     override fun onBackPressed() {
-        if (meterLayout.closeInformationFromBack()) return
-        if (meterLayout.closeCameraManagement()) return
-        if (meterLayout.closeVignettingCalibration()) return
-        if (meterLayout.closeCalibration()) return
-        if (meterLayout.closeSettings()) return
-        if (meterLayout.closeZoneMode()) return
+        if (handleBackNavigation()) return
+        if (recentlyHandledOverlayBack()) return
         super.onBackPressed()
     }
+
+    private fun handleBackNavigation(): Boolean {
+        val handled = meterLayout.closeCombinationSelectionFromBack() ||
+            meterLayout.closeInformationFromBack() ||
+            meterLayout.closeParameterHistoryFromBack() ||
+            meterLayout.closeCameraManagement() ||
+            meterLayout.closeVignettingCalibration() ||
+            meterLayout.closeExposurePreviewCalibration() ||
+            meterLayout.closeCalibration() ||
+            meterLayout.closeFilmSelector() ||
+            meterLayout.closeParameterEditorFromBack() ||
+            meterLayout.closeSettings() ||
+            meterLayout.closeTools() ||
+            meterLayout.closeZoneMode()
+        if (handled) lastOverlayBackHandledAtMs = SystemClock.uptimeMillis()
+        return handled
+    }
+
+    private fun recentlyHandledOverlayBack(): Boolean =
+        lastOverlayBackHandledAtMs > 0L &&
+            SystemClock.uptimeMillis() - lastOverlayBackHandledAtMs < BACK_DUPLICATE_GUARD_MS
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         state.landscape = newConfig.orientation == Configuration.ORIENTATION_LANDSCAPE
-        meterLayout.requestLayout()
+        meterLayout.refresh(frameChanged = true)
+        // The window manager can publish the new Configuration before the TextureView receives
+        // its final bounds. Re-read both bounds and display rotation after the next traversal.
+        meterLayout.postOnAnimation {
+            val preview = meterLayout.textureView
+            updatePreviewTransform(preview.width, preview.height)
+        }
+    }
+
+    /** Android 16 ignores fixed orientation on sw600dp+ displays for target 36 apps. */
+    private fun canControlWindowOrientation(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.BAKLAVA ||
+            resources.configuration.smallestScreenWidthDp < 600
+
+    private fun applyRequestedOrientationFromState() {
+        if (!canControlWindowOrientation()) {
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            state.landscape = resources.configuration.orientation ==
+                Configuration.ORIENTATION_LANDSCAPE
+            return
+        }
+        requestedOrientation = if (state.landscape) {
+            ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        } else {
+            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        }
     }
 
     override fun onRequestPermissionsResult(
@@ -250,17 +1080,39 @@ class MainActivity : Activity(), CameraControllerCallback {
         grantResults: IntArray,
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == LOCATION_PERMISSION_REQUEST) {
+            val granted = permissions.indices.any { index ->
+                permissions[index] in LOCATION_PERMISSIONS &&
+                    grantResults.getOrNull(index) == PackageManager.PERMISSION_GRANTED
+            }
+            if (granted) {
+                enableParameterGps()
+            } else {
+                meterLayout.setParameterGpsEnabled(false)
+                Toast.makeText(
+                    this,
+                    localized("未获得定位权限，GPS 记录保持关闭", "Location permission was denied; GPS recording remains off"),
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
+            return
+        }
         if (requestCode != CAMERA_PERMISSION_REQUEST) return
+        cameraPermissionRequestInFlight = false
         if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
-            cameraController.start()
+            refreshCameraCatalog()?.let(::activateCameraRoute)
+            if (activityResumed) scheduleCameraStartAfterForegroundLayout()
+            maybeShowCalibrationEnvironmentChange()
+            mainHandler.post(::maybeShowFirstMeteringCalibrationPrompt)
         } else {
             val message = localized(
-                "需要相机权限才能进行 RAW 测光。",
-                "Camera permission is required for RAW metering.",
+                "需要相机权限才能进行测光。",
+                "Camera permission is required for metering.",
             )
             state.cameraInfo = state.cameraInfo.copy(status = message)
             meterLayout.refresh()
             Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+            showCameraPermissionRecoveryDialog()
         }
     }
 
@@ -268,10 +1120,40 @@ class MainActivity : Activity(), CameraControllerCallback {
         if (state.menuLanguage == MenuLanguage.ENGLISH) english else chinese
 
     override fun onCameraInfo(info: CameraUiInfo) {
-        if (info.cameraId.isNotBlank() && info.cameraId != state.selectedCameraId) {
+        val oldInfo = state.cameraInfo
+        val oldAspect = state.currentPreviewLandscapeAspect()
+        val selectedCameraStillExists = state.availableCameras.any {
+            it.cameraId == state.selectedCameraId
+        }
+        if (info.cameraId.isNotBlank() && state.selectedCameraId.isNotBlank() &&
+            info.cameraId != state.selectedCameraId && selectedCameraStillExists
+        ) {
+            // Camera2 session callbacks are asynchronous. A closing route can report after the
+            // user has selected another camera; it must never overwrite the persisted choice.
+            return
+        }
+        if (info.cameraId.isNotBlank() && state.selectedCameraId.isBlank()) {
             state.selectCamera(info.cameraId)
         }
         state.cameraInfo = info
+        if (!meterLayout.isFilmNegativeOpen && (state.appliedFlashConfiguration?.isAutoDistance == true ||
+                meterLayout.isDepthOfFieldAutomaticDistanceEnabled()) &&
+            info.previewStreamGeneration > 0L && (
+                info.previewStreamGeneration != oldInfo.previewStreamGeneration ||
+                    info.activePhysicalCameraId != oldInfo.activePhysicalCameraId
+                )
+        ) {
+            cameraController.requestAutomaticDistance()
+        }
+        val geometryChanged = oldInfo.previewSize != info.previewSize ||
+            oldInfo.previewStreamGeneration != info.previewStreamGeneration ||
+            oldInfo.sensorOrientationDegrees != info.sensorOrientationDegrees ||
+            oldInfo.lensFacing != info.lensFacing ||
+            oldInfo.activePhysicalCameraId != info.activePhysicalCameraId ||
+            kotlin.math.abs(oldAspect - state.currentPreviewLandscapeAspect()) > 0.001f
+        if (geometryChanged) {
+            cameraController.setPreviewOutputAspectOverride(state.currentCameraOutputAspect())
+        }
         val switchingMessage = localized("正在切换摄像头", "Switching camera")
         if (state.transientMessage == switchingMessage &&
             info.cameraId == state.selectedCameraId &&
@@ -280,20 +1162,106 @@ class MainActivity : Activity(), CameraControllerCallback {
             state.transientMessage = null
         }
         if (state.zoom > info.maxDisplayZoom) state.zoom = info.maxDisplayZoom
-        if (meterLayout.isCalibrationOpen) {
-            meterLayout.calibrationView.setCurrentCorrection(
-                cameraController.currentUserCalibrationEv(),
-            )
+        if (meterLayout.isCalibrationOpen || meterLayout.isExposurePreviewCalibrationOpen) {
+            refreshCalibrationCorrections()
         }
+        meterLayout.refresh(
+            frameChanged = geometryChanged || meterLayout.isVignettingCalibrationOpen,
+        )
+        updateExposurePreviewFromMeter()
+    }
+
+    override fun onDistanceMeasurementState(state: DistanceMeasurementState) {
+        val now = SystemClock.elapsedRealtime()
+        if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0 &&
+            (state.status != lastDistanceDiagnosticStatus || now - lastDistanceDiagnosticAtMs >= 2000L)) {
+            lastDistanceDiagnosticAtMs = now
+            lastDistanceDiagnosticStatus = state.status
+            android.util.Log.i("DistanceDiagnostic", "status=${state.status} source=${state.estimate?.source} " +
+                "meters=${state.estimate?.meters} confidence=${state.estimate?.confidence} " +
+                "focus=${state.focusObservation != null} motion=${state.motionObservation != null} reason=${state.diagnosticReason}")
+        }
+        this.state.distanceMeasurementState = state
         meterLayout.refresh()
+        updateExposurePreviewFromMeter()
+    }
+
+    override fun onCombinationSelectionFallbackToSystem() {
+        if (state.meteringCombinationSelectionMode ==
+            MeteringCombinationSelectionMode.SYSTEM
+        ) {
+            return
+        }
+        state.updateSetting(
+            SettingKey.COMBINATION_SELECTION,
+            MeteringCombinationSelectionMode.SYSTEM.name,
+        )
+        meterLayout.refresh()
+        if (activityResumed) {
+            Toast.makeText(
+                this,
+                localized(
+                    "当前摄像头没有有效的人工组合记录，已恢复系统设置",
+                    "This camera has no valid manual combination; System selection was restored",
+                ),
+                Toast.LENGTH_LONG,
+            ).show()
+        }
+    }
+
+    override fun onManualCombinationRevalidationNeeded(request: ManualCombinationRevalidationRequest) {
+        if (!activityResumed || meterLayout.isCombinationSelectionOpen ||
+            state.selectedCameraId != request.selectionCameraId || !cameraController.isManualRevalidationCurrent(request)
+        ) return
+        if (!request.canStart || request.planId == null) {
+            Toast.makeText(
+                this,
+                localized(
+                    "保存的手动组合已不再受支持，请在设置中重新选择组合",
+                    "The saved manual workflow is unsupported. Choose a new workflow in Settings",
+                ),
+                Toast.LENGTH_LONG,
+            ).show()
+            return
+        }
+        manualVerificationDialog?.dismiss()
+        manualVerificationDialog = AlertDialog.Builder(this)
+            .setTitle(localized("需要重新验证相机组合", "Camera workflow needs revalidation"))
+            .setMessage(localized(
+                "已保留你的镜头和手动选择。开始后会测试完整 RAW/Zone 流程；在完成前不能测光。",
+                "Your lens and manual choice are preserved. Starting tests the complete RAW/Zone workflow; metering stays unavailable until it finishes.",
+            ))
+            .setPositiveButton(localized("开始验证", "Start")) { _, _ ->
+                startManualCombinationRevalidation(request)
+            }
+            .setNegativeButton(localized("暂不验证", "Not now"), null)
+            .show()
+    }
+
+    private fun startManualCombinationRevalidation(request: ManualCombinationRevalidationRequest) {
+        if (!activityResumed || state.selectedCameraId != request.selectionCameraId ||
+            meterLayout.isCombinationSelectionOpen || !cameraController.isManualRevalidationCurrent(request)
+        ) return
+        val candidate = cameraController.manualCombinationCandidates()
+            .firstOrNull { it.plan.id == request.planId } ?: return
+        manualCombinationGeneration += 1
+        manualCombinationCandidates = listOf(candidate)
+        manualCombinationIndex = 0
+        manualCombinationProbeEvidence = null
+        manualCombinationAccepting = false
+        manualApprovalSaved = false
+        manualRevalidationRequest = request
+        manualCombinationRevalidating = true
+        showNextManualCombination()
     }
 
     override fun onRawUnavailable() {
+        if (!activityResumed) return
         showRawUnavailableDialog(force = false)
     }
 
     override fun tryReserveZoneTrackingFrame(): Boolean =
-        meterLayout.tryReserveZoneTrackingFrame()
+        !meterLayout.isFilmNegativeOpen && meterLayout.tryReserveZoneTrackingFrame()
 
     override fun cancelZoneTrackingFrameReservation() {
         meterLayout.cancelZoneTrackingFrameReservation()
@@ -304,11 +1272,19 @@ class MainActivity : Activity(), CameraControllerCallback {
     }
 
     override fun onMeteringStarted(source: MeteringSource, frameCount: Int) {
-        if (calibrationMeasurementPending) {
-            meterLayout.calibrationView.setMeasuring(true, frameCount)
+        if (!activityResumed) return
+        if (calibrationCoordinator.isActive) {
+            val step = calibrationCoordinator.currentStep()
+            meterLayout.calibrationView.setMeasuring(
+                measuring = true,
+                frameCount = frameCount,
+                source = source,
+                step = step?.position,
+                totalSteps = step?.total,
+            )
             return
         }
-        if (zoneMeasurementPending) {
+        if (zoneMeasurementPending || zoneRemeasureActive) {
             state.measuring = true
             meterLayout.zoneView.invalidate()
             return
@@ -316,50 +1292,86 @@ class MainActivity : Activity(), CameraControllerCallback {
         state.measuring = true
         state.transientMessage = if (source == MeteringSource.RAW) {
             localized(
-                "正在读取 $frameCount 帧中央 RAW",
-                "Reading $frameCount center RAW frames",
+                "正在读取 RAW 流（$frameCount 张）",
+                "Reading RAW stream ($frameCount frames)",
             )
         } else {
             localized(
-                "正在读取 $frameCount 帧中央预览亮度 · 兼容模式",
-                "Reading $frameCount center preview frames · Compatible mode",
+                "正在读取预览流",
+                "Reading preview stream",
             )
         }
         meterLayout.refresh()
     }
 
+    override fun onMeteringBaselineRestoring() {
+        if (!activityResumed) return
+        if (calibrationCoordinator.isActive) {
+            meterLayout.calibrationView.setRestoringAutoExposure()
+        } else {
+            state.measuring = true
+            state.transientMessage = localized(
+                "正在恢复自动曝光",
+                "Restoring auto exposure",
+            )
+            meterLayout.refresh()
+        }
+    }
+
+    override fun onMeteringRestoreStateChanged(restoring: Boolean) {
+        if (!activityResumed) {
+            // A restore callback arriving while backgrounded is ignored; the transaction is already
+            // being torn down on pause, so clear any stale busy flag it might have left.
+            state.meteringInteractionBusy = false
+            return
+        }
+        zoneCameraRestorePending = restoring
+        state.meteringInteractionBusy = restoring
+        if (restoring) {
+            // Result delivery and Camera2 recovery are separate states: do not restart the
+            // metering spinner merely because the resident preview is rebuilding.
+            state.measuring = false
+            state.transientMessage = localized("正在恢复预览", "Restoring preview")
+        } else if (!zoneMeasurementPending) {
+            state.measuring = false
+            state.transientMessage = null
+        }
+        if (!restoring) meterLayout.resumeZoneVisualTrackingAfterMetering()
+        meterLayout.refresh()
+        if (!restoring && zoneRemeasureActive) {
+            finishZoneRemeasureBatch()
+        }
+    }
+
     override fun onMeterReading(reading: MeterReading) {
-        if (calibrationMeasurementPending) {
-            calibrationMeasurementPending = false
-            val reference = calibrationReferenceEv100
-            calibrationReferenceEv100 = Double.NaN
-            val correction = cameraController.updateUserCalibration(
-                referenceEv100 = reference,
-                measuredEv100 = reading.sceneEv100,
-            )
-            meterLayout.calibrationView.showResult(
-                referenceEv100 = reference,
-                measuredEv100 = reading.sceneEv100,
-                correctionEv = correction,
-            )
+        if (!activityResumed) return
+        if (calibrationCoordinator.isActive) {
+            handleCalibrationReading(reading)
             return
         }
         if (zoneMeasurementPending) {
             zoneMeasurementPending = false
+            // The measured value is ready now. zoneCameraRestorePending still blocks a second
+            // capture, but must not keep the measurement indicator spinning.
             state.measuring = false
             state.lastReading = reading
             meterLayout.completeZoneMeasurement(reading)
+            if (!zoneCameraRestorePending) {
+                meterLayout.resumeZoneVisualTrackingAfterMetering()
+            }
             meterLayout.refresh()
+            updateExposurePreviewFromMeter()
             return
         }
         state.measuring = false
         state.lastReading = reading
+        state.lastNormalReading = reading
         state.sceneEv100 = reading.sceneEv100
         state.transientMessage = when {
-            reading.source == MeteringSource.ISP_PREVIEW ->
+            reading.source != MeteringSource.RAW ->
                 localized(
-                    "兼容测光 · RAW 不可用，结果可能不太准确",
-                    "Compatible metering · RAW unavailable; result may be less accurate",
+                    "预览流测光完成 · EV ${"%.1f".format(reading.sceneEv100)}",
+                    "Preview-stream metering complete · EV ${"%.1f".format(reading.sceneEv100)}",
                 )
             reading.clippedFraction > 0.1 ->
                 localized(
@@ -373,34 +1385,95 @@ class MainActivity : Activity(), CameraControllerCallback {
                 )
             else ->
                 localized(
-                    "${reading.frameCount} 帧 RAW · EV100 ${"%.1f".format(reading.sceneEv100)}",
-                    "${reading.frameCount} RAW frames · EV100 ${"%.1f".format(reading.sceneEv100)}",
+                    "RAW 流测光完成 · EV ${"%.1f".format(reading.sceneEv100)}",
+                    "RAW-stream metering complete · EV ${"%.1f".format(reading.sceneEv100)}",
                 )
         }
         meterLayout.refresh()
+        updateExposurePreviewFromMeter()
         clearTransientMessageLater()
     }
 
+    override fun onZoneMeteringBatchResult(results: List<ZoneMeteringResult>) {
+        if (!activityResumed || !zoneRemeasureActive) return
+        zoneRemeasureUpdated = meterLayout.completeZoneRemeasureBatch(results)
+        if (!zoneCameraRestorePending) {
+            meterLayout.resumeZoneVisualTrackingAfterMetering()
+        }
+        results.lastOrNull()?.reading?.let { state.lastReading = it }
+        state.measuring = false
+        state.transientMessage = if (zoneCameraRestorePending) {
+            localized("正在恢复预览", "Restoring preview")
+        } else {
+            null
+        }
+        meterLayout.refresh()
+        updateExposurePreviewFromMeter()
+        if (!zoneCameraRestorePending) finishZoneRemeasureBatch()
+    }
+
     override fun onMeteringError(message: String) {
-        if (calibrationMeasurementPending) {
-            calibrationMeasurementPending = false
-            calibrationReferenceEv100 = Double.NaN
-            meterLayout.calibrationView.showError(message)
+        if (!activityResumed) return
+        if (calibrationCoordinator.isActive) {
+            continueCalibrationAfterError(message)
             return
         }
         if (zoneMeasurementPending) {
             zoneMeasurementPending = false
             state.measuring = false
             meterLayout.failZoneMeasurement()
+            if (!zoneCameraRestorePending) {
+                meterLayout.resumeZoneVisualTrackingAfterMetering()
+            }
+            if (zoneRemeasureActive) {
+                finishZoneRemeasureBatch(interrupted = true)
+                return
+            }
             state.transientMessage = message
             meterLayout.refresh()
+            updateExposurePreviewFromMeter()
             clearTransientMessageLater()
+            return
+        }
+        if (zoneRemeasureActive) {
+            state.measuring = false
+            meterLayout.failZoneRemeasureBatch()
+            if (!zoneCameraRestorePending) {
+                meterLayout.resumeZoneVisualTrackingAfterMetering()
+            }
+            finishZoneRemeasureBatch(interrupted = true)
             return
         }
         state.measuring = false
         state.transientMessage = message
         meterLayout.refresh()
+        updateExposurePreviewFromMeter()
         clearTransientMessageLater()
+    }
+
+    override fun onExposurePreviewUnavailable() {
+        if (!activityResumed || state.exposurePreviewMode != ExposurePreviewMode.ON) return
+        Toast.makeText(
+            this,
+            localized(
+                "当前摄像头不支持手动曝光或曝光补偿，无法生成曝光预览",
+                "This camera supports neither manual exposure nor exposure compensation, " +
+                    "so exposure preview is unavailable",
+            ),
+            Toast.LENGTH_LONG,
+        ).show()
+    }
+
+    private fun updateExposurePreviewFromMeter() {
+        val selection = if (state.exposurePreviewMode == ExposurePreviewMode.ON &&
+            !meterLayout.isFilmNegativeOpen && !state.measuring &&
+            !calibrationCoordinator.isActive && !vignettingCalibrationPending
+        ) {
+            meterLayout.currentExposurePreviewSelection()
+        } else {
+            null
+        }
+        cameraController.updateExposurePreview(selection)
     }
 
     override fun onVignettingCalibrationStarted() {
@@ -410,7 +1483,7 @@ class MainActivity : Activity(), CameraControllerCallback {
 
     override fun onVignettingCalibrationCompleted(info: VignettingCalibrationInfo) {
         vignettingCalibrationPending = false
-        val cameraId = state.cameraInfo.cameraId.ifBlank { state.selectedCameraId }
+        val cameraId = state.cameraInfo.calibrationCameraId.ifBlank { state.selectedCameraId }
         state.refreshVignettingCalibration(cameraId)
         meterLayout.vignettingCalibrationView.showResult(info)
         meterLayout.refresh()
@@ -422,10 +1495,361 @@ class MainActivity : Activity(), CameraControllerCallback {
         meterLayout.refresh()
     }
 
-    private fun ensureCameraPermission() {
-        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(arrayOf(Manifest.permission.CAMERA), CAMERA_PERMISSION_REQUEST)
+    private fun startMeteringCalibration(referenceEv100: Double) {
+        if (calibrationCoordinator.isActive || !activityResumed) return
+        val sources = MeteringCalibrationPlan.create(
+            mode = state.meteringPipelineMode,
+            capabilities = cameraController.calibrationCapabilities(),
+        )
+        if (sources.isEmpty()) {
+            meterLayout.calibrationView.showError(
+                localized("当前相机没有可校准的测光流", "This camera has no calibratable metering stream"),
+            )
+            return
         }
+        val firstStep = calibrationCoordinator.start(
+            referenceEv100 = referenceEv100,
+            sources = sources,
+            cameraIdentity = cameraController.currentCalibrationIdentity(),
+        ) ?: return
+        startCalibrationMeasurement(firstStep.step)
+    }
+
+    private fun startCalibrationMeasurement(step: MeteringCalibrationStep) {
+        if (!calibrationCoordinator.isActive || !activityResumed) return
+        meterLayout.calibrationView.setMeasuring(
+            true,
+            source = step.source,
+            step = step.position,
+            totalSteps = step.total,
+        )
+        val accepted = cameraController.measure(
+            state.frameFormat,
+            state.frameLandscape,
+            state.zoom,
+            state.meteringMode,
+            meteringAngleDegrees = state.angleMeteringDegrees,
+            requestedSource = step.source,
+        )
+        if (!accepted) {
+            clearCalibrationRun()
+            meterLayout.calibrationView.showError(
+                localized(
+                    "请等待当前测量完成后再校准",
+                    "Wait for the current measurement to finish before calibrating",
+                ),
+            )
+        }
+    }
+
+    private fun handleCalibrationReading(reading: MeterReading) {
+        handleCalibrationTransition(
+            calibrationCoordinator.onReading(
+                reading = reading,
+                currentCameraIdentity = cameraController.currentCalibrationIdentity(),
+                signature = reading.calibrationSample?.signature,
+            ),
+        )
+    }
+
+    private fun continueCalibrationAfterError(message: String) {
+        handleCalibrationTransition(calibrationCoordinator.onStageError(message))
+    }
+
+    private fun handleCalibrationTransition(transition: MeteringCalibrationTransition) {
+        when (transition) {
+            is MeteringCalibrationTransition.Next -> startCalibrationMeasurement(transition.step)
+            is MeteringCalibrationTransition.Complete -> finishCalibration(transition.result)
+            MeteringCalibrationTransition.LensChanged -> {
+                cameraController.finishCalibrationSession()
+                meterLayout.calibrationView.showError(
+                    localized(
+                        "校准期间镜头发生切换，未保存本次结果",
+                        "The lens changed during calibration; this run was not saved",
+                    ),
+                )
+                meterLayout.refresh()
+            }
+            MeteringCalibrationTransition.Idle -> clearCalibrationRun()
+        }
+    }
+
+    private fun finishCalibration(result: MeteringCalibrationCompletion) {
+        if (!result.referenceEv100.isFinite() || result.measurements.isEmpty()) {
+            clearCalibrationRun()
+            meterLayout.calibrationView.showError(
+                result.terminalError ?: localized("校准输入已失效，请重试", "Calibration input expired. Try again"),
+            )
+            return
+        }
+        val record = cameraController.updateUserCalibration(
+            referenceEv100 = result.referenceEv100,
+            measurements = result.measurements,
+            signatures = result.signatures,
+            inputLuma = result.inputLuma,
+            samples = result.samples,
+        )
+        invalidateMeteringAfterCalibrationChange()
+        clearCalibrationRun()
+        if (result.terminalError == null && !result.hasFailures) {
+            meterLayout.calibrationView.showResult(record)
+        } else {
+            meterLayout.calibrationView.showPartialResult(
+                record,
+                localized(
+                    "部分测光流已校准；未完成的来源保留原有修正",
+                    "Some streams were calibrated; incomplete sources kept their prior corrections",
+                ),
+            )
+        }
+        meterLayout.refresh()
+    }
+
+    private fun clearCalibrationRun() {
+        calibrationCoordinator.cancel()
+        cameraController.finishCalibrationSession()
+    }
+
+    /**
+     * Calibration is camera-specific, and cached readings already contain the correction that was
+     * active when they were captured. Never combine one of those readings with a newer correction:
+     * that would make exposure preview jump by exactly the device's calibration delta.
+     */
+    private fun invalidateMeteringAfterCalibrationChange() {
+        state.invalidateMeteringResults()
+        state.transientMessage = null
+        meterLayout.invalidateZoneMeasurementsAfterCalibration()
+        cameraController.updateExposurePreview(null)
+    }
+
+    private fun refreshCalibrationCorrections() {
+        if (calibrationDisplaySelectionId != state.selectedCameraId) {
+            calibrationDisplaySelectionId = state.selectedCameraId
+            calibrationDisplayCameraId = null
+        }
+        val liveCameraId = cameraController.currentCalibrationCameraId()
+        val cameraId = CalibrationDisplayIdentity.resolve(
+            boundCameraId = calibrationDisplayCameraId,
+            liveCameraId = liveCameraId,
+        )
+        calibrationDisplayCameraId = cameraId
+        val record = state.cameraCalibrationRecord(cameraId)
+        val showRawStream = shouldShowRawCalibration()
+        val rawCorrection = if (showRawStream) {
+            record?.rawCorrectionEv ?: 0.0
+        } else {
+            null
+        }
+        meterLayout.calibrationView.setCurrentCorrections(
+            cameraId = cameraId,
+            rawCorrectionEv = rawCorrection,
+            yuvCorrectionEv = record?.yuvCorrectionEv,
+            ispPreviewCorrectionEv = record?.ispPreviewCorrectionEv,
+            legacyCompatibleCorrectionEv = record?.legacyCompatibleCorrectionEv,
+            showRawStream = showRawStream,
+        )
+        meterLayout.exposurePreviewCalibrationView.updateCamera(
+            cameraId,
+            state.exposurePreviewExecutionCorrectionEv(cameraId),
+        )
+    }
+
+    /** RAW is displayed only when this mode can use it and the selected camera exposes it. */
+    private fun shouldShowRawCalibration(): Boolean =
+        CalibrationStreamPolicy.includesRaw(
+            mode = state.meteringPipelineMode,
+            rawSupported = state.currentCamera()?.rawAvailable ?: state.cameraInfo.rawAvailable,
+        )
+
+    /** Re-query permission-sensitive Camera2 metadata without changing the existing picker flow. */
+    private fun refreshCameraCatalog(): String? {
+        val selectedCamera = state.updateCameraCatalog(cameraController.availableCameras())
+        pendingCalibrationEnvironmentChange = calibrationEnvironmentStore.evaluate(
+            cameras = state.availableCameras,
+            hasCalibrationArtifacts = state.hasCalibrationArtifacts(),
+        )
+        if (::meterLayout.isInitialized) meterLayout.refresh(frameChanged = true)
+        return selectedCamera
+    }
+
+    /** Keeps per-route preview geometry ordered ahead of the asynchronous Camera2 selection. */
+    private fun activateCameraRoute(cameraId: String) {
+        cameraController.setPreviewOutputAspectOverride(state.currentCameraOutputAspect())
+        cameraController.selectCamera(cameraId)
+    }
+
+    private fun ensureCameraPermission() {
+        if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            maybeShowCalibrationEnvironmentChange()
+            return
+        }
+        if (cameraPermissionRequestInFlight || cameraPermissionDialogVisible) return
+        if (cameraPermissionRequestMarker().isFile) {
+            showCameraPermissionRecoveryDialog()
+            return
+        }
+        runCatching { cameraPermissionRequestMarker().createNewFile() }
+        requestCameraPermission()
+    }
+
+    private fun cameraPermissionRequestMarker(): File =
+        File(noBackupFilesDir, CAMERA_PERMISSION_REQUEST_MARKER)
+
+    private fun requestCameraPermission() {
+        cameraPermissionRequestInFlight = true
+        requestPermissions(arrayOf(Manifest.permission.CAMERA), CAMERA_PERMISSION_REQUEST)
+    }
+
+    private fun showCameraPermissionRecoveryDialog() {
+        if (!activityResumed || cameraPermissionDialogVisible ||
+            cameraPermissionRequestInFlight || isFinishing
+        ) return
+        cameraPermissionDialogVisible = true
+        val canRequestAgain = shouldShowRequestPermissionRationale(Manifest.permission.CAMERA)
+        AlertDialog.Builder(this)
+            .setTitle(localized("需要相机权限", "Camera permission required"))
+            .setMessage(
+                localized(
+                    if (canRequestAgain) {
+                        "测光需要访问相机画面和曝光参数。应用不会上传相机画面。"
+                    } else {
+                        "相机权限已被关闭。请在系统设置中允许相机权限后再进行测光。"
+                    },
+                    if (canRequestAgain) {
+                        "Metering needs access to camera frames and exposure metadata. " +
+                            "Camera frames are not uploaded."
+                    } else {
+                        "Camera permission is disabled. Allow it in system settings before " +
+                            "using the meter."
+                    },
+                ),
+            )
+            .setNegativeButton(localized("稍后处理", "Later"), null)
+            .setPositiveButton(
+                localized(
+                    if (canRequestAgain) "重新授权" else "打开设置",
+                    if (canRequestAgain) "Try again" else "Open settings",
+                ),
+            ) { _, _ ->
+                if (canRequestAgain) {
+                    requestCameraPermission()
+                } else {
+                    startActivity(
+                        Intent(
+                            android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                            Uri.parse("package:$packageName"),
+                        ),
+                    )
+                }
+            }
+            .setOnDismissListener { cameraPermissionDialogVisible = false }
+            .show()
+    }
+
+    private fun maybeShowCalibrationEnvironmentChange() {
+        val change = pendingCalibrationEnvironmentChange ?: return
+        if (!activityResumed || isFinishing ||
+            checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED
+        ) return
+        pendingCalibrationEnvironmentChange = null
+        calibrationEnvironmentStore.markPrompted(change)
+        AlertDialog.Builder(this)
+            .setTitle(localized("建议重新校准", "Recalibration recommended"))
+            .setMessage(
+                localized(
+                    "检测到设备或者相机环境变化，建议重新校准。",
+                    "A device or camera-environment change was detected. Recalibration is " +
+                        "recommended.",
+                ),
+            )
+            .setNegativeButton(localized("稍后处理", "Later"), null)
+            .setPositiveButton(localized("立即校准", "Calibrate now")) { _, _ ->
+                // Open the Settings calibration choices; do not start either workflow directly.
+                meterLayout.showCalibrationSettings()
+            }
+            .show()
+    }
+
+    private fun maybeShowFirstMeteringCalibrationPrompt() {
+        if (meterLayout.isFilmNegativeOpen || !activityResumed || isFinishing || firstCalibrationPromptVisible ||
+            firstCalibrationPromptShownThisProcess ||
+            checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED ||
+            state.hasMeteringCalibrationArtifacts()
+        ) return
+        val preferences = getSharedPreferences(PREFERENCES_NAME, MODE_PRIVATE)
+        if (preferences.getBoolean(SUPPRESS_FIRST_CALIBRATION_PROMPT, false)) return
+
+        firstCalibrationPromptShownThisProcess = true
+        firstCalibrationPromptVisible = true
+        val body = localized(
+            "为了获得更可靠的测光结果，建议先针对当前设备和镜头完成一次测光校准。",
+            "For more reliable readings, calibrate metering for this device and lens first.",
+        )
+        val link = localized("点击进入测光校准", "Tap to open metering calibration")
+        val message = SpannableString("$body\n$link")
+        val linkStart = body.length + 1
+        message.setSpan(
+            ForegroundColorSpan(Color.rgb(35, 112, 205)),
+            linkStart,
+            message.length,
+            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+        )
+        lateinit var dialog: AlertDialog
+        message.setSpan(
+            object : ClickableSpan() {
+                override fun onClick(widget: View) {
+                    dialog.dismiss()
+                    meterLayout.showCalibration()
+                    refreshCalibrationCorrections()
+                }
+
+                override fun updateDrawState(drawState: TextPaint) {
+                    drawState.color = Color.rgb(35, 112, 205)
+                    drawState.isUnderlineText = false
+                }
+            },
+            linkStart,
+            message.length,
+            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+        )
+        dialog = AlertDialog.Builder(this)
+            .setTitle(localized("建议进行测光校准", "Metering calibration recommended"))
+            .setMessage(message)
+            .setNegativeButton(localized("下次再说", "Next time"), null)
+            .setPositiveButton(localized("不再提示", "Don't remind me again")) { _, _ ->
+                preferences.edit().putBoolean(SUPPRESS_FIRST_CALIBRATION_PROMPT, true).apply()
+            }
+            .setOnDismissListener { firstCalibrationPromptVisible = false }
+            .create()
+        dialog.setOnShowListener {
+            dialog.findViewById<TextView>(android.R.id.message)?.apply {
+                movementMethod = LinkMovementMethod.getInstance()
+                highlightColor = Color.TRANSPARENT
+            }
+        }
+        dialog.show()
+    }
+
+    private fun registerPredictiveBackCallback() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        val callback = OnBackInvokedCallback {
+            if (!handleBackNavigation() && !recentlyHandledOverlayBack()) {
+                finishAfterTransition()
+            }
+        }
+        onBackInvokedDispatcher.registerOnBackInvokedCallback(
+            OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+            callback,
+        )
+        backInvokedCallback = callback
+    }
+
+    override fun onDestroy() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            backInvokedCallback?.let(onBackInvokedDispatcher::unregisterOnBackInvokedCallback)
+        }
+        backInvokedCallback = null
+        super.onDestroy()
     }
 
     private fun showRawUnavailableDialog(force: Boolean) {
@@ -441,13 +1865,14 @@ class MainActivity : Activity(), CameraControllerCallback {
         val cameraName = camera?.let(state::cameraName)
             ?: localized("当前摄像头", "Current camera")
         AlertDialog.Builder(this)
-            .setTitle(localized("RAW 不可用", "RAW unavailable"))
+            .setTitle(localized("已切换到预览测光", "Preview metering enabled"))
             .setMessage(
                 localized(
-                    "$cameraName 不支持 RAW_SENSOR，将使用经过 ISP 处理的预览画面测光。" +
-                        "测光仍然可用，但结果可能不准确。",
-                    "$cameraName does not support RAW_SENSOR. Metering will use the " +
-                        "ISP-processed preview and may be inaccurate.",
+                    "$cameraName 不支持 RAW 流，应用已自动使用手机处理后的预览画面测光。" +
+                        "测光仍然可用，建议再完成一次预览流校准。",
+                    "$cameraName does not support a RAW stream. The app is using the " +
+                        "phone-processed preview for metering. Metering remains available; " +
+                        "preview-stream calibration is recommended.",
                 ),
             )
             .setMultiChoiceItems(
@@ -462,6 +1887,56 @@ class MainActivity : Activity(), CameraControllerCallback {
                 }
             }
             .setOnDismissListener { rawDialogVisible = false }
+            .show()
+    }
+
+    private fun showCompatibilityModeWarning() {
+        val preferences = getSharedPreferences(PREFERENCES_NAME, MODE_PRIVATE)
+        if (preferences.getBoolean(SUPPRESS_COMPATIBILITY_MODE_WARNING, false) ||
+            compatibilityModeDialogVisible || isFinishing
+        ) return
+        compatibilityModeDialogVisible = true
+        AlertDialog.Builder(this)
+            .setTitle(localized("兼容模式提示", "Compatibility mode"))
+            .setMessage(
+                localized(
+                    "兼容模式不使用 RAW 流。如果高精度模式或稳定模式可以正常使用，" +
+                        "更推荐采用高精度模式或稳定模式。",
+                    "Compatibility mode does not use the RAW stream. If High accuracy or " +
+                        "Stable mode works normally, either is recommended instead.",
+                ),
+            )
+            .setPositiveButton(localized("确定", "OK"), null)
+            .setNeutralButton(localized("不再提示", "Don't show again")) { _, _ ->
+                preferences.edit().putBoolean(SUPPRESS_COMPATIBILITY_MODE_WARNING, true).apply()
+            }
+            .setOnDismissListener { compatibilityModeDialogVisible = false }
+            .show()
+    }
+
+    private fun showAngleCompatibilityWarning() {
+        val preferences = getSharedPreferences(PREFERENCES_NAME, MODE_PRIVATE)
+        if (preferences.getBoolean(SUPPRESS_ANGLE_COMPATIBILITY_WARNING, false) ||
+            angleCompatibilityDialogVisible || isFinishing
+        ) return
+        angleCompatibilityDialogVisible = true
+        AlertDialog.Builder(this)
+            .setTitle(localized("按角度测光不可用", "Angle metering unavailable"))
+            .setMessage(
+                localized(
+                    "兼容模式的预览分辨率不足，无法提供有意义的角度测光精度。" +
+                        "请先选择高精度模式或稳定模式。",
+                    "Compatibility mode does not have enough preview resolution for meaningful " +
+                        "angle-metering accuracy. Select High accuracy or Stable mode first.",
+                ),
+            )
+            .setPositiveButton(localized("确定", "OK"), null)
+            .setNeutralButton(localized("不再提示", "Don't show again")) { _, _ ->
+                preferences.edit()
+                    .putBoolean(SUPPRESS_ANGLE_COMPATIBILITY_WARNING, true)
+                    .apply()
+            }
+            .setOnDismissListener { angleCompatibilityDialogVisible = false }
             .show()
     }
 
@@ -484,8 +1959,12 @@ class MainActivity : Activity(), CameraControllerCallback {
             )
             .setNegativeButton(if (english) "Cancel" else "取消", null)
             .setPositiveButton(if (english) "Reset" else "重置") { _, _ ->
-                cameraController.resetUserCalibration()
-                meterLayout.calibrationView.showReset()
+                val cameraId = calibrationDisplayCameraId
+                    ?: cameraController.currentCalibrationCameraId()
+                cameraController.resetUserCalibration(cameraId)
+                invalidateMeteringAfterCalibrationChange()
+                meterLayout.calibrationView.showReset(shouldShowRawCalibration())
+                meterLayout.refresh()
             }
             .setOnDismissListener { calibrationResetDialogVisible = false }
             .show()
@@ -509,7 +1988,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             .setNegativeButton(localized("取消", "Cancel"), null)
             .setPositiveButton(localized("重置", "Reset")) { _, _ ->
                 cameraController.resetVignettingCalibration()
-                val cameraId = state.cameraInfo.cameraId.ifBlank { state.selectedCameraId }
+                val cameraId = state.cameraInfo.calibrationCameraId.ifBlank { state.selectedCameraId }
                 state.refreshVignettingCalibration(cameraId)
                 meterLayout.vignettingCalibrationView.showReset()
                 meterLayout.refresh()
@@ -520,7 +1999,7 @@ class MainActivity : Activity(), CameraControllerCallback {
 
     private fun showVignettingGuideDialog() {
         if (vignettingDialogVisible || isFinishing ||
-            calibrationMeasurementPending || vignettingCalibrationPending
+            calibrationCoordinator.isActive || vignettingCalibrationPending
         ) return
         val camera = state.currentCamera()
         val rawAvailable = if (camera != null && state.cameraInfo.cameraId == camera.cameraId) {
@@ -531,8 +2010,8 @@ class MainActivity : Activity(), CameraControllerCallback {
         if (!rawAvailable) {
             meterLayout.vignettingCalibrationView.showError(
                 localized(
-                    "无法输出 RAW，无需校准",
-                    "RAW output is unavailable; no calibration is needed",
+                    "当前镜头不支持暗角校准",
+                    "This lens does not support vignetting calibration",
                 ),
             )
             return
@@ -546,11 +2025,10 @@ class MainActivity : Activity(), CameraControllerCallback {
                 localized(
                     "请将当前镜头对准亮度均匀的画面，让它填满整个取景框。" +
                         "避开阴影、反光和过曝，拍摄时保持手机稳定。\n\n" +
-                        "此提示不会开始拍摄；进入页面后，请点击“拍摄并矫正”开始。",
+                        "进入页面后，请点击“拍摄并矫正”开始。",
                     "Aim the current lens at a uniformly lit scene and fill the full frame. " +
                         "Avoid shadows, glare, and clipping, and hold the phone steady.\n\n" +
-                        "This guide does not start a capture. Tap “Capture and calibrate” " +
-                        "on the page when ready.",
+                        "Tap “Capture and calibrate” on the page when ready.",
                 ),
             )
             .setNeutralButton(localized("不再提示", "Don't show again")) { _, _ ->
@@ -602,12 +2080,222 @@ class MainActivity : Activity(), CameraControllerCallback {
             .show()
     }
 
+    private fun showCameraOutputAspectDialog(cameraId: String) {
+        val camera = state.availableCameras.firstOrNull { it.cameraId == cameraId } ?: return
+        val storageCameraId = state.aspectStorageCameraId(cameraId)
+        val configured = state.cameraOutputAspect(storageCameraId)
+        val detected = if (cameraId == state.selectedCameraId) {
+            state.cameraInfo.previewSize?.let {
+                PreviewOutputGeometry.landscapeAspect(it.width, it.height, null)
+            }
+        } else {
+            null
+        }
+        val editor = EditText(this).apply {
+            setText(configured?.let(PreviewOutputGeometry::label).orEmpty())
+            hint = detected?.let(PreviewOutputGeometry::label) ?: "4:3 / 16:9 / 1.500"
+            isSingleLine = true
+            selectAll()
+        }
+        val padding = (20f * resources.displayMetrics.density).toInt()
+        val container = FrameLayout(this).apply {
+            setPadding(padding, 0, padding, 0)
+            addView(
+                editor,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                ),
+            )
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(localized("传感器输出画面比例", "Sensor output aspect"))
+            .setMessage(
+                localized(
+                    "${state.cameraName(camera)}\n输入会被视为最终输出画面比例，可用 4:3、16:9 或 1.5。" +
+                        "留空或点击重置则恢复自动读取。",
+                    "${state.cameraName(camera)}\nThe entered value is treated as the final output aspect. " +
+                        "Use 4:3, 16:9, or 1.5. Leave blank or reset to use the detected size.",
+                ),
+            )
+            .setView(container)
+            .setNegativeButton(localized("取消", "Cancel"), null)
+            .setNeutralButton(localized("重置", "Reset")) { _, _ ->
+                state.setCameraOutputAspect(storageCameraId, null)
+                cameraController.setPreviewOutputAspectOverride(state.currentCameraOutputAspect())
+                meterLayout.refresh(frameChanged = true)
+            }
+            .setPositiveButton(localized("保存", "Save"), null)
+            .create()
+        dialog.setOnShowListener {
+            applyInterfaceDialogColors(dialog, editor)
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val text = editor.text.toString()
+                val aspect = if (text.isBlank()) null else PreviewOutputGeometry.parseAspect(text)
+                if (text.isNotBlank() && aspect == null) {
+                    editor.error = localized("请输入 4:3、16:9 或 1.0–4.0", "Enter 4:3, 16:9, or 1.0–4.0")
+                    return@setOnClickListener
+                }
+                state.setCameraOutputAspect(storageCameraId, aspect)
+                cameraController.setPreviewOutputAspectOverride(state.currentCameraOutputAspect())
+                meterLayout.refresh(frameChanged = true)
+                dialog.dismiss()
+            }
+        }
+        dialog.show()
+    }
+
+    private fun applyInterfaceDialogColors(dialog: AlertDialog, editor: EditText) {
+        val background = if (state.isDarkMode) Color.BLACK else Color.WHITE
+        val foreground = if (state.isDarkMode) Color.rgb(210, 210, 206) else Color.rgb(20, 20, 20)
+        val muted = if (state.isDarkMode) Color.rgb(145, 145, 142) else Color.rgb(108, 108, 104)
+        dialog.window?.setBackgroundDrawable(ColorDrawable(background))
+        dialog.findViewById<TextView>(android.R.id.message)?.setTextColor(foreground)
+        val titleId = resources.getIdentifier("alertTitle", "id", "android")
+        if (titleId != 0) dialog.findViewById<TextView>(titleId)?.setTextColor(foreground)
+        editor.setTextColor(foreground)
+        editor.setHintTextColor(muted)
+        editor.backgroundTintList = ColorStateList.valueOf(foreground)
+        listOf(
+            AlertDialog.BUTTON_NEGATIVE,
+            AlertDialog.BUTTON_NEUTRAL,
+            AlertDialog.BUTTON_POSITIVE,
+        ).forEach { button -> dialog.getButton(button)?.setTextColor(foreground) }
+    }
+
+    private fun enableParameterGps() {
+        val quality = parameterLocationCoordinator.permissionQuality()
+        if (quality == LocationPermissionQuality.NONE) {
+            requestPermissions(LOCATION_PERMISSIONS, LOCATION_PERMISSION_REQUEST)
+            return
+        }
+        if (!parameterLocationCoordinator.systemLocationAvailable()) {
+            meterLayout.setParameterGpsEnabled(false)
+            Toast.makeText(
+                this,
+                localized("系统定位未开启，GPS 记录保持关闭", "System location is off; GPS recording remains disabled"),
+                Toast.LENGTH_LONG,
+            ).show()
+            return
+        }
+        meterLayout.setParameterGpsEnabled(true)
+        meterLayout.setParameterLocationState(ParameterLocationDisplayState.REQUESTING)
+        parameterLocationCoordinator.requestFix()
+    }
+
+    private fun recordedLocationFrom(fix: LocationFix): RecordedLocation = RecordedLocation(
+        latitude = fix.latitude,
+        longitude = fix.longitude,
+        accuracyMeters = fix.accuracyMeters,
+        provider = fix.provider,
+        ageMsAtCapture = fix.ageMs,
+        permissionQuality = fix.permissionQuality.name,
+    )
+
+    private fun captureParameterRecord(
+        draftId: String,
+        snapshot: ParameterMeterSnapshot,
+        options: ParameterRecordOptions,
+        previewPath: String,
+        previewAspect: Float,
+        zoom: Float,
+    ) {
+        val locationFix = if (options.recordGps) parameterLocationCoordinator.snapshot() else null
+        if (options.recordGps && locationFix == null) {
+            parameterLocationCoordinator.ensureFreshFix(
+                foreground = activityResumed,
+                enabled = true,
+            )
+        }
+        if (options.recordGps && locationFix == null) {
+            // Keep the user's GPS preference; only this record omits the location.
+            meterLayout.setParameterLocationState(ParameterLocationDisplayState.NO_FIX)
+            Toast.makeText(
+                this,
+                localized("暂时无法取得定位，本条记录不包含 GPS", "No location fix is available; this record will not include GPS"),
+                Toast.LENGTH_LONG,
+            ).show()
+        }
+        val draft = ParameterCaptureDraft(
+            id = draftId,
+            snapshot = snapshot,
+            previewTempPath = previewPath,
+            cameraId = state.cameraInfo.calibrationCameraId.ifBlank { state.selectedCameraId },
+            location = locationFix?.let(::recordedLocationFrom),
+            capturedAtEpochMs = System.currentTimeMillis().takeIf { options.recordTime },
+        )
+        if (!options.recordRaw) {
+            meterLayout.completeParameterCapture(draft)
+            return
+        }
+        val rawFile = meterLayout.createParameterRawFile(draftId)
+        cameraController.captureRawRecord(rawFile, previewAspect, zoom) { result ->
+            val completed = result.fold(
+                onSuccess = { artifact ->
+                    draft.copy(
+                        rawTempPath = artifact.filePath,
+                        rawGrid = artifact.rawGrid.rebasedForKnownPoints(
+                            snapshot.ev100,
+                            snapshot.zonePoints,
+                        ),
+                    )
+                },
+                onFailure = { error ->
+                    rawFile.delete()
+                    Toast.makeText(
+                        this,
+                        error.message ?: localized("RAW 记录失败，仍可保存其他参数", "RAW capture failed; other parameters can still be saved"),
+                        Toast.LENGTH_LONG,
+                    ).show()
+                    draft
+                },
+            )
+            if (activityResumed) {
+                meterLayout.completeParameterCapture(completed)
+            } else {
+                meterLayout.discardParameterCapture(completed)
+            }
+        }
+    }
+
     private fun updatePreviewTransform(width: Int, height: Int) {
         if (width <= 0 || height <= 0) return
         @Suppress("DEPRECATION")
-        val rotation = windowManager.defaultDisplay?.rotation ?: Surface.ROTATION_0
+        val rotation = meterLayout.textureView.display?.rotation ?: Surface.ROTATION_0
         val zoom = if (meterLayout.isVignettingCalibrationOpen) 1f else state.zoom
         cameraController.updatePreviewTransform(width, height, rotation, zoom)
+    }
+
+    private fun finishZoneRemeasureBatch(interrupted: Boolean = false) {
+        if (!zoneRemeasureActive) return
+        val completed = zoneRemeasureUpdated
+        val notCompleted = (zoneRemeasureTotal - completed).coerceAtLeast(0)
+        clearZoneRemeasureState()
+        state.measuring = false
+        state.transientMessage = if (interrupted) {
+            localized(
+                "重新测光中断：已更新 $completed 个，未更新 $notCompleted 个",
+                "Remeasuring stopped: $completed updated, $notCompleted not updated",
+            )
+        } else {
+            localized(
+                "重新测光完成：已更新 $completed 个，未更新 $notCompleted 个",
+                "Remeasuring complete: $completed updated, $notCompleted not updated",
+            )
+        }
+        meterLayout.refresh()
+        updateExposurePreviewFromMeter()
+        clearTransientMessageLater()
+    }
+
+    private fun clearZoneRemeasureState() {
+        zoneRemeasureActive = false
+        zoneRemeasureUpdated = 0
+        zoneRemeasureTotal = 0
+    }
+
+    private fun scheduleCameraStartAfterForegroundLayout() {
+        foregroundCameraStartCoordinator.schedule()
     }
 
     private fun clearTransientMessageLater() {
@@ -622,6 +2310,7 @@ class MainActivity : Activity(), CameraControllerCallback {
         )
     }
 
+    @Suppress("DEPRECATION")
     private fun hideSystemBars() {
         if (android.os.Build.VERSION.SDK_INT >= 30) {
             val decor = window.decorView
@@ -658,6 +2347,20 @@ class MainActivity : Activity(), CameraControllerCallback {
 
     companion object {
         private const val CAMERA_PERMISSION_REQUEST = 41
+        private const val LOCATION_PERMISSION_REQUEST = 42
+        private val LOCATION_PERMISSIONS = arrayOf(
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION,
+        )
+        private const val PREFERENCES_NAME = "raw_light_meter_state"
+        private const val SUPPRESS_COMPATIBILITY_MODE_WARNING =
+            "suppress_compatibility_mode_warning"
+        private const val SUPPRESS_ANGLE_COMPATIBILITY_WARNING =
+            "suppress_angle_compatibility_warning"
+        private const val SUPPRESS_FIRST_CALIBRATION_PROMPT =
+            "suppress_first_metering_calibration_prompt"
+        private const val CAMERA_PERMISSION_REQUEST_MARKER = "camera-permission-requested"
+        private const val BACK_DUPLICATE_GUARD_MS = 400L
         private val TRANSIENT_TOKEN = Any()
     }
 }

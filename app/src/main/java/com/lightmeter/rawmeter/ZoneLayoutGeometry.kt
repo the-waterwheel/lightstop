@@ -10,6 +10,8 @@ internal data class ZoneLayoutGeometry(
     val cameraFrame: RectF,
     val formatButton: RectF,
     val orientationButton: RectF,
+    val settingsButton: RectF,
+    val toolsButton: RectF,
     val zoomTrack: RectF,
     val normalHandle: RectF,
     val apertureRow: RectF,
@@ -21,6 +23,7 @@ internal data class ZoneLayoutGeometry(
     val recordViewport: RectF,
     val clearTrack: RectF,
     val clearHandle: RectF,
+    val ev100Badge: RectF,
     val markButton: RectF,
 )
 
@@ -38,6 +41,11 @@ internal object ZoneLayoutCalculator {
         density: Float,
         state: MeterState,
     ): ZoneLayoutGeometry {
+        if (width <= 0 || height <= 0) return ZoneLayoutGeometry(false,
+            RectF(), RectF(), RectF(), RectF(), RectF(), RectF(), RectF(), RectF(),
+            RectF(), RectF(), RectF(), RectF(), RectF(), RectF(), RectF(), RectF(),
+            RectF(), RectF(), RectF())
+        val density = AdaptiveLayout.density(width, height, density, LayoutProfile.METER)
         val w = width.toFloat()
         val h = height.toFloat()
         val pad = 10f * density
@@ -48,6 +56,8 @@ internal object ZoneLayoutCalculator {
         val cameraFrame: RectF
         val formatButton: RectF
         val orientationButton: RectF
+        val settingsButton: RectF
+        val toolsButton: RectF
         val zoomTrack: RectF
         val normalHandle: RectF
         val apertureRow: RectF
@@ -59,8 +69,8 @@ internal object ZoneLayoutCalculator {
         val recordViewport: RectF
         val clearTrack: RectF
         val clearHandle: RectF
+        val ev100Badge: RectF
         val markButton: RectF
-        val touchMarking = state.zoneMarkingMethod == ZoneMarkingMethod.TOUCH
         val aspect = if (state.frameLandscape) {
             state.frameFormat.landscapeAspect
         } else {
@@ -72,7 +82,7 @@ internal object ZoneLayoutCalculator {
                 pad,
                 pad,
                 w - pad,
-                h * if (touchMarking) 0.46f else 0.42f,
+                h * 0.42f,
             )
             val frameArea = RectF(
                 previewPanel.left + gap,
@@ -92,6 +102,20 @@ internal object ZoneLayoutCalculator {
                 previewPanel.top + gap,
                 previewPanel.right - gap,
                 previewPanel.top + gap + button,
+            )
+            // Anchored to the viewfinder panel corner like the normal-mode settings button,
+            // so it never moves when the selected frame format changes the fitted image.
+            settingsButton = RectF(
+                previewPanel.left + gap,
+                previewPanel.bottom - gap - button,
+                previewPanel.left + gap + button,
+                previewPanel.bottom - gap,
+            )
+            toolsButton = RectF(
+                settingsButton.right + gap,
+                settingsButton.top,
+                settingsButton.right + gap + button,
+                settingsButton.bottom,
             )
             zoomTrack = RectF(
                 previewPanel.right - 30f * density,
@@ -134,25 +158,29 @@ internal object ZoneLayoutCalculator {
                 zoneScale.bottom + gap * 0.45f + h * 0.052f,
             )
             recordPanel = RectF(pad, markerRail.bottom + gap, w - pad, h - pad)
+            val recordContentRight =
+                recordPanel.left + recordPanel.width() * RECORD_CONTENT_FRACTION
             val markSize = min(
-                72f * density,
-                min(recordPanel.width() * 0.20f, recordPanel.height() * 0.34f),
+                84f * density,
+                min(recordPanel.width() * 0.24f, recordPanel.height() * 0.40f),
             )
-            markButton = if (touchMarking) {
-                RectF()
-            } else {
-                RectF(
-                    recordPanel.right - gap - markSize,
-                    recordPanel.centerY() - markSize / 2f,
-                    recordPanel.right - gap,
-                    recordPanel.centerY() + markSize / 2f,
-                )
-            }
-            val recordContentRight = if (touchMarking) {
-                recordPanel.right - gap
-            } else {
-                markButton.left - gap
-            }
+            val badgeGap = 5f * density
+            val badgeHeight = min(markSize, 52f * density)
+            val badgeWidth = min(42f * density, badgeHeight * 0.82f)
+            val actionGroupSize = badgeWidth + badgeGap + markSize
+            val markLeft = centeredActionLeft(recordPanel, recordContentRight, actionGroupSize, gap) + badgeWidth + badgeGap
+            ev100Badge = RectF(
+                markLeft - badgeGap - badgeWidth,
+                recordPanel.centerY() - badgeHeight / 2f,
+                markLeft - badgeGap,
+                recordPanel.centerY() + badgeHeight / 2f,
+            )
+            markButton = RectF(
+                markLeft,
+                recordPanel.centerY() - markSize / 2f,
+                markLeft + markSize,
+                recordPanel.centerY() + markSize / 2f,
+            )
             clearTrack = RectF(
                 recordPanel.left + gap,
                 recordPanel.top + gap,
@@ -172,7 +200,7 @@ internal object ZoneLayoutCalculator {
                 recordPanel.bottom - gap,
             )
         } else {
-            val previewWidth = w * if (touchMarking) 0.47f else 0.43f
+            val previewWidth = w * 0.43f
             previewPanel = if (state.isLeftHanded) {
                 RectF(w - previewWidth + pad, pad, w - pad, h - pad)
             } else {
@@ -206,6 +234,20 @@ internal object ZoneLayoutCalculator {
                 previewPanel.top + gap,
                 previewPanel.right - gap,
                 previewPanel.top + gap + button,
+            )
+            // Anchored to the viewfinder panel corner like the normal-mode settings button,
+            // so it never moves when the selected frame format changes the fitted image.
+            settingsButton = RectF(
+                previewPanel.left + gap,
+                previewPanel.bottom - gap - button,
+                previewPanel.left + gap + button,
+                previewPanel.bottom - gap,
+            )
+            toolsButton = RectF(
+                settingsButton.right + gap,
+                settingsButton.top,
+                settingsButton.right + gap + button,
+                settingsButton.bottom,
             )
             zoomTrack = if (state.isLeftHanded) {
                 RectF(
@@ -292,25 +334,29 @@ internal object ZoneLayoutCalculator {
                 recordPanel.right,
                 recordPanel.bottom,
             )
+            val recordContentRight =
+                recordPanel.left + recordPanel.width() * RECORD_CONTENT_FRACTION
             val markSize = min(
-                68f * density,
-                min(recordPanel.width() * 0.18f, recordPanel.height() * 0.42f),
+                80f * density,
+                min(recordPanel.width() * 0.22f, recordPanel.height() * 0.46f),
             )
-            markButton = if (touchMarking) {
-                RectF()
-            } else {
-                RectF(
-                    recordPanel.right - gap - markSize,
-                    recordPanel.centerY() - markSize / 2f,
-                    recordPanel.right - gap,
-                    recordPanel.centerY() + markSize / 2f,
-                )
-            }
-            val recordContentRight = if (touchMarking) {
-                recordPanel.right - gap
-            } else {
-                markButton.left - gap
-            }
+            val badgeGap = 5f * density
+            val badgeHeight = min(markSize, 52f * density)
+            val badgeWidth = min(42f * density, badgeHeight * 0.82f)
+            val actionGroupSize = badgeWidth + badgeGap + markSize
+            val markLeft = centeredActionLeft(recordPanel, recordContentRight, actionGroupSize, gap) + badgeWidth + badgeGap
+            ev100Badge = RectF(
+                markLeft - badgeGap - badgeWidth,
+                recordPanel.centerY() - badgeHeight / 2f,
+                markLeft - badgeGap,
+                recordPanel.centerY() + badgeHeight / 2f,
+            )
+            markButton = RectF(
+                markLeft,
+                recordPanel.centerY() - markSize / 2f,
+                markLeft + markSize,
+                recordPanel.centerY() + markSize / 2f,
+            )
             clearTrack = RectF(
                 recordPanel.left + gap,
                 recordPanel.bottom - 28f * density,
@@ -348,7 +394,10 @@ internal object ZoneLayoutCalculator {
             recordViewport = recordViewport,
             clearTrack = clearTrack,
             clearHandle = clearHandle,
+            ev100Badge = ev100Badge,
             markButton = markButton,
+            settingsButton = settingsButton,
+            toolsButton = toolsButton,
         )
     }
 
@@ -372,4 +421,19 @@ internal object ZoneLayoutCalculator {
             )
         }
     }
+
+    /** Centers the mark action in the space beside the details list on every screen width. */
+    private fun centeredActionLeft(
+        panel: RectF,
+        contentRight: Float,
+        actionSize: Float,
+        gap: Float,
+    ): Float {
+        val availableLeft = contentRight + gap
+        val availableRight = panel.right - gap
+        val centered = (availableLeft + availableRight - actionSize) / 2f
+        return centered.coerceIn(availableLeft, (availableRight - actionSize).coerceAtLeast(availableLeft))
+    }
+
+    private const val RECORD_CONTENT_FRACTION = 0.5f
 }

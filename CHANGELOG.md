@@ -3,6 +3,262 @@
 All notable user-facing changes are recorded here. The project follows
 [Semantic Versioning](https://semver.org/) for public releases.
 
+## 0.5.0 - 2026-09-28
+
+- Made RAW combination checks more reliable across camera routes. A manually
+  approved RAW workflow keeps its selection through screen changes and app
+  restarts; failures offer a fresh retry instead of silently switching sources.
+- Improved Zone point handling and shortened the wait around isolated RAW
+  capture and preview recovery.
+- Added clearer metering source and confidence indicators, better calibration
+  checks, and more complete parameter records, including flash and distance.
+- Improved camera and settings accessibility, film search, and privacy controls
+  for saved records and backup.
+
+## 0.4.0 - 2026-09-18
+
+- Kept one stable `TextureView`/`SurfaceTexture` transport geometry across
+  Normal and Zone. Mode transitions now change the clipped viewport and
+  controls without resizing the native preview layer, preventing the stretched
+  image left behind by affected vendor compositors.
+- Repositioned the parameter-record slider below the meter button in every
+  mode. Metering-angle and flash-distance controls now sit closer together in
+  a parallel row above it, and expanded dials take precedence over the slider
+  so the controls no longer obscure each other.
+- Reduced isolated Zone RAW latency by retaining reusable dormant RAW/YUV
+  readers between compatible sessions. Only the selected profile's surfaces
+  are attached to an active session, so the existing vendor-HAL isolation,
+  session ownership, fallback order, and recovery boundaries remain intact.
+- Added hold-to-remeasure for existing Zone points. A supported RAW workflow
+  captures one shared RAW set, registers every visible point independently,
+  and reports points outside the valid view as not updated instead of writing
+  an unsafe estimate.
+- During isolated RAW capture, Zone markers now remain visually frozen with
+  the frozen preview while a hidden gyroscope estimate advances their scene
+  position. Visual tracking and descriptor re-identification resume only after
+  a real live preview/YUV frame returns.
+- Improved Zone tracking under one-handed shake and longer off-screen motion:
+  rapid-motion optical-flow windows, interpolated marker presentation,
+  preserved feature anchors, camera-ray gyroscope propagation, bounded local
+  re-entry search, and periodic full-frame descriptor fallback reduce jumps and
+  relative spreading. Visually lost predictions stay hidden until confirmed.
+- Added an independent per-camera exposure-preview calibration. It corrects the
+  viewfinder's visual rendering of 0 EV without changing formal RAW/YUV/ISP
+  metering calibration; changing either calibration invalidates stale readings
+  rather than stacking old and new corrections.
+- Split camera opening, preview requests, runtime metadata, distance capture,
+  RAW record capture, vignetting capture, preview health, and exposure-preview
+  state into focused coordinators behind `CameraController`. The public
+  lifecycle, physical-camera routing, isolated-session policy, and HAL fallback
+  strategy are unchanged.
+
+## 0.3.1 - 2026-09-12
+
+- Disabled Android Gradle Plugin VCS metadata in release APKs so distributed
+  artifacts no longer include the source commit hash.
+
+- Closed the automatic RAW workflow-probe loop: configuration and capture
+  completion are no longer enough. A candidate now requires a real RAW image,
+  an exact sensor-timestamp result pair, a readable buffer layout, and the hard
+  metadata required by metering, under a bounded timeout and without a pixel scan.
+- Made preview crop geometry sensor-orientation aware while keeping display
+  rotation separate from the orientation already supplied by `TextureView`.
+  Extracted foreground-start sampling and preview matrix recovery so neither
+  path can mutate Camera2 session/HAL fallback policy.
+- Split preview-to-RAW registration out of the former thousand-line metering
+  analysis object, preserving the public analysis entry points and algorithms.
+
+- Reworked the Flash Index controls: guide-number value and reference ISO are
+  separate, metering ISO can diverge from the main dial, and unapplied sessions
+  refresh their default ISO when reopened. Enlarged and corrected the input and
+  settings dialogs.
+- Rebuilt the flash-distance selector as a faster graduated metre-only radial
+  dial with Auto and a visible live estimate. Flash-distance and metering-angle
+  dials are now positioned above/below the meter button and expand exclusively.
+- Parameter records now preserve the entered guide number, GN reference ISO,
+  metering ISO, flash settings, distance source and distance quality while
+  retaining backwards compatibility with older records.
+- Added six supplied bitmap icons to the Tools grid with theme-independent white
+  artwork and larger labels beneath smaller, consistently inset symbols.
+- Zone camera management now preserves Zone mode and the selected route. Zone
+  markers gained segmented square targeting frames, and the mark button was
+  enlarged where layout space allows.
+- Added foreground preview recovery for vendor window/compositor races: camera
+  start waits for stable TextureView geometry, the first resumed frame reasserts
+  buffer size and matrix state, and a bounded convergence/watchdog path keeps
+  preview correction outside Camera2 session and HAL fallback logic.
+- Added the Flash Index tool with guide number, ISO, fractional power, loss
+  stops, manual non-linear distance selection, and physically correct combined
+  ambient-plus-flash exposure compensation.
+- Added a source-aware automatic-distance foundation for flash calculations.
+  Camera2 AF distance now requires valid calibrated/approximate metadata, an
+  available result key, a known physical route, focused/stationary frames, and
+  stable multi-frame dioptre-space filtering. Results carry source, quality,
+  range, timestamp, sample count, and freshness state.
+- Automatic-distance estimates are invalidated for camera/session/physical-lens
+  changes and TTL expiry. Every metering pass begins a new AF-distance
+  acquisition; stale or unavailable Auto distance does not alter flash exposure.
+
+## 0.3.0 - 2026-09-03
+
+- Moved sensor-output aspect overrides into a nested More Settings page reached
+  from Metering, removed More from the top-level settings tabs, and matched the
+  camera/aspect controls to the active settings surface color.
+- Increased the primary aperture and shutter readouts in both Normal and Zone,
+  limited the Normal aperture readout to one decimal place, and reduced tick
+  spacing to two-thirds while keeping scale-drag sensitivity synchronized.
+- Removed reciprocity algorithm/source labels from film selection and the
+  selected-film card; film name, ISO, and unavailable state remain visible.
+- Added per-film reciprocity editing and custom-film creation. Users can enter
+  discrete points, a power-law exponent, fixed-EV compensation, or a finite
+  no-compensation range; overrides are stored separately and can be reset to
+  the bundled data.
+- Changed discrete reciprocity interpolation to explicit exposure-stop space
+  (`log2` time) with a shape-preserving cubic curve and a continuous entry from
+  the no-compensation range. Replaced several step-like or over-broad public
+  models with audited smooth node curves.
+- Added a General viewfinder-frame-rate preference. Low remains the default
+  and preserves the existing 30 fps ceiling; High can try advertised regular
+  session ranges up to 60 fps when current stream durations permit it. FPS
+  rejection falls back through 30/24 fps and the HAL default without changing
+  the selected RAW/YUV/ISP workflow; preview-health failures above 30 fps also
+  retry the same workflow at Low before combination search.
+
+## 0.2.2 - 2026-08-31
+
+- Added per-camera Camera2 workflow-matrix search with ordered RAW split,
+  fully isolated RAW, full multi-stream, Stable YUV, and Compatibility ISP
+  candidates. Unknown mandatory-matrix results still receive a real session
+  test; vendor preflight `false` results are advisory.
+- Added System and Manual metering-combination selection. Manual selection runs
+  every required session stage and lets the user judge flicker, stalls,
+  black/green frames, and stripes; accepted results expire after an OS build
+  or camera-route change.
+- Defined Stable as preview + YUV without RAW and Compatibility as displayed
+  ISP preview without RAW/YUV. High accuracy now falls back through those
+  classes only after all RAW workflows fail.
+- Added transient isolated RAW capture for Zone and constrained ordinary
+  metering, restoring the resident preview + YUV workflow afterward.
+- Made one calibration run cover every hardware-supported RAW, YUV, and ISP
+  source independently of the selected user mode.
+- Relaxed automatic preview-health classification so green, near-black, and
+  frozen scenes remain suspicious rather than immediate failures; added manual
+  safe-preview selection and a setting to disable automatic health detection.
+- Fixed a vivo/MediaTek interoperability failure where
+  `isSessionConfigurationSupported()` reported false after isolated RAW even
+  though recreating the same processed session succeeded.
+
+- Rebuilt processed-stream luminance around the Camera2 output model: YUV
+  metering now reconstructs sRGB from all Y/U/V planes, honors reported
+  full/limited range and color matrices, inverts usable per-frame tonemap
+  curves, and uses the same linear-luminance median statistic as ISP/RAW.
+  Older processed-stream calibration offsets are invalidated while RAW
+  calibration remains valid.
+- Corrected public camera/backup disclosures to match optional GPS records,
+  JPEG/DNG storage, and Android or vendor backup/device-transfer behavior.
+- Made formal metering and recording use exact sensor-timestamp pairs; stale
+  displayed-preview metadata is rejected.
+- Allowed fixed physical-lens routes independent of logical-camera
+  `APPROXIMATE` sync, tracked active physical lenses where Android reports them,
+  and rejected unsupported RAW CFA layouts from Bayer processing.
+- Added bounded preview stripe recovery with safe-preview confirmation, plus
+  front-camera mirror-aware RAW coordinate mapping and crash-recoverable
+  parameter-record commits.
+
+- Added the Tools panel framework: a button beside Settings opens a
+  scrollable three-column tools grid (depth of field, latitude, parameter
+  log, reciprocity, color temperature)
+  that replaces the parameter area in Normal and Zone modes while the
+  viewfinder stays interactive. Flash-index and exposure-correction identifiers
+  remain reserved for later versions, without exposing unfinished entries.
+- Implemented the depth-of-field tool with format and circle-of-confusion
+  presets/custom values, metering-step aperture and logarithmic focus dials,
+  animated near/focus/far markers, hyperfocal distance, and matching
+  portrait/landscape, Normal/Zone, and left-handed panel transitions.
+- Keep the active Tools page open underneath Settings and restore it on Back;
+  Normal/Zone mode handles are disabled while the Tools panel is open.
+- Added a settings button to the Zone overlay at the viewfinder panel's
+  bottom-left corner; calibration, vignetting, and camera-management actions
+  exit Zone first.
+- Anchored the focal-length readout to the viewfinder's bottom-right corner
+  in every mode and show only the selected frame format's equivalent focal
+  length.
+- Required exact sensor-timestamp image/result pairing for formal metering and
+  recording; unmatched frames are rejected instead of borrowing adjacent
+  exposure metadata.
+- Attempt fixed physical-camera routes even when the logical camera reports
+  APPROXIMATE synchronization, because that declaration describes concurrent
+  sensors rather than prohibiting one physical output.
+- Treat RAW as unavailable on LEGACY hardware-level devices even when they
+  advertise RAW output.
+- Use the advertised RAW minimum frame duration for RAW capture requests
+  instead of reusing the preview frame duration, which some HALs reject or
+  clamp silently.
+- Renamed Zone marking methods to **Button and touch** (按键与触屏) and
+  **Button only** (仅按键). Both methods keep the mark button; Button and
+  touch additionally places points by tapping the preview, reusing the
+  RAW-side template matching for touch points.
+- Removed Zone marker tap selection and double-tap deletion; marker dots are
+  inert and are removed only from the record list.
+- Rebuilt the pinned OpenCV runtime without the unused IPP, TBB, KleidiCV,
+  ITT, and optional codec backends, shrinking the universal APK from about
+  72.5 MiB to about 39.8 MiB with no behavior change.
+- Matched YUV buffers to Camera2 exposure metadata by identical sensor timestamps.
+- Added a one-time device/camera-environment change warning; old metering and
+  vignetting corrections remain stored but become unavailable until recalibrated.
+- Added recoverable camera-permission denial handling and a system-settings route.
+- Made OpenCV initialization fail safely into fixed Zone markers before any native
+  tracker object is created.
+- Added conservative Camera2 mandatory-stream/output-count prefiltering and
+  real workflow configuration probes while continuing to prefer every camera
+  that advertises a usable RAW stream.
+- Updated the app build to API 36.1 / target 36 while retaining min API 28, and
+  updated native build inputs for 16 KB page-size compatibility.
+- Renamed the user modes to **High accuracy (recommended)**, **Stable**, and
+  **Compatibility mode**, without changing persisted enum values or old preference
+  migration.
+- Split calibration results into **RAW sensor**, **YUV compatible stream**, and
+  **ISP display preview**; every hardware-supported source is calibrated
+  sequentially regardless of the current metering mode.
+- Added a bilingual Compatibility-mode RAW notice with **OK** and a persistent
+  **Don't show again** action.
+- Reduced RAW sampling to one frame below ISO 500, two below ISO 1200, and three
+  at ISO 1200 or above to reduce measurement delay and motion error.
+- Added 6×12, 6×17, 4×5, 5×7, and 8×10 formats, selected-format focal-length
+  equivalence, and wrapped format menus that keep every option readable.
+- Added source-complete sequential calibration; cameras without RAW skip only
+  the RAW stage while retaining independent YUV and ISP corrections.
+- Added bilingual compatibility mode settings and camera-error recovery across
+  full, RAW-only, YUV-compatible, preview-only, and logical-camera routes.
+- Reworked metering into three user modes: RAW-first high accuracy, RAW-free
+  Stable YUV, and minimum-output Compatibility ISP. Existing compatible-mode
+  preferences migrate to the current Compatibility mode.
+- Fixed vignetting-calibration geometry refresh so its camera preview, action
+  button, and correction history remain aligned and visible after camera/session
+  or orientation changes; simplified the bilingual guide text.
+- Unified automatic logical cameras and fixed physical lenses on a common 4:3
+  preview stream when advertised, preventing aspect changes or apparent stretching
+  when Automatic camera and Main camera are backed by the same lens.
+- Limited explicit preview requests to safe advertised ranges at or below
+  30 fps, with automatic 24 fps and system-default fallback when rejected.
+- Made resident outputs workflow-specific: Stable and high-accuracy Zone paths
+  keep YUV, constrained RAW paths use a short isolated capture, and repeating
+  requests pause while resident RAW or vignetting captures are in progress.
+- Added an automatic logical-camera entry as the default on multi-camera phones;
+  fixed physical lenses remain selectable and monochrome/NIR sensors are hidden.
+- Changed compatible metering to one ISP-processed frame, with a maximum
+  three-frame/250 ms YUV attempt before a single preview fallback.
+- Limited RAW capture to one full-size image in flight and explicitly cancel
+  completed RAW, YUV, and vignetting timeout callbacks.
+- Fixed background interruption so an in-progress measurement or calibration
+  does not remain permanently displayed as measuring.
+- Added half-frame naming/layout corrections and expanded bilingual UI text.
+- Split `CameraController` into a session coordinator, RAW meter, compatible
+  meter, timestamp result pairer, and recovery state machine, with documented
+  thread and resource ownership.
+- Documented camera stream profiles, resource ownership, vendor boundaries,
+  and the resulting controller component boundaries.
+
 ## 0.2.1 - 2026-08-12
 
 - Added a compact **About** entry under General settings.

@@ -1,5 +1,6 @@
 package com.lightmeter.rawmeter
 
+import android.app.AlertDialog
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
@@ -38,6 +39,7 @@ class CalibrationView(
         val reset: RectF,
         val camera: RectF,
         val modes: List<RectF>,
+        val help: RectF,
         val editorArea: RectF,
         val historyRows: List<RectF>,
         val primary: RectF,
@@ -48,7 +50,7 @@ class CalibrationView(
     var isMeasuring: Boolean = false
         private set
 
-    private val density = resources.displayMetrics.density
+    private val density get() = layoutDensity(LayoutProfile.METER)
     private val foreground: Int
         get() = if (state.isDarkMode) Color.rgb(210, 210, 206) else Color.rgb(20, 20, 20)
     private val surfaceColor: Int
@@ -82,10 +84,14 @@ class CalibrationView(
         isoEditor,
         luxEditor,
     )
-
     private var mode = CalibrationReferenceMode.EV100
     private var geometry: Geometry? = null
-    private var currentCorrectionEv = 0.0
+    private var currentRawCorrectionEv: Double? = null
+    private var currentYuvCorrectionEv: Double? = null
+    private var currentIspCorrectionEv: Double? = null
+    private var currentLegacyCompatibleCorrectionEv: Double? = null
+    private var boundCalibrationCameraId: String? = null
+    private var rawStreamVisible = false
     private var statusText = ""
     private var statusIsError = false
 
@@ -102,8 +108,20 @@ class CalibrationView(
     fun calculatePreviewFrame(width: Int, height: Int): RectF =
         calculateGeometry(width, height).preview
 
-    fun setCurrentCorrection(value: Double) {
-        currentCorrectionEv = value
+    fun setCurrentCorrections(
+        cameraId: String,
+        rawCorrectionEv: Double?,
+        yuvCorrectionEv: Double?,
+        ispPreviewCorrectionEv: Double?,
+        legacyCompatibleCorrectionEv: Double?,
+        showRawStream: Boolean,
+    ) {
+        boundCalibrationCameraId = cameraId
+        currentRawCorrectionEv = rawCorrectionEv
+        currentYuvCorrectionEv = yuvCorrectionEv
+        currentIspCorrectionEv = ispPreviewCorrectionEv
+        currentLegacyCompatibleCorrectionEv = legacyCompatibleCorrectionEv
+        rawStreamVisible = showRawStream
         invalidate()
     }
 
@@ -116,16 +134,18 @@ class CalibrationView(
         invalidate()
     }
 
-    fun setMeasuring(measuring: Boolean, frameCount: Int? = null) {
+    fun setMeasuring(
+        measuring: Boolean,
+        frameCount: Int? = null,
+        source: MeteringSource? = null,
+        step: Int? = null,
+        totalSteps: Int? = null,
+    ) {
         isMeasuring = measuring
         if (measuring) {
-            statusText = if (frameCount != null) {
-                localized(
-                    "正在读取 $frameCount 帧中央画面…",
-                    "Reading $frameCount center frames…",
-                )
-            } else {
-                localized("正在准备测光…", "Preparing measurement…")
+            statusText = when {
+                source != null && frameCount != null -> calibrationStepText(source, step, totalSteps, frameCount)
+                else -> localized("正在准备测光…", "Preparing measurement…")
             }
             statusIsError = false
             clearEditorFocus()
@@ -133,18 +153,27 @@ class CalibrationView(
         invalidate()
     }
 
-    fun showResult(
-        referenceEv100: Double,
-        measuredEv100: Double,
-        correctionEv: Double,
-    ) {
-        isMeasuring = false
-        currentCorrectionEv = correctionEv
-        statusText = localized(
-            "完成：手机 ${formatEv(measuredEv100)} → 参考 ${formatEv(referenceEv100)}",
-            "Done: phone ${formatEv(measuredEv100)} → reference ${formatEv(referenceEv100)}",
-        )
+    fun setRestoringAutoExposure() {
+        isMeasuring = true
+        statusText = localized("正在恢复自动曝光…", "Restoring auto exposure…")
         statusIsError = false
+        clearEditorFocus()
+        invalidate()
+    }
+
+    fun showResult(record: CameraCalibrationRecord) {
+        isMeasuring = false
+        applyRecord(record)
+        statusText = localized("校准完成", "Calibration complete")
+        statusIsError = false
+        invalidate()
+    }
+
+    fun showPartialResult(record: CameraCalibrationRecord, message: String) {
+        isMeasuring = false
+        applyRecord(record)
+        statusText = message
+        statusIsError = true
         invalidate()
     }
 
@@ -155,9 +184,13 @@ class CalibrationView(
         invalidate()
     }
 
-    fun showReset() {
+    fun showReset(showRawStream: Boolean) {
         isMeasuring = false
-        currentCorrectionEv = 0.0
+        rawStreamVisible = showRawStream
+        currentRawCorrectionEv = if (showRawStream) 0.0 else null
+        currentYuvCorrectionEv = 0.0
+        currentIspCorrectionEv = 0.0
+        currentLegacyCompatibleCorrectionEv = null
         statusText = localized(
             "当前测光修正已重置，可从历史回退",
             "Current correction reset; history remains available",
@@ -168,7 +201,7 @@ class CalibrationView(
 
     fun showHistoryRestored(record: CameraCalibrationRecord) {
         isMeasuring = false
-        currentCorrectionEv = record.correctionEv
+        applyRecord(record)
         statusText = localized(
             "已回退到 ${formatCalibrationTime(record.updatedAtEpochMs)} 的校准",
             "Restored calibration from ${formatCalibrationTime(record.updatedAtEpochMs)}",
@@ -253,6 +286,7 @@ class CalibrationView(
     }
 
     private fun drawHeader(canvas: Canvas, g: Geometry) {
+        val busy = isMeasuring
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1.5f * density
         paint.color = foreground
@@ -276,7 +310,7 @@ class CalibrationView(
             boldPaint,
         )
         boldPaint.textSize = 10f * density
-        boldPaint.color = if (isMeasuring) muted else red
+        boldPaint.color = if (busy) muted else red
         drawCenteredText(
             canvas,
             localized("重置", "Reset"),
@@ -314,7 +348,7 @@ class CalibrationView(
         paint.typeface = Typeface.DEFAULT_BOLD
         drawCenteredText(
             canvas,
-            state.frameFormat.label,
+            state.frameFormat.displayLabel(state.menuLanguage),
             badge.centerX(),
             badge.centerY(),
             paint,
@@ -323,8 +357,7 @@ class CalibrationView(
 
     private fun drawControls(canvas: Canvas, g: Geometry) {
         g.modes.forEachIndexed { index, rect ->
-            val itemMode = CalibrationReferenceMode.entries[index]
-            val selected = itemMode == mode
+            val selected = CalibrationReferenceMode.entries[index] == mode
             paint.style = Paint.Style.FILL
             paint.color = if (selected) foreground else surfaceColor
             canvas.drawRoundRect(rect, 3f * density, 3f * density, paint)
@@ -336,7 +369,8 @@ class CalibrationView(
             paint.color = if (selected) surfaceColor else foreground
             paint.textSize = 8.5f * density
             paint.typeface = Typeface.DEFAULT_BOLD
-            drawCenteredText(canvas, modeLabel(itemMode), rect.centerX(), rect.centerY(), paint)
+            val label = modeLabel(CalibrationReferenceMode.entries[index])
+            drawCenteredText(canvas, label, rect.centerX(), rect.centerY(), paint)
         }
 
         paint.style = Paint.Style.FILL
@@ -357,7 +391,13 @@ class CalibrationView(
                 "Lux requires an evenly lit 18% diffuse gray card",
             )
         }
-        canvas.drawText(help, g.controls.left, g.editorArea.top - 7f * density, paint)
+        canvas.drawText(
+            ellipsize(help, g.help.left - g.controls.left - 6f * density, paint),
+            g.controls.left,
+            g.editorArea.top - 7f * density,
+            paint,
+        )
+        drawHelpButton(canvas, g.help)
 
         drawHistory(canvas, g)
         if (statusText.isNotEmpty()) {
@@ -396,7 +436,7 @@ class CalibrationView(
     }
 
     private fun drawHistory(canvas: Canvas, g: Geometry) {
-        val cameraId = state.currentCamera()?.cameraId
+        val cameraId = currentCalibrationCameraId()
         val active = cameraId?.let(state::cameraCalibrationRecord)
         val history = cameraId?.let(state::cameraCalibrationHistory).orEmpty().take(3)
         if (g.historyRows.isEmpty()) return
@@ -404,12 +444,19 @@ class CalibrationView(
         paint.color = muted
         paint.textSize = 7.5f * density
         paint.typeface = Typeface.DEFAULT_BOLD
-        canvas.drawText(
-            localized("当前镜头 · 最近 3 次校准", "Current lens · last 3 calibrations"),
-            g.controls.left,
-            g.historyRows.first().top - 5f * density,
-            paint,
-        )
+        correctionLines(
+            raw = currentRawCorrectionEv,
+            yuv = currentYuvCorrectionEv,
+            isp = currentIspCorrectionEv,
+            legacy = currentLegacyCompatibleCorrectionEv,
+        ).forEachIndexed { index, line ->
+            canvas.drawText(
+                ellipsize(line, g.controls.width(), paint),
+                g.controls.left,
+                g.historyRows.first().top - (15f - index * 9f) * density,
+                paint,
+            )
+        }
         if (history.isEmpty()) {
             paint.typeface = Typeface.DEFAULT
             drawCenteredText(
@@ -451,7 +498,7 @@ class CalibrationView(
             paint.typeface = Typeface.DEFAULT_BOLD
             paint.textSize = 7.4f * density
             val summary = "${formatCalibrationTime(record.updatedAtEpochMs)}  ·  " +
-                "${signedEv(record.correctionEv)} EV"
+                compactCorrectionSummary(record)
             val textWidth = action.left - row.left - 14f * density
             canvas.drawText(
                 ellipsize(summary, textWidth, paint),
@@ -468,8 +515,8 @@ class CalibrationView(
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (event.actionMasked != MotionEvent.ACTION_UP) return true
         val g = geometry ?: return true
+        if (event.actionMasked != MotionEvent.ACTION_UP) return true
         when {
             g.back.contains(event.x, event.y) -> {
                 haptic()
@@ -499,11 +546,15 @@ class CalibrationView(
                 requestLayout()
                 invalidate()
             }
+            g.help.contains(event.x, event.y) && !isMeasuring -> {
+                haptic()
+                showModeHelp()
+            }
             !isMeasuring -> {
                 val historyIndex = g.historyRows.indexOfFirst { row ->
                     historyActionRect(row).contains(event.x, event.y)
                 }
-                val cameraId = state.currentCamera()?.cameraId
+                val cameraId = currentCalibrationCameraId()
                 val history = cameraId?.let(state::cameraCalibrationHistory).orEmpty().take(3)
                 val selected = history.getOrNull(historyIndex)
                 val active = cameraId?.let(state::cameraCalibrationRecord)
@@ -602,13 +653,21 @@ class CalibrationView(
         )
         val modeGap = 5f * density
         val modeHeight = min(34f * density, controls.height() * 0.16f)
-        val modeWidth = (controls.width() - modeGap * 2f) / 3f
-        val modes = CalibrationReferenceMode.entries.indices.map { index ->
+        val modeCount = CalibrationReferenceMode.entries.size
+        val modeWidth = (controls.width() - modeGap * (modeCount - 1)) / modeCount
+        val modes = (0 until modeCount).map { index ->
             val left = controls.left + index * (modeWidth + modeGap)
             RectF(left, controls.top, left + modeWidth, controls.top + modeHeight)
         }
         val editorHeight = min(48f * density, controls.height() * 0.22f)
         val editorTop = modes.first().bottom + 28f * density
+        val helpSize = 22f * density
+        val help = RectF(
+            controls.right - helpSize,
+            editorTop - 24f * density,
+            controls.right,
+            editorTop - 2f * density,
+        )
         val editorArea = RectF(
             controls.left,
             editorTop,
@@ -623,7 +682,9 @@ class CalibrationView(
             controls.bottom,
         )
         val historyGap = 4f * density
-        val historyTop = editorArea.bottom + 17f * density
+        // Reserve a real two-line band for the current RAW/YUV/ISP corrections. EditText children
+        // are rendered above this canvas; the old 17 dp gap put the first line underneath them.
+        val historyTop = editorArea.bottom + 38f * density
         val historyBottom = primary.top - 22f * density
         val historyHeight = ((historyBottom - historyTop - historyGap * 2f) / 3f)
             .coerceAtLeast(18f * density)
@@ -638,6 +699,7 @@ class CalibrationView(
             reset,
             camera,
             modes,
+            help,
             editorArea,
             historyRows,
             primary,
@@ -756,7 +818,12 @@ class CalibrationView(
     private fun localized(chinese: String, english: String): String =
         if (state.menuLanguage == MenuLanguage.ENGLISH) english else chinese
 
-    private fun formatEv(value: Double): String = "%.2f EV".format(value)
+    private fun currentCalibrationCameraId(): String =
+        boundCalibrationCameraId
+            ?: state.cameraInfo.calibrationCameraId
+            .ifBlank { state.selectedCameraId }
+            .ifBlank { state.currentCamera()?.cameraId.orEmpty() }
+            .ifBlank { "0" }
 
     private fun formatCalibrationTime(epochMs: Long): String =
         SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(epochMs))
@@ -764,8 +831,94 @@ class CalibrationView(
     private fun signedEv(value: Double): String =
         if (value >= 0.0) "+${"%.2f".format(value)}" else "%.2f".format(value)
 
+    private fun applyRecord(record: CameraCalibrationRecord) {
+        currentRawCorrectionEv = record.rawCorrectionEv
+        currentYuvCorrectionEv = record.yuvCorrectionEv
+        currentIspCorrectionEv = record.ispPreviewCorrectionEv
+        currentLegacyCompatibleCorrectionEv = record.legacyCompatibleCorrectionEv
+    }
+
+    private fun calibrationStepText(
+        source: MeteringSource,
+        step: Int?,
+        totalSteps: Int?,
+        frameCount: Int,
+    ): String {
+        val progress = if (step != null && totalSteps != null) " $step/$totalSteps" else ""
+        val sourceName = when (source) {
+            MeteringSource.RAW -> localized("RAW 传感器", "RAW sensor")
+            MeteringSource.YUV_PREVIEW -> localized("YUV 兼容流", "YUV compatible stream")
+            MeteringSource.ISP_PREVIEW -> localized("ISP 显示预览", "ISP display preview")
+        }
+        return localized(
+            "正在校准$sourceName$progress（$frameCount 张）…",
+            "Calibrating $sourceName$progress ($frameCount frames)…",
+        )
+    }
+
+    private fun correctionLines(
+        raw: Double?,
+        yuv: Double?,
+        isp: Double?,
+        legacy: Double?,
+    ): List<String> {
+        val first = buildList {
+            if (rawStreamVisible) add(correctionLabel("RAW", raw))
+            add(correctionLabel("YUV", yuv))
+        }.joinToString(" · ")
+        val second = buildList {
+            add(correctionLabel("ISP", isp))
+            legacy?.let { add("${localized("旧版共享", "Legacy shared")} ${signedEv(it)} EV") }
+        }.joinToString(" · ")
+        return listOf(first, second)
+    }
+
+    private fun correctionLabel(label: String, value: Double?): String = value?.let {
+        "$label ${signedEv(it)} EV"
+    } ?: "$label ${localized("未校准", "not calibrated")}"
+
+    private fun compactCorrectionSummary(record: CameraCalibrationRecord): String =
+        correctionLines(
+            record.rawCorrectionEv,
+            record.yuvCorrectionEv,
+            record.ispPreviewCorrectionEv,
+            record.legacyCompatibleCorrectionEv,
+        ).joinToString(" · ")
+
     private fun haptic() {
         performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+    }
+
+    private fun drawHelpButton(canvas: Canvas, rect: RectF) {
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 1.2f * density
+        paint.color = foreground
+        canvas.drawCircle(rect.centerX(), rect.centerY(), rect.width() * 0.38f, paint)
+        boldPaint.color = foreground
+        boldPaint.textSize = 10f * density
+        drawCenteredText(canvas, "?", rect.centerX(), rect.centerY(), boldPaint)
+    }
+
+    private fun showModeHelp() {
+        val message = when (mode) {
+            CalibrationReferenceMode.CAMERA_EXPOSURE -> localized(
+                "使用可靠的数码相机，并选择点测光或中央重点测光。在自动曝光下把曝光补偿设为 0 EV，读取并填入光圈、快门和 ISO。然后让本应用对准参考相机测量的同一位置，点击“测光并校准”。",
+                "Use a trusted digital camera with spot or center-weighted metering. In auto exposure, set exposure compensation to 0 EV and enter the displayed aperture, shutter speed, and ISO. Aim this app at the same area measured by the reference camera, then tap “Measure and calibrate”.",
+            )
+            CalibrationReferenceMode.EV100 -> localized(
+                "使用可靠的测光表，以点测光或中央重点方式测量目标区域并读取 EV100。填入该数值后，让本应用对准同一位置，点击“测光并校准”。",
+                "Use a trusted meter to measure the target with spot or center-weighted metering and read EV100. Enter that value, aim this app at the same area, then tap “Measure and calibrate”.",
+            )
+            CalibrationReferenceMode.LUX_GRAY_CARD -> localized(
+                "均匀照亮一张可靠的 18% 漫反射灰卡，用可靠的照度计测量灰卡所在位置的 Lux 并填入。然后让本应用对准灰卡中央，点击“测光并校准”。",
+                "Evenly illuminate a reliable 18% diffuse gray card. Measure illuminance at the card with a trusted lux meter and enter the Lux value. Aim this app at the center of the gray card, then tap “Measure and calibrate”.",
+            )
+        }
+        AlertDialog.Builder(context)
+            .setTitle(modeLabel(mode))
+            .setMessage(message)
+            .setPositiveButton(localized("知道了", "Got it"), null)
+            .show()
     }
 
     private fun drawCenteredText(

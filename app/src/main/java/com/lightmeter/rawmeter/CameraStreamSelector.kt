@@ -3,7 +3,9 @@ package com.lightmeter.rawmeter
 import android.graphics.ImageFormat
 import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.params.RecommendedStreamConfigurationMap
 import android.hardware.camera2.params.StreamConfigurationMap
+import android.os.Build
 import android.util.Range
 import android.util.Size
 import kotlin.math.abs
@@ -15,7 +17,9 @@ import kotlin.math.min
  *
  * Keeping this outside [CameraController] makes device-capability decisions independently
  * reviewable and prevents the camera lifecycle class from accumulating more sizing policy.
- * The selected sizes and frame-rate preferences intentionally match the original behavior.
+ * Frame-rate selection stays within the user's ceiling, the advertised AE ranges, and the
+ * configured streams' minimum frame durations. The optional high-rate preference is capped at
+ * 60 fps; constrained high-speed sessions are deliberately outside this app's metering pipeline.
  */
 internal object CameraStreamSelector {
     fun choosePreviewSize(characteristics: CameraCharacteristics): Size? {
@@ -35,65 +39,177 @@ internal object CameraStreamSelector {
         } else {
             4.0 / 3.0
         }
-        val has60Range = characteristics
-            .get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
-            ?.any { it.lower <= 60 && it.upper >= 60 } == true
-        val fast = if (has60Range) {
-            bounded.filter { size ->
-                val duration = map.getOutputMinFrameDuration(SurfaceTexture::class.java, size)
-                val area = size.width.toLong() * size.height.toLong()
-                area >= 1280L * 720L && (duration == 0L || duration <= 20_000_000L)
-            }
-        } else {
-            emptyList()
-        }
-        return fast.ifEmpty { bounded }.minWithOrNull(
-            compareBy<Size> {
-                abs(it.width.toDouble() / it.height.toDouble() - sensorAspect)
-            }.thenByDescending {
-                it.width.toLong() * it.height.toLong()
-            },
-        )
+        val selected = choosePreviewDimensions(
+            sizes = bounded.map { it.width to it.height },
+            sensorAspect = sensorAspect,
+            preferred = recommendedPreviewSizes(characteristics),
+        ) ?: return null
+        return bounded.firstOrNull { it.width == selected.first && it.height == selected.second }
+    }
+
+    /**
+     * API 29+ recommended preview outputs act as an ordering reference only. A missing or
+     * incompatible recommendation falls back to the full advertised table.
+     */
+    private fun recommendedPreviewSizes(
+        characteristics: CameraCharacteristics,
+    ): Set<Pair<Int, Int>> {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return emptySet()
+        val recommended = runCatching {
+            characteristics.getRecommendedStreamConfigurationMap(
+                RecommendedStreamConfigurationMap.USECASE_PREVIEW,
+            )
+        }.getOrNull() ?: return emptySet()
+        return recommended.getOutputSizes(SurfaceTexture::class.java)
+            ?.map { it.width to it.height }
+            ?.toSet()
+            .orEmpty()
     }
 
     fun chooseTrackingSize(map: StreamConfigurationMap, preview: Size): Size? {
         val sizes = map.getOutputSizes(ImageFormat.YUV_420_888)?.toList().orEmpty()
         if (sizes.isEmpty()) return null
-        val previewAspect = preview.width.toDouble() / preview.height.coerceAtLeast(1)
         val compact = sizes.filter { size ->
             max(size.width, size.height) <= TRACKING_MAX_LONG_EDGE &&
                 min(size.width, size.height) >= TRACKING_MIN_SHORT_EDGE
         }.ifEmpty {
             sizes.filter { max(it.width, it.height) <= 1280 }.ifEmpty { sizes }
         }
-        return compact.minWithOrNull(
-            compareBy<Size> {
-                abs(it.width.toDouble() / it.height.coerceAtLeast(1) - previewAspect)
-            }.thenBy {
-                abs(max(it.width, it.height) - TRACKING_TARGET_LONG_EDGE)
-            }.thenBy { it.width.toLong() * it.height.toLong() },
-        )
+        val selected = chooseTrackingDimensions(
+            sizes = compact.map { it.width to it.height },
+            preview = preview.width to preview.height,
+        ) ?: return null
+        return compact.firstOrNull { it.width == selected.first && it.height == selected.second }
     }
 
-    fun chooseFpsRange(characteristics: CameraCharacteristics, size: Size): Range<Int>? {
+    /** A differently shaped YUV stream cannot safely proxy preview touch coordinates. */
+    fun chooseTrackingDimensions(
+        sizes: List<Pair<Int, Int>>,
+        preview: Pair<Int, Int>,
+    ): Pair<Int, Int>? {
+        val previewAspect = preview.first.toDouble() / preview.second.coerceAtLeast(1)
+        return sizes
+            .filter { (width, height) ->
+                width > 0 && height > 0 &&
+                    abs(width.toDouble() / height - previewAspect) <= MAX_TRACKING_ASPECT_ERROR
+            }
+            .minWithOrNull(
+                compareBy<Pair<Int, Int>> {
+                    abs(max(it.first, it.second) - TRACKING_TARGET_LONG_EDGE)
+                }.thenBy { it.first.toLong() * it.second.toLong() },
+            )
+    }
+
+    fun chooseFpsRange(
+        characteristics: CameraCharacteristics,
+        previewSize: Size,
+        trackingSize: Size?,
+        requestedCeiling: Int,
+        lowLight: Boolean = false,
+    ): Range<Int>? {
         val ranges = characteristics
             .get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
             ?.toList()
             .orEmpty()
         val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-        val duration = map?.getOutputMinFrameDuration(SurfaceTexture::class.java, size) ?: 0L
-        if (duration == 0L || duration <= 20_000_000L) {
-            ranges.firstOrNull { it.lower <= 60 && it.upper >= 60 }?.let {
-                return Range(60, 60)
+        val durations = buildList {
+            map?.getOutputMinFrameDuration(SurfaceTexture::class.java, previewSize)
+                ?.takeIf { it > 0L }
+                ?.let(::add)
+            trackingSize?.let { size ->
+                map?.getOutputMinFrameDuration(ImageFormat.YUV_420_888, size)
+                    ?.takeIf { it > 0L }
+                    ?.let(::add)
             }
         }
-        return ranges
-            .filter { it.lower <= 30 && it.upper >= 30 }
-            .minByOrNull { abs(it.lower - 30) + abs(it.upper - 30) }
-            ?: ranges.maxByOrNull { it.upper }
+        val streamCeiling = durations.maxOrNull()?.let { duration ->
+            (1_000_000_000L / duration).toInt().coerceAtLeast(1)
+        } ?: requestedCeiling
+        return selectFpsRange(
+            ranges = ranges,
+            requestedCeiling = CameraFrameRatePolicy.effectiveCeiling(
+                requestedCeiling,
+                streamCeiling,
+            ),
+            lowLight = lowLight,
+        )
+    }
+
+    /** Keeps an FPS rejection independent from RAW/YUV/ISP workflow fallback. */
+    fun nextFallbackFpsCeiling(currentCeiling: Int?): Int? =
+        currentCeiling?.let(CameraFrameRatePolicy::nextFallbackCeiling)
+
+    /** Selects an advertised AE range without synthesizing a range the HAL may reject. */
+    fun selectFpsRange(
+        ranges: List<Range<Int>>,
+        requestedCeiling: Int,
+        lowLight: Boolean = false,
+    ): Range<Int>? {
+        val selected = selectFpsRangeBounds(
+            ranges = ranges.map { it.lower to it.upper },
+            requestedCeiling = requestedCeiling,
+            lowLight = lowLight,
+        ) ?: return null
+        return ranges.firstOrNull { it.lower == selected.first && it.upper == selected.second }
+    }
+
+    /** Pure counterpart used by JVM tests where android.util.Range is only a stub. */
+    fun selectFpsRangeBounds(
+        ranges: List<Pair<Int, Int>>,
+        requestedCeiling: Int,
+        lowLight: Boolean = false,
+    ): Pair<Int, Int>? = CameraFrameRatePolicy.selectRangeBounds(
+        ranges = ranges,
+        requestedCeiling = requestedCeiling,
+        lowLight = lowLight,
+    )
+
+    /**
+     * Keeps logical and explicitly routed physical cameras on the same common preview shape.
+     *
+     * Some multi-camera HALs describe the logical camera with a 16:9 active array while each
+     * physical lens exposes a 4:3 array. Selecting only by that metadata makes "Automatic camera"
+     * use 1920x1080 and "Main camera" use 1440x1080, so switching between two routes backed by the
+     * same lens changes the viewport and can look like a stretched preview. Prefer an advertised
+     * 4:3 stream on both routes; fall back to the camera's own sensor aspect when 4:3 is absent.
+     */
+    fun choosePreviewDimensions(
+        sizes: List<Pair<Int, Int>>,
+        sensorAspect: Double,
+        preferred: Set<Pair<Int, Int>> = emptySet(),
+    ): Pair<Int, Int>? {
+        if (sizes.isEmpty()) return null
+        val fourThirds = 4.0 / 3.0
+        val commonShape = sizes.filter { (width, height) ->
+            width > 0 && height > 0 &&
+                abs(max(width, height).toDouble() / min(width, height) - fourThirds) <=
+                ASPECT_TOLERANCE
+        }
+        val candidates = commonShape.ifEmpty { sizes }
+        val normalizedSensorAspect = if (sensorAspect in 0.0..1.0 && sensorAspect > 0.0) {
+            1.0 / sensorAspect
+        } else {
+            sensorAspect
+        }
+        val targetAspect = if (commonShape.isNotEmpty()) fourThirds else normalizedSensorAspect
+        val preferredCandidates = preferred.takeIf { it.isNotEmpty() }
+            ?.let { recommended -> candidates.filter { it in recommended } }
+            .orEmpty()
+        val pool = preferredCandidates.ifEmpty { candidates }
+        return pool.minWithOrNull(
+            compareBy<Pair<Int, Int>> { (width, height) ->
+                if (width > 0 && height > 0) {
+                    abs(max(width, height).toDouble() / min(width, height) - targetAspect)
+                } else {
+                    Double.MAX_VALUE
+                }
+            }.thenByDescending { (width, height) -> width.toLong() * height.toLong() },
+        )
     }
 
     private const val TRACKING_TARGET_LONG_EDGE = 640
     private const val TRACKING_MAX_LONG_EDGE = 720
     private const val TRACKING_MIN_SHORT_EDGE = 240
+    private const val MAX_TRACKING_ASPECT_ERROR = 0.025
+    private const val ASPECT_TOLERANCE = 0.03
 }

@@ -57,6 +57,10 @@ internal class DeferredZoneMarkerTracker(
         delegate?.onMeteringStateChanged(active)
     }
 
+    override fun resumeVisualTrackingAfterMetering() {
+        delegate?.resumeVisualTrackingAfterMetering()
+    }
+
     override fun resetMarker(id: Int, normalizedX: Float, normalizedY: Float) {
         delegate?.resetMarker(id, normalizedX, normalizedY)
     }

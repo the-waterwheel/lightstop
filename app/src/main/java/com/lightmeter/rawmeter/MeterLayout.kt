@@ -3,17 +3,30 @@ package com.lightmeter.rawmeter
 import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
+import android.app.AlertDialog
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.RectF
 import android.graphics.SurfaceTexture
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
 import android.util.AttributeSet
 import android.view.TextureView
+import android.view.Surface
 import android.view.View
 import android.view.ViewGroup
 import android.view.animation.DecelerateInterpolator
+import android.widget.FrameLayout
+import android.widget.Toast
+import java.io.File
+import java.util.UUID
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
+
+private const val ANGLE_CONTROL_MODE_SWITCH_DELAY_MS = 300L
 
 class MeterLayout @JvmOverloads constructor(
     context: Context,
@@ -22,26 +35,60 @@ class MeterLayout @JvmOverloads constructor(
     trackerFactory: ZoneMarkerTrackerFactory = OpenCvZoneMarkerTrackerFactory(),
 ) : ViewGroup(context, attributeSet) {
 
-    private enum class CameraManagementOrigin { SETTINGS, CALIBRATION, VIGNETTING }
+    private enum class CameraManagementOrigin { SETTINGS, CALIBRATION, PREVIEW_CALIBRATION, VIGNETTING }
+    private enum class FilmSelectionTarget { LATITUDE, RECIPROCITY, PARAMETER_RECORD }
 
-    interface Listener {
+    internal interface Listener {
         fun onMeasureRequested()
         fun onOrientationToggle()
         fun onPreviewGeometryChanged(width: Int, height: Int)
         fun onControlsChanged(frameChanged: Boolean)
+        fun onAutomaticDistanceRequested()
+        fun onAutomaticDistanceStopped()
+        fun onSettingRejected(key: SettingKey, value: String)
+        fun onCombinationSelectionModeChanged(mode: MeteringCombinationSelectionMode)
+        fun onManualCombinationLooksNormal()
+        fun onManualCombinationLooksAbnormal()
+        fun onManualCombinationSelectionCancelled()
         fun onCalibrationOpened()
+        fun onSafePreviewRequested()
         fun onCameraSelected(cameraId: String)
         fun onCameraNoteRequested(cameraId: String)
+        fun onCameraAspectRequested(cameraId: String)
         fun onCameraVisibilityRequested(cameraId: String, hidden: Boolean)
         fun onCalibrationMeasureRequested(referenceEv100: Double)
         fun onCalibrationResetRequested()
         fun onCalibrationHistoryRestoreRequested(updatedAtEpochMs: Long)
+        fun onExposurePreviewCalibrationStarted()
+        fun onExposurePreviewCalibrationComparisonRequested(correctionEv: Double?)
+        fun onExposurePreviewCalibrationSaveRequested(correctionEv: Double)
+        fun onExposurePreviewCalibrationResetRequested()
+        fun onExposurePreviewCalibrationCancelled()
         fun onVignettingCalibrationOpened()
         fun onVignettingCalibrationRequested()
         fun onVignettingCalibrationResetRequested()
         fun onVignettingHistoryRestoreRequested(createdAtEpochMs: Long)
-        fun onZoneMeasureRequested(marker: ZoneMarker, target: ZoneMeteringTarget?)
+        fun onZoneMeasureRequested(marker: ZoneMarker, target: ZoneMeteringTarget?): Boolean
+        fun onZoneRemeasureHoldPrompt()
+        fun onZoneRemeasureAllRequested(markerIds: List<Int>)
         fun onZoneTrackingActiveChanged(active: Boolean)
+        fun onParameterGpsEnableRequested()
+        fun onColorTemperatureEstimateRequested()
+        fun onFilmNegativePreviewChanged(enabled: Boolean)
+        fun onFilmNegativeSettingsChanged(settings: FilmNegativeSettings)
+        fun onFilmNegativeCameraLockChanged(locked: Boolean)
+        fun onFilmNegativeBaseSampleRequested()
+        fun onFilmNegativeFrameRequested(mode: FilmNegativePickMode)
+        fun onFilmNegativeFrozenSettingsAccepted(frame: FilmNegativeFrozenFrame, settings: FilmNegativeSettings, completion: (Boolean) -> Unit)
+        fun onFilmNegativeRetryRequested()
+        fun onParameterCaptureRequested(
+            draftId: String,
+            snapshot: ParameterMeterSnapshot,
+            options: ParameterRecordOptions,
+            previewPath: String,
+            previewAspect: Float,
+            zoom: Float,
+        )
     }
 
     val textureView = TextureView(context).apply {
@@ -52,8 +99,49 @@ class MeterLayout @JvmOverloads constructor(
     val informationView = InformationView(context, state)
     val cameraManagementView = CameraManagementView(context, state)
     val calibrationView = CalibrationView(context, state)
+    internal val exposurePreviewCalibrationView = ExposurePreviewCalibrationView(context, state)
     val vignettingCalibrationView = VignettingCalibrationView(context, state)
+    internal val combinationSelectionView = CameraCombinationSelectionView(context, state)
     val zoneView = ZoneSystemView(context, state)
+    val toolsView = ToolsView(context, state)
+    internal val filmNegativeToolView = FilmNegativeToolView(context, state)
+    private val filmLatitudeRepository = FilmLatitudeRepository(context)
+    private val filmReciprocityRepository = FilmReciprocityRepository(context)
+    private val flashExposureRepository = FlashExposureRepository(context)
+    val depthOfFieldView = DepthOfFieldView(context, state)
+    private val latitudeView = LatitudeView(context, state, filmLatitudeRepository)
+    private val reciprocityView = ReciprocityView(
+        context,
+        state,
+        filmLatitudeRepository,
+        filmReciprocityRepository,
+    )
+    private val flashExposureView = FlashExposureView(context, state, flashExposureRepository)
+    private val filmSelectorView = FilmSelectorView(
+        context,
+        state,
+        filmLatitudeRepository,
+        filmReciprocityRepository,
+    )
+    private val parameterIoDispatcher = ParameterRecordIoDispatcher(
+        mainHandler = Handler(Looper.getMainLooper()),
+    )
+    private val parameterRecordRepository = ParameterRecordRepository(context)
+    private val parameterCaptureGuard = ParameterCaptureGuard()
+    private var activeCaptureToken = 0
+
+    init {
+        parameterRecordRepository.scheduleRecovery(parameterIoDispatcher)
+    }
+    private val parameterRecordToolView = ParameterRecordToolView(context, state, parameterRecordRepository)
+    private val parameterRecordEditorView = ParameterRecordEditorView(context, state)
+    private val parameterHistoryView = ParameterHistoryView(context, state, parameterRecordRepository)
+    private val colorTemperatureView = ColorTemperatureView(context, state)
+    private val grayCardGuideView = GrayCardGuideView(context, state)
+    private val angleMeteringDialView = AngleMeteringDialView(context, state)
+    private val flashDistanceDialView = FlashDistanceDialView(context, state)
+    private val recordCaptureSliderView = RecordCaptureSliderView(context, state)
+    private val toolsHost = FrameLayout(context)
     private val zoneMarkerTracker: ZoneMarkerTracker = DeferredZoneMarkerTracker {
         trackerFactory.create(textureView, state) { id, x, y, trackingState ->
             zoneView.updateMarkerTracking(id, x, y, trackingState)
@@ -65,19 +153,55 @@ class MeterLayout @JvmOverloads constructor(
         private set
     var isCalibrationOpen: Boolean = false
         private set
+    var isExposurePreviewCalibrationOpen: Boolean = false
+        private set
     var isVignettingCalibrationOpen: Boolean = false
         private set
     var isCameraManagementOpen: Boolean = false
         private set
+    var isCombinationSelectionOpen: Boolean = false
+        private set
+    var isToolsOpen: Boolean = false
+        private set
+    var isFilmSelectorOpen: Boolean = false
+        private set
+    var isParameterEditorOpen: Boolean = false
+        private set
+    var isParameterHistoryOpen: Boolean = false
+        private set
+    private var activeToolId: ToolId? = null
+    val isFilmNegativeOpen: Boolean get() = isToolsOpen && activeToolId == ToolId.FILM_NEGATIVE
+    private var filmSelectionTarget = FilmSelectionTarget.LATITUDE
     var isZoneMode: Boolean = false
         private set
     private var zoneTransitionFraction = 0f
     private var zoneAnimator: ValueAnimator? = null
     private var zoneTransitionPrepared = false
+    private var angleControlSuppressedForModeTransition = false
+    private var angleControlFadeInAnimating = false
+    private var angleControlFadeInRunnable: Runnable? = null
     private var lastLayoutLandscape: Boolean? = null
     private var zoneOrientationRestartPending = false
     private var cameraManagementOrigin = CameraManagementOrigin.SETTINGS
-    var listener: Listener? = null
+    private var settingsOpenedFromZone = false
+    private var pendingActionAfterZoneExit: (() -> Unit)? = null
+    private val previewHistogramSampler = object : Runnable {
+        override fun run() {
+            if (!isExposurePreviewCalibrationOpen) return
+            if (textureView.isAvailable) {
+                runCatching {
+                    textureView.getBitmap(HISTOGRAM_SAMPLE_WIDTH, HISTOGRAM_SAMPLE_HEIGHT)
+                }.getOrNull()?.let { bitmap ->
+                    exposurePreviewCalibrationView.updateHistogram(bitmap)
+                    bitmap.recycle()
+                }
+            }
+            if (isExposurePreviewCalibrationOpen) {
+                postDelayed(this, HISTOGRAM_SAMPLE_INTERVAL_MS)
+            }
+        }
+    }
+    internal var listener: Listener? = null
         set(value) {
             field = value
             instrumentView.listener = object : InstrumentView.Listener {
@@ -93,7 +217,12 @@ class MeterLayout @JvmOverloads constructor(
                     showSettings()
                 }
 
+                override fun onToolsRequested() {
+                    toggleTools()
+                }
+
                 override fun onZoneEntryDrag(progress: Float, released: Boolean) {
+                    if (isToolsOpen) return
                     if (!released) {
                         prepareZoneTransition()
                         applyZoneTransition(progress)
@@ -124,11 +253,75 @@ class MeterLayout @JvmOverloads constructor(
                     instrumentView.invalidate()
                     settingsView.invalidate()
                     value?.onControlsChanged(frameChanged)
+                    if (key == SettingKey.COMBINATION_SELECTION) {
+                        val notifySelectionChange: () -> Unit = {
+                            value?.onCombinationSelectionModeChanged(
+                                state.meteringCombinationSelectionMode,
+                            )
+                            Unit
+                        }
+                        if (settingsOpenedFromZone &&
+                            state.meteringCombinationSelectionMode ==
+                            MeteringCombinationSelectionMode.MANUAL
+                        ) {
+                            exitZoneForAction(notifySelectionChange)
+                        } else {
+                            notifySelectionChange()
+                        }
+                    }
+                }
+
+                override fun onSettingRejected(key: SettingKey, rejectedValue: String) {
+                    value?.onSettingRejected(key, rejectedValue)
                 }
 
                 override fun onActionRequested(key: SettingActionKey) {
+                    if (settingsOpenedFromZone && key != SettingActionKey.SHOW_ABOUT) {
+                        if (key == SettingActionKey.MANAGE_CAMERAS ||
+                            key == SettingActionKey.MANAGE_OUTPUT_ASPECTS
+                        ) {
+                            // Camera selection and per-camera output geometry are safe while the
+                            // Zone host remains active. Keeping the host alive also avoids an
+                            // unnecessary resident-session switch through Normal mode.
+                            showCameraManagement(CameraManagementOrigin.SETTINGS)
+                            return
+                        }
+                        exitZoneForAction {
+                            when (key) {
+                                SettingActionKey.USE_SAFE_PREVIEW -> {
+                                    value?.onSafePreviewRequested()
+                                }
+                                SettingActionKey.MANAGE_CAMERAS -> {
+                                    showCameraManagement(CameraManagementOrigin.SETTINGS)
+                                }
+                                SettingActionKey.MANAGE_OUTPUT_ASPECTS -> {
+                                    showCameraManagement(CameraManagementOrigin.SETTINGS)
+                                }
+                                SettingActionKey.START_METERING_CALIBRATION -> {
+                                    showCalibration()
+                                    value?.onCalibrationOpened()
+                                }
+                                SettingActionKey.START_EXPOSURE_PREVIEW_CALIBRATION -> {
+                                    showExposurePreviewCalibration()
+                                }
+                                SettingActionKey.START_VIGNETTING_CALIBRATION -> {
+                                    showVignettingCalibration()
+                                    value?.onVignettingCalibrationOpened()
+                                }
+                                SettingActionKey.SHOW_MORE_SETTINGS -> Unit
+                                else -> Unit
+                            }
+                        }
+                        return
+                    }
                     when (key) {
+                        SettingActionKey.USE_SAFE_PREVIEW -> {
+                            value?.onSafePreviewRequested()
+                        }
                         SettingActionKey.MANAGE_CAMERAS -> {
+                            showCameraManagement(CameraManagementOrigin.SETTINGS)
+                        }
+                        SettingActionKey.MANAGE_OUTPUT_ASPECTS -> {
                             showCameraManagement(CameraManagementOrigin.SETTINGS)
                         }
                         SettingActionKey.SHOW_ABOUT -> {
@@ -138,13 +331,31 @@ class MeterLayout @JvmOverloads constructor(
                             showCalibration()
                             value?.onCalibrationOpened()
                         }
+                        SettingActionKey.START_EXPOSURE_PREVIEW_CALIBRATION -> {
+                            showExposurePreviewCalibration()
+                        }
                         SettingActionKey.START_VIGNETTING_CALIBRATION -> {
                             showVignettingCalibration()
                             value?.onVignettingCalibrationOpened()
                         }
+                        SettingActionKey.SHOW_MORE_SETTINGS -> Unit
                     }
                 }
             }
+            combinationSelectionView.listener =
+                object : CameraCombinationSelectionView.Listener {
+                    override fun onCombinationLooksNormal() {
+                        value?.onManualCombinationLooksNormal()
+                    }
+
+                    override fun onCombinationLooksAbnormal() {
+                        value?.onManualCombinationLooksAbnormal()
+                    }
+
+                    override fun onCombinationSelectionCancelled() {
+                        value?.onManualCombinationSelectionCancelled()
+                    }
+                }
             informationView.listener = object : InformationView.Listener {
                 override fun onCloseRequested() {
                     closeInformation()
@@ -171,6 +382,37 @@ class MeterLayout @JvmOverloads constructor(
                     value?.onCalibrationMeasureRequested(referenceEv100)
                 }
             }
+            exposurePreviewCalibrationView.listener =
+                object : ExposurePreviewCalibrationView.Listener {
+                    override fun onExitRequested() {
+                        closeExposurePreviewCalibration()
+                    }
+
+                    override fun onCameraRequested() {
+                        value?.onExposurePreviewCalibrationCancelled()
+                        showCameraManagement(CameraManagementOrigin.PREVIEW_CALIBRATION)
+                    }
+
+                    override fun onStarted() {
+                        value?.onExposurePreviewCalibrationStarted()
+                    }
+
+                    override fun onAdjustmentRequested(correctionEv: Double) {
+                        value?.onExposurePreviewCalibrationComparisonRequested(correctionEv)
+                    }
+
+                    override fun onSaveRequested(correctionEv: Double) {
+                        value?.onExposurePreviewCalibrationSaveRequested(correctionEv)
+                    }
+
+                    override fun onResetRequested() {
+                        value?.onExposurePreviewCalibrationResetRequested()
+                    }
+
+                    override fun onCancelled() {
+                        value?.onExposurePreviewCalibrationCancelled()
+                    }
+                }
             vignettingCalibrationView.listener = object : VignettingCalibrationView.Listener {
                 override fun onExitRequested() {
                     closeVignettingCalibration()
@@ -209,12 +451,17 @@ class MeterLayout @JvmOverloads constructor(
                     value?.onCameraNoteRequested(cameraId)
                 }
 
+                override fun onCameraAspectRequested(cameraId: String) {
+                    value?.onCameraAspectRequested(cameraId)
+                }
+
                 override fun onCameraVisibilityRequested(cameraId: String, hidden: Boolean) {
                     value?.onCameraVisibilityRequested(cameraId, hidden)
                 }
             }
             zoneView.listener = object : ZoneSystemView.Listener {
                 override fun onExitDrag(progress: Float, released: Boolean) {
+                    if (isToolsOpen) return
                     if (!released) {
                         applyZoneTransition(1f - progress)
                     } else {
@@ -223,26 +470,44 @@ class MeterLayout @JvmOverloads constructor(
                 }
 
                 override fun onMarkRequested(marker: ZoneMarker) {
-                    zoneMarkerTracker.addMarker(
-                        marker.id,
-                        marker.normalizedX,
-                        marker.normalizedY,
-                    )
                     val target = if (state.zoneMarkingMethod == ZoneMarkingMethod.TOUCH) {
                         zoneMeteringTarget(marker)
                     } else {
                         null
                     }
-                    zoneMarkerTracker.onMeteringStateChanged(true)
-                    value?.onZoneMeasureRequested(marker, target)
+                    val accepted = value?.onZoneMeasureRequested(marker, target) ?: false
+                    if (!accepted) {
+                        // The capture was refused after the point was created. Roll back the new
+                        // marker, its tracker entry and the pending id so the next point can start.
+                        zoneView.failMeasurement()
+                        zoneMarkerTracker.removeMarker(marker.id)
+                        zoneView.invalidate()
+                        return
+                    }
+                    zoneMarkerTracker.addMarker(
+                        marker.id,
+                        marker.normalizedX,
+                        marker.normalizedY,
+                    )
+                    suspendZoneVisualTrackingForMetering()
+                }
+
+                override fun onRemeasureAllRequested(markerIds: List<Int>) {
+                    value?.onZoneRemeasureAllRequested(markerIds)
+                }
+
+                override fun onRemeasureHoldPrompt() {
+                    value?.onZoneRemeasureHoldPrompt()
                 }
 
                 override fun onMarkerRemoved(markerId: Int) {
                     zoneMarkerTracker.removeMarker(markerId)
+                    value?.onControlsChanged(false)
                 }
 
                 override fun onMarkersCleared(markerIds: List<Int>) {
                     zoneMarkerTracker.clearMarkers()
+                    value?.onControlsChanged(false)
                 }
 
                 override fun onOrientationToggle() {
@@ -267,6 +532,14 @@ class MeterLayout @JvmOverloads constructor(
                     if (frameChanged) requestLayout()
                     value?.onControlsChanged(frameChanged)
                 }
+
+                override fun onSettingsRequested() {
+                    showSettingsFromZone()
+                }
+
+                override fun onToolsRequested() {
+                    toggleTools()
+                }
             }
         }
 
@@ -282,10 +555,403 @@ class MeterLayout @JvmOverloads constructor(
         addView(cameraManagementView)
         calibrationView.visibility = View.GONE
         addView(calibrationView)
+        exposurePreviewCalibrationView.visibility = View.GONE
+        addView(exposurePreviewCalibrationView)
         vignettingCalibrationView.visibility = View.GONE
         addView(vignettingCalibrationView)
         zoneView.visibility = View.GONE
         addView(zoneView)
+        addView(grayCardGuideView)
+        toolsHost.visibility = View.GONE
+        toolsHost.addView(
+            toolsView,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        depthOfFieldView.visibility = View.GONE
+        toolsHost.addView(
+            depthOfFieldView,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        latitudeView.visibility = View.GONE
+        toolsHost.addView(
+            latitudeView,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        reciprocityView.visibility = View.GONE
+        toolsHost.addView(
+            reciprocityView,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        flashExposureView.visibility = View.GONE
+        toolsHost.addView(
+            flashExposureView,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        parameterRecordToolView.visibility = View.GONE
+        toolsHost.addView(
+            parameterRecordToolView,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        colorTemperatureView.visibility = View.GONE
+        toolsHost.addView(
+            colorTemperatureView,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        addView(toolsHost)
+        filmNegativeToolView.visibility = View.GONE
+        addView(filmNegativeToolView)
+        angleMeteringDialView.visibility = View.GONE
+        addView(angleMeteringDialView)
+        flashDistanceDialView.visibility = View.GONE
+        addView(flashDistanceDialView)
+        recordCaptureSliderView.visibility = View.GONE
+        addView(recordCaptureSliderView)
+        parameterRecordEditorView.visibility = View.GONE
+        addView(parameterRecordEditorView)
+        filmSelectorView.visibility = View.GONE
+        addView(filmSelectorView)
+        parameterHistoryView.visibility = View.GONE
+        addView(parameterHistoryView)
+        combinationSelectionView.visibility = View.GONE
+        addView(combinationSelectionView)
+        zoneView.setAppliedLatitude(filmLatitudeRepository.loadApplied()?.range)
+        instrumentView.setAppliedReciprocity(filmReciprocityRepository.appliedMethod())
+        zoneView.setAppliedReciprocity(filmReciprocityRepository.appliedMethod())
+        state.setAppliedFlashConfiguration(flashExposureRepository.applied(state.iso))
+        angleMeteringDialView.onAngleChanged = {
+            instrumentView.invalidate()
+            zoneView.invalidate()
+        }
+        angleMeteringDialView.onExpandedChanged = { expanded ->
+            if (expanded) {
+                flashDistanceDialView.collapse()
+                flashDistanceDialView.visibility = View.INVISIBLE
+                angleMeteringDialView.bringToFront()
+            } else {
+                post { updateAngleMeteringControl() }
+            }
+        }
+        flashDistanceDialView.onDistanceChanged = { distance ->
+            val base = state.appliedFlashConfiguration ?: flashExposureRepository.selected(state.iso)
+            flashExposureView.updateConfiguration(base.copy(distanceMeters = distance))
+            updateFlashPresentation()
+        }
+        flashDistanceDialView.onExpandedChanged = { expanded ->
+            if (expanded) {
+                angleMeteringDialView.collapse()
+                angleMeteringDialView.visibility = View.INVISIBLE
+                flashDistanceDialView.bringToFront()
+            } else {
+                post { updateAngleMeteringControl() }
+            }
+        }
+        toolsView.listener = object : ToolsView.Listener {
+            override fun onCloseRequested() {
+                closeTools()
+            }
+
+            override fun onToolRequested(spec: ToolSpec) {
+                when (spec.id) {
+                    ToolId.DEPTH_OF_FIELD -> showDepthOfField()
+                    ToolId.LATITUDE -> showLatitude()
+                    ToolId.RECIPROCITY -> showReciprocity()
+                    ToolId.FLASH_INDEX -> showFlashExposure()
+                    ToolId.PARAMETER_LOG -> showParameterRecord()
+                    ToolId.COLOR_TEMPERATURE -> showColorTemperature()
+                    ToolId.FILM_NEGATIVE -> showFilmNegative()
+                    else -> Log.i("lightstop", "Tool requested: ${spec.id}")
+                }
+            }
+        }
+        depthOfFieldView.listener = object : DepthOfFieldView.Listener {
+            override fun onBackToToolsRequested() {
+                activeToolId = null
+                depthOfFieldView.visibility = View.GONE
+                toolsView.visibility = View.VISIBLE
+                toolsView.bringToFront()
+            }
+
+            override fun onCloseRequested() {
+                closeTools()
+            }
+
+            override fun onAutomaticDistanceSampleRequested() {
+                listener?.onAutomaticDistanceRequested()
+            }
+
+            override fun onAutomaticDistanceStopped() {
+                if (state.appliedFlashConfiguration?.isAutoDistance != true) {
+                    listener?.onAutomaticDistanceStopped()
+                }
+            }
+        }
+        latitudeView.listener = object : LatitudeView.Listener {
+            override fun onBackToToolsRequested() {
+                activeToolId = null
+                latitudeView.visibility = View.GONE
+                toolsView.visibility = View.VISIBLE
+                toolsView.bringToFront()
+            }
+
+            override fun onCloseRequested() {
+                closeTools()
+            }
+
+            override fun onFilmSelectionRequested() {
+                showFilmSelector(FilmSelectionTarget.LATITUDE)
+            }
+
+            override fun onAppliedLatitudeChanged(value: AppliedFilmLatitude?) {
+                zoneView.setAppliedLatitude(value?.range)
+            }
+        }
+        reciprocityView.listener = object : ReciprocityView.Listener {
+            override fun onBackToToolsRequested() {
+                activeToolId = null
+                reciprocityView.visibility = View.GONE
+                toolsView.visibility = View.VISIBLE
+                toolsView.bringToFront()
+            }
+
+            override fun onCloseRequested() {
+                closeTools()
+            }
+
+            override fun onFilmSelectionRequested() {
+                showFilmSelector(FilmSelectionTarget.RECIPROCITY)
+            }
+
+            override fun onAppliedReciprocityChanged(method: ReciprocityMethod?) {
+                instrumentView.setAppliedReciprocity(method)
+                zoneView.setAppliedReciprocity(method)
+            }
+        }
+        flashExposureView.listener = object : FlashExposureView.Listener {
+            override fun onBackToToolsRequested() {
+                activeToolId = null
+                flashExposureView.visibility = View.GONE
+                toolsView.visibility = View.VISIBLE
+                toolsView.bringToFront()
+            }
+
+            override fun onCloseRequested() {
+                closeTools()
+            }
+
+            override fun onSettingsRequested(configuration: FlashConfiguration) {
+                FlashSettingsDialog.show(context, state, configuration) { updated ->
+                    flashExposureView.updateConfiguration(updated)
+                    updateFlashPresentation()
+                }
+            }
+
+            override fun onGuideNumberRequested(configuration: FlashConfiguration) {
+                FlashSettingsDialog.showGuideNumberInput(context, state, configuration) { guideNumber ->
+                    flashExposureView.updateConfiguration(
+                        configuration.copy(guideNumber = guideNumber),
+                    )
+                    updateFlashPresentation()
+                }
+            }
+
+            override fun onMeteringIsoRequested(configuration: FlashConfiguration) {
+                FlashSettingsDialog.showMeteringIsoInput(context, state, configuration) { iso ->
+                    flashExposureView.updateConfiguration(configuration.copy(iso = iso))
+                    updateFlashPresentation()
+                }
+            }
+
+            override fun onAppliedFlashChanged(configuration: FlashConfiguration?) {
+                state.setAppliedFlashConfiguration(configuration)
+                if (configuration?.isAutoDistance == true) {
+                    listener?.onAutomaticDistanceRequested()
+                } else if (!depthOfFieldView.isAutomaticDistanceEnabled()) {
+                    listener?.onAutomaticDistanceStopped()
+                }
+                updateFlashPresentation()
+                listener?.onControlsChanged(false)
+            }
+        }
+        parameterRecordToolView.listener = object : ParameterRecordToolView.Listener {
+            override fun onBackToToolsRequested() {
+                activeToolId = null
+                parameterRecordToolView.visibility = View.GONE
+                toolsView.visibility = View.VISIBLE
+                toolsView.bringToFront()
+            }
+
+            override fun onCloseRequested() {
+                closeTools()
+            }
+
+            override fun onHistoryRequested() {
+                showParameterHistory()
+            }
+
+            override fun onRecordingStateChanged(recording: Boolean) {
+                setRecordSliderVisible(recording)
+                if (recording && isToolsOpen) closeTools()
+            }
+
+            override fun onGpsEnableRequested() {
+                listener?.onParameterGpsEnableRequested()
+            }
+        }
+        colorTemperatureView.listener = object : ColorTemperatureView.Listener {
+            override fun onBackToToolsRequested() {
+                activeToolId = null
+                colorTemperatureView.visibility = View.GONE
+                grayCardGuideView.setGuide(RectF(), false)
+                toolsView.visibility = View.VISIBLE
+                toolsView.bringToFront()
+            }
+
+            override fun onCloseRequested() {
+                closeTools()
+            }
+
+            override fun onEstimateRequested() {
+                listener?.onColorTemperatureEstimateRequested()
+                    ?: colorTemperatureView.showError(
+                        if (state.menuLanguage == MenuLanguage.ENGLISH) {
+                            "Camera is not ready"
+                        } else {
+                            "相机尚未就绪"
+                        },
+                    )
+            }
+        }
+        filmNegativeToolView.listener = object : FilmNegativeToolView.Listener {
+            override fun onBackToToolsRequested() = leaveFilmNegative(backToTools = true)
+            override fun onCloseRequested() { closeTools() }
+            override fun onSettingsChanged(settings: FilmNegativeSettings) {
+                listener?.onFilmNegativeSettingsChanged(settings)
+            }
+            override fun onCameraLockChanged(locked: Boolean) {
+                listener?.onFilmNegativeCameraLockChanged(locked)
+            }
+            override fun onSampleBaseRequested() { listener?.onFilmNegativeBaseSampleRequested() }
+            override fun onFrameRequested(mode: FilmNegativePickMode) { listener?.onFilmNegativeFrameRequested(mode) }
+            override fun onFrozenSettingsAccepted(frame: FilmNegativeFrozenFrame, settings: FilmNegativeSettings, completion: (Boolean) -> Unit) {
+                listener?.onFilmNegativeFrozenSettingsAccepted(frame, settings, completion)
+            }
+            override fun onRetryRequested() {
+                filmNegativeToolView.setCameraLocked(false)
+                listener?.onFilmNegativeRetryRequested()
+            }
+        }
+        parameterRecordEditorView.listener = object : ParameterRecordEditorView.Listener {
+            override fun onCancelRequested(draft: ParameterCaptureDraft) {
+                if (!parameterCaptureGuard.cancel(activeCaptureToken, draft.id)) return
+                closeParameterEditor(resetCapture = true)
+                // Discard only touches pending files; it must not block the main thread.
+                parameterIoDispatcher.execute { parameterRecordRepository.discard(draft) }
+            }
+
+            override fun onFilmSelectionRequested() {
+                showFilmSelector(FilmSelectionTarget.PARAMETER_RECORD)
+            }
+
+            override fun onSaveRequested(draft: ParameterCaptureDraft) {
+                val token = activeCaptureToken
+                if (!parameterCaptureGuard.beginSave(token, draft.id)) return
+                parameterRecordEditorView.setSaving(true)
+                val accepted = parameterIoDispatcher.submit(
+                    background = { runCatching { parameterRecordRepository.save(draft) } },
+                    onMain = { result ->
+                        result.onSuccess {
+                            if (parameterCaptureGuard.complete(token, draft.id)) {
+                                parameterRecordEditorView.setSaving(false)
+                                closeParameterEditor(resetCapture = true)
+                            }
+                        }.onFailure {
+                            if (!parameterCaptureGuard.finishSave(token, draft.id)) return@onFailure
+                            parameterRecordEditorView.setSaving(false)
+                            Log.e("lightstop", "Unable to save parameter record", it)
+                            Toast.makeText(
+                                context,
+                                if (state.menuLanguage == MenuLanguage.ENGLISH) {
+                                    "Unable to save this record. Check available storage."
+                                } else {
+                                    "无法保存本条记录，请检查可用存储空间"
+                                },
+                                Toast.LENGTH_LONG,
+                            ).show()
+                        }
+                    },
+                )
+                if (!accepted && parameterCaptureGuard.finishSave(token, draft.id)) {
+                    parameterRecordEditorView.setSaving(false)
+                    Toast.makeText(context, localized("保存任务未能启动", "Unable to start saving"), Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+        parameterHistoryView.listener = object : ParameterHistoryView.Listener {
+            override fun onCloseRequested() {
+                closeParameterHistory()
+            }
+
+            override fun onRepositoryChanged() {
+                if (parameterRecordRepository.activeCategoryId == null) {
+                    parameterRecordToolView.stopRecording()
+                }
+                parameterRecordToolView.invalidate()
+            }
+        }
+        recordCaptureSliderView.onCaptureRequested = {
+            if (parameterRecordRepository.needsPrivacyNotice) {
+                showParameterCapturePrivacyNotice()
+            } else {
+                startParameterCapture()
+            }
+        }
+        filmSelectorView.listener = object : FilmSelectorView.Listener {
+            override fun onCloseRequested() {
+                closeFilmSelector()
+            }
+
+            override fun onFilmSelected(profile: FilmLatitudeProfile) {
+                when (filmSelectionTarget) {
+                    FilmSelectionTarget.LATITUDE -> latitudeView.selectFilm(profile)
+                    FilmSelectionTarget.RECIPROCITY -> reciprocityView.selectFilm(profile)
+                    FilmSelectionTarget.PARAMETER_RECORD -> parameterRecordEditorView.selectFilm(profile)
+                }
+                closeFilmSelector()
+            }
+
+            override fun onFilmRangeReset(profile: FilmLatitudeProfile) {
+                if (filmSelectionTarget == FilmSelectionTarget.LATITUDE) {
+                    latitudeView.onFilmRangeReset(profile)
+                }
+            }
+
+            override fun onFilmReciprocityChanged(profile: FilmLatitudeProfile) {
+                if (filmSelectionTarget == FilmSelectionTarget.RECIPROCITY) {
+                    reciprocityView.onFilmReciprocityChanged(profile)
+                }
+            }
+        }
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
@@ -312,6 +978,10 @@ class MeterLayout @JvmOverloads constructor(
             MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
             MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
         )
+        exposurePreviewCalibrationView.measure(
+            MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
+        )
         vignettingCalibrationView.measure(
             MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
             MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
@@ -319,6 +989,47 @@ class MeterLayout @JvmOverloads constructor(
         zoneView.measure(
             MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
             MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
+        )
+        grayCardGuideView.measure(
+            MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
+        )
+        filmSelectorView.measure(
+            MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
+        )
+        recordCaptureSliderView.measure(
+            MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
+        )
+        angleMeteringDialView.measure(
+            MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
+        )
+        flashDistanceDialView.measure(
+            MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
+        )
+        parameterHistoryView.measure(
+            MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
+        )
+        combinationSelectionView.measure(
+            MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
+        )
+        val toolsRect = toolsPanelRect(width, height)
+        filmNegativeToolView.measure(
+            MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
+        )
+        toolsHost.measure(
+            MeasureSpec.makeMeasureSpec(toolsRect.width().roundToInt().coerceAtLeast(0), MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(toolsRect.height().roundToInt().coerceAtLeast(0), MeasureSpec.EXACTLY),
+        )
+        parameterRecordEditorView.measure(
+            MeasureSpec.makeMeasureSpec(toolsRect.width().roundToInt().coerceAtLeast(0), MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(toolsRect.height().roundToInt().coerceAtLeast(0), MeasureSpec.EXACTLY),
         )
         val geometry = LayoutGeometry.calculate(
             width,
@@ -328,8 +1039,12 @@ class MeterLayout @JvmOverloads constructor(
             state.frameLandscape,
             state.isLeftHanded,
         )
-        val cameraFrame = if (isVignettingCalibrationOpen) {
+        val cameraFrame = if (isCombinationSelectionOpen || isFilmNegativeOpen) {
+            RectF(0f, 0f, width.toFloat(), height.toFloat())
+        } else if (isVignettingCalibrationOpen) {
             vignettingCalibrationView.calculatePreviewFrame(width, height)
+        } else if (isExposurePreviewCalibrationOpen) {
+            exposurePreviewCalibrationView.calculatePreviewFrame(width, height)
         } else if (isCalibrationOpen) {
             calibrationView.calculatePreviewFrame(width, height)
         } else if (zoneTransitionFraction > 0f || isZoneMode) {
@@ -341,7 +1056,21 @@ class MeterLayout @JvmOverloads constructor(
         } else {
             geometry.cameraFrame
         }
-        val textureFrame = previewTextureFrame(cameraFrame, width, height)
+        val textureFrame = when {
+            isFilmNegativeOpen || isCombinationSelectionOpen || isVignettingCalibrationOpen ||
+                isExposurePreviewCalibrationOpen || isCalibrationOpen ->
+                previewTextureFrame(
+                    cameraFrame = cameraFrame,
+                    width = width,
+                    height = height,
+                    showFullPreview = isVignettingCalibrationOpen,
+                )
+            else -> normalZonePreviewTextureFrame(
+                normalCameraFrame = geometry.cameraFrame,
+                width = width,
+                height = height,
+            )
+        }
         textureView.measure(
             MeasureSpec.makeMeasureSpec(textureFrame.width().toInt(), MeasureSpec.EXACTLY),
             MeasureSpec.makeMeasureSpec(textureFrame.height().toInt(), MeasureSpec.EXACTLY),
@@ -357,9 +1086,7 @@ class MeterLayout @JvmOverloads constructor(
             it != layoutLandscape
         } == true
         lastLayoutLandscape = layoutLandscape
-        if (isZoneMode && zoneOrientationRestartPending && displayOrientationChanged &&
-            previousLayoutLandscape != null
-        ) {
+        if (isZoneMode && zoneOrientationRestartPending && displayOrientationChanged) {
             // The camera did not move; only Android's app coordinate axes rotated. Counter that
             // one-time display rotation before laying out and restarting the tracker.
             zoneView.remapMarkersForLayoutOrientation(
@@ -375,8 +1102,12 @@ class MeterLayout @JvmOverloads constructor(
             state.frameLandscape,
             state.isLeftHanded,
         )
-        val cameraFrame = if (isVignettingCalibrationOpen) {
+        val cameraFrame = if (isCombinationSelectionOpen || isFilmNegativeOpen) {
+            RectF(0f, 0f, width.toFloat(), height.toFloat())
+        } else if (isVignettingCalibrationOpen) {
             vignettingCalibrationView.calculatePreviewFrame(width, height)
+        } else if (isExposurePreviewCalibrationOpen) {
+            exposurePreviewCalibrationView.calculatePreviewFrame(width, height)
         } else if (isCalibrationOpen) {
             calibrationView.calculatePreviewFrame(width, height)
         } else if (zoneTransitionFraction > 0f || isZoneMode) {
@@ -388,7 +1119,21 @@ class MeterLayout @JvmOverloads constructor(
         } else {
             geometry.cameraFrame
         }
-        val textureFrame = previewTextureFrame(cameraFrame, width, height)
+        val textureFrame = when {
+            isFilmNegativeOpen || isCombinationSelectionOpen || isVignettingCalibrationOpen ||
+                isExposurePreviewCalibrationOpen || isCalibrationOpen ->
+                previewTextureFrame(
+                    cameraFrame = cameraFrame,
+                    width = width,
+                    height = height,
+                    showFullPreview = isVignettingCalibrationOpen,
+                )
+            else -> normalZonePreviewTextureFrame(
+                normalCameraFrame = geometry.cameraFrame,
+                width = width,
+                height = height,
+            )
+        }
         textureView.layout(
             textureFrame.left.toInt(),
             textureFrame.top.toInt(),
@@ -406,8 +1151,31 @@ class MeterLayout @JvmOverloads constructor(
         informationView.layout(0, 0, width, height)
         cameraManagementView.layout(0, 0, width, height)
         calibrationView.layout(0, 0, width, height)
+        exposurePreviewCalibrationView.layout(0, 0, width, height)
         vignettingCalibrationView.layout(0, 0, width, height)
         zoneView.layout(0, 0, width, height)
+        grayCardGuideView.layout(0, 0, width, height)
+        grayCardGuideView.setGuide(
+            cameraFrame,
+            isToolsOpen && activeToolId == ToolId.COLOR_TEMPERATURE,
+        )
+        layoutToolsPanel()
+        filmNegativeToolView.layout(0, 0, width, height)
+        angleMeteringDialView.layout(0, 0, width, height)
+        flashDistanceDialView.layout(0, 0, width, height)
+        recordCaptureSliderView.layout(0, 0, width, height)
+        val parameterPanel = toolsPanelRect(width, height)
+        parameterRecordEditorView.layout(
+            parameterPanel.left.toInt(),
+            parameterPanel.top.toInt(),
+            parameterPanel.right.toInt(),
+            parameterPanel.bottom.toInt(),
+        )
+        filmSelectorView.layout(0, 0, width, height)
+        parameterHistoryView.layout(0, 0, width, height)
+        combinationSelectionView.layout(0, 0, width, height)
+        updateAngleMeteringControl()
+        updateRecordSliderAnchor()
         // A format change can resize this child while the ViewGroup's own bounds stay the
         // same, so `changed` is not a reliable signal. Publish geometry after every layout.
         post {
@@ -447,23 +1215,60 @@ class MeterLayout @JvmOverloads constructor(
     fun currentSurfaceTexture(): SurfaceTexture? = textureView.surfaceTexture
 
     fun refresh(frameChanged: Boolean = false) {
-        if (frameChanged) requestLayout()
+        if (frameChanged) {
+            zoneView.refreshGeometry()
+            requestLayout()
+        }
         updateBackground()
         instrumentView.invalidate()
         settingsView.invalidate()
         informationView.invalidate()
         cameraManagementView.invalidate()
         calibrationView.invalidate()
+        exposurePreviewCalibrationView.invalidate()
         vignettingCalibrationView.invalidate()
         zoneView.invalidate()
+        toolsView.invalidate()
+        depthOfFieldView.updateAutomaticDistance(state.distanceMeasurementState)
+        depthOfFieldView.invalidate()
+        latitudeView.invalidate()
+        reciprocityView.invalidate()
+        flashExposureView.invalidate()
+        parameterRecordToolView.resumePage()
+        colorTemperatureView.updateRawSupport(state.cameraInfo.rawAvailable)
+        parameterRecordEditorView.invalidate()
+        parameterHistoryView.invalidate()
+        recordCaptureSliderView.invalidate()
+        updateAngleMeteringControl()
+        filmSelectorView.applyTheme()
     }
 
     fun showSettings() {
-        if (isSettingsOpen || isCalibrationOpen || isVignettingCalibrationOpen ||
-            isCameraManagementOpen ||
+        if (isSettingsOpen || isCalibrationOpen || isExposurePreviewCalibrationOpen ||
+            isVignettingCalibrationOpen ||
+            isCameraManagementOpen || isCombinationSelectionOpen ||
             isZoneMode || zoneTransitionFraction > 0f
         ) return
+        settingsOpenedFromZone = false
+        openSettingsPage()
+    }
+
+    /** Opens Settings from the Zone overlay; calibration actions then exit Zone first. */
+    fun showSettingsFromZone() {
+        if (isSettingsOpen || isCalibrationOpen || isExposurePreviewCalibrationOpen ||
+            isVignettingCalibrationOpen ||
+            isCameraManagementOpen ||
+            !isZoneMode || zoneTransitionFraction < 1f
+        ) return
+        Log.i("lightstop", "Settings opened from Zone overlay")
+        settingsOpenedFromZone = true
+        openSettingsPage()
+    }
+
+    private fun openSettingsPage() {
         isSettingsOpen = true
+        angleMeteringDialView.collapse()
+        updateAngleMeteringControl()
         settingsView.animate().cancel()
         settingsView.visibility = View.VISIBLE
         settingsView.bringToFront()
@@ -476,6 +1281,911 @@ class MeterLayout @JvmOverloads constructor(
             .start()
     }
 
+    /** Opens Settings at the calibration choices without starting either calibration flow. */
+    fun showCalibrationSettings() {
+        settingsView.selectSection(SettingsSectionKey.CALIBRATION)
+        showSettings()
+    }
+
+    /**
+     * The Tools panel replaces the parameter area while the viewfinder stays interactive. The
+     * covered region is derived from the active mode's preview panel, so Normal and Zone (whose
+     * parameter areas differ) both keep their own viewfinder untouched.
+     */
+    fun showTools() {
+        if (isToolsOpen || isSettingsOpen || isCalibrationOpen ||
+            isExposurePreviewCalibrationOpen || isVignettingCalibrationOpen ||
+            isCameraManagementOpen || isInformationOpen
+        ) return
+        instrumentView.setModeTransitionEnabled(false)
+        instrumentView.setParameterDialInteractionEnabled(false)
+        zoneView.setModeTransitionEnabled(false)
+        angleMeteringDialView.collapse()
+        isToolsOpen = true
+        updateAngleMeteringControl()
+        Log.i("lightstop", "Tools panel opened")
+        when (activeToolId) {
+            ToolId.DEPTH_OF_FIELD -> {
+                toolsView.visibility = View.GONE
+                latitudeView.visibility = View.GONE
+                reciprocityView.visibility = View.GONE
+                parameterRecordToolView.visibility = View.GONE
+                colorTemperatureView.visibility = View.GONE
+                flashExposureView.visibility = View.GONE
+                depthOfFieldView.visibility = View.VISIBLE
+                depthOfFieldView.resumePage()
+                depthOfFieldView.bringToFront()
+            }
+            ToolId.LATITUDE -> {
+                toolsView.visibility = View.GONE
+                depthOfFieldView.visibility = View.GONE
+                reciprocityView.visibility = View.GONE
+                parameterRecordToolView.visibility = View.GONE
+                colorTemperatureView.visibility = View.GONE
+                flashExposureView.visibility = View.GONE
+                latitudeView.visibility = View.VISIBLE
+                latitudeView.resumePage()
+                latitudeView.bringToFront()
+            }
+            ToolId.RECIPROCITY -> {
+                toolsView.visibility = View.GONE
+                depthOfFieldView.visibility = View.GONE
+                latitudeView.visibility = View.GONE
+                parameterRecordToolView.visibility = View.GONE
+                colorTemperatureView.visibility = View.GONE
+                flashExposureView.visibility = View.GONE
+                reciprocityView.visibility = View.VISIBLE
+                reciprocityView.resumePage()
+                reciprocityView.bringToFront()
+            }
+            ToolId.PARAMETER_LOG -> {
+                toolsView.visibility = View.GONE
+                depthOfFieldView.visibility = View.GONE
+                latitudeView.visibility = View.GONE
+                reciprocityView.visibility = View.GONE
+                colorTemperatureView.visibility = View.GONE
+                flashExposureView.visibility = View.GONE
+                parameterRecordToolView.visibility = View.VISIBLE
+                parameterRecordToolView.resumePage()
+                parameterRecordToolView.bringToFront()
+            }
+            ToolId.COLOR_TEMPERATURE -> {
+                toolsView.visibility = View.GONE
+                depthOfFieldView.visibility = View.GONE
+                latitudeView.visibility = View.GONE
+                reciprocityView.visibility = View.GONE
+                parameterRecordToolView.visibility = View.GONE
+                flashExposureView.visibility = View.GONE
+                colorTemperatureView.visibility = View.VISIBLE
+                colorTemperatureView.updateRawSupport(state.cameraInfo.rawAvailable)
+                colorTemperatureView.bringToFront()
+            }
+            ToolId.FLASH_INDEX -> {
+                toolsView.visibility = View.GONE
+                depthOfFieldView.visibility = View.GONE
+                latitudeView.visibility = View.GONE
+                reciprocityView.visibility = View.GONE
+                parameterRecordToolView.visibility = View.GONE
+                colorTemperatureView.visibility = View.GONE
+                flashExposureView.visibility = View.VISIBLE
+                flashExposureView.resumePage()
+                flashExposureView.bringToFront()
+            }
+            else -> {
+                depthOfFieldView.visibility = View.GONE
+                latitudeView.visibility = View.GONE
+                reciprocityView.visibility = View.GONE
+                parameterRecordToolView.visibility = View.GONE
+                colorTemperatureView.visibility = View.GONE
+                flashExposureView.visibility = View.GONE
+                toolsView.visibility = View.VISIBLE
+                toolsView.bringToFront()
+            }
+        }
+        toolsHost.bringToFront()
+        layoutToolsPanel()
+        val rect = toolsPanelRect(width, height)
+        val landscape = width > height
+        // Position off-screen before becoming visible so the first frame is already mid-slide
+        // instead of flashing at the final position.
+        toolsHost.animate().cancel()
+        toolsHost.translationX = if (landscape) {
+            if (state.isLeftHanded) -rect.width() else rect.width()
+        } else {
+            0f
+        }
+        toolsHost.translationY = if (landscape) 0f else rect.height()
+        toolsHost.visibility = View.VISIBLE
+        toolsHost.animate()
+            .translationX(0f)
+            .translationY(0f)
+            .setDuration(300L)
+            .setInterpolator(DecelerateInterpolator())
+            .start()
+        requestLayout()
+    }
+
+    fun toggleTools() {
+        if (isToolsOpen) {
+            closeTools()
+        } else {
+            showTools()
+        }
+    }
+
+    fun closeTools(): Boolean {
+        if (!isToolsOpen) return false
+        if (isFilmNegativeOpen) {
+            leaveFilmNegative(backToTools = false)
+            return true
+        }
+        if (isFilmSelectorOpen) closeFilmSelector(animate = false)
+        depthOfFieldView.pausePage()
+        activeToolId = null
+        isToolsOpen = false
+        grayCardGuideView.setGuide(RectF(), false)
+        val rect = toolsPanelRect(width, height)
+        val landscape = width > height
+        toolsHost.animate().cancel()
+        toolsHost.animate()
+            .translationX(if (landscape) {
+                if (state.isLeftHanded) -rect.width() else rect.width()
+            } else {
+                0f
+            })
+            .translationY(if (landscape) 0f else rect.height())
+            .setDuration(260L)
+            .setInterpolator(DecelerateInterpolator())
+            .withEndAction {
+                if (!isToolsOpen) {
+                    toolsHost.visibility = View.GONE
+                    instrumentView.setModeTransitionEnabled(true)
+                    instrumentView.setParameterDialInteractionEnabled(true)
+                    zoneView.setModeTransitionEnabled(true)
+                    updateAngleMeteringControl()
+                }
+            }
+            .start()
+        return true
+    }
+
+    fun isDepthOfFieldAutomaticDistanceEnabled(): Boolean =
+        depthOfFieldView.isAutomaticDistanceEnabled()
+
+    private fun toolsPanelRect(width: Int, height: Int): RectF {
+        val density = resources.displayMetrics.density
+        val landscape = width > height
+        val previewPanel = if (isZoneMode || zoneTransitionFraction > 0f) {
+            ZoneLayoutCalculator.calculate(width, height, density, state).previewPanel
+        } else {
+            LayoutGeometry.calculate(
+                width,
+                height,
+                density,
+                state.frameFormat,
+                state.frameLandscape,
+                state.isLeftHanded,
+            ).previewPanel
+        }
+        return if (landscape) {
+            if (state.isLeftHanded) {
+                RectF(0f, 0f, previewPanel.left, height.toFloat())
+            } else {
+                RectF(previewPanel.right, 0f, width.toFloat(), height.toFloat())
+            }
+        } else {
+            RectF(0f, previewPanel.bottom, width.toFloat(), height.toFloat())
+        }
+    }
+
+    private fun layoutToolsPanel() {
+        val rect = toolsPanelRect(width, height)
+        toolsHost.layout(rect.left.toInt(), rect.top.toInt(), rect.right.toInt(), rect.bottom.toInt())
+    }
+
+    private fun showFilmNegative() {
+        activeToolId = ToolId.FILM_NEGATIVE
+        pauseZoneTracking()
+        listener?.onZoneTrackingActiveChanged(false)
+        toolsHost.animate().cancel()
+        toolsHost.visibility = View.GONE
+        instrumentView.visibility = View.INVISIBLE
+        zoneView.visibility = View.INVISIBLE
+        grayCardGuideView.setGuide(RectF(), false)
+        filmNegativeToolView.openPage()
+        filmNegativeToolView.visibility = View.VISIBLE
+        filmNegativeToolView.bringToFront()
+        listener?.onFilmNegativeSettingsChanged(filmNegativeToolView.settings)
+        listener?.onFilmNegativePreviewChanged(true)
+        requestLayout()
+        Log.i("lightstop", "Film negative tool opened")
+    }
+
+    private fun leaveFilmNegative(backToTools: Boolean) {
+        if (!isFilmNegativeOpen) return
+        activeToolId = null
+        filmNegativeToolView.visibility = View.GONE
+        listener?.onFilmNegativePreviewChanged(false)
+        filmNegativeToolView.discardFrozenFrame()
+        instrumentView.visibility = if (isZoneMode) View.INVISIBLE else View.VISIBLE
+        zoneView.visibility = if (isZoneMode) View.VISIBLE else View.GONE
+        if (backToTools) {
+            toolsView.visibility = View.VISIBLE
+            toolsView.bringToFront()
+            toolsHost.translationX = 0f
+            toolsHost.translationY = 0f
+            toolsHost.visibility = View.VISIBLE
+            toolsHost.bringToFront()
+        } else {
+            isToolsOpen = false
+            toolsHost.visibility = View.GONE
+            instrumentView.setModeTransitionEnabled(true)
+            instrumentView.setParameterDialInteractionEnabled(true)
+            zoneView.setModeTransitionEnabled(true)
+        }
+        resumeZoneTracking()
+        listener?.onZoneTrackingActiveChanged(isZoneMode)
+        updateAngleMeteringControl()
+        requestLayout()
+        Log.i("lightstop", "Film negative tool closed")
+    }
+
+    private fun showDepthOfField() {
+        activeToolId = ToolId.DEPTH_OF_FIELD
+        val apertureStop = if (isZoneMode) {
+            zoneView.currentApertureCoordinate()
+        } else {
+            instrumentView.currentApertureCoordinate()
+        }
+        depthOfFieldView.openWithMeterDefaults(apertureStop)
+        toolsView.visibility = View.GONE
+        latitudeView.visibility = View.GONE
+        reciprocityView.visibility = View.GONE
+        parameterRecordToolView.visibility = View.GONE
+        colorTemperatureView.visibility = View.GONE
+        flashExposureView.visibility = View.GONE
+        depthOfFieldView.visibility = View.VISIBLE
+        depthOfFieldView.bringToFront()
+        Log.i("lightstop", "Depth-of-field tool opened")
+    }
+
+    private fun showLatitude() {
+        activeToolId = ToolId.LATITUDE
+        latitudeView.openPage()
+        toolsView.visibility = View.GONE
+        depthOfFieldView.visibility = View.GONE
+        reciprocityView.visibility = View.GONE
+        parameterRecordToolView.visibility = View.GONE
+        colorTemperatureView.visibility = View.GONE
+        flashExposureView.visibility = View.GONE
+        latitudeView.visibility = View.VISIBLE
+        latitudeView.bringToFront()
+        Log.i("lightstop", "Latitude tool opened")
+    }
+
+    private fun showReciprocity() {
+        activeToolId = ToolId.RECIPROCITY
+        val shutterCoordinate = if (isZoneMode) {
+            zoneView.currentShutterCoordinate()
+        } else {
+            instrumentView.currentShutterCoordinate()
+        }
+        reciprocityView.openPage(shutterCoordinate)
+        toolsView.visibility = View.GONE
+        depthOfFieldView.visibility = View.GONE
+        latitudeView.visibility = View.GONE
+        parameterRecordToolView.visibility = View.GONE
+        colorTemperatureView.visibility = View.GONE
+        flashExposureView.visibility = View.GONE
+        reciprocityView.visibility = View.VISIBLE
+        reciprocityView.bringToFront()
+        Log.i("lightstop", "Reciprocity tool opened")
+    }
+
+    private fun showFlashExposure() {
+        activeToolId = ToolId.FLASH_INDEX
+        flashExposureView.openPage()
+        toolsView.visibility = View.GONE
+        depthOfFieldView.visibility = View.GONE
+        latitudeView.visibility = View.GONE
+        reciprocityView.visibility = View.GONE
+        parameterRecordToolView.visibility = View.GONE
+        colorTemperatureView.visibility = View.GONE
+        flashExposureView.visibility = View.VISIBLE
+        flashExposureView.bringToFront()
+        Log.i("lightstop", "Flash-exposure tool opened")
+    }
+
+    private fun showParameterRecord() {
+        activeToolId = ToolId.PARAMETER_LOG
+        parameterRecordToolView.resumePage()
+        toolsView.visibility = View.GONE
+        depthOfFieldView.visibility = View.GONE
+        latitudeView.visibility = View.GONE
+        reciprocityView.visibility = View.GONE
+        colorTemperatureView.visibility = View.GONE
+        flashExposureView.visibility = View.GONE
+        parameterRecordToolView.visibility = View.VISIBLE
+        parameterRecordToolView.bringToFront()
+        Log.i("lightstop", "Parameter-record tool opened")
+    }
+
+    private fun showColorTemperature() {
+        activeToolId = ToolId.COLOR_TEMPERATURE
+        colorTemperatureView.openPage(state.cameraInfo.rawAvailable)
+        toolsView.visibility = View.GONE
+        depthOfFieldView.visibility = View.GONE
+        latitudeView.visibility = View.GONE
+        reciprocityView.visibility = View.GONE
+        parameterRecordToolView.visibility = View.GONE
+        flashExposureView.visibility = View.GONE
+        colorTemperatureView.visibility = View.VISIBLE
+        colorTemperatureView.bringToFront()
+        requestLayout()
+        Log.i("lightstop", "Color-temperature tool opened")
+    }
+
+    internal fun showColorTemperatureReading(reading: ColorTemperatureReading) {
+        colorTemperatureView.showReading(reading)
+    }
+
+    fun showColorTemperatureError(message: String) {
+        colorTemperatureView.showError(message)
+    }
+
+    private fun showFilmSelector(target: FilmSelectionTarget) {
+        val allowed = when (target) {
+            FilmSelectionTarget.LATITUDE -> isToolsOpen && activeToolId == ToolId.LATITUDE
+            FilmSelectionTarget.RECIPROCITY -> isToolsOpen && activeToolId == ToolId.RECIPROCITY
+            FilmSelectionTarget.PARAMETER_RECORD -> isParameterEditorOpen
+        }
+        if (isFilmSelectorOpen || !allowed) return
+        filmSelectionTarget = target
+        isFilmSelectorOpen = true
+        filmSelectorView.open(
+            if (target == FilmSelectionTarget.RECIPROCITY) {
+                FilmSelectorMode.RECIPROCITY
+            } else {
+                FilmSelectorMode.STANDARD
+            },
+        )
+        filmSelectorView.animate().cancel()
+        filmSelectorView.visibility = View.VISIBLE
+        filmSelectorView.bringToFront()
+        val landscape = width > height
+        filmSelectorView.translationX = if (landscape) {
+            if (state.isLeftHanded) -width.toFloat() else width.toFloat()
+        } else {
+            0f
+        }
+        filmSelectorView.translationY = if (landscape) 0f else -height.toFloat()
+        filmSelectorView.animate()
+            .translationX(0f)
+            .translationY(0f)
+            .setDuration(300L)
+            .setInterpolator(DecelerateInterpolator())
+            .start()
+    }
+
+    fun closeFilmSelector(animate: Boolean = true): Boolean {
+        if (!isFilmSelectorOpen) return false
+        isFilmSelectorOpen = false
+        filmSelectorView.releaseInput()
+        filmSelectorView.animate().cancel()
+        if (!animate) {
+            filmSelectorView.visibility = View.GONE
+            filmSelectorView.translationX = 0f
+            filmSelectorView.translationY = 0f
+            return true
+        }
+        val landscape = width > height
+        filmSelectorView.animate()
+            .translationX(if (landscape) {
+                if (state.isLeftHanded) -width.toFloat() else width.toFloat()
+            } else {
+                0f
+            })
+            .translationY(if (landscape) 0f else -height.toFloat())
+            .setDuration(260L)
+            .setInterpolator(DecelerateInterpolator())
+            .withEndAction {
+                if (!isFilmSelectorOpen) filmSelectorView.visibility = View.GONE
+            }
+            .start()
+        return true
+    }
+
+    private fun currentParameterSnapshot(): ParameterMeterSnapshot = if (isZoneMode) {
+        ParameterMeterSnapshot(
+            mode = ParameterRecordMode.ZONE,
+            apertureCoordinate = zoneView.currentApertureCoordinate(),
+            shutterCoordinate = zoneView.currentShutterCoordinate(),
+            ei = zoneView.session.iso,
+            ev100 = zoneView.currentMeanEv100(),
+            zonePoints = zoneView.recordedZonePoints(),
+            flash = ParameterRecordCaptureSnapshot.flash(state),
+            distance = ParameterRecordCaptureSnapshot.distance(state.distanceMeasurementState),
+        )
+    } else {
+        ParameterMeterSnapshot(
+            mode = ParameterRecordMode.NORMAL,
+            apertureCoordinate = instrumentView.currentApertureCoordinate(),
+            shutterCoordinate = instrumentView.currentShutterCoordinate(),
+            ei = state.iso,
+            ev100 = state.effectiveEv100,
+            zonePoints = emptyList(),
+            flash = ParameterRecordCaptureSnapshot.flash(state),
+            distance = ParameterRecordCaptureSnapshot.distance(state.distanceMeasurementState),
+        )
+    }
+
+    private fun showParameterCapturePrivacyNotice() {
+        AlertDialog.Builder(context)
+            .setTitle(localized("参数记录与系统备份", "Parameter records and system backup"))
+            .setMessage(
+                localized(
+                    "保存记录会把取景照片、曝光参数、备注、当时已应用的闪光灯与距离状态，以及你选择记录的位置写入应用私有存储；启用 RAW 时还会保存 DNG。Android 或设备厂商启用的云备份/换机功能可能复制这些内容。备份由系统或厂商执行，开发者无法访问。你可以在系统设置关闭本应用备份，也可以随时删除记录。",
+                    "Saving a record stores a viewfinder photo, exposure parameters, notes, the applied flash and distance state at capture, and any location you choose to record in app-private storage. Enabling RAW also saves a DNG. Android or your device manufacturer may copy this data through cloud backup or device transfer. Those backups are operated by the system or vendor, not accessible to the developer. You can disable this app's backup in system settings or delete records at any time.",
+                ),
+            )
+            .setNegativeButton(localized("取消保存", "Cancel save")) { _, _ ->
+                recordCaptureSliderView.setCapturePending(false)
+            }
+            .setNeutralButton(localized("查看隐私说明", "View privacy notice")) { _, _ ->
+                recordCaptureSliderView.setCapturePending(false)
+                showParameterCapturePrivacyDetails()
+            }
+            .setPositiveButton(localized("我已了解并继续", "I understand and continue")) { _, _ ->
+                parameterRecordRepository.acknowledgePrivacyNotice()
+                startParameterCapture()
+            }
+            .setOnCancelListener { recordCaptureSliderView.setCapturePending(false) }
+            .show()
+    }
+
+    private fun showParameterCapturePrivacyDetails() {
+        AlertDialog.Builder(context)
+            .setTitle(localized("隐私说明", "Privacy notice"))
+            .setMessage(
+                localized(
+                    "光档不会通过网络向开发者上传照片、测光数据、位置、备注、闪光灯或距离信息。位置仅在你启用参数记录的位置选项并授权后使用，不会在后台持续跟踪；只有足够新且精度合理的定位才会写入记录，粗略位置会标注为粗略。系统或设备厂商的备份服务可能按你的系统设置复制应用私有数据；是否备份、加密、保留或成功恢复取决于设备、账号、系统版本、厂商政策和备份配额。较大的 DNG 不保证会被备份。",
+                    "lightstop does not upload photos, meter readings, locations, notes, flash settings, or distance information to the developer. Location is used only after you enable it for parameter records and grant permission; it is not tracked in the background. Only a fresh, plausibly accurate fix is attached, and a coarse fix is labelled as coarse. System or device-vendor backup services may copy app-private data according to your settings. Backup, encryption, retention, and restore depend on the device, account, OS version, vendor policy, and quota. Large DNG files are not guaranteed to be backed up.",
+                ),
+            )
+            .setPositiveButton(localized("确定", "OK"), null)
+            .show()
+    }
+
+    private fun startParameterCapture() {
+        val id = UUID.randomUUID().toString()
+        activeCaptureToken = parameterCaptureGuard.begin(id)
+        // Freeze every value the record must keep even if the user changes settings while the
+        // preview is being encoded off the main thread.
+        val options = parameterRecordRepository.options
+        val snapshot = currentParameterSnapshot()
+        // Freeze the crop and zoom at capture start so an asynchronous RAW request cannot pick up
+        // a later viewfinder change.
+        val previewAspect = if (state.frameLandscape) {
+            state.frameFormat.landscapeAspect
+        } else {
+            1f / state.frameFormat.landscapeAspect
+        }
+        val zoom = state.zoom
+        val previewFile = parameterRecordRepository.createPendingPreviewFile(id)
+        val source = capturePreviewBitmap()
+        if (source == null) {
+            parameterCaptureGuard.cancel()
+            recordCaptureSliderView.setCapturePending(false)
+            Toast.makeText(
+                context,
+                if (state.menuLanguage == MenuLanguage.ENGLISH) {
+                    "Unable to capture the current preview. Try again."
+                } else {
+                    "无法截取当前画面，请重试"
+                },
+                Toast.LENGTH_LONG,
+            ).show()
+            return
+        }
+        // Crop geometry depends on live view layout, so it is resolved on the main thread before
+        // the bitmap is handed to the I/O dispatcher, which owns and recycles it.
+        val crop = calculateParameterCrop(source.width, source.height)
+        val token = activeCaptureToken
+        parameterIoDispatcher.submit(
+            background = { writeParameterPreview(source, crop, previewFile) },
+            onMain = { path ->
+                if (!parameterCaptureGuard.isCurrent(token, id)) {
+                    path?.let { File(it).delete() }
+                    return@submit
+                }
+                if (path == null) {
+                    parameterCaptureGuard.cancel()
+                    recordCaptureSliderView.setCapturePending(false)
+                    Toast.makeText(
+                        context,
+                        if (state.menuLanguage == MenuLanguage.ENGLISH) {
+                            "Unable to capture the current preview. Try again."
+                        } else {
+                            "无法截取当前画面，请重试"
+                        },
+                        Toast.LENGTH_LONG,
+                    ).show()
+                } else {
+                    listener?.onParameterCaptureRequested(
+                        id,
+                        snapshot,
+                        options,
+                        path,
+                        previewAspect,
+                        zoom,
+                    ) ?: recordCaptureSliderView.setCapturePending(false)
+                }
+            },
+        )
+    }
+
+    private fun capturePreviewBitmap(): Bitmap? = runCatching {
+        val sourceWidth = textureView.width.coerceAtLeast(1)
+        val sourceHeight = textureView.height.coerceAtLeast(1)
+        val scale = min(1f, 1600f / max(sourceWidth, sourceHeight).toFloat())
+        textureView.getBitmap(
+            (sourceWidth * scale).roundToInt().coerceAtLeast(1),
+            (sourceHeight * scale).roundToInt().coerceAtLeast(1),
+        )
+    }.getOrNull()
+
+    private data class PixelCrop(val left: Int, val top: Int, val right: Int, val bottom: Int)
+
+    private fun calculateParameterCrop(sourceWidth: Int, sourceHeight: Int): PixelCrop {
+        val viewWidth = textureView.width.coerceAtLeast(1)
+        val viewHeight = textureView.height.coerceAtLeast(1)
+        val cameraFrame = if (isZoneMode) {
+            zoneView.calculatePreviewFrame(width, height)
+        } else {
+            LayoutGeometry.calculate(
+                width,
+                height,
+                resources.displayMetrics.density,
+                state.frameFormat,
+                state.frameLandscape,
+                state.isLeftHanded,
+            ).cameraFrame
+        }
+        val cropLeft = (((cameraFrame.left - textureView.left) / viewWidth) * sourceWidth)
+            .roundToInt().coerceIn(0, sourceWidth - 1)
+        val cropTop = (((cameraFrame.top - textureView.top) / viewHeight) * sourceHeight)
+            .roundToInt().coerceIn(0, sourceHeight - 1)
+        val cropRight = (((cameraFrame.right - textureView.left) / viewWidth) * sourceWidth)
+            .roundToInt().coerceIn(cropLeft + 1, sourceWidth)
+        val cropBottom = (((cameraFrame.bottom - textureView.top) / viewHeight) * sourceHeight)
+            .roundToInt().coerceIn(cropTop + 1, sourceHeight)
+        return PixelCrop(cropLeft, cropTop, cropRight, cropBottom)
+    }
+
+    /** Runs on the I/O dispatcher; owns and recycles [source] and any cropped copy. */
+    private fun writeParameterPreview(source: Bitmap, crop: PixelCrop, file: File): String? {
+        try {
+            val cropped = Bitmap.createBitmap(
+                source,
+                crop.left,
+                crop.top,
+                crop.right - crop.left,
+                crop.bottom - crop.top,
+            )
+            try {
+                file.outputStream().use { output ->
+                    check(cropped.compress(Bitmap.CompressFormat.JPEG, 92, output))
+                }
+                return file.absolutePath
+            } finally {
+                if (cropped !== source) cropped.recycle()
+            }
+        } catch (error: Exception) {
+            file.delete()
+            Log.e("lightstop", "Unable to capture parameter-record preview", error)
+            return null
+        } finally {
+            source.recycle()
+        }
+    }
+
+    fun createParameterRawFile(id: String) = parameterRecordRepository.createPendingRawFile(id)
+
+    fun setParameterGpsEnabled(enabled: Boolean) {
+        parameterRecordToolView.setGpsEnabled(enabled)
+    }
+
+    fun setParameterLocationState(state: ParameterLocationDisplayState) {
+        parameterRecordToolView.setLocationState(state)
+    }
+
+    fun isParameterGpsEnabled(): Boolean = parameterRecordRepository.options.recordGps
+
+    fun completeParameterCapture(draft: ParameterCaptureDraft) {
+        if (parameterCaptureGuard.isCurrent(activeCaptureToken, draft.id)) showParameterEditor(draft)
+    }
+
+    fun discardParameterCapture(draft: ParameterCaptureDraft) {
+        if (!parameterCaptureGuard.cancel(activeCaptureToken, draft.id)) return
+        recordCaptureSliderView.setCapturePending(false)
+        parameterIoDispatcher.execute { parameterRecordRepository.discard(draft) }
+    }
+
+    private fun showParameterEditor(draft: ParameterCaptureDraft) {
+        if (isParameterEditorOpen) return
+        isParameterEditorOpen = true
+        parameterRecordEditorView.open(parameterRecordRepository.applyActiveCategoryDefaults(draft))
+        parameterRecordEditorView.animate().cancel()
+        parameterRecordEditorView.visibility = View.VISIBLE
+        parameterRecordEditorView.bringToFront()
+        val rect = toolsPanelRect(width, height)
+        val landscape = width > height
+        parameterRecordEditorView.translationX = if (landscape) {
+            if (state.isLeftHanded) -rect.width() else rect.width()
+        } else {
+            0f
+        }
+        parameterRecordEditorView.translationY = if (landscape) 0f else rect.height()
+        parameterRecordEditorView.animate()
+            .translationX(0f)
+            .translationY(0f)
+            .setDuration(300L)
+            .setInterpolator(DecelerateInterpolator())
+            .start()
+    }
+
+    private fun closeParameterEditor(resetCapture: Boolean): Boolean {
+        if (!isParameterEditorOpen) return false
+        if (isFilmSelectorOpen) closeFilmSelector(animate = false)
+        isParameterEditorOpen = false
+        val rect = toolsPanelRect(width, height)
+        val landscape = width > height
+        parameterRecordEditorView.animate().cancel()
+        parameterRecordEditorView.animate()
+            .translationX(if (landscape) {
+                if (state.isLeftHanded) -rect.width() else rect.width()
+            } else 0f)
+            .translationY(if (landscape) 0f else rect.height())
+            .setDuration(260L)
+            .setInterpolator(DecelerateInterpolator())
+            .withEndAction {
+                if (!isParameterEditorOpen) {
+                    parameterRecordEditorView.visibility = View.GONE
+                    parameterRecordEditorView.clearDraft()
+                }
+                if (resetCapture) recordCaptureSliderView.setCapturePending(false)
+                if (parameterRecordToolView.recording) bringRecordSliderToFrontIfDialsCollapsed()
+            }
+            .start()
+        return true
+    }
+
+    fun closeParameterEditorFromBack(): Boolean {
+        val draft = parameterRecordEditorView.currentDraft()
+        return when (
+            ParameterEditorBackPolicy.decide(
+                isOpen = isParameterEditorOpen,
+                hasDraft = draft != null,
+                saving = parameterCaptureGuard.isSaving,
+            )
+        ) {
+            ParameterEditorBackAction.NOT_HANDLED -> false
+            ParameterEditorBackAction.CONSUME_SAVING -> true
+            ParameterEditorBackAction.CLOSE_STALE -> closeParameterEditor(resetCapture = true)
+            ParameterEditorBackAction.CLOSE_AND_DISCARD -> {
+                if (draft != null && parameterCaptureGuard.cancel(activeCaptureToken, draft.id)) {
+                    parameterIoDispatcher.execute { parameterRecordRepository.discard(draft) }
+                }
+                closeParameterEditor(resetCapture = true)
+            }
+        }
+    }
+
+    private fun showParameterHistory() {
+        if (isParameterHistoryOpen) return
+        isParameterHistoryOpen = true
+        parameterHistoryView.open()
+        parameterHistoryView.animate().cancel()
+        parameterHistoryView.visibility = View.VISIBLE
+        parameterHistoryView.bringToFront()
+        parameterHistoryView.translationY = -height.toFloat().coerceAtLeast(1f)
+        parameterHistoryView.animate()
+            .translationY(0f)
+            .setDuration(300L)
+            .setInterpolator(DecelerateInterpolator())
+            .start()
+    }
+
+    private fun closeParameterHistory(): Boolean {
+        if (!isParameterHistoryOpen) return false
+        isParameterHistoryOpen = false
+        parameterRecordToolView.invalidate()
+        parameterHistoryView.animate().cancel()
+        parameterHistoryView.animate()
+            .translationY(-height.toFloat().coerceAtLeast(1f))
+            .setDuration(260L)
+            .setInterpolator(DecelerateInterpolator())
+            .withEndAction {
+                if (!isParameterHistoryOpen) parameterHistoryView.visibility = View.GONE
+            }
+            .start()
+        return true
+    }
+
+    fun closeParameterHistoryFromBack(): Boolean {
+        if (!isParameterHistoryOpen) return false
+        if (parameterHistoryView.navigateBack()) return true
+        return closeParameterHistory()
+    }
+
+    private fun setRecordSliderVisible(visible: Boolean) {
+        recordCaptureSliderView.visibility = if (visible) View.VISIBLE else View.GONE
+        recordCaptureSliderView.setCapturePending(false)
+        if (visible) {
+            updateRecordSliderAnchor()
+            bringRecordSliderToFrontIfDialsCollapsed()
+        }
+    }
+
+    private fun updateRecordSliderAnchor() {
+        if (recordCaptureSliderView.visibility != View.VISIBLE) return
+        recordCaptureSliderView.setAnchor(
+            if (isZoneMode) zoneView.recordButtonRect() else instrumentView.recordButtonRect(),
+        )
+    }
+
+    private fun updateAngleMeteringControl(fadeIn: Boolean = false) {
+        if (angleControlSuppressedForModeTransition) {
+            flashDistanceDialView.visibility = View.GONE
+            flashDistanceDialView.collapse()
+            return
+        }
+        val transitionSettled = zoneTransitionFraction <= 0f || zoneTransitionFraction >= 1f
+        val unobstructed = transitionSettled &&
+            !isCalibrationOpen && !isExposurePreviewCalibrationOpen &&
+            !isVignettingCalibrationOpen &&
+            !isCameraManagementOpen && !isCombinationSelectionOpen && !isInformationOpen &&
+            !isSettingsOpen && !isToolsOpen && !isFilmSelectorOpen &&
+            !isParameterEditorOpen && !isParameterHistoryOpen
+        val flashVisible = state.appliedFlashConfiguration != null && unobstructed
+        val visible = state.meteringMode == MeteringMode.ANGLE &&
+            state.meteringPipelineMode != MeteringPipelineMode.FAST &&
+            unobstructed
+        val anchor = if (isZoneMode) zoneView.recordButtonRect() else instrumentView.recordButtonRect()
+        // Keep the pair distinct while pulling it slightly closer to the primary action center.
+        val pairOffset = 38f * resources.displayMetrics.density
+        val angleOffset = if (visible && flashVisible) -pairOffset else 0f
+        val flashOffset = if (visible && flashVisible) pairOffset else 0f
+        updateFlashDistanceControl(flashVisible, anchor, flashOffset)
+        if (!visible) {
+            angleMeteringDialView.animate().cancel()
+            angleControlFadeInAnimating = false
+            angleMeteringDialView.alpha = 1f
+            angleMeteringDialView.visibility = View.GONE
+            angleMeteringDialView.collapse()
+            return
+        }
+        angleMeteringDialView.setAnchor(anchor, angleOffset)
+        angleMeteringDialView.refreshSupport()
+        if (fadeIn) {
+            angleMeteringDialView.animate().cancel()
+            angleControlFadeInAnimating = true
+            angleMeteringDialView.alpha = 0f
+            angleMeteringDialView.visibility = View.VISIBLE
+            angleMeteringDialView.animate()
+                .alpha(1f)
+                .setDuration(160L)
+                .setInterpolator(DecelerateInterpolator())
+                .withEndAction {
+                    angleControlFadeInAnimating = false
+                    angleMeteringDialView.alpha = 1f
+                }
+                .start()
+        } else if (!angleControlFadeInAnimating) {
+            angleMeteringDialView.alpha = 1f
+            angleMeteringDialView.visibility = View.VISIBLE
+        }
+        when {
+            flashDistanceDialView.isExpanded() -> {
+                angleMeteringDialView.visibility = View.INVISIBLE
+                flashDistanceDialView.visibility = View.VISIBLE
+                flashDistanceDialView.bringToFront()
+            }
+
+            angleMeteringDialView.isExpanded() -> {
+                flashDistanceDialView.visibility = View.INVISIBLE
+                angleMeteringDialView.visibility = View.VISIBLE
+                angleMeteringDialView.bringToFront()
+            }
+
+            else -> angleMeteringDialView.bringToFront()
+        }
+        bringRecordSliderToFrontIfDialsCollapsed()
+    }
+
+    private fun bringRecordSliderToFrontIfDialsCollapsed() {
+        if (recordCaptureSliderView.visibility == View.VISIBLE &&
+            !angleMeteringDialView.isExpanded() &&
+            !flashDistanceDialView.isExpanded()
+        ) {
+            recordCaptureSliderView.bringToFront()
+        }
+    }
+
+    private fun updateFlashDistanceControl(
+        visible: Boolean,
+        anchor: RectF,
+        compactCenterOffsetX: Float,
+    ) {
+        if (!visible) {
+            flashDistanceDialView.visibility = View.GONE
+            flashDistanceDialView.collapse()
+            return
+        }
+        flashDistanceDialView.setConfiguration(
+            state.appliedFlashConfiguration,
+            state.distanceMeasurementState,
+        )
+        flashDistanceDialView.setAnchor(anchor, compactCenterOffsetX)
+        flashDistanceDialView.visibility = View.VISIBLE
+        flashDistanceDialView.bringToFront()
+    }
+
+    private fun updateFlashPresentation() {
+        flashDistanceDialView.setConfiguration(
+            state.appliedFlashConfiguration,
+            state.distanceMeasurementState,
+        )
+        instrumentView.invalidate()
+        zoneView.invalidate()
+        flashExposureView.invalidate()
+        updateAngleMeteringControl()
+    }
+
+    private fun suppressAngleControlForModeTransition() {
+        angleControlFadeInRunnable?.let(::removeCallbacks)
+        angleControlFadeInRunnable = null
+        if (angleControlSuppressedForModeTransition) return
+        angleControlSuppressedForModeTransition = true
+        angleControlFadeInAnimating = false
+        angleMeteringDialView.animate().cancel()
+        flashDistanceDialView.visibility = View.GONE
+        flashDistanceDialView.collapse()
+        if (angleMeteringDialView.visibility == View.VISIBLE && angleMeteringDialView.alpha > 0f) {
+            angleMeteringDialView.animate()
+                .alpha(0f)
+                .setDuration(110L)
+                .setInterpolator(DecelerateInterpolator())
+                .withEndAction {
+                    if (angleControlSuppressedForModeTransition) {
+                        angleMeteringDialView.visibility = View.GONE
+                        angleMeteringDialView.collapse()
+                    }
+                }
+                .start()
+        } else {
+            angleMeteringDialView.alpha = 0f
+            angleMeteringDialView.visibility = View.GONE
+            angleMeteringDialView.collapse()
+        }
+    }
+
+    private fun scheduleAngleControlAfterModeTransition() {
+        if (!angleControlSuppressedForModeTransition) return
+        angleControlFadeInRunnable?.let(::removeCallbacks)
+        angleMeteringDialView.animate().cancel()
+        angleMeteringDialView.alpha = 0f
+        angleMeteringDialView.visibility = View.GONE
+        angleMeteringDialView.collapse()
+        val runnable = Runnable {
+            angleControlFadeInRunnable = null
+            angleControlSuppressedForModeTransition = false
+            updateAngleMeteringControl(fadeIn = true)
+        }
+        angleControlFadeInRunnable = runnable
+        postDelayed(runnable, ANGLE_CONTROL_MODE_SWITCH_DELAY_MS)
+    }
+
     fun closeSettings(): Boolean {
         if (isInformationOpen) return closeInformationFromBack()
         if (!isSettingsOpen) return false
@@ -486,10 +2196,62 @@ class MeterLayout @JvmOverloads constructor(
             .setDuration(260L)
             .setInterpolator(DecelerateInterpolator())
             .withEndAction {
-                if (!isSettingsOpen) settingsView.visibility = View.GONE
+                if (!isSettingsOpen) {
+                    settingsView.visibility = View.GONE
+                    settingsView.resetNestedSection()
+                    updateAngleMeteringControl()
+                }
             }
             .start()
         return true
+    }
+
+    internal fun showCombinationSelection(
+        index: Int,
+        count: Int,
+        ready: Boolean,
+        status: String,
+    ) {
+        if (!isCombinationSelectionOpen) {
+            closeSettingsImmediately()
+            closeTools()
+            isCombinationSelectionOpen = true
+            instrumentView.visibility = View.GONE
+            zoneView.visibility = View.GONE
+            combinationSelectionView.visibility = View.VISIBLE
+            combinationSelectionView.bringToFront()
+            updateAngleMeteringControl()
+            requestLayout()
+        }
+        combinationSelectionView.showCandidate(index, count, ready, status)
+    }
+
+    internal fun updateCombinationProbeState(ready: Boolean, status: String) {
+        combinationSelectionView.updateProbeState(ready, status)
+    }
+
+    internal fun closeCombinationSelection(): Boolean {
+        if (!isCombinationSelectionOpen) return false
+        isCombinationSelectionOpen = false
+        combinationSelectionView.visibility = View.GONE
+        instrumentView.visibility = if (isZoneMode) View.GONE else View.VISIBLE
+        zoneView.visibility = if (isZoneMode) View.VISIBLE else View.GONE
+        updateAngleMeteringControl()
+        requestLayout()
+        return true
+    }
+
+    fun closeCombinationSelectionFromBack(): Boolean {
+        if (!isCombinationSelectionOpen) return false
+        listener?.onManualCombinationSelectionCancelled()
+        return true
+    }
+
+    private fun closeSettingsImmediately() {
+        isSettingsOpen = false
+        settingsView.animate().cancel()
+        settingsView.translationY = 0f
+        settingsView.visibility = View.GONE
     }
 
     private fun showInformation(page: InformationView.Page) {
@@ -538,12 +2300,20 @@ class MeterLayout @JvmOverloads constructor(
     }
 
     private fun showCameraManagement(origin: CameraManagementOrigin) {
-        if (isCameraManagementOpen || isZoneMode || zoneTransitionFraction > 0f) return
+        val allowedOverZoneSettings = origin == CameraManagementOrigin.SETTINGS &&
+            settingsOpenedFromZone && isZoneMode && zoneTransitionFraction >= 1f
+        if (isCameraManagementOpen ||
+            (isZoneMode || zoneTransitionFraction > 0f) && !allowedOverZoneSettings
+        ) return
         cameraManagementOrigin = origin
         isCameraManagementOpen = true
         when (origin) {
             CameraManagementOrigin.SETTINGS -> settingsView.visibility = View.GONE
             CameraManagementOrigin.CALIBRATION -> calibrationView.visibility = View.GONE
+            CameraManagementOrigin.PREVIEW_CALIBRATION -> {
+                exposurePreviewCalibrationView.visibility = View.GONE
+                stopPreviewHistogramSampling()
+            }
             CameraManagementOrigin.VIGNETTING -> vignettingCalibrationView.visibility = View.GONE
         }
         cameraManagementView.animate().cancel()
@@ -571,6 +2341,8 @@ class MeterLayout @JvmOverloads constructor(
                     when (cameraManagementOrigin) {
                         CameraManagementOrigin.SETTINGS -> settingsView.bringToFront()
                         CameraManagementOrigin.CALIBRATION -> calibrationView.bringToFront()
+                        CameraManagementOrigin.PREVIEW_CALIBRATION ->
+                            exposurePreviewCalibrationView.bringToFront()
                         CameraManagementOrigin.VIGNETTING ->
                             vignettingCalibrationView.bringToFront()
                     }
@@ -585,6 +2357,15 @@ class MeterLayout @JvmOverloads constructor(
                 calibrationView.visibility = View.VISIBLE
                 calibrationView.invalidate()
             }
+            CameraManagementOrigin.PREVIEW_CALIBRATION -> {
+                exposurePreviewCalibrationView.visibility = View.VISIBLE
+                exposurePreviewCalibrationView.open(
+                    currentCalibrationCameraId(),
+                    state.exposurePreviewExecutionCorrectionEv(currentCalibrationCameraId()),
+                )
+                exposurePreviewCalibrationView.invalidate()
+                startPreviewHistogramSampling()
+            }
             CameraManagementOrigin.VIGNETTING -> {
                 vignettingCalibrationView.visibility = View.VISIBLE
                 vignettingCalibrationView.invalidate()
@@ -596,7 +2377,8 @@ class MeterLayout @JvmOverloads constructor(
     }
 
     fun showCalibration() {
-        if (isCalibrationOpen || isVignettingCalibrationOpen || isCameraManagementOpen ||
+        if (isCalibrationOpen || isExposurePreviewCalibrationOpen ||
+            isVignettingCalibrationOpen || isCameraManagementOpen ||
             isZoneMode || zoneTransitionFraction > 0f
         ) return
         settingsView.animate().cancel()
@@ -626,8 +2408,68 @@ class MeterLayout @JvmOverloads constructor(
         return true
     }
 
+    fun showExposurePreviewCalibration() {
+        if (isExposurePreviewCalibrationOpen || isCalibrationOpen ||
+            isVignettingCalibrationOpen || isCameraManagementOpen ||
+            isZoneMode || zoneTransitionFraction > 0f
+        ) return
+        settingsView.animate().cancel()
+        settingsView.visibility = View.GONE
+        isExposurePreviewCalibrationOpen = true
+        instrumentView.visibility = View.GONE
+        exposurePreviewCalibrationView.visibility = View.VISIBLE
+        exposurePreviewCalibrationView.bringToFront()
+        val cameraId = currentCalibrationCameraId()
+        exposurePreviewCalibrationView.open(
+            cameraId,
+            state.exposurePreviewExecutionCorrectionEv(cameraId),
+        )
+        startPreviewHistogramSampling()
+        updateBackground()
+        requestLayout()
+    }
+
+    fun closeExposurePreviewCalibration(): Boolean {
+        if (!isExposurePreviewCalibrationOpen) return false
+        exposurePreviewCalibrationView.close()
+        stopPreviewHistogramSampling()
+        isExposurePreviewCalibrationOpen = false
+        exposurePreviewCalibrationView.visibility = View.GONE
+        instrumentView.visibility = View.VISIBLE
+        settingsView.translationY = 0f
+        settingsView.visibility = View.VISIBLE
+        settingsView.bringToFront()
+        isSettingsOpen = true
+        updateBackground()
+        requestLayout()
+        invalidate()
+        return true
+    }
+
+    fun completeExposurePreviewCalibration(correctionEv: Double) {
+        if (!isExposurePreviewCalibrationOpen) return
+        exposurePreviewCalibrationView.showSaved(correctionEv)
+        closeExposurePreviewCalibration()
+    }
+
+    private fun currentCalibrationCameraId(): String =
+        state.cameraInfo.calibrationCameraId
+            .ifBlank { state.selectedCameraId }
+            .ifBlank { state.currentCamera()?.cameraId.orEmpty() }
+            .ifBlank { "0" }
+
+    private fun startPreviewHistogramSampling() {
+        removeCallbacks(previewHistogramSampler)
+        post(previewHistogramSampler)
+    }
+
+    private fun stopPreviewHistogramSampling() {
+        removeCallbacks(previewHistogramSampler)
+    }
+
     fun showVignettingCalibration() {
-        if (isVignettingCalibrationOpen || isCalibrationOpen || isCameraManagementOpen ||
+        if (isVignettingCalibrationOpen || isCalibrationOpen ||
+            isExposurePreviewCalibrationOpen || isCameraManagementOpen ||
             isZoneMode || zoneTransitionFraction > 0f
         ) return
         settingsView.animate().cancel()
@@ -669,7 +2511,7 @@ class MeterLayout @JvmOverloads constructor(
     }
 
     fun resumeZoneTracking() {
-        if (isZoneMode) zoneMarkerTracker.start(zoneView.session.markers)
+        if (isZoneMode && !isFilmNegativeOpen) zoneMarkerTracker.start(zoneView.session.markers)
     }
 
     fun offerZoneTrackingFrame(frame: ZoneTrackingFrame) {
@@ -688,6 +2530,94 @@ class MeterLayout @JvmOverloads constructor(
         return zoneView.completeMeasurement(reading)
     }
 
+    /** Called only when the resident preview/YUV stream is live again (or never stopped). */
+    fun resumeZoneVisualTrackingAfterMetering() {
+        zoneMarkerTracker.resumeVisualTrackingAfterMetering()
+    }
+
+    private fun suspendZoneVisualTrackingForMetering() {
+        zoneView.freezeMarkerDisplayPositions()
+        zoneMarkerTracker.onMeteringStateChanged(true)
+    }
+
+    /** Uses the point's latest tracked position and always enables preview-to-RAW registration. */
+    fun beginZoneRemeasure(markerId: Int): ZoneMeteringTarget? {
+        val marker = zoneView.beginRemeasure(markerId) ?: return null
+        suspendZoneVisualTrackingForMetering()
+        return zoneMeteringTarget(marker)
+    }
+
+    /** Freezes only points currently visible in the film frame for one shared RAW batch. */
+    fun beginZoneRemeasureBatch(markerIds: List<Int>): List<ZoneMeteringRequest> {
+        if (zoneView.session.pendingMarkerId != null) return emptyList()
+        val requestedIds = markerIds.toSet()
+        val requests = zoneView.session.markers.mapNotNull { marker ->
+            if (marker.id !in requestedIds || marker.ev100 == null ||
+                marker.trackingState == ZoneTrackingState.LOST ||
+                marker.normalizedX !in 0f..1f || marker.normalizedY !in 0f..1f
+            ) {
+                return@mapNotNull null
+            }
+            ZoneMeteringRequest(marker.id, zoneMeteringTarget(marker))
+        }
+        if (requests.isNotEmpty()) suspendZoneVisualTrackingForMetering()
+        return requests
+    }
+
+    fun completeZoneRemeasureBatch(results: List<ZoneMeteringResult>): Int {
+        zoneMarkerTracker.onMeteringStateChanged(false)
+        return zoneView.completeRemeasurements(results).size
+    }
+
+    fun failZoneRemeasureBatch() {
+        zoneMarkerTracker.onMeteringStateChanged(false)
+        zoneView.invalidate()
+    }
+
+    /** Zone readings cannot survive a change to the per-camera metering calibration. */
+    fun invalidateZoneMeasurementsAfterCalibration() {
+        zoneView.session.clear()
+        zoneMarkerTracker.clearMarkers()
+        zoneView.invalidate()
+    }
+
+    private companion object {
+        const val HISTOGRAM_SAMPLE_WIDTH = 160
+        const val HISTOGRAM_SAMPLE_HEIGHT = 90
+        const val HISTOGRAM_SAMPLE_INTERVAL_MS = 500L
+    }
+
+    fun currentExposurePreviewSelection(): ExposurePreviewSelection? {
+        val sceneEv100: Double
+        val selectedExposureEv100: Double
+        if (isZoneMode) {
+            sceneEv100 = zoneView.currentPreviewCalibratedMeanEv100() ?: return null
+            selectedExposureEv100 = ExposurePreviewMath.exposureEv100(
+                apertureCoordinate = zoneView.session.apertureCoordinate,
+                shutterCoordinate = zoneView.session.shutterCoordinate,
+                iso = zoneView.session.iso,
+            )
+        } else {
+            val reading = state.lastNormalReading ?: return null
+            sceneEv100 = state.previewCalibratedSceneEv100(
+                reading.sceneEv100,
+                reading.source,
+            )
+            // This is the final combined EV driving both parameter rows. Reading their animated
+            // centers here can capture the previous frame immediately after a new measurement.
+            selectedExposureEv100 = state.effectiveEv100 ?: return null
+        }
+        if (!sceneEv100.isFinite() || !selectedExposureEv100.isFinite()) {
+            return null
+        }
+        return ExposurePreviewSelection(
+            previewCalibratedSceneEv100 = sceneEv100,
+            selectedExposureEv100 = selectedExposureEv100,
+            previewCorrectionEv = state.previewCameraCorrectionEv(),
+            executionCorrectionEv = state.exposurePreviewExecutionCorrectionEv(),
+        )
+    }
+
     fun failZoneMeasurement(): ZoneMarker? {
         zoneMarkerTracker.onMeteringStateChanged(false)
         return zoneView.failMeasurement()?.also {
@@ -697,6 +2627,7 @@ class MeterLayout @JvmOverloads constructor(
 
     private fun prepareZoneTransition() {
         if (zoneTransitionPrepared) return
+        if (isToolsOpen) closeTools()
         zoneTransitionPrepared = true
         zoneView.enter()
         zoneView.visibility = View.VISIBLE
@@ -707,6 +2638,7 @@ class MeterLayout @JvmOverloads constructor(
 
     private fun applyZoneTransition(fraction: Float) {
         val value = fraction.coerceIn(0f, 1f)
+        if (value > 0f && value < 1f) suppressAngleControlForModeTransition()
         if (value > 0f) prepareZoneTransition()
         zoneTransitionFraction = value
         if (value < 1f) instrumentView.visibility = View.VISIBLE
@@ -749,6 +2681,13 @@ class MeterLayout @JvmOverloads constructor(
         }
     }
 
+    private fun exitZoneForAction(action: () -> Unit) {
+        settingsOpenedFromZone = false
+        closeSettings()
+        pendingActionAfterZoneExit = action
+        animateZoneTransition(0f)
+    }
+
     private fun finishZoneTransition(target: Float) {
         applyZoneTransition(target)
         if (target >= 1f) {
@@ -770,6 +2709,14 @@ class MeterLayout @JvmOverloads constructor(
             zoneMarkerTracker.stop()
             listener?.onZoneTrackingActiveChanged(false)
         }
+        val pending = pendingActionAfterZoneExit
+        pendingActionAfterZoneExit = null
+        pending?.invoke()
+        if (recordCaptureSliderView.visibility == View.VISIBLE && !isParameterEditorOpen) {
+            updateRecordSliderAnchor()
+            bringRecordSliderToFrontIfDialsCollapsed()
+        }
+        scheduleAngleControlAfterModeTransition()
         requestLayout()
     }
 
@@ -780,15 +2727,25 @@ class MeterLayout @JvmOverloads constructor(
         start.bottom + (end.bottom - start.bottom) * fraction,
     )
 
-    private fun previewTextureFrame(cameraFrame: RectF, width: Int, height: Int): RectF {
-        val previewSize = state.cameraInfo.previewSize
-        val longAspect = if (previewSize != null && previewSize.width > 0 && previewSize.height > 0) {
-            max(previewSize.width, previewSize.height).toFloat() /
-                min(previewSize.width, previewSize.height).toFloat()
-        } else {
-            16f / 9f
-        }
-        val displayedAspect = if (width > height) longAspect else 1f / longAspect
+    private fun previewTextureFrame(
+        cameraFrame: RectF,
+        width: Int,
+        height: Int,
+        showFullPreview: Boolean = false,
+    ): RectF {
+        // Vignetting calibration needs the entire camera output, including the corners. Its
+        // overlay is already fitted to the stream aspect, so never enlarge/crop this TextureView.
+        if (showFullPreview) return RectF(cameraFrame)
+        val info = state.cameraInfo
+        val relativeRotation = CameraPreviewTransform.relativeRotationDegrees(
+            sensorOrientationDegrees = info.sensorOrientationDegrees,
+            displayRotation = textureView.display?.rotation ?: Surface.ROTATION_0,
+            lensFacing = info.lensFacing,
+        )
+        val displayedAspect = PreviewOutputGeometry.displayAspect(
+            landscapeAspect = state.currentPreviewLandscapeAspect(),
+            relativeRotationDegrees = relativeRotation,
+        )
         val frameAspect = cameraFrame.width() / cameraFrame.height().coerceAtLeast(1f)
         return if (frameAspect > displayedAspect) {
             val textureHeight = cameraFrame.width() / displayedAspect
@@ -809,9 +2766,39 @@ class MeterLayout @JvmOverloads constructor(
         }
     }
 
+    /**
+     * Keeps the native TextureView layer identical while Normal and Zone animate between their
+     * differently shaped viewports. Resizing a live SurfaceTexture on every animation frame makes
+     * some vendor compositors keep the previous sampling geometry, leaving the destination mode
+     * stretched until the Activity is backgrounded. The union is only a transport surface: each
+     * mode still clips and maps through its own [cameraFrame].
+     */
+    private fun normalZonePreviewTextureFrame(
+        normalCameraFrame: RectF,
+        width: Int,
+        height: Int,
+    ): RectF {
+        val zoneCameraFrame = zoneView.calculatePreviewFrame(width, height)
+        val coverageFrame = RectF(
+            minOf(normalCameraFrame.left, zoneCameraFrame.left),
+            minOf(normalCameraFrame.top, zoneCameraFrame.top),
+            maxOf(normalCameraFrame.right, zoneCameraFrame.right),
+            maxOf(normalCameraFrame.bottom, zoneCameraFrame.bottom),
+        )
+        return previewTextureFrame(coverageFrame, width, height)
+    }
+
     private fun zoneMeteringTarget(marker: ZoneMarker): ZoneMeteringTarget {
         val cameraFrame = zoneView.calculatePreviewFrame(width, height)
-        val textureFrame = previewTextureFrame(cameraFrame, width, height)
+        val normalCameraFrame = LayoutGeometry.calculate(
+            width,
+            height,
+            resources.displayMetrics.density,
+            state.frameFormat,
+            state.frameLandscape,
+            state.isLeftHanded,
+        ).cameraFrame
+        val textureFrame = normalZonePreviewTextureFrame(normalCameraFrame, width, height)
         val screenX = cameraFrame.left + marker.normalizedX * cameraFrame.width()
         val screenY = cameraFrame.top + marker.normalizedY * cameraFrame.height()
         return ZoneMeteringTarget(
@@ -834,9 +2821,17 @@ class MeterLayout @JvmOverloads constructor(
         )
     }
 
+    private fun localized(chinese: String, english: String): String =
+        if (state.menuLanguage == MenuLanguage.ENGLISH) english else chinese
+
     override fun onDetachedFromWindow() {
         zoneAnimator?.cancel()
+        stopPreviewHistogramSampling()
+        angleControlFadeInRunnable?.let(::removeCallbacks)
+        angleControlFadeInRunnable = null
+        angleMeteringDialView.animate().cancel()
         zoneMarkerTracker.release()
+        parameterIoDispatcher.shutdown()
         super.onDetachedFromWindow()
     }
 

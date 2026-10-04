@@ -1,20 +1,16 @@
 package com.lightmeter.rawmeter
 
 import android.graphics.Bitmap
-import android.graphics.Color
 import android.graphics.Rect
 import android.graphics.RectF
 import android.hardware.camera2.CameraCharacteristics
-import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureResult
 import android.media.Image
 import android.util.Log
-import java.util.TreeMap
 import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
-import kotlin.math.sqrt
 
 internal data class MeteringFrameStat(
     val ev100: Double,
@@ -23,24 +19,22 @@ internal data class MeteringFrameStat(
     val captureIso: Int,
     val exposureTimeNs: Long,
     val aperture: Float,
+    /** EV before the user offset or processed response curve was applied. */
+    val ev100BeforeUserCalibration: Double = ev100,
+    /** The exact user offset/response correction used to produce [ev100]. */
+    val appliedUserCorrectionEv: Double = 0.0,
+    /** RAW channel medians pinned at the white level; drives exposure retry, not clipping alone. */
+    val saturatedChannelCount: Int = 0,
+    /** Valid RAW samples used for the median, for quality assessment. */
+    val sampleCount: Int = 0,
 )
 
-internal data class MeasurementAccumulator(
-    val id: Int,
-    val expectedFrames: Int,
-    val frameAspect: Float,
-    val zoom: Float,
-    val meteringMode: MeteringMode,
-    val target: ZoneMeteringTarget? = null,
-    val previewReference: PreviewLumaReference? = null,
-    val screenToSensorRotationDegrees: Int = 0,
-    val startedAtNs: Long = System.nanoTime(),
-    val images: MutableMap<Long, Image> = TreeMap(),
-    val results: MutableMap<Long, CaptureResult> = TreeMap(),
-    val stats: MutableList<MeteringFrameStat> = mutableListOf(),
-    var submittedFrames: Int = 0,
-    var completedFrames: Int = 0,
-    var rawMeterPoint: RawMeterPoint? = null,
+internal data class RawColorSample(
+    val red: Double,
+    val green: Double,
+    val blue: Double,
+    val clippedFraction: Double,
+    val sampleCount: Int,
 )
 
 /** CPU-only metering math kept outside CameraController's session lifecycle. */
@@ -55,14 +49,17 @@ internal object MeteringAnalysis {
         meteringMode: MeteringMode,
         calibrationStore: CameraCalibrationStore,
         target: ZoneMeteringTarget? = null,
+        meteringRoiFraction: Float? = null,
     ): MeteringFrameStat? {
         val centerX = target?.previewX ?: 0.5f
         val centerY = target?.previewY ?: 0.5f
+        val lumaDecoder = ProcessedLumaMetadata.decoder(result)
         val spot = analyzePreviewRegion(
             bitmap,
-            SPOT_ROI_FRACTION,
+            spotRoiFraction(meteringMode, meteringRoiFraction),
             centerX,
             centerY,
+            lumaDecoder,
         ) ?: return null
         val region = if (meteringMode == MeteringMode.CENTER_WEIGHTED) {
             val wide = analyzePreviewRegion(
@@ -70,6 +67,7 @@ internal object MeteringAnalysis {
                 CENTER_WEIGHTED_ROI_FRACTION,
                 centerX,
                 centerY,
+                lumaDecoder,
             ) ?: return null
             PreviewRegionStat(
                 luma = spot.luma * CENTER_SPOT_WEIGHT + wide.luma * CENTER_WIDE_WEIGHT,
@@ -88,8 +86,13 @@ internal object MeteringAnalysis {
             ?: return null
         val seconds = exposureTime / 1_000_000_000.0
         val cameraEv = log2(aperture * aperture / seconds * 100.0 / sensitivity)
-        val sceneEv = cameraEv + log2(region.luma / RAW_REFERENCE_LEVEL) +
-            calibrationStore.userCorrection(cameraId.ifBlank { "0" })
+        val beforeUserCalibration = cameraEv + log2(region.luma / RAW_REFERENCE_LEVEL)
+        val userCorrection = calibrationStore.responseCorrection(
+                cameraId.ifBlank { "0" },
+                MeteringSource.ISP_PREVIEW,
+                region.luma,
+            )
+        val sceneEv = beforeUserCalibration + userCorrection
         return MeteringFrameStat(
             ev100 = sceneEv,
             luma = region.luma,
@@ -97,6 +100,70 @@ internal object MeteringAnalysis {
             captureIso = sensitivity,
             exposureTimeNs = exposureTime,
             aperture = aperture,
+            ev100BeforeUserCalibration = beforeUserCalibration,
+            appliedUserCorrectionEv = userCorrection,
+        )
+    }
+
+    fun analyzeYuvPreview(
+        image: Image,
+        result: CaptureResult,
+        characteristics: CameraCharacteristics,
+        cameraId: String,
+        meteringMode: MeteringMode,
+        calibrationStore: CameraCalibrationStore,
+        meteringRoiFraction: Float? = null,
+    ): MeteringFrameStat? {
+        if (image.format != android.graphics.ImageFormat.YUV_420_888) return null
+        if (image.planes.size < 3) return null
+        val lumaDecoder = ProcessedLumaMetadata.decoder(result)
+        val yuvEncoding = ProcessedLumaMetadata.yuvEncoding(image)
+        val spot = analyzeYuvRegion(
+            image,
+            spotRoiFraction(meteringMode, meteringRoiFraction),
+            lumaDecoder,
+            yuvEncoding,
+        ) ?: return null
+        val region = if (meteringMode == MeteringMode.CENTER_WEIGHTED) {
+            val wide = analyzeYuvRegion(
+                image,
+                CENTER_WEIGHTED_ROI_FRACTION,
+                lumaDecoder,
+                yuvEncoding,
+            ) ?: return null
+            PreviewRegionStat(
+                luma = spot.luma * CENTER_SPOT_WEIGHT + wide.luma * CENTER_WIDE_WEIGHT,
+                clipped = spot.clipped * CENTER_SPOT_WEIGHT +
+                    wide.clipped * CENTER_WIDE_WEIGHT,
+            )
+        } else {
+            spot
+        }
+        if (!region.luma.isFinite() || region.luma <= 0.00001) return null
+        val exposureTime = result.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: return null
+        val sensitivity = result.get(CaptureResult.SENSOR_SENSITIVITY) ?: return null
+        val aperture = result.get(CaptureResult.LENS_APERTURE)
+            ?: characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_APERTURES)
+                ?.firstOrNull()
+            ?: return null
+        val seconds = exposureTime / 1_000_000_000.0
+        val cameraEv = log2(aperture * aperture / seconds * 100.0 / sensitivity)
+        val beforeUserCalibration = cameraEv + log2(region.luma / RAW_REFERENCE_LEVEL)
+        val userCorrection = calibrationStore.responseCorrection(
+                cameraId.ifBlank { "0" },
+                MeteringSource.YUV_PREVIEW,
+                region.luma,
+            )
+        val sceneEv = beforeUserCalibration + userCorrection
+        return MeteringFrameStat(
+            ev100 = sceneEv,
+            luma = region.luma,
+            clipped = region.clipped,
+            captureIso = sensitivity,
+            exposureTimeNs = exposureTime,
+            aperture = aperture,
+            ev100BeforeUserCalibration = beforeUserCalibration,
+            appliedUserCorrectionEv = userCorrection,
         )
     }
 
@@ -112,15 +179,18 @@ internal object MeteringAnalysis {
         rawMeterPoint: RawMeterPoint? = null,
         vignettingStore: VignettingCalibrationStore? = null,
         applyVignettingCalibration: Boolean = false,
+        meteringRoiFraction: Float? = null,
     ): MeteringFrameStat? {
         val plane = image.planes.firstOrNull() ?: return null
         val black = result.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)
             ?: fixedBlackLevels(characteristics)
+            ?: return null
         val white = result.get(CaptureResult.SENSOR_DYNAMIC_WHITE_LEVEL)
             ?: characteristics.get(CameraCharacteristics.SENSOR_INFO_WHITE_LEVEL)
             ?: return null
         val cfa = characteristics.get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT)
-            ?: CameraMetadata.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_RGGB
+            ?.takeIf(RawSensorFormatPolicy::isBayerCfa)
+            ?: return null
         val bufferOffset = plane.buffer.position()
         val spotValues = analyzeRawRegion(
             image = image,
@@ -131,8 +201,9 @@ internal object MeteringAnalysis {
             activeArray = cameraInfo.activeArray,
             frameAspect = frameAspect,
             zoom = zoom,
-            roiFraction = SPOT_ROI_FRACTION,
+            roiFraction = spotRoiFraction(meteringMode, meteringRoiFraction),
             rawMeterPoint = rawMeterPoint,
+            preservePhysicalAngle = meteringMode == MeteringMode.ANGLE,
         )
         val values = if (meteringMode == MeteringMode.CENTER_WEIGHTED) {
             blendRawRegions(
@@ -148,6 +219,7 @@ internal object MeteringAnalysis {
                     zoom = zoom,
                     roiFraction = CENTER_WEIGHTED_ROI_FRACTION,
                     rawMeterPoint = rawMeterPoint,
+                    preservePhysicalAngle = false,
                 ),
             )
         } else {
@@ -182,7 +254,7 @@ internal object MeteringAnalysis {
         }
         val vignettingGain = if (applyVignettingCalibration && rawMeterPoint != null) {
             vignettingStore?.gainAt(
-                cameraId = cameraInfo.cameraId,
+                cameraId = cameraInfo.calibrationCameraId,
                 sensorX = rawMeterPoint.sensorX,
                 sensorY = rawMeterPoint.sensorY,
                 imageWidth = image.width,
@@ -202,16 +274,21 @@ internal object MeteringAnalysis {
             ?: return null
         val seconds = exposureTime / 1_000_000_000.0
         val cameraEv = log2(aperture * aperture / seconds * 100.0 / sensitivity)
-        val userCalibrationEv = calibrationStore.userCorrection(cameraInfo.cameraId)
-        val calibrationEv = calibrationStore.totalCorrection(cameraInfo.cameraId)
+        val userCalibrationEv = calibrationStore.userCorrection(
+            cameraInfo.calibrationCameraId,
+            MeteringSource.RAW,
+        )
+        val calibrationEv = calibrationStore.totalCorrection(
+            cameraInfo.calibrationCameraId,
+            MeteringSource.RAW,
+        )
         val baselineCalibrationEv = calibrationEv - userCalibrationEv
         val sceneEv = cameraEv + log2(luma / RAW_REFERENCE_LEVEL) + calibrationEv
-        val postRawBoost = result.get(CaptureResult.CONTROL_POST_RAW_SENSITIVITY_BOOST) ?: 100
-        val neutralPoint = result.get(CaptureResult.SENSOR_NEUTRAL_COLOR_POINT)
-            ?.joinToString(prefix = "[", postfix = "]") { it.toString() }
-            ?: "unavailable"
-        Log.e(
-            TAG,
+        MeterDiagnostics.log(TAG) {
+            val postRawBoost = result.get(CaptureResult.CONTROL_POST_RAW_SENSITIVITY_BOOST) ?: 100
+            val neutralPoint = result.get(CaptureResult.SENSOR_NEUTRAL_COLOR_POINT)
+                ?.joinToString(prefix = "[", postfix = "]") { it.toString() }
+                ?: "unavailable"
             "RAW frame diagnostics: r=${values[0]} g1=${values[1]} g2=${values[2]} " +
                 "b=${values[3]} legacyLuma=$legacyLuma colorLuma=$baseLuma " +
                 "vignettingGain=$vignettingGain correctedLuma=$luma " +
@@ -222,8 +299,8 @@ internal object MeteringAnalysis {
                 "postRawBoost=$postRawBoost neutral=$neutralPoint cameraEv=$cameraEv " +
                 "baselineCalibrationEv=$baselineCalibrationEv " +
                 "userCalibrationEv=$userCalibrationEv calibrationEv=$calibrationEv " +
-                "sceneEv=$sceneEv mode=$meteringMode",
-        )
+                "sceneEv=$sceneEv mode=$meteringMode"
+        }
         return MeteringFrameStat(
             ev100 = sceneEv,
             luma = luma,
@@ -231,6 +308,56 @@ internal object MeteringAnalysis {
             captureIso = sensitivity,
             exposureTimeNs = exposureTime,
             aperture = aperture,
+            ev100BeforeUserCalibration = cameraEv + log2(luma / RAW_REFERENCE_LEVEL) + baselineCalibrationEv,
+            appliedUserCorrectionEv = userCalibrationEv,
+            saturatedChannelCount = (0..3).count {
+                values[it] >= RawExposureRetryPolicy.CHANNEL_SATURATION_LEVEL
+            },
+            sampleCount = values[5].toInt(),
+        )
+    }
+
+    /** Reads a centered, black-level-corrected RAW patch without applying AWB gains. */
+    fun analyzeRawColorSample(
+        image: Image,
+        result: CaptureResult,
+        characteristics: CameraCharacteristics,
+        activeArray: Rect?,
+        frameAspect: Float,
+        zoom: Float,
+        roiFraction: Float = 0.24f,
+    ): RawColorSample? {
+        val plane = image.planes.firstOrNull() ?: return null
+        val black = result.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)
+            ?: fixedBlackLevels(characteristics)
+            ?: return null
+        val white = result.get(CaptureResult.SENSOR_DYNAMIC_WHITE_LEVEL)
+            ?: characteristics.get(CameraCharacteristics.SENSOR_INFO_WHITE_LEVEL)
+            ?: return null
+        val cfa = characteristics.get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT)
+            ?.takeIf(RawSensorFormatPolicy::isBayerCfa)
+            ?: return null
+        val values = analyzeRawRegion(
+            image = image,
+            bufferOffset = plane.buffer.position(),
+            cfa = cfa,
+            black = black,
+            white = white,
+            activeArray = activeArray,
+            frameAspect = frameAspect,
+            zoom = zoom,
+            roiFraction = roiFraction.coerceIn(0.08f, 0.5f),
+            rawMeterPoint = null,
+        )
+        if (values.size < 6 || values[5] < 64.0) return null
+        val green = (values[1] + values[2]) * 0.5
+        if (!values[0].isFinite() || !green.isFinite() || !values[3].isFinite()) return null
+        return RawColorSample(
+            red = values[0],
+            green = green,
+            blue = values[3],
+            clippedFraction = values[4].coerceIn(0.0, 1.0),
+            sampleCount = values[5].roundToInt(),
         )
     }
 
@@ -239,79 +366,17 @@ internal object MeteringAnalysis {
         frameAspect: Float,
         zoom: Float,
         target: ZoneMeteringTarget,
-    ): PreviewLumaReference? {
-        if (frame.width <= 1 || frame.height <= 1 ||
-            frame.luma.size < frame.width * frame.height
-        ) return null
-        val rotation = normalizedRotation(frame.clockwiseRotationDegrees)
-        val rotated = rotation == 90 || rotation == 270
-        val orientedWidth = if (rotated) frame.height else frame.width
-        val orientedHeight = if (rotated) frame.width else frame.height
-        val crop = centeredCrop(
-            RectF(0f, 0f, orientedWidth.toFloat(), orientedHeight.toFloat()),
-            frameAspect,
-            zoom,
-        )
-        val gridSize = RAW_MATCH_GRID_SIZE
-        val halfSpan = referenceHalfSpan(target.frameX, target.frameY)
-        val samples = FloatArray(gridSize * gridSize)
-        for (row in 0 until gridSize) {
-            val offsetY = normalizedGridOffset(row, gridSize) * halfSpan
-            for (column in 0 until gridSize) {
-                val offsetX = normalizedGridOffset(column, gridSize) * halfSpan
-                val screenX = (target.frameX + offsetX).coerceIn(0f, 1f)
-                val screenY = (target.frameY + offsetY).coerceIn(0f, 1f)
-                val orientedX = crop.left + screenX * crop.width()
-                val orientedY = crop.top + screenY * crop.height()
-                samples[row * gridSize + column] = sampleRotatedLuma(
-                    frame,
-                    orientedX,
-                    orientedY,
-                    orientedWidth,
-                    orientedHeight,
-                    rotation,
-                )
-            }
-        }
-        return if (standardDeviation(samples) >= MIN_ISP_REFERENCE_STD_DEV) {
-            PreviewLumaReference(samples, gridSize, halfSpan)
-        } else {
-            null
-        }
-    }
+    ): PreviewLumaReference? = RawPreviewRegistration.createReference(
+        frame = frame,
+        frameAspect = frameAspect,
+        zoom = zoom,
+        target = target,
+    )
 
     fun createPreviewReference(
         bitmap: Bitmap,
         target: ZoneMeteringTarget,
-    ): PreviewLumaReference? {
-        if (bitmap.width <= 1 || bitmap.height <= 1) return null
-        val gridSize = RAW_MATCH_GRID_SIZE
-        val halfSpan = referenceHalfSpan(target.frameX, target.frameY)
-        val samples = FloatArray(gridSize * gridSize)
-        for (row in 0 until gridSize) {
-            val frameOffsetY = normalizedGridOffset(row, gridSize) * halfSpan
-            for (column in 0 until gridSize) {
-                val frameOffsetX = normalizedGridOffset(column, gridSize) * halfSpan
-                val previewX = (target.previewX +
-                    frameOffsetX * target.previewFrameWidthFraction).coerceIn(0f, 1f)
-                val previewY = (target.previewY +
-                    frameOffsetY * target.previewFrameHeightFraction).coerceIn(0f, 1f)
-                val pixel = bitmap.getPixel(
-                    (previewX * (bitmap.width - 1)).roundToInt(),
-                    (previewY * (bitmap.height - 1)).roundToInt(),
-                )
-                samples[row * gridSize + column] =
-                    Color.red(pixel) * 0.2126f +
-                    Color.green(pixel) * 0.7152f +
-                    Color.blue(pixel) * 0.0722f
-            }
-        }
-        return if (standardDeviation(samples) >= MIN_ISP_REFERENCE_STD_DEV) {
-            PreviewLumaReference(samples, gridSize, halfSpan)
-        } else {
-            null
-        }
-    }
+    ): PreviewLumaReference? = RawPreviewRegistration.createReference(bitmap, target)
 
     fun resolveRawMeteringPoint(
         image: Image,
@@ -322,101 +387,17 @@ internal object MeteringAnalysis {
         zoom: Float,
         target: ZoneMeteringTarget,
         reference: PreviewLumaReference?,
-        screenToSensorRotationDegrees: Int,
-    ): RawMeterPoint {
-        val plane = image.planes.firstOrNull()
-        val crop = rawMeterCrop(
-            image.width,
-            image.height,
-            cameraInfo.activeArray,
-            frameAspect,
-            zoom,
-        )
-        val approximate = rawPointForScreenCoordinate(
-            target.frameX,
-            target.frameY,
-            crop,
-            screenToSensorRotationDegrees,
-        )
-        if (plane == null || reference == null ||
-            reference.gridSize <= 1 ||
-            reference.samples.size != reference.gridSize * reference.gridSize
-        ) {
-            return approximate
-        }
-        val black = result.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)
-            ?: fixedBlackLevels(characteristics)
-        val white = result.get(CaptureResult.SENSOR_DYNAMIC_WHITE_LEVEL)
-            ?: characteristics.get(CameraCharacteristics.SENSOR_INFO_WHITE_LEVEL)
-            ?: return approximate
-        val cfa = characteristics.get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT)
-            ?: CameraMetadata.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_RGGB
-        val sampler = RawGreenSampler(
-            image = image,
-            bufferOffset = plane.buffer.position(),
-            cfa = cfa,
-            black = black,
-            white = white,
-        )
-
-        var bestX = target.frameX
-        var bestY = target.frameY
-        var bestCorrelation = Double.NEGATIVE_INFINITY
-        var bestAdjusted = Double.NEGATIVE_INFINITY
-
-        fun consider(candidateX: Float, candidateY: Float) {
-            if (candidateX !in 0f..1f || candidateY !in 0f..1f) return
-            val rawSamples = sampleRawFeature(
-                sampler,
-                crop,
-                candidateX,
-                candidateY,
-                reference,
-                screenToSensorRotationDegrees,
-            ) ?: return
-            val correlation = normalizedCorrelation(reference.samples, rawSamples)
-            if (!correlation.isFinite()) return
-            val distanceX = candidateX - target.frameX
-            val distanceY = candidateY - target.frameY
-            val normalizedDistanceSquared =
-                (distanceX * distanceX + distanceY * distanceY) /
-                    (RAW_MATCH_SEARCH_RADIUS * RAW_MATCH_SEARCH_RADIUS)
-            val adjusted = correlation - RAW_MATCH_DISTANCE_PENALTY * normalizedDistanceSquared
-            if (adjusted > bestAdjusted) {
-                bestAdjusted = adjusted
-                bestCorrelation = correlation
-                bestX = candidateX
-                bestY = candidateY
-            }
-        }
-
-        for (row in -RAW_MATCH_COARSE_STEPS..RAW_MATCH_COARSE_STEPS) {
-            for (column in -RAW_MATCH_COARSE_STEPS..RAW_MATCH_COARSE_STEPS) {
-                consider(
-                    target.frameX + column * RAW_MATCH_COARSE_STEP,
-                    target.frameY + row * RAW_MATCH_COARSE_STEP,
-                )
-            }
-        }
-        val coarseX = bestX
-        val coarseY = bestY
-        for (row in -RAW_MATCH_FINE_STEPS..RAW_MATCH_FINE_STEPS) {
-            for (column in -RAW_MATCH_FINE_STEPS..RAW_MATCH_FINE_STEPS) {
-                consider(
-                    coarseX + column * RAW_MATCH_FINE_STEP,
-                    coarseY + row * RAW_MATCH_FINE_STEP,
-                )
-            }
-        }
-        if (bestCorrelation < MIN_RAW_MATCH_CORRELATION) return approximate
-        val resolved = rawPointForScreenCoordinate(
-            bestX,
-            bestY,
-            crop,
-            screenToSensorRotationDegrees,
-        )
-        return resolved.copy(matchScore = bestCorrelation)
-    }
+        screenToSensorTransform: ScreenToSensorCoordinateTransform,
+    ): RawMeterPoint = RawPreviewRegistration.resolve(
+        image = image,
+        result = result,
+        characteristics = characteristics,
+        cameraInfo = cameraInfo,
+        zoom = zoom,
+        target = target,
+        reference = reference,
+        screenToSensorTransform = screenToSensorTransform,
+    )
 
     fun createVignettingCalibrationMap(
         image: Image,
@@ -427,11 +408,13 @@ internal object MeteringAnalysis {
         val plane = image.planes.firstOrNull() ?: return null
         val black = result.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)
             ?: fixedBlackLevels(characteristics)
+            ?: return null
         val white = result.get(CaptureResult.SENSOR_DYNAMIC_WHITE_LEVEL)
             ?: characteristics.get(CameraCharacteristics.SENSOR_INFO_WHITE_LEVEL)
             ?: return null
         val cfa = characteristics.get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT)
-            ?: CameraMetadata.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_RGGB
+            ?.takeIf(RawSensorFormatPolicy::isBayerCfa)
+            ?: return null
         val active = validatedActiveRect(image.width, image.height, activeArray)
         val (gridWidth, gridHeight) = if (active.width() >= active.height()) {
             VIGNETTING_GRID_LONG_EDGE to
@@ -522,6 +505,7 @@ internal object MeteringAnalysis {
         fraction: Float,
         centerX: Float = 0.5f,
         centerY: Float = 0.5f,
+        lumaDecoder: ProcessedLumaDecoder,
     ): PreviewRegionStat? {
         val sampleSize = (min(bitmap.width, bitmap.height) * fraction)
             .roundToInt()
@@ -542,10 +526,7 @@ internal object MeteringAnalysis {
             val red = ((color ushr 16) and 0xff) / 255.0
             val green = ((color ushr 8) and 0xff) / 255.0
             val blue = (color and 0xff) / 255.0
-            luminances[index] =
-                0.2126 * srgbToLinear(red) +
-                    0.7152 * srgbToLinear(green) +
-                    0.0722 * srgbToLinear(blue)
+            luminances[index] = lumaDecoder.linearLuma(red, green, blue)
             if (red >= 0.98 || green >= 0.98 || blue >= 0.98) clipped++
         }
         luminances.sort()
@@ -556,6 +537,55 @@ internal object MeteringAnalysis {
             luminances[luminances.size / 2]
         }
         return PreviewRegionStat(luma, clipped.toDouble() / pixels.size)
+    }
+
+    private fun analyzeYuvRegion(
+        image: Image,
+        roiFraction: Float,
+        lumaDecoder: ProcessedLumaDecoder,
+        yuvEncoding: YuvColorEncoding,
+    ): PreviewRegionStat? {
+        val width = image.width
+        val height = image.height
+        if (width <= 1 || height <= 1 || image.planes.size < 3) return null
+        val yPlane = YuvPlaneReader(image.planes[0])
+        val uPlane = YuvPlaneReader(image.planes[1])
+        val vPlane = YuvPlaneReader(image.planes[2])
+        val roiWidth = (width * roiFraction).roundToInt().coerceIn(2, width)
+        val roiHeight = (height * roiFraction).roundToInt().coerceIn(2, height)
+        val left = (width - roiWidth) / 2
+        val top = (height - roiHeight) / 2
+        val luminances = DoubleArray(roiWidth * roiHeight)
+        var clipped = 0
+        var count = 0
+        for (row in top until top + roiHeight) {
+            for (column in left until left + roiWidth) {
+                val yCode = yPlane.sample(column, row) ?: continue
+                val uCode = uPlane.sample(column / 2, row / 2) ?: continue
+                val vCode = vPlane.sample(column / 2, row / 2) ?: continue
+                val rgb = ProcessedLumaMath.yuvToEncodedRgb(yCode, uCode, vCode, yuvEncoding)
+                luminances[count] = lumaDecoder.linearLuma(rgb.red, rgb.green, rgb.blue)
+                if (rgb.clipped) clipped += 1
+                count += 1
+            }
+        }
+        val luma = ProcessedLumaMath.median(luminances, count) ?: return null
+        return PreviewRegionStat(luma, clipped.toDouble() / count)
+    }
+
+    /** Absolute reads preserve each vendor plane's initial buffer offset and row/pixel padding. */
+    private class YuvPlaneReader(plane: Image.Plane) {
+        private val buffer = plane.buffer.duplicate()
+        private val start = buffer.position()
+        private val rowStride = plane.rowStride
+        private val pixelStride = plane.pixelStride
+
+        fun sample(column: Int, row: Int): Int? {
+            if (column < 0 || row < 0 || rowStride <= 0 || pixelStride <= 0) return null
+            val offset = start.toLong() + row.toLong() * rowStride + column.toLong() * pixelStride
+            if (offset < start || offset >= buffer.limit()) return null
+            return buffer.get(offset.toInt()).toInt() and 0xff
+        }
     }
 
     private fun analyzeRawRegion(
@@ -569,6 +599,7 @@ internal object MeteringAnalysis {
         zoom: Float,
         roiFraction: Float,
         rawMeterPoint: RawMeterPoint?,
+        preservePhysicalAngle: Boolean = false,
     ): DoubleArray {
         val plane = image.planes[0]
         val roi = rawMeterRoi(
@@ -576,9 +607,10 @@ internal object MeteringAnalysis {
             image.height,
             activeArray,
             frameAspect,
-            zoom,
+            if (preservePhysicalAngle) 1f else zoom,
             roiFraction,
             rawMeterPoint,
+            preservePhysicalAngle,
         )
         return RawMeterBridge.analyzeRaw(
             buffer = plane.buffer,
@@ -606,6 +638,15 @@ internal object MeteringAnalysis {
         }
     }
 
+    private fun spotRoiFraction(
+        meteringMode: MeteringMode,
+        meteringRoiFraction: Float?,
+    ): Float = if (meteringMode == MeteringMode.ANGLE) {
+        meteringRoiFraction?.coerceIn(MIN_ROI_FRACTION, 1f) ?: SPOT_ROI_FRACTION
+    } else {
+        SPOT_ROI_FRACTION
+    }
+
     private fun rawMeterRoi(
         imageWidth: Int,
         imageHeight: Int,
@@ -614,16 +655,36 @@ internal object MeteringAnalysis {
         zoom: Float,
         roiFraction: Float,
         rawMeterPoint: RawMeterPoint?,
+        preservePhysicalAngle: Boolean,
     ): Rect {
-        val crop = rawMeterCrop(
+        val pointCrop = rawMeterPoint?.let {
+            RectF(it.visibleCropLeft, it.visibleCropTop, it.visibleCropRight, it.visibleCropBottom)
+        }?.takeIf {
+            it.left.isFinite() && it.top.isFinite() && it.right.isFinite() &&
+                it.bottom.isFinite() && it.width() > 1f && it.height() > 1f
+        }
+        val crop = if (preservePhysicalAngle) {
+            rawMeterCrop(
+                imageWidth,
+                imageHeight,
+                reportedActiveArray,
+                frameAspect,
+                zoom = 1f,
+            )
+        } else pointCrop ?: rawMeterCrop(
             imageWidth,
             imageHeight,
             reportedActiveArray,
             frameAspect,
             zoom,
         )
+        val maximumRoiSize = min(
+            min(imageWidth, imageHeight),
+            min(crop.width(), crop.height()).roundToInt(),
+        ).coerceAtLeast(2)
+        val minimumRoiSize = min(32, maximumRoiSize)
         val roiSize = (min(crop.width(), crop.height()) * roiFraction).roundToInt()
-            .coerceIn(32, min(imageWidth, imageHeight))
+            .coerceIn(minimumRoiSize, maximumRoiSize)
         val centerX = rawMeterPoint?.sensorX ?: crop.centerX()
         val centerY = rawMeterPoint?.sensorY ?: crop.centerY()
         val minLeft = crop.left.roundToInt().coerceIn(0, imageWidth - roiSize)
@@ -731,203 +792,9 @@ internal object MeteringAnalysis {
         )
     }
 
-    private fun rawPointForScreenCoordinate(
-        screenX: Float,
-        screenY: Float,
-        crop: RectF,
-        rotationDegrees: Int,
-    ): RawMeterPoint {
-        val x = screenX.coerceIn(0f, 1f)
-        val y = screenY.coerceIn(0f, 1f)
-        val (sensorX, sensorY) = when (normalizedRotation(rotationDegrees)) {
-            90 -> y to (1f - x)
-            180 -> (1f - x) to (1f - y)
-            270 -> (1f - y) to x
-            else -> x to y
-        }
-        return RawMeterPoint(
-            sensorX = crop.left + sensorX * crop.width(),
-            sensorY = crop.top + sensorY * crop.height(),
-            matchScore = Double.NaN,
-        )
-    }
-
-    private fun sampleRawFeature(
-        sampler: RawGreenSampler,
-        crop: RectF,
-        centerX: Float,
-        centerY: Float,
-        reference: PreviewLumaReference,
-        rotationDegrees: Int,
-    ): FloatArray? {
-        val samples = FloatArray(reference.samples.size)
-        for (row in 0 until reference.gridSize) {
-            val offsetY = normalizedGridOffset(row, reference.gridSize) * reference.halfSpan
-            for (column in 0 until reference.gridSize) {
-                val offsetX = normalizedGridOffset(column, reference.gridSize) * reference.halfSpan
-                val screenX = (centerX + offsetX).coerceIn(0f, 1f)
-                val screenY = (centerY + offsetY).coerceIn(0f, 1f)
-                val point = rawPointForScreenCoordinate(
-                    screenX,
-                    screenY,
-                    crop,
-                    rotationDegrees,
-                )
-                samples[row * reference.gridSize + column] =
-                    sampler.sample(point.sensorX, point.sensorY) ?: return null
-            }
-        }
-        return samples
-    }
-
-    private class RawGreenSampler(
-        image: Image,
-        private val bufferOffset: Int,
-        private val cfa: Int,
-        private val black: FloatArray,
-        private val white: Int,
-    ) {
-        private val plane = image.planes[0]
-        private val buffer = plane.buffer
-        private val imageWidth = image.width
-        private val imageHeight = image.height
-
-        fun sample(sensorX: Float, sensorY: Float): Float? {
-            if (plane.pixelStride < 2 || imageWidth < 2 || imageHeight < 2) return null
-            val cellX = sensorX.roundToInt().coerceIn(0, imageWidth - 2) and -2
-            val cellY = sensorY.roundToInt().coerceIn(0, imageHeight - 2) and -2
-            var total = 0f
-            var count = 0
-            for (dy in 0..1) {
-                for (dx in 0..1) {
-                    val x = cellX + dx
-                    val y = cellY + dy
-                    val position = ((y and 1) shl 1) or (x and 1)
-                    val channel = rawChannel(cfa, position)
-                    if (channel != 1 && channel != 2) continue
-                    val offset = bufferOffset + y * plane.rowStride + x * plane.pixelStride
-                    if (offset < 0 || offset + 1 >= buffer.limit()) continue
-                    val raw = (buffer.get(offset).toInt() and 0xff) or
-                        ((buffer.get(offset + 1).toInt() and 0xff) shl 8)
-                    val blackLevel = black.getOrElse(position) { 0f }
-                    val denominator = max(1f, white - blackLevel)
-                    total += ((raw - blackLevel) / denominator).coerceIn(0f, 1f)
-                    count += 1
-                }
-            }
-            return if (count > 0) total / count else null
-        }
-    }
-
-    private fun rawChannel(cfa: Int, position: Int): Int = when (cfa) {
-        CameraMetadata.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_RGGB ->
-            position
-        CameraMetadata.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_GRBG ->
-            when (position) {
-                0 -> 1
-                1 -> 0
-                2 -> 3
-                else -> 2
-            }
-        CameraMetadata.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_GBRG ->
-            when (position) {
-                0 -> 1
-                1 -> 3
-                2 -> 0
-                else -> 2
-            }
-        CameraMetadata.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_BGGR ->
-            when (position) {
-                0 -> 3
-                1 -> 1
-                2 -> 2
-                else -> 0
-            }
-        else -> position
-    }
-
-    private fun sampleRotatedLuma(
-        frame: ZoneTrackingFrame,
-        orientedX: Float,
-        orientedY: Float,
-        orientedWidth: Int,
-        orientedHeight: Int,
-        rotationDegrees: Int,
-    ): Float {
-        val x = orientedX.coerceIn(0f, (orientedWidth - 1).toFloat()) /
-            (orientedWidth - 1).coerceAtLeast(1)
-        val y = orientedY.coerceIn(0f, (orientedHeight - 1).toFloat()) /
-            (orientedHeight - 1).coerceAtLeast(1)
-        val (sourceX, sourceY) = when (rotationDegrees) {
-            90 -> y to (1f - x)
-            180 -> (1f - x) to (1f - y)
-            270 -> (1f - y) to x
-            else -> x to y
-        }
-        return bilinearLuma(
-            frame,
-            sourceX * (frame.width - 1),
-            sourceY * (frame.height - 1),
-        )
-    }
-
-    private fun bilinearLuma(frame: ZoneTrackingFrame, x: Float, y: Float): Float {
-        val left = x.toInt().coerceIn(0, frame.width - 1)
-        val top = y.toInt().coerceIn(0, frame.height - 1)
-        val right = min(left + 1, frame.width - 1)
-        val bottom = min(top + 1, frame.height - 1)
-        val fractionX = (x - left).coerceIn(0f, 1f)
-        val fractionY = (y - top).coerceIn(0f, 1f)
-        fun value(column: Int, row: Int): Float =
-            (frame.luma[row * frame.width + column].toInt() and 0xff).toFloat()
-        val topValue = value(left, top) * (1f - fractionX) + value(right, top) * fractionX
-        val bottomValue =
-            value(left, bottom) * (1f - fractionX) + value(right, bottom) * fractionX
-        return topValue * (1f - fractionY) + bottomValue * fractionY
-    }
-
-    private fun normalizedCorrelation(first: FloatArray, second: FloatArray): Double {
-        if (first.size != second.size || first.isEmpty()) return Double.NaN
-        val firstMean = first.average()
-        val secondMean = second.average()
-        var numerator = 0.0
-        var firstEnergy = 0.0
-        var secondEnergy = 0.0
-        for (index in first.indices) {
-            val firstCentered = first[index] - firstMean
-            val secondCentered = second[index] - secondMean
-            numerator += firstCentered * secondCentered
-            firstEnergy += firstCentered * firstCentered
-            secondEnergy += secondCentered * secondCentered
-        }
-        val denominator = sqrt(firstEnergy * secondEnergy)
-        return if (denominator > 1e-9) numerator / denominator else Double.NaN
-    }
-
-    private fun standardDeviation(values: FloatArray): Double {
-        if (values.isEmpty()) return 0.0
-        val mean = values.average()
-        val variance = values.sumOf { value ->
-            val difference = value - mean
-            difference * difference
-        } / values.size
-        return sqrt(variance)
-    }
-
-    private fun normalizedGridOffset(index: Int, size: Int): Float =
-        index.toFloat() / (size - 1).coerceAtLeast(1) * 2f - 1f
-
-    private fun referenceHalfSpan(x: Float, y: Float): Float {
-        val edgeDistance = min(min(x, 1f - x), min(y, 1f - y)).coerceAtLeast(0f)
-        return min(RAW_MATCH_PATCH_HALF_SPAN, max(MIN_RAW_MATCH_PATCH_HALF_SPAN, edgeDistance * 0.8f))
-    }
-
-    private fun normalizedRotation(rotationDegrees: Int): Int =
-        ((rotationDegrees % 360) + 360) % 360
-
-    private fun fixedBlackLevels(characteristics: CameraCharacteristics): FloatArray {
+    private fun fixedBlackLevels(characteristics: CameraCharacteristics): FloatArray? {
         val pattern = characteristics.get(CameraCharacteristics.SENSOR_BLACK_LEVEL_PATTERN)
-            ?: return floatArrayOf(0f, 0f, 0f, 0f)
+            ?: return null
         return floatArrayOf(
             pattern.getOffsetForIndex(0, 0).toFloat(),
             pattern.getOffsetForIndex(1, 0).toFloat(),
@@ -936,28 +803,15 @@ internal object MeteringAnalysis {
         )
     }
 
-    private fun srgbToLinear(value: Double): Double =
-        if (value <= 0.04045) value / 12.92 else Math.pow((value + 0.055) / 1.055, 2.4)
-
     private fun log2(value: Double): Double = ln(value) / ln(2.0)
 
     private const val TAG = "lightstop"
     private const val RAW_REFERENCE_LEVEL = 0.18
     private const val SPOT_ROI_FRACTION = 0.08f
+    private const val MIN_ROI_FRACTION = 0.001f
     private const val CENTER_WEIGHTED_ROI_FRACTION = 0.30f
     private const val CENTER_SPOT_WEIGHT = 0.7
     private const val CENTER_WIDE_WEIGHT = 0.3
-    private const val RAW_MATCH_GRID_SIZE = 11
-    private const val RAW_MATCH_PATCH_HALF_SPAN = 0.026f
-    private const val MIN_RAW_MATCH_PATCH_HALF_SPAN = 0.006f
-    private const val MIN_ISP_REFERENCE_STD_DEV = 2.5
-    private const val RAW_MATCH_SEARCH_RADIUS = 0.085f
-    private const val RAW_MATCH_COARSE_STEPS = 6
-    private const val RAW_MATCH_COARSE_STEP = 0.014f
-    private const val RAW_MATCH_FINE_STEPS = 3
-    private const val RAW_MATCH_FINE_STEP = 0.003f
-    private const val RAW_MATCH_DISTANCE_PENALTY = 0.06
-    private const val MIN_RAW_MATCH_CORRELATION = 0.12
     private const val VIGNETTING_GRID_LONG_EDGE = 64
     private const val VIGNETTING_GRID_MIN_SHORT_EDGE = 32
     private const val VIGNETTING_CELL_SAMPLES = 7
