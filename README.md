@@ -371,7 +371,7 @@ app/build/outputs/apk/release/app-release-unsigned.apk
 app/build/outputs/bundle/release/app-release.aab
 ```
 
-The verified 0.5.0 unsigned universal APK is 44,479,873 bytes (42.42 MiB).
+The verified 0.5.0 r4-perf unsigned universal APK is 73,989,377 bytes (70.56 MiB).
 The signed APK produced in Android Studio will have a different size and hash.
 Native libraries still account for most of the universal APK.
 
@@ -390,7 +390,7 @@ interactively instead of storing a secret in shell history:
 $buildTools = (Get-ChildItem "$env:LOCALAPPDATA\Android\Sdk\build-tools" -Directory |
   Sort-Object Name -Descending | Select-Object -First 1).FullName
 New-Item -ItemType Directory -Force dist | Out-Null
-& "$buildTools\zipalign.exe" -f -p 4 `
+& "$buildTools\zipalign.exe" -f -P 16 4 `
   app\build\outputs\apk\release\app-release-unsigned.apk `
   dist\lightstop-v0.5.0-aligned.apk
 & "$buildTools\apksigner.bat" sign `
@@ -438,20 +438,28 @@ commit generated release files to the source tree.
 ## Pinned slim OpenCV
 
 The application uses
-`app/libs/opencv-slim-4.12.0-r2.aar`, built from the official OpenCV 4.12.0
+`app/libs/opencv-slim-4.12.0-r4-perf.aar`, built from the official OpenCV 4.12.0
 source instead of resolving a changing Maven dependency. It retains the
 modules needed by lightstop and the official Android Java glue, and includes
-`arm64-v8a`, `armeabi-v7a`, and `x86_64`. Acceleration and codec backends the
-application never calls (IPP, TBB, KleidiCV, ITT, OpenJPEG, TIFF, WebP,
-OpenEXR, AVIF, Jasper) are disabled in this revision.
+`arm64-v8a`, `armeabi-v7a`, and `x86_64`. This revision prioritizes real-time
+performance and maintenance: it preserves TBB, Carotene, arm64 KleidiCV,
+x86_64 IPP, default ITT, SIMD dispatch and `-O3`. Only unused OpenJPEG, TIFF,
+WebP, OpenEXR, AVIF and Jasper file-codec backends are disabled. PNG/JPEG and
+the existing Java/JNI API remain available, with 16 KB ELF alignment.
 
 ```text
-Size: 33,514,507 bytes
-SHA-256: 321C84621FE818E35CC7B6401953039BC784E4FE4CFB9D35690B4DBEDF4D57CD
+Size: 59,634,187 bytes
+SHA-256: 0CAC465278897A22BDC1D26BCAAA53E06D20B5C295DE18992334146330F43848
 ```
 
 See [the reproducible OpenCV build guide](tools/opencv-slim/README.md) for the
 pinned source checksum, build matrix, modules, and upgrade procedure.
+The merged release measures 70.56 MiB as a universal APK and 17.82 MiB for
+arm64. To build each ABI plus a universal APK, run
+`./gradlew -PsplitApks=true :app:assembleRelease`; release artifacts require
+signing. OpenCV native payload is 8.32% smaller than the accelerated r1 baseline.
+See [the integration and validation report](docs/OPENCV_PERFORMANCE_FIRST_2026_10_04_ZH.md)
+for exact measurements and the deferred device performance checks.
 
 The AAR contains third-party components under several permissive licenses and
 the Intel Simplified Software License for applicable prebuilt IPP binaries. It

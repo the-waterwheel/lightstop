@@ -25,6 +25,10 @@ The corresponding license texts are distributed in
 | OpenCV | 4.12.0 | Apache-2.0 | `app/src/main/assets/licenses/OpenCV-LICENSE-2.0.txt` and `OpenCV-NOTICE.txt` |
 | Android cpu_features | OpenCV-pinned source | Apache-2.0 | `third-party/android-cpufeatures-Apache-2.0.txt` |
 | Carotene ARM HAL | OpenCV-pinned source | BSD-3-Clause | `third-party/carotene-BSD-3-Clause.txt` |
+| oneTBB | 2022.1.0 | Apache-2.0 | `third-party/onetbb-Apache-2.0.txt` |
+| KleidiCV (arm64) | 0.5.0 | Apache-2.0 | `third-party/kleidicv-Apache-2.0.txt` |
+| Intel IPP / IPP IW (x86_64) | 2022.1.0 / OpenCV-pinned wrapper | Intel Simplified Software License | `third-party/intel-ippicv-EULA.txt` and `third-party/intel-ippiw-EULA.txt` |
+| Intel ITT notify | OpenCV-pinned source | BSD-3-Clause branch of its dual license | `third-party/ittnotify-BSD-3-Clause.txt` |
 | libjpeg-turbo / IJG JPEG | OpenCV-pinned source | BSD-style, IJG, and zlib terms | `third-party/libjpeg-turbo-LICENSE.md` and `libjpeg-turbo-README.ijg` |
 | libpng | OpenCV-pinned source | PNG Reference Library License | `third-party/libpng-LICENSE.txt` |
 | Berkeley SoftFloat / fdlibm | OpenCV-pinned source | BSD-3-Clause and Sun permissive notices | `third-party/softfloat-LICENSE.txt` |

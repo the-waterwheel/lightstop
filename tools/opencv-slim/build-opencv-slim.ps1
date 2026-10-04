@@ -229,6 +229,9 @@ New-Item -ItemType Directory -Force -Path $sdkBuildDir, $aarBuildDir, $outputDir
 
 # Keep every dependency downloaded by the OpenCV AAR Gradle build outside the app repo.
 $env:GRADLE_USER_HOME = Join-Path $OpenCvRoot "gradle-home"
+# A long-lived Gradle daemon can retain redirected output handles on Windows and
+# keep this wrapper waiting after a successful SDK build. Use a single-use daemon.
+$env:GRADLE_OPTS = "$($env:GRADLE_OPTS) -Dorg.gradle.daemon=false".Trim()
 $existingGradleHome = Join-Path $env:USERPROFILE ".gradle"
 $existingDependencyCacheRoot = Join-Path $existingGradleHome "caches"
 $existingModulesCache = Join-Path $existingDependencyCacheRoot "modules-2"

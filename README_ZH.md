@@ -276,7 +276,7 @@ Windows 命令行发布时，先构建未签名 APK，再对齐并签名。下�
 $buildTools = (Get-ChildItem "$env:LOCALAPPDATA\Android\Sdk\build-tools" -Directory |
   Sort-Object Name -Descending | Select-Object -First 1).FullName
 New-Item -ItemType Directory -Force dist | Out-Null
-& "$buildTools\zipalign.exe" -f -p 4 `
+& "$buildTools\zipalign.exe" -f -P 16 4 `
   app\build\outputs\apk\release\app-release-unsigned.apk `
   dist\lightstop-v0.5.0-aligned.apk
 & "$buildTools\apksigner.bat" sign `
@@ -303,45 +303,35 @@ git push origin v0.5.0
 
 ### 精简 OpenCV
 
-应用固定使用本地版本化 AAR `app/libs/opencv-slim-4.12.0-r2.aar`，不再在应用构建期间从 Maven 动态解析 OpenCV。AAR 由 OpenCV `4.12.0` 官方源码构建，保留应用和官方 Android Java 胶水层所需模块，并包含 `arm64-v8a`、`armeabi-v7a`、`x86_64`；本修订关闭了应用不会调用的 IPP、TBB、KleidiCV、ITT 以及 OpenJPEG、TIFF、WebP、OpenEXR、AVIF、Jasper 后端。完整的版本矩阵、源码校验值、模块说明、Windows 启动器、构建命令和升级规则见 [精简 OpenCV 构建说明](tools/opencv-slim/README.md)。
+应用固定使用本地版本化 AAR `app/libs/opencv-slim-4.12.0-r4-perf.aar`，不再在应用构建期间从 Maven 动态解析 OpenCV。AAR 由 OpenCV `4.12.0` 官方源码构建，保留原有模块、Java/JNI 接口及三个 ABI。本修订优先保持实时性能与维护便利，保留 TBB、Carotene、arm64 KleidiCV、x86_64 IPP、默认 ITT、SIMD dispatch 和 `-O3`，只关闭 OpenJPEG、TIFF、WebP、OpenEXR、AVIF、Jasper 文件格式后端，保留 PNG/JPEG；三个 ABI 的 OpenCV 库使用 16 KB ELF 对齐。完整的版本矩阵、源码校验值、模块说明、构建命令和升级规则见 [精简 OpenCV 构建说明](tools/opencv-slim/README.md)。
 
-当前 AAR 为 `33,514,507` bytes，SHA-256：
+当前 AAR 为 `59,634,187` bytes，SHA-256：
 
 ```text
-321C84621FE818E35CC7B6401953039BC784E4FE4CFB9D35690B4DBEDF4D57CD
+0CAC465278897A22BDC1D26BCAAA53E06D20B5C295DE18992334146330F43848
 ```
 
 ## Release 体积
 
-当前 release 已启用 R8 和资源收缩，并在一个通用 APK 中包含 `arm64-v8a`、`armeabi-v7a`、`x86_64` 三个 ABI。0.5.0 实测未签名通用 APK 为 `44,479,873` bytes（约 42.42 MiB）；Android Studio 生成的签名包大小与哈希会有所不同。原生库仍占主要空间。以下为 0.4.0 的压缩内容参考：
+当前 release 已启用 R8 和资源收缩，默认生成包含 `arm64-v8a`、`armeabi-v7a`、`x86_64` 的通用 APK。合并其他功能工作树并接入性能优先 r4-perf 后，0.5.0 实测产物如下；release 尚未签名，签名后大小与哈希会有所不同。
 
-| 内容 | 大小 |
-|---|---:|
-| x86_64 原生库（含 libc++） | 17.12 MiB |
-| arm64-v8a 原生库（含 libc++） | 12.81 MiB |
-| armeabi-v7a 原生库（含 libc++） | 8.71 MiB |
-| DEX | 1.07 MiB |
-| 第三方许可证资源 | 约 0.22 MiB |
-| Android 资源 | 约 0.11 MiB |
+| 产物 | bytes | MiB |
+|---|---:|---:|
+| 通用 APK | 73,989,377 | 70.56 |
+| arm64-v8a APK | 18,690,244 | 17.82 |
+| armeabi-v7a APK | 13,500,390 | 12.87 |
+| x86_64 APK | 49,888,051 | 47.58 |
+| AAB 文件 | 34,333,615 | 32.74 |
 
-与 r1 精简构建（通用 APK 约 72.53 MiB）及原先约 97.5 MiB 的完整 Maven OpenCV 通用 APK 相比，r2 已显著减少原生库占用。原生库仍占绝大多数体积，R8 和资源收缩主要压缩 Java/Kotlin DEX 与 Android 资源。当前水平与可进一步达到的目标：
+OpenCV 三架构库本体由 r1 的 `71,750,624` bytes 缩至 `65,779,784` bytes，减少 5.69 MiB（8.32%）。旧 r2 通用 APK 曾约 42.42 MiB，它关闭了 TBB、KleidiCV 和 IPP；r4-perf 按实时性能优先要求恢复这些后端，因此不能沿用 r2 的体积数字。历史版本的通用 APK 同时包含不同业务代码，不能作为相同代码下的严格体积对比。AAB 文件压缩大小也不等于商店最终下载量。
 
-- 通用三 ABI APK，R8 + 资源收缩：0.5.0 未签名包实测约 42.42 MiB。
-- 单独 arm64-v8a APK：约 14–15 MiB。
-- 单独 armeabi-v7a APK：约 11–12 MiB。
-- 单独 x86_64 APK：约 16–17 MiB。
-- Android App Bundle：商店按 ABI 拆分后，每台设备只接收匹配的原生库，下载量约为上述单 ABI APK 大小。
+ABI 是 CPU 架构标识；分架构 APK 必须匹配设备。通用 APK 支持本项目包含的三个架构，AAB 由商店按设备生成对应的分发 APK。使用已合并的开关可同时生成三个架构 APK 与通用 APK，默认构建行为保持不变：
 
-ABI 是 CPU 架构标识而不是可安装文件；可安装的只有 APK。通用 APK 任何设备都能装但体积最大，分 ABI APK 体积约为三分之一但必须选对架构，AAB 不能直接安装、仅供商店按设备生成对应的分发 APK。
+```powershell
+.\gradlew.bat -PsplitApks=true :app:assembleRelease
+```
 
-如需继续明显缩小，应按以下顺序处理：
-
-1. 发布 AAB，或为 ABI 分别生成 APK。
-2. 保持 `isMinifyEnabled = true` 和 `isShrinkResources = true`，并验证 OpenCV/JNI 保留规则。
-3. 可选：在 OpenCV 构建配置中启用 `ENABLE_LTO=ON` 或改用静态 libc++，再进一步压缩 10% 左右。
-4. 如果不需要在模拟器发布包中保留 x86_64，可用产品风味或 ABI split 将其排除出真机发布变体；不要直接删除调试能力。
-
-体积区间基于当前精简 OpenCV APK 的实际 ZIP 内容估算，正式发布前应以签名 release/AAB 和目标应用商店报告为准。
+在保持性能与维护便利的前提下，分架构发布或使用 AAB 是后续优先方案。进一步更换优化级别、线程后端或启用 LTO，需要先比较实际耗时与体积，不能预设固定收益。接口校验、合并提交、构建测试和暂缓的实机性能测试详见 [本次验证报告](docs/OPENCV_PERFORMANCE_FIRST_2026_10_04_ZH.md)。
 
 ## 数据与权限
 

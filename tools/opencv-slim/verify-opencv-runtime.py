@@ -97,6 +97,13 @@ def main():
             failures.append(abi + ": missing 16 KB ELF alignment")
         if not re.search(r"Parallel framework:\s+TBB", info):
             failures.append(abi + ": TBB acceleration missing")
+        for field in ("Baseline", "Dispatched code generation"):
+            pattern = re.escape(field) + r":\s*([^\n]+)"
+            current_cpu = re.search(pattern, info)
+            baseline_cpu = re.search(pattern, baseline[abi]["info"])
+            if (current_cpu.group(1).strip() if current_cpu else None) != (
+                    baseline_cpu.group(1).strip() if baseline_cpu else None):
+                failures.append(abi + ": CPU " + field + " changed")
         if abi == "arm64-v8a" and "KleidiCV" not in info:
             failures.append(abi + ": KleidiCV acceleration missing")
         if abi.startswith("arm") and "carotene" not in info:
@@ -108,7 +115,7 @@ def main():
             failures.append(abi + ": expected performance-oriented -O3")
         if not re.search(r"JPEG:\s+build-libjpeg-turbo", info) or not re.search(r"PNG:\s+build", info):
             failures.append(abi + ": PNG/JPEG support missing")
-        if re.search(r"^\s*(WEBP|TIFF|JPEG 2000|OpenEXR):\s+(?!NO\b|OFF\b)\S", info, re.MULTILINE):
+        if re.search(r"^\s*(WEBP|TIFF|JPEG 2000|OpenEXR|AVIF):\s+(?!NO\b|OFF\b)\S", info, re.MULTILINE):
             failures.append(abi + ": unused codec still included")
         modules = re.search(r"To be built:\s+([^\n]+)", info).group(1).split()
         if set(modules) != {"core", "imgproc", "imgcodecs", "video", "videoio", "features2d", "calib3d", "flann", "java"}:

@@ -24,6 +24,7 @@ def _windows_subprocess_run(command: Any, *args: Any, **kwargs: Any) -> Any:
         command = list(command)
         working_directory = kwargs.get("cwd") or os.getcwd()
         command[0] = os.path.abspath(os.path.join(working_directory, "gradlew.bat"))
+        command.append("--no-daemon")
     return _subprocess_run(command, *args, **kwargs)
 
 

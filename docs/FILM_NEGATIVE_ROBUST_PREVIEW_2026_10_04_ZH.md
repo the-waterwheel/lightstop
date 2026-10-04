@@ -87,6 +87,6 @@
 
 ## 安装包与 OpenCV 的后续工作
 
-按用户最新安排，自编译更小的 OpenCV 暂缓。当前 APK 继续使用已固定 SHA-256 的 `opencv-slim-4.12.0-r2.aar`，没有切换到未完成的候选库。实验脚本和体积报告工具保留，候选构建状态见 `tools/opencv-slim/README.md`。
+本工作树截至 `fa6c5ef` 的安排是暂缓实验性 OpenCV 候选，使用已固定 SHA-256 的 `opencv-slim-4.12.0-r2.aar`。随后集成分支按性能优先要求接入保留加速后端的 r4-perf，合并验证与实机测试状态见 [OpenCV 集成报告](OPENCV_PERFORMANCE_FIRST_2026_10_04_ZH.md)。原工作树的实验脚本和体积报告草稿仍保留。
 
 [Android App Bundle](https://developer.android.com/guide/app-bundle) 已让支持该格式的应用商店按设备 ABI 分发，单独打 arm64 APK 并不能在它的基础上再去掉其他 ABI。可选 `-PsplitApks=true` 只针对直接下载 APK 的分发场景；默认仍构建通用 APK。真正进一步减小每个设备的原生库仍需调整 OpenCV 内容并完成全部 ABI 和 Zone 真机回归，留到负片预览验收后。
