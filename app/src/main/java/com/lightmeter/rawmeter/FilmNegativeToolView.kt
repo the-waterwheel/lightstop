@@ -126,7 +126,7 @@ internal class FilmNegativeToolView(context: Context, private val state: MeterSt
             refreshSliders()
             listener?.onSettingsChanged(settings)
         }
-        controls.addView(invert, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
+        adjustments.addView(invert, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
         status.setTextColor(Color.rgb(216, 216, 210))
         status.textSize = 12f
         status.setPadding(0, dp(6), 0, dp(10))
@@ -136,11 +136,12 @@ internal class FilmNegativeToolView(context: Context, private val state: MeterSt
         lock.setOnCheckedChangeListener { _, checked ->
             if (!updating) listener?.onCameraLockChanged(checked)
         }
-        controls.addView(lock, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
-        controls.addView(button(localized("自动选择", "Auto select")) {
+        advanced.addView(lock, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
+        controls.addView(button(localized("一键识别并校正", "Auto detect and correct")) {
             listener?.onSampleBaseRequested()
-        }, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
-        controls.addView(button(localized("静止帧选择胶片区域", "Freeze and select photograph")) {
+        }.apply { setBackgroundColor(Color.rgb(135, 35, 39)) }, 0,
+            LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
+        controls.addView(button(localized("手动选区（备用）", "Manual selection (fallback)")) {
             listener?.onFrameRequested(FilmNegativePickMode.FRAME)
         }, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
         controls.addView(adjustments)
@@ -158,13 +159,15 @@ internal class FilmNegativeToolView(context: Context, private val state: MeterSt
         styleSwitch(monochrome)
         monochrome.setOnCheckedChangeListener { _, checked ->
             if (!updating) {
-                // Monochrome film has no orange base. Start with a neutral reference.
-                settings = FilmNegativeSettings(monochrome = checked).withoutReference()
+                // The one-tap action detects the mode itself. This is a post-result override,
+                // so keep the measured base, tone and user's other adjustments intact.
+                settings = settings.copy(monochrome = checked,
+                    colorCorrection = if (checked) null else settings.colorCorrection)
                 refreshSliders()
                 listener?.onSettingsChanged(settings)
             }
         }
-        controls.addView(monochrome, controls.indexOfChild(adjustments),
+        adjustments.addView(monochrome,
             LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
         adjustments.addView(button(localized("高级调整：片基 / 密度", "Advanced: film base / density")) {
             advanced.visibility = if (advanced.visibility == View.VISIBLE) View.GONE else View.VISIBLE
@@ -265,7 +268,7 @@ internal class FilmNegativeToolView(context: Context, private val state: MeterSt
         discardFrozenFrame()
         automaticBaseBusy = true
         enableControls(controls, false)
-        showStatus(localized("正在锁定相机并选择胶片区域、片基和校色，请保持静止…", "Locking camera and selecting photograph, film base and colour. Keep still…"))
+        showStatus(localized("正在锁定相机并截取一帧，随后自动选择照片、片基并校正…", "Locking camera and capturing one frame, then selecting the photograph, film base and correction…"))
         return pickerSerial
     }
 
@@ -280,6 +283,7 @@ internal class FilmNegativeToolView(context: Context, private val state: MeterSt
             settings = selection.settings
             refreshSliders()
             listener?.onSettingsChanged(settings)
+            scroll.post { if (picker == null) scroll.scrollTo(0, 0) }
         }
         showStatus(message)
     }
@@ -290,8 +294,8 @@ internal class FilmNegativeToolView(context: Context, private val state: MeterSt
     }
 
     private fun defaultStatus() = localized(
-        "保留照片附近的片边，点击「自动选择」；或在静止帧中框选照片内容，自动去色罩并校色。",
-        "Include borders near the photograph and tap Auto select, or select image content in a frozen frame for inversion and colour.")
+        "保留照片附近的片边，点击「一键识别并校正」。自动选照片、识别片基并完成反相，完成后可微调。",
+        "Include nearby film borders and tap Auto detect and correct. The photograph, base and inversion are automatic; fine-tune afterwards.")
 
     fun discardFrozenFrame() {
         pickerSerial++
@@ -309,6 +313,7 @@ internal class FilmNegativeToolView(context: Context, private val state: MeterSt
         discardFrozenFrame()
         val serial = pickerSerial
         val snapshotSettings = settings
+        var automaticSelection: FilmNegativeSelection? = null
         lateinit var editor: FilmNegativePickerView
         fun analyze(task: () -> Any?, result: (Any?) -> Unit) {
             editor.setBusy(true)
@@ -326,7 +331,8 @@ internal class FilmNegativeToolView(context: Context, private val state: MeterSt
             cancel = { discardFrozenFrame() },
             confirm = { region ->
                 analyze({ if (mode == FilmNegativePickMode.BASE) FilmNegativeFrameAnalysis.base(frame, region)
-                    else FilmNegativeSelectionAnalysis.manual(frame, region, snapshotSettings) }) { value ->
+                    else automaticSelection?.takeIf { it.region == region }
+                        ?: FilmNegativeSelectionAnalysis.manual(frame, region, snapshotSettings) }) { value ->
                     val candidate = when (value) {
                         is FloatArray -> snapshotSettings.copy(baseRed = value[0], baseGreen = value[1], baseBlue = value[2],
                             densityWindow = null, colorCorrection = null, regionTone = false,
@@ -371,8 +377,9 @@ internal class FilmNegativeToolView(context: Context, private val state: MeterSt
                     else FilmNegativeSelectionAnalysis.automatic(frame, snapshotSettings) }) { value ->
                     val candidate = value as? FilmBaseCandidate
                     val selection = value as? FilmNegativeSelection
+                    automaticSelection = selection
                     if (selection != null) {
-                        editor.select(selection.region)
+                        editor.select(selection.region, selection.mask)
                         editor.showMessage(localized("已标出照片区域；请检查范围并确认。", "Photograph marked. Check the region and confirm."))
                     } else if (candidate == null) editor.showMessage(localized("没有找到可靠候选，请手动框选照片内容。", "No reliable candidate. Select image content manually."))
                     else {
@@ -430,7 +437,10 @@ internal class FilmNegativeToolView(context: Context, private val state: MeterSt
         }
         monochrome.isChecked = settings.monochrome
         invert.text = if (settings.inverted) localized("正常取景", "Original view") else localized("反相预览", "Invert preview")
-        adjustments.visibility = if (settings.inverted) View.VISIBLE else View.GONE
+        // Original/positive comparison is independent of whether an analysis result exists.
+        // Keep the controls available when comparing, until reset or reference invalidation.
+        adjustments.visibility = if (settings.inverted ||
+            settings.referenceSource != FilmNegativeReferenceSource.DEFAULT) View.VISIBLE else View.GONE
         updating = false
     }
 

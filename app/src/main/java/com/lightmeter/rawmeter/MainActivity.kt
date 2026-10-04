@@ -624,16 +624,16 @@ class MainActivity : Activity(), CameraControllerCallback {
                         cameraController.selectFilmNegativeFrame { selection ->
                             if (!meterLayout.isFilmNegativeOpen) return@selectFilmNegativeFrame
                             view.finishAutomaticBaseRecognition(serial, selection, if (selection == null) localized(
-                                "未找到可靠的照片范围与片基。请保留附近片边，或在静止帧手动框选照片。",
-                                "No reliable photograph and film base. Include nearby borders, or select a photograph in a frozen frame.")
+                                "这次未能可靠识别。保留照片附近片边、保持稳定后，再点「一键识别并校正」。",
+                                "Detection was inconclusive. Include nearby film borders, hold still and tap Auto detect and correct again.")
                             else if (selection.settings.monochrome) localized(
-                                "黑白胶片区域和片基已通过三帧验证，可调整 Dmin / Dmax。",
-                                "Monochrome photograph and film base verified across three frames. Adjust Dmin / Dmax.")
+                                "已完成黑白负片反相与影调校正，可在下方微调。",
+                                "Black-and-white inversion and tone correction applied. Fine-tune below.")
                             else if (selection.settings.colorCorrection == null) localized(
-                                "胶片区域和片基已通过三帧验证，已去色罩；中性样本不足，可手调色温 / 色调。",
-                                "Photograph and film base verified across three frames; inversion applied. Few neutral samples; adjust temperature / tint.")
-                            else localized("胶片区域与片基已通过三帧验证，已自动去色罩和校色。",
-                                "Photograph and film base verified across three frames; inversion and colour applied."))
+                                "已完成去色罩、反相与影调校正；颜色采用保守处理，可在下方微调。",
+                                "Film base, inversion and tone corrected; colour kept conservative. Fine-tune below.")
+                            else localized("已完成彩色负片反相与校正，可在下方微调。",
+                                "Colour negative inversion and correction applied. Fine-tune below."))
                         }
                     }
                 }

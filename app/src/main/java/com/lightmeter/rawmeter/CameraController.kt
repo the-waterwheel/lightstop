@@ -775,7 +775,7 @@ class CameraController(
         }
     }
 
-    /** One small readback/analysis at a time; no analysis work can queue behind the video stream. */
+    /** Freeze one locked original, analyze it once, then reuse its display correction. */
     internal fun selectFilmNegativeFrame(completion: (FilmNegativeSelection?) -> Unit) {
         val handler = cameraHandler
         if (handler == null) { mainHandler.post { completion(null) }; return }
@@ -789,9 +789,8 @@ class CameraController(
                 return@post
             }
             val orientation = renderer.orientationToken
-            val window = FilmNegativeSelectionWindow()
-            val deadline = android.os.SystemClock.elapsedRealtime() + 6500L
-            var attempts = 0
+            val started = android.os.SystemClock.elapsedRealtime()
+            if (BuildConfig.DEBUG) Log.i("FilmSelectionDiagnostic", "start serial=$serial mode=single-frame")
             var completed = false
             var timeout: Runnable? = null
             fun current() = serial == filmSampleSerial && generation == cameraGeneration &&
@@ -802,6 +801,8 @@ class CameraController(
                 timeout?.let { handler.removeCallbacks(it) }
                 if (!current()) return
                 val accepted = result?.takeIf { filmEvidence?.compatible(it.evidence) == true && renderer.orientationToken == it.orientationToken }
+                if (BuildConfig.DEBUG) Log.i("FilmSelectionDiagnostic",
+                    "finish serial=$serial accepted=${accepted != null} mode=single-frame elapsedMs=${android.os.SystemClock.elapsedRealtime() - started}")
                 if (accepted != null) {
                     filmSampleReference = FilmNegativeBaseSample(FloatArray(3) { accepted.settings.base(it) }, accepted.evidence)
                     filmNegativeSettings = accepted.settings
@@ -809,28 +810,27 @@ class CameraController(
                 }
                 mainHandler.post { if (current()) completion(accepted?.takeIf { renderer.orientationToken == it.orientationToken }) }
             }
-            fun next() {
-                if (!current() || completed) return
-                if (++attempts > 6 || android.os.SystemClock.elapsedRealtime() >= deadline) { finish(null); return }
-                renderer.captureFrame(FilmNegativeSelectionAnalysis.ANALYSIS_EDGE) { frame -> handler.post captureResult@{
+            timeout = Runnable { finish(null) }
+            handler.postDelayed(checkNotNull(timeout), 6500L)
+            renderer.captureFrame(FilmNegativeSelectionAnalysis.ANALYSIS_EDGE) { frame -> handler.post captureResult@{
                     if (!current() || completed) return@captureResult
                     if (frame == null || filmEvidence?.compatible(frame.evidence) != true ||
                         frame.orientationToken != orientation || renderer.orientationToken != orientation) { finish(null); return@captureResult }
                     Thread({
+                        val analysisStarted = android.os.SystemClock.elapsedRealtime()
                         val result = runCatching { FilmNegativeSelectionAnalysis.automatic(frame, snapshot) }.getOrNull()
+                        if (BuildConfig.DEBUG) Log.i("FilmSelectionDiagnostic", "analysis serial=$serial mode=single-frame " +
+                            "elapsedMs=${android.os.SystemClock.elapsedRealtime() - analysisStarted} region=${result?.region} " +
+                            "monochrome=${result?.settings?.monochrome} base=${result?.settings?.let { "${it.baseRed},${it.baseGreen},${it.baseBlue}" }} " +
+                            "tone=${result?.settings?.let { "${it.blackDensity},${it.whiteDensity}" }}")
                         handler.post analysisResult@{
                             if (!current() || completed) return@analysisResult
-                            if (filmEvidence?.compatible(frame.evidence) != true || result == null ||
+                            if (filmEvidence?.compatible(frame.evidence) != true ||
                                 renderer.orientationToken != orientation) { finish(null); return@analysisResult }
-                            val verified = window.add(result)
-                            if (verified != null) finish(verified) else handler.postDelayed({ next() }, 120L)
+                            finish(result)
                         }
                     }, "film-selection-analysis").start()
                 } }
-            }
-            timeout = Runnable { finish(null) }
-            handler.postDelayed(checkNotNull(timeout), 6500L)
-            next()
         }
     }
 
@@ -904,6 +904,12 @@ class CameraController(
             mainHandler.post { if (serial == filmLockSerial && filmNegativeLocked) pending?.invoke(true) }
         }
         filmSampleReference?.let { if (!it.evidence.compatible(evidence)) {
+            if (BuildConfig.DEBUG) Log.i("FilmSelectionDiagnostic", "reference-invalidated " +
+                "locked=${evidence.locked} exposure=${it.evidence.exposureNs}->${evidence.exposureNs} " +
+                "iso=${it.evidence.sensitivity}->${evidence.sensitivity} " +
+                "gains=${it.evidence.colorGains}->${evidence.colorGains} " +
+                "processing=${it.evidence.processingKey}->${evidence.processingKey} " +
+                "curveChanged=${it.evidence.processingCurve != evidence.processingCurve}")
             filmNegativeLocked = false
             invalidateFilmBase()
             previewRequests.update()

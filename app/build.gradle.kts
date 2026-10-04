@@ -5,6 +5,8 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+val buildAbiSplits = providers.gradleProperty("splitApks").map { it.toBooleanStrict() }.orElse(false).get()
+
 android {
     namespace = "com.lightmeter.rawmeter"
     compileSdk {
@@ -13,6 +15,10 @@ android {
         }
     }
     ndkVersion = "27.0.12077973"
+
+    buildFeatures {
+        buildConfig = true
+    }
 
     defaultConfig {
         applicationId = "com.lightmeter.rawmeter"
@@ -28,7 +34,17 @@ android {
         }
 
         ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+            if (!buildAbiSplits) abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+        }
+    }
+
+    // Optional smaller direct-download APKs; retain a universal APK for distribution fallback.
+    splits {
+        abi {
+            isEnable = buildAbiSplits
+            reset()
+            include("arm64-v8a", "armeabi-v7a", "x86_64")
+            isUniversalApk = true
         }
     }
 

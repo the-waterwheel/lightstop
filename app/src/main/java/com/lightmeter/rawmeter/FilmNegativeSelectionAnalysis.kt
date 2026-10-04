@@ -7,7 +7,8 @@ import kotlin.math.min
 
 internal data class FilmNegativeSelection(val region: FilmNegativeRegion,
     val baseRegion: FilmNegativeRegion?, val settings: FilmNegativeSettings,
-    val evidence: FilmNegativeFrameEvidence, val orientationToken: Long = 0)
+    val evidence: FilmNegativeFrameEvidence, val orientationToken: Long = 0,
+    val mask: FilmNegativeMask? = null, val baseSupport: FilmNegativeMask? = null)
 
 /** On-demand analysis of the original texture. All geometry is relative to the whole image. */
 internal object FilmNegativeSelectionAnalysis {
@@ -55,20 +56,13 @@ internal object FilmNegativeSelectionAnalysis {
         return result
     }
     private fun similar(a: FloatArray, b: FloatArray) = (0..2).all { abs(a[it] - b[it]) < max(5f / 255, min(a[it], b[it]) * .045f) }
-    private fun stripe(image: Image, x: Int, y: Int, dx: Int, dy: Int, monochrome: Boolean): FloatArray? {
-        val values = ArrayList<FloatArray>()
-        for (i in 0..8) values.add(patch(image, x + dx * i, y + dy * i, monochrome, 1) ?: return null)
-        val reference = FloatArray(3) { c -> median(values.map { it[c] }) }
-        return reference.takeIf { values.all { value -> similar(value, reference) } }
-    }
-
     /** Search only the surrounding rails of this photograph, including rails inside a contact sheet. */
     fun nearbyBase(frame: FilmNegativeFrozenFrame, region: FilmNegativeRegion, monochrome: Boolean): FilmBaseCandidate? {
         val image = image(frame) ?: return null
         return nearbyBase(image, region, monochrome)
     }
     private fun nearbyBase(image: Image, r: FilmNegativeRegion, monochrome: Boolean,
-        requireMultipleSides: Boolean = false): FilmBaseCandidate? {
+        requireMultipleSides: Boolean = true): FilmBaseCandidate? {
         val x0 = r.left * image.w; val x1 = r.right * image.w
         val y0 = r.top * image.h; val y1 = r.bottom * image.h
         if (x1 - x0 < 12 || y1 - y0 < 12) return null
@@ -155,63 +149,19 @@ internal object FilmNegativeSelectionAnalysis {
         return best
     }
 
-    /** Find dense rectangular photographs between clear rails, then verify each local reference. */
+    /** Validate actual curved/rotated support, then compute tone only inside that support. */
     fun automatic(frame: FilmNegativeFrozenFrame, settings: FilmNegativeSettings): FilmNegativeSelection? {
-        val image = image(frame) ?: return null
-        val seeds = ArrayList<FloatArray>()
-        for (y in 0 until image.h - 2 step 3) for (x in 0 until image.w - 2 step 3) {
-            val base = patch(image, x, y, settings.monochrome) ?: continue
-            if (seeds.none { similar(it, base) }) seeds.add(base)
-        }
-        // Thin clear rails may have no square uniform patch at all.
-        for (y in 0 until image.h - 8 step 6) for (x in 0 until image.w) {
-            val base = stripe(image, x, y, 0, 1, settings.monochrome) ?: continue
-            if (seeds.none { similar(it, base) }) seeds.add(base)
-        }
-        for (y in 0 until image.h) for (x in 0 until image.w - 8 step 6) {
-            val base = stripe(image, x, y, 1, 0, settings.monochrome) ?: continue
-            if (seeds.none { similar(it, base) }) seeds.add(base)
-        }
-        val proposals = ArrayList<FilmNegativeSelection>()
-        for (base in seeds.sortedByDescending { it.sum() }.take(12)) {
-            val baseDensity = FloatArray(3) { opticalDensity[(base[it] * 255 + .5f).toInt().coerceIn(0, 255)] }
-            val mask = BooleanArray(image.pixels.size) { i ->
-                val pixel = image.pixels[i]
-                val red = (pixel ushr 16) and 255; val green = (pixel ushr 8) and 255; val blue = pixel and 255
-                val dr = opticalDensity[red] - baseDensity[0]
-                val dg = opticalDensity[green] - baseDensity[1]
-                val db = opticalDensity[blue] - baseDensity[2]
-                red in 4..246 && green in 4..246 && blue in 4..246 && dr > .025f && dg > .025f && db > .025f &&
-                    dr * .2126f + dg * .7152f + db * .0722f > .07f
-            }
-            val queue = IntArray(mask.size)
-            for (seed in mask.indices) {
-                if (!mask[seed]) continue
-                var head = 0; var tail = 1; queue[0] = seed; mask[seed] = false
-                var left = image.w; var right = 0; var top = image.h; var bottom = 0
-                while (head < tail) {
-                    val i = queue[head++]; val x = i % image.w; val y = i / image.w
-                    left = min(left, x); right = max(right, x); top = min(top, y); bottom = max(bottom, y)
-                    for (next in intArrayOf(if (x > 0) i - 1 else -1, if (x + 1 < image.w) i + 1 else -1,
-                        if (y > 0) i - image.w else -1, if (y + 1 < image.h) i + image.w else -1)) {
-                        if (next < 0 || !mask[next]) continue
-                        mask[next] = false; queue[tail++] = next
-                    }
-                }
-                val area = (right - left + 1) * (bottom - top + 1)
-                if (right - left < 14 || bottom - top < 14 || tail < 128 || tail < area * .55f || area > mask.size * .94f) continue
-                val region = FilmNegativeRegion(left.toFloat() / image.w, top.toFloat() / image.h,
-                    (right + 1f) / image.w, (bottom + 1f) / image.h)
-                if (proposals.any { overlap(it.region, region) > .8f }) continue
-                val reference = nearbyBase(image, region, settings.monochrome, requireMultipleSides = true) ?: continue
-                analyze(frame, region, settings, reference)?.let(proposals::add)
-            }
-        }
-        // Prefer a large photograph near the centre when several strips are visible.
-        return proposals.maxByOrNull { selection ->
-            val r = selection.region
+        if (!frame.evidence.usable) return null
+        val sampled = image(frame) ?: return null
+        val reduced = frame.copy(width = sampled.w, height = sampled.h, pixels = sampled.pixels)
+        return FilmNegativeShapeDetector.find(reduced).sortedByDescending { photo ->
+            val r = photo.region
             val distance = abs((r.left + r.right) / 2 - .5f) + abs((r.top + r.bottom) / 2 - .5f)
-            (r.right - r.left) * (r.bottom - r.top) / (1f + distance)
+            (photo.mask.area.toFloat() / (photo.mask.width * photo.mask.height)) / (1f + distance)
+        }.firstNotNullOfOrNull { photo ->
+            // Avoid computing colour and percentiles for every other frame on a strip.
+            // If the preferred photograph has insufficient tone, try the next candidate.
+            analyze(reduced, photo.region, settings.copy(monochrome = photo.monochrome), photo.base, photo.mask, photo.baseSupport)
         }
     }
 
@@ -219,10 +169,17 @@ internal object FilmNegativeSelectionAnalysis {
         if (listOf(region.left, region.top, region.right, region.bottom).any { !it.isFinite() }) return null
         val r = FilmNegativeRegion(region.left.coerceIn(0f, 1f), region.top.coerceIn(0f, 1f),
             region.right.coerceIn(0f, 1f), region.bottom.coerceIn(0f, 1f))
-        return analyze(frame, r, settings, nearbyBase(frame, r, settings.monochrome))
+        if (r.right <= r.left || r.bottom <= r.top) return null
+        val sampled = image(frame) ?: return null
+        val reduced = frame.copy(width = sampled.w, height = sampled.h, pixels = sampled.pixels)
+        val photo = FilmNegativeShapeDetector.find(reduced, settings.monochrome)
+            .filter { overlap(it.region, r) > .85f }.maxByOrNull { overlap(it.region, r) }
+        return if (photo != null) analyze(reduced, r, settings, photo.base, photo.mask, photo.baseSupport)
+        else analyze(frame, r, settings, nearbyBase(frame, r, settings.monochrome))
     }
     private fun analyze(frame: FilmNegativeFrozenFrame, r: FilmNegativeRegion,
-        settings: FilmNegativeSettings, reference: FilmBaseCandidate?): FilmNegativeSelection? {
+        settings: FilmNegativeSettings, reference: FilmBaseCandidate?,
+        mask: FilmNegativeMask? = null, baseSupport: FilmNegativeMask? = null): FilmNegativeSelection? {
         if (frame.width <= 0 || frame.height <= 0 || frame.width.toLong() * frame.height != frame.pixels.size.toLong()) return null
         val x0 = (r.left * frame.width).toInt(); val x1 = (r.right * frame.width).toInt()
         val y0 = (r.top * frame.height).toInt(); val y1 = (r.bottom * frame.height).toInt()
@@ -230,6 +187,7 @@ internal object FilmNegativeSelectionAnalysis {
         val values = ArrayList<FloatArray>(); val quadrants = ArrayList<Int>(); var total = 0
         val step = max(1, max(x1 - x0, y1 - y0) / 160)
         for (y in y0 until y1 step step) for (x in x0 until x1 step step) {
+            if (mask != null && !mask.interior((x + .5f) / frame.width, (y + .5f) / frame.height)) continue
             total++
             val value = rgb(frame.pixels[y * frame.width + x])
             if (!valid(value)) continue
@@ -254,7 +212,7 @@ internal object FilmNegativeSelectionAnalysis {
             regionTone = true, densityWindow = null, colorCorrection = correction,
             gamma = 1f, exposureEv = 0f, warmth = 0f, tint = 0f, saturation = 1f, inverted = true,
             referenceSource = if (reference == null) FilmNegativeReferenceSource.CONTENT_ESTIMATE else FilmNegativeReferenceSource.FILM_BORDER)
-        return FilmNegativeSelection(r, reference?.region, adjusted, frame.evidence, frame.orientationToken)
+        return FilmNegativeSelection(r, reference?.region, adjusted, frame.evidence, frame.orientationToken, mask, baseSupport)
     }
 
     private fun neutralCorrection(densities: List<FloatArray>, quadrants: List<Int>, low: Float, high: Float): FilmNegativeColorCorrection? {
@@ -290,16 +248,18 @@ internal object FilmNegativeSelectionAnalysis {
 /** Anchor all three results, so a moving selection or changing light cannot slowly drift. */
 internal class FilmNegativeSelectionWindow {
     private val selections = ArrayList<FilmNegativeSelection>()
+    fun clear() = selections.clear()
     fun add(value: FilmNegativeSelection): FilmNegativeSelection? {
         val last = selections.lastOrNull()
         if (last != null && value.evidence.timestampNs <= last.evidence.timestampNs) return null
         val first = selections.firstOrNull()
         if (first != null && (!first.evidence.compatible(value.evidence) ||
             first.orientationToken != value.orientationToken ||
+            first.settings.monochrome != value.settings.monochrome ||
             value.evidence.timestampNs - last!!.evidence.timestampNs > 1_500_000_000L ||
             FilmNegativeSelectionAnalysis.overlap(first.region, value.region) < .85f ||
             first.baseRegion == null || value.baseRegion == null ||
-            FilmNegativeSelectionAnalysis.overlap(first.baseRegion, value.baseRegion) < .6f ||
+            !consistentSupport(first, value) ||
             (0..2).any { abs(first.settings.base(it) - value.settings.base(it)) > max(3f / 255, first.settings.base(it) * .02f) } ||
             abs(first.settings.blackDensity - value.settings.blackDensity) > .04f ||
             abs(first.settings.whiteDensity - value.settings.whiteDensity) > .06f ||
@@ -310,6 +270,23 @@ internal class FilmNegativeSelectionWindow {
         val result = selections[1].copy(evidence = value.evidence)
         selections.clear()
         return result
+    }
+    private fun consistentSupport(a: FilmNegativeSelection, b: FilmNegativeSelection): Boolean {
+        if (a.mask != null || b.mask != null) {
+            if (a.mask == null || b.mask == null || a.mask.overlap(b.mask) < .8f) return false
+        }
+        if (a.baseSupport != null || b.baseSupport != null) {
+            // Register the narrow border by the already-validated photograph translation.
+            // Two pixels of hand movement can otherwise make identical one-pixel rails disjoint.
+            val du = (b.region.left + b.region.right - a.region.left - a.region.right) / 2
+            val dv = (b.region.top + b.region.bottom - a.region.top - a.region.bottom) / 2
+            return a.baseSupport != null && b.baseSupport != null && a.baseSupport.overlap(b.baseSupport, du, dv) >= .6f
+        }
+        val ar = a.baseRegion ?: return false; val br = b.baseRegion ?: return false
+        // Older/manual candidates may be a single analysis pixel. Compare location in image
+        // coordinates, not IoU of tiny tiles, while still rejecting a different rail.
+        return abs(ar.left + ar.right - br.left - br.right) < .04f &&
+            abs(ar.top + ar.bottom - br.top - br.bottom) < .04f
     }
     private fun consistentCorrection(a: FilmNegativeColorCorrection?, b: FilmNegativeColorCorrection?): Boolean {
         if (a == null || b == null) return a == b
