@@ -32,8 +32,8 @@ internal class FilmNegativePickerView(context: Context, private val english: Boo
 
     init {
         orientation = VERTICAL
-        val foreground = if (darkMode) Color.WHITE else Color.BLACK
-        setBackgroundColor(if (darkMode) Color.rgb(16, 16, 16) else Color.WHITE)
+        val foreground = InstrumentStyle.foreground(darkMode)
+        setBackgroundColor(InstrumentStyle.background(darkMode))
         isClickable = true
         message.setTextColor(foreground)
         message.textSize = 13f
@@ -43,7 +43,7 @@ internal class FilmNegativePickerView(context: Context, private val english: Boo
         val actions = LinearLayout(context)
         fun action(label: String, callback: () -> Unit) = Button(context).apply {
             text = label; textSize = 12f; isAllCaps = false
-            setTextColor(foreground); setBackgroundColor(if (darkMode) Color.rgb(48, 48, 48) else Color.rgb(235, 235, 235))
+            InstrumentStyle.styleButton(this, darkMode)
             setOnClickListener { callback() }
         }
         actions.addView(action(word("取消", "Cancel"), cancel), LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f))
@@ -51,6 +51,7 @@ internal class FilmNegativePickerView(context: Context, private val english: Boo
             else word("自动选区", "Auto region"), findBase)
         actions.addView(autoButton, LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.5f))
         confirmButton = action(word("确认选区", "Use selection")) { confirm(image.region) }
+        InstrumentStyle.styleButton(confirmButton, darkMode, primary = true)
         actions.addView(confirmButton, LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.5f))
         addView(actions)
         addView(image, LayoutParams(LayoutParams.MATCH_PARENT, 0, 1f))

@@ -42,12 +42,12 @@ internal class ParameterRecordToolView(
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans-serif", Typeface.NORMAL) }
     private val boldPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans-serif", Typeface.BOLD) }
     private val path = Path()
-    private val background: Int get() = if (state.isDarkMode) Color.BLACK else Color.WHITE
-    private val foreground: Int get() = if (state.isDarkMode) Color.rgb(224, 224, 220) else Color.rgb(20, 20, 20)
-    private val muted: Int get() = if (state.isDarkMode) Color.rgb(100, 100, 96) else Color.rgb(178, 178, 174)
-    private val panel: Int get() = if (state.isDarkMode) Color.rgb(45, 45, 43) else Color.rgb(235, 235, 232)
-    private val actionSurface: Int get() = if (state.isDarkMode) Color.rgb(24, 24, 22) else Color.WHITE
-    private val red = Color.rgb(201, 39, 46)
+    private val background: Int get() = InstrumentStyle.background(state.isDarkMode)
+    private val foreground: Int get() = InstrumentStyle.foreground(state.isDarkMode)
+    private val muted: Int get() = InstrumentStyle.secondary(state.isDarkMode)
+    private val panel: Int get() = InstrumentStyle.panel(state.isDarkMode)
+    private val actionSurface: Int get() = InstrumentStyle.control(state.isDarkMode)
+    private val red = InstrumentStyle.red
     private var geometry = ParameterRecordToolGeometry.EMPTY
     private var target = Target.NONE
     private var locationState = ParameterLocationDisplayState.DISABLED

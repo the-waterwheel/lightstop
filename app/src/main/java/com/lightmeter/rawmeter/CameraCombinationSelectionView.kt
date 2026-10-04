@@ -61,7 +61,7 @@ internal class CameraCombinationSelectionView(
         val dark = state.isDarkMode
         val panelColor = if (dark) Color.argb(220, 10, 10, 10) else Color.argb(220, 245, 245, 242)
         val foreground = if (dark) Color.rgb(235, 235, 230) else Color.rgb(18, 18, 18)
-        val accent = Color.rgb(166, 27, 36)
+        val accent = InstrumentStyle.red
         val horizontal = 14f * density
         val topPanel = RectF(
             horizontal,

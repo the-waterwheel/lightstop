@@ -6,6 +6,7 @@ plugins {
 }
 
 val buildAbiSplits = providers.gradleProperty("splitApks").map { it.toBooleanStrict() }.orElse(false).get()
+val uiPreview = providers.gradleProperty("uiPreview").map { it.toBooleanStrict() }.orElse(false).get()
 
 android {
     namespace = "com.lightmeter.rawmeter"
@@ -77,11 +78,25 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+
+    if (uiPreview) {
+        sourceSets.getByName("test").java.srcDir("src/uiPreview/java")
+        testOptions.unitTests.isIncludeAndroidResources = true
+        testOptions.unitTests.all {
+            it.systemProperty("robolectric.dependency.repo.url", "https://repo.maven.apache.org/maven2")
+            it.systemProperty("uiPreview.output", providers.gradleProperty("previewOutput").orElse("build/ui-preview").get())
+            providers.gradleProperty("previewSdkDir").orNull?.let { directory ->
+                it.systemProperty("robolectric.offline", "true")
+                it.systemProperty("robolectric.dependency.dir", rootProject.file(directory).absolutePath)
+            }
+        }
+    }
 }
 
 dependencies {
     implementation(files("libs/opencv-slim-4.12.0-r2.aar"))
     testImplementation("junit:junit:4.13.2")
+    if (uiPreview) testImplementation("org.robolectric:robolectric:4.14.1")
 }
 
 // The slim OpenCV runtime is a pinned local artifact. Fail the build if the bytes change so a

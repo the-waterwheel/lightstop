@@ -48,9 +48,9 @@ internal class FilmNegativeToolView(context: Context, private val state: MeterSt
     var settings = FilmNegativeSettings()
         private set
     private val density get() = resources.displayMetrics.density
-    private val accent = Color.rgb(163, 38, 46)
-    private val foreground get() = if (state.isDarkMode) Color.WHITE else Color.BLACK
-    private val surface get() = if (state.isDarkMode) Color.rgb(18, 18, 18) else Color.WHITE
+    private val accent = InstrumentStyle.red
+    private val foreground get() = InstrumentStyle.foreground(state.isDarkMode)
+    private val surface get() = InstrumentStyle.background(state.isDarkMode)
     private val header = LinearLayout(context)
     private val drawer = LinearLayout(context)
     private val scroll = ScrollView(context)
@@ -129,14 +129,16 @@ internal class FilmNegativeToolView(context: Context, private val state: MeterSt
         header.minimumHeight = dp(52)
         header.addView(button(localized("返回", "Back")) {
             if (!handleBack()) listener?.onBackToToolsRequested()
-        }, LinearLayout.LayoutParams(dp(68), dp(52)))
+        }.apply { tag = "back" }, LinearLayout.LayoutParams(dp(68), dp(52)))
         header.addView(text(localized("负片预览", "Negative preview"), 17f).apply {
+            typeface = InstrumentStyle.labelTypeface
             maxLines = 1; ellipsize = TextUtils.TruncateAt.END; gravity = Gravity.CENTER
         }, LinearLayout.LayoutParams(0, dp(52), 1f))
         header.addView(View(context), LinearLayout.LayoutParams(dp(68), dp(52)))
         addView(header)
         drawer.orientation = LinearLayout.VERTICAL
-        drawerHandle.textSize = 14f; drawerHandle.gravity = Gravity.CENTER
+        drawerHandle.textSize = 12f; drawerHandle.gravity = Gravity.CENTER
+        drawerHandle.typeface = InstrumentStyle.labelTypeface
         drawerHandle.minimumHeight = dp(44)
         drawerHandle.contentDescription = localized("展开或收起参数", "Expand or collapse parameters")
         drawerHandle.setOnClickListener { setExpanded(!expanded) }
@@ -253,17 +255,20 @@ internal class FilmNegativeToolView(context: Context, private val state: MeterSt
     }
 
     fun applyTheme() {
-        header.setBackgroundColor(surface); drawer.setBackgroundColor(surface)
-        drawerHandle.setTextColor(foreground)
+        header.setBackgroundColor(surface)
+        drawer.background = GradientDrawable().apply {
+            setColor(surface)
+            cornerRadii = floatArrayOf(dp(12).toFloat(), dp(12).toFloat(), dp(12).toFloat(), dp(12).toFloat(), 0f, 0f, 0f, 0f)
+            setStroke(dp(1), InstrumentStyle.border(this@FilmNegativeToolView.state.isDarkMode))
+        }
+        drawerHandle.setTextColor(InstrumentStyle.secondary(state.isDarkMode))
         for (label in themedTexts) label.setTextColor(foreground)
         for ((view, primary) in themedButtons) {
-            val shape = GradientDrawable().apply {
-                if (view.tag == "question") this.shape = GradientDrawable.OVAL else cornerRadius = dp(8).toFloat()
-                setColor(if (primary) accent else surface)
-                setStroke(dp(1), if (primary || view.isSelected) accent else if (this@FilmNegativeToolView.state.isDarkMode) 0xff606060.toInt() else 0xffbdbdbd.toInt())
+            InstrumentStyle.styleButton(view, state.isDarkMode, primary, view.tag == "question")
+            if (view.tag == "back") {
+                view.background = RippleDrawable(ColorStateList.valueOf(0x18a61b24),
+                    android.graphics.drawable.ColorDrawable(surface), null)
             }
-            view.setTextColor(if (primary) Color.WHITE else if (view.isSelected) accent else foreground)
-            view.background = RippleDrawable(ColorStateList.valueOf(if (primary) 0x30ffffff else 0x20a3262e), shape, null)
         }
         for (view in themedSwitches) {
             view.setTextColor(foreground)
@@ -273,7 +278,7 @@ internal class FilmNegativeToolView(context: Context, private val state: MeterSt
         for (slider in sliders) {
             slider.bar.thumbTintList = ColorStateList.valueOf(accent)
             slider.bar.progressTintList = ColorStateList.valueOf(accent)
-            slider.bar.progressBackgroundTintList = ColorStateList.valueOf(if (state.isDarkMode) 0xff505050.toInt() else 0xffdddddd.toInt())
+            slider.bar.progressBackgroundTintList = ColorStateList.valueOf(InstrumentStyle.border(state.isDarkMode))
         }
         if (::curveView.isInitialized) curveView.invalidate()
     }

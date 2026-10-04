@@ -60,12 +60,12 @@ class DepthOfFieldView(
     private var geometry = DepthOfFieldGeometry.EMPTY
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
 
-    private val background: Int get() = if (state.isDarkMode) Color.BLACK else Color.WHITE
-    private val foreground: Int get() = if (state.isDarkMode) Color.rgb(224, 224, 220) else Color.rgb(20, 20, 20)
-    private val muted: Int get() = if (state.isDarkMode) Color.rgb(96, 96, 92) else Color.rgb(190, 190, 186)
-    private val secondaryStrong: Int get() = if (state.isDarkMode) Color.rgb(164, 164, 160) else Color.rgb(106, 106, 102)
-    private val panel: Int get() = if (state.isDarkMode) Color.rgb(48, 48, 46) else Color.rgb(224, 224, 220)
-    private val red = Color.rgb(211, 43, 43)
+    private val background: Int get() = InstrumentStyle.background(state.isDarkMode)
+    private val foreground: Int get() = InstrumentStyle.foreground(state.isDarkMode)
+    private val muted: Int get() = InstrumentStyle.secondary(state.isDarkMode)
+    private val secondaryStrong: Int get() = InstrumentStyle.secondary(state.isDarkMode)
+    private val panel: Int get() = InstrumentStyle.panel(state.isDarkMode)
+    private val red = InstrumentStyle.red
 
     private val session = DepthOfFieldSession()
     private val dialogs = DepthOfFieldDialogs(
@@ -295,7 +295,7 @@ class DepthOfFieldView(
     private fun drawAutomaticDistanceControl(canvas: Canvas) {
         val button = geometry.autoDistanceButton
         val help = geometry.autoDistanceHelp
-        val blue = Color.rgb(38, 112, 205)
+        val blue = InstrumentStyle.blue
         paint.style = Paint.Style.FILL
         paint.color = if (automaticDistanceEnabled) Color.argb(38, 38, 112, 205) else background
         canvas.drawCircle(button.centerX(), button.centerY(), button.width() * 0.43f, paint)

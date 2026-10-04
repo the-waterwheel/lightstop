@@ -22,7 +22,7 @@ internal class RecordCaptureSliderView(
 
     private val density get() = layoutDensity(LayoutProfile.SCROLL)
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val red = Color.rgb(201, 39, 46)
+    private val red = InstrumentStyle.red
     private var anchor = RectF()
     private var track = RectF()
     private val innerTrack = RectF()

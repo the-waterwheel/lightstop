@@ -23,9 +23,8 @@ import kotlin.math.min
  * Scrollable Tools ("小工具") panel that replaces the parameter area under the viewfinder.
  *
  * The panel only lays out over the parameter region; the viewfinder below it keeps receiving
- * touches. Tools are rendered from [ToolsCatalog] as a three-column grid of gray placeholder
- * cells. Tool pages are not implemented yet: taps dispatch through [Listener] so each tool can
- * grow its own page without touching this framework.
+ * touches. Tools are rendered from [ToolsCatalog] as a three-column grid; taps dispatch through
+ * [Listener]. Only the artwork inset and surface treatment differ from the original grid.
  */
 @SuppressLint("ViewConstructor")
 class ToolsView(
@@ -44,28 +43,28 @@ class ToolsView(
 
     private val density get() = layoutDensity(LayoutProfile.SCROLL)
     private val scaledDensity get() = layoutTextDensity(LayoutProfile.SCROLL)
-    private val lightBlack = Color.rgb(20, 20, 20)
-    private val nightForeground = Color.rgb(210, 210, 206)
-    private val background: Int get() = if (state.isDarkMode) Color.BLACK else Color.WHITE
+    private val lightBlack = InstrumentStyle.ink
+    private val nightForeground = InstrumentStyle.nightInk
+    private val background: Int get() = InstrumentStyle.background(state.isDarkMode)
     private val foreground: Int get() = if (state.isDarkMode) nightForeground else lightBlack
     private val dividerColor: Int
-        get() = if (state.isDarkMode) Color.rgb(84, 84, 80) else Color.rgb(190, 190, 186)
+        get() = InstrumentStyle.border(state.isDarkMode)
     private val cellColor: Int
-        get() = if (state.isDarkMode) Color.rgb(58, 58, 56) else Color.rgb(214, 214, 210)
+        get() = InstrumentStyle.iconTile(state.isDarkMode)
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
         typeface = Typeface.create("sans", Typeface.NORMAL)
     }
     private val boldPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        typeface = Typeface.create("sans", Typeface.BOLD)
+        typeface = InstrumentStyle.labelTypeface
     }
     private val iconPaint = Paint(
         Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG,
     )
     /**
      * These icons intentionally keep their authored white fill in both themes. The Tools cells
-     * remain mid-gray, so tinting them with the normal foreground color would make the supplied
+     * retain a gray backing, so tinting them with the normal foreground color would make the supplied
      * artwork less legible and would also discard its antialiased edge treatment.
      */
     private data class ToolIcon(
@@ -171,7 +170,12 @@ class ToolsView(
             }
             paint.style = Paint.Style.FILL
             paint.color = cellColor
-            canvas.drawRoundRect(cell, 6f * density, 6f * density, paint)
+            canvas.drawRoundRect(cell, 8f * density, 8f * density, paint)
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 0.75f * density
+            paint.color = dividerColor
+            canvas.drawRoundRect(cell, 8f * density, 8f * density, paint)
+            paint.style = Paint.Style.FILL
             boldPaint.color = foreground
             boldPaint.textSize = TOOL_LABEL_TEXT_SP * scaledDensity
             val label = spec.label.resolve(state.menuLanguage)
@@ -179,10 +183,10 @@ class ToolsView(
             val lines = if (labelWidth > cell.width() - 16f * density) 2 else 1
             val textBlockHeight = boldPaint.textSize * if (lines == 1) 1.25f else 2.45f
             val iconBox = RectF(
-                cell.left + 9f * density,
-                cell.top + 8f * density,
-                cell.right - 9f * density,
-                cell.bottom - textBlockHeight - 13f * density,
+                cell.left + 17f * density,
+                cell.top + 14f * density,
+                cell.right - 17f * density,
+                cell.bottom - textBlockHeight - 17f * density,
             )
             toolIcons[spec.id]?.let { icon ->
                 drawIconFitCenter(canvas, icon, iconBox)
@@ -200,7 +204,7 @@ class ToolsView(
         val size = min(box.width(), box.height()) * 0.72f
         val film = RectF(box.centerX() - size * 0.55f, box.centerY() - size * 0.36f,
             box.centerX() + size * 0.55f, box.centerY() + size * 0.36f)
-        paint.color = Color.BLACK
+        paint.color = foreground
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 2f * density
         canvas.drawRoundRect(film, 3f * density, 3f * density, paint)

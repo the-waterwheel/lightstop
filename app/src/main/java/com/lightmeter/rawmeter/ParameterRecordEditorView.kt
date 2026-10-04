@@ -76,11 +76,11 @@ internal class ParameterRecordEditorView(
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans-serif", Typeface.NORMAL) }
     private val boldPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans-serif", Typeface.BOLD) }
     private val notePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans-serif", Typeface.NORMAL) }
-    private val background: Int get() = if (state.isDarkMode) Color.BLACK else Color.WHITE
-    private val foreground: Int get() = if (state.isDarkMode) Color.rgb(224, 224, 220) else Color.rgb(20, 20, 20)
-    private val muted: Int get() = if (state.isDarkMode) Color.rgb(105, 105, 101) else Color.rgb(178, 178, 174)
-    private val panel: Int get() = if (state.isDarkMode) Color.rgb(45, 45, 43) else Color.rgb(235, 235, 232)
-    private val red = Color.rgb(201, 39, 46)
+    private val background: Int get() = InstrumentStyle.background(state.isDarkMode)
+    private val foreground: Int get() = InstrumentStyle.foreground(state.isDarkMode)
+    private val muted: Int get() = InstrumentStyle.secondary(state.isDarkMode)
+    private val panel: Int get() = InstrumentStyle.panel(state.isDarkMode)
+    private val red = InstrumentStyle.red
     private var geometry = ParameterRecordEditorGeometry.EMPTY
     private var draft: ParameterCaptureDraft? = null
     private var target = Target.NONE

@@ -57,15 +57,15 @@ internal class ReciprocityView(
         typeface = Typeface.create("sans-serif", Typeface.NORMAL)
     }
     private val timeRenderer = ReciprocityTimeRenderer(density, scaledDensity)
-    private val background: Int get() = if (state.isDarkMode) Color.BLACK else Color.WHITE
-    private val foreground: Int get() = if (state.isDarkMode) Color.rgb(218, 218, 214) else Color.rgb(20, 20, 20)
-    private val muted: Int get() = if (state.isDarkMode) Color.rgb(70, 70, 68) else Color.rgb(166, 166, 162)
-    private val secondaryStrong: Int get() = if (state.isDarkMode) Color.rgb(164, 164, 160) else Color.rgb(96, 96, 92)
-    private val panel: Int get() = if (state.isDarkMode) Color.rgb(42, 42, 40) else Color.rgb(235, 235, 232)
-    private val actionSurface: Int get() = if (state.isDarkMode) Color.rgb(24, 24, 22) else Color.WHITE
+    private val background: Int get() = InstrumentStyle.background(state.isDarkMode)
+    private val foreground: Int get() = InstrumentStyle.foreground(state.isDarkMode)
+    private val muted: Int get() = InstrumentStyle.secondary(state.isDarkMode)
+    private val secondaryStrong: Int get() = InstrumentStyle.secondary(state.isDarkMode)
+    private val panel: Int get() = InstrumentStyle.panel(state.isDarkMode)
+    private val actionSurface: Int get() = InstrumentStyle.control(state.isDarkMode)
     private val actionActiveSurface: Int get() = if (state.isDarkMode) Color.rgb(72, 72, 68) else Color.rgb(218, 218, 214)
     private val actionText: Int get() = if (state.isDarkMode) foreground else Color.rgb(22, 22, 22)
-    private val red = Color.rgb(205, 38, 45)
+    private val red = InstrumentStyle.red
 
     private var geometry = ReciprocityGeometry.EMPTY
     private var selectedFilmId: String? = null

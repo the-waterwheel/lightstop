@@ -43,9 +43,9 @@ internal class FlashDistanceDialView(
         typeface = Typeface.create("sans", Typeface.BOLD)
         textAlign = Paint.Align.CENTER
     }
-    private val foreground: Int get() = if (state.isDarkMode) Color.rgb(222, 222, 218) else Color.rgb(20, 20, 20)
+    private val foreground: Int get() = InstrumentStyle.foreground(state.isDarkMode)
     private val surface: Int get() = if (state.isDarkMode) Color.rgb(28, 28, 27) else Color.WHITE
-    private val blue = Color.rgb(38, 112, 184)
+    private val blue = InstrumentStyle.blue
 
     private var configuration: FlashConfiguration? = null
     private var distanceState = DistanceMeasurementState()
