@@ -11,7 +11,6 @@ import android.graphics.Color
 import android.graphics.RectF
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
-import android.text.TextUtils
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -130,10 +129,6 @@ internal class FilmNegativeToolView(context: Context, private val state: MeterSt
         header.addView(button(localized("返回", "Back")) {
             if (!handleBack()) listener?.onBackToToolsRequested()
         }, LinearLayout.LayoutParams(dp(68), dp(52)))
-        header.addView(text(localized("负片预览", "Negative preview"), 17f).apply {
-            maxLines = 1; ellipsize = TextUtils.TruncateAt.END; gravity = Gravity.CENTER
-        }, LinearLayout.LayoutParams(0, dp(52), 1f))
-        header.addView(View(context), LinearLayout.LayoutParams(dp(68), dp(52)))
         addView(header)
         drawer.orientation = LinearLayout.VERTICAL
         drawerHandle.textSize = 14f; drawerHandle.gravity = Gravity.CENTER
