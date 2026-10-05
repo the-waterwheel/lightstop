@@ -156,10 +156,66 @@ class Camera2FocusDistanceProviderTest {
         assertEquals(DistanceMeasurementStatus.WAITING_FOR_FOCUS, provider.start(context, capability).status)
     }
 
-    @Test fun unsupportedCapabilityCannotProduceSamplesLater() {
+    @Test fun missingDistanceMetadataCannotProduceSamplesLater() {
+        val provider = Camera2FocusDistanceProvider()
+        provider.start(context, capability.copy(resultKeyAvailable = false))
+        assertNull(feed(provider, 100_000_000L, 1f))
+    }
+
+    @Test fun uncalibratedAndLegacyUnknownMetadataProduceExplicitBestEffortEstimates() {
+        for (calibration in listOf(null, CameraCharacteristics.LENS_INFO_FOCUS_DISTANCE_CALIBRATION_UNCALIBRATED)) {
+            val provider = Camera2FocusDistanceProvider()
+            assertEquals(DistanceMeasurementStatus.WAITING_FOR_FOCUS,
+                provider.start(context, capability.copy(calibration = calibration)).status)
+            val state = feed(provider, 100_000_000L, 0.5f)!!
+            val estimate = state.estimate!!
+            assertEquals(2.0, estimate.meters, 0.0)
+            assertEquals(DistanceSource.FOCUS_ESTIMATED, estimate.source)
+            assertEquals(DistanceQuality.LOW, estimate.quality)
+            assertTrue(estimate.isApproximate)
+            assertNull(estimate.lowerMeters)
+            assertNull(estimate.upperMeters)
+            assertTrue(estimate.confidence <= 0.30)
+            assertFalse(DistanceFusionEngine.usableForFlash(estimate))
+            assertEquals(2.0, state.effectiveMetersForFlash!!, 0.0)
+        }
+    }
+
+    @Test fun missingPhysicalIdDoesNotDisableLegacyFocusEstimation() {
+        val provider = Camera2FocusDistanceProvider()
+        val legacyContext = context.copy(physicalIdentityKnown = false)
+        provider.start(legacyContext, capability.copy(physicalIdentityKnown = false))
+        var state: DistanceMeasurementState? = null
+        repeat(5) { index -> state = provider.onFrame(legacyContext, index * 333_000_000L,
+            CameraMetadata.CONTROL_AF_STATE_PASSIVE_FOCUSED, CameraMetadata.LENS_STATE_STATIONARY, 1f) }
+        assertEquals(DistanceSource.FOCUS_ESTIMATED, state!!.estimate!!.source)
+        assertEquals(1.0, state!!.estimate!!.meters, 0.0)
+    }
+
+    @Test fun estimatedScaleStillRejectsFailedFocusInvalidCodesAndImplausibleReciprocals() {
         val provider = Camera2FocusDistanceProvider()
         provider.start(context, capability.copy(calibration = null))
-        assertNull(feed(provider, 100_000_000L, 1f))
+        assertNull(provider.onFrame(context, 1L, CameraMetadata.CONTROL_AF_STATE_PASSIVE_UNFOCUSED,
+            CameraMetadata.LENS_STATE_STATIONARY, 1f))
+        assertNull(provider.onFrame(context, 2L, CameraMetadata.CONTROL_AF_STATE_PASSIVE_FOCUSED,
+            CameraMetadata.LENS_STATE_STATIONARY, Float.NaN))
+        assertNull(feed(provider, 100_000_000L, 0.001f)?.estimate)
+        provider.start(context, capability.copy(calibration = null, minimumDiopters = 1000f))
+        assertNull(feed(provider, 100_000_000L, 100f)?.estimate)
+    }
+
+    @Test fun threeFpsPreviewCanProduceDistanceRegardlessOfCalibrationClass() {
+        for (calibration in listOf(CameraCharacteristics.LENS_INFO_FOCUS_DISTANCE_CALIBRATION_CALIBRATED,
+            CameraCharacteristics.LENS_INFO_FOCUS_DISTANCE_CALIBRATION_APPROXIMATE,
+            CameraCharacteristics.LENS_INFO_FOCUS_DISTANCE_CALIBRATION_UNCALIBRATED)) {
+            val provider = Camera2FocusDistanceProvider()
+            provider.start(context, capability.copy(calibration = calibration))
+            var state: DistanceMeasurementState? = null
+            repeat(5) { index -> state = provider.onFrame(context, 100_000_000L + index * 333_000_000L,
+                CameraMetadata.CONTROL_AF_STATE_PASSIVE_FOCUSED, CameraMetadata.LENS_STATE_STATIONARY, 0.5f) }
+            assertEquals(DistanceMeasurementStatus.AVAILABLE, state!!.status)
+            assertEquals(2.0, state!!.effectiveMetersForFlash!!, 0.0)
+        }
     }
 
     @Test fun farQuantisationWidensExposureUncertaintyAndReducesConfidence() {

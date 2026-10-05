@@ -79,6 +79,9 @@ internal class CameraDistanceCaptureCoordinator(
         }
         activeContext = context
         lastStartNs = System.nanoTime()
+        val handler = cameraHandler()
+        if (handler != null && motionGeometryAllowed() && characteristics()?.let(MotionDistanceGeometry::canAttempt) == true)
+            motionProvider.start(context, handler) else motionProvider.stop()
         distanceCoordinator.startFocusDistance(
             context,
             FocusDistanceCapability(
@@ -89,13 +92,11 @@ internal class CameraDistanceCaptureCoordinator(
                 targetConfidence = if ((requestCharacteristics()?.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF) ?: 0) > 0)
                     1.0 else 0.45,
             ),
+            motionSupported = motionProvider.running,
         )
-        val handler = cameraHandler()
         if (handler != null) {
             handler.removeCallbacks(expiryCheck)
             handler.postDelayed(expiryCheck, 250L)
-            if (motionGeometryAllowed() && characteristics()?.let(MotionDistanceGeometry::canAttempt) == true)
-                motionProvider.start(context, handler) else motionProvider.stop()
         }
         onSamplingChanged()
         triggerAutoFocus()
@@ -275,13 +276,12 @@ internal class CameraDistanceCaptureCoordinator(
 
     private fun currentContext(): DistanceContext? {
         val info = cameraInfo()
-        if (!info.physicalCameraIdentityKnown) return null
         val identity = info.activePhysicalCameraId ?: info.physicalCameraId
             ?: info.runtimeCameraId.takeIf { it.isNotBlank() } ?: return null
         return DistanceContext(
             generation = cameraGeneration(),
             cameraIdentity = identity,
-            physicalIdentityKnown = true,
+            physicalIdentityKnown = info.physicalCameraIdentityKnown,
         )
     }
 

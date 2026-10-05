@@ -92,4 +92,46 @@ class DistanceFusionEngineTest {
             estimate(2.1, DistanceSource.MOTION_PARALLAX), now) { _, _ -> Double.NaN }!!
         assertEquals(DistanceMeasurementStatus.STALE, result.status)
     }
+
+    private fun heuristic() = estimate(2.0, DistanceSource.FOCUS_ESTIMATED, confidence = 0.25)
+        .copy(lowerMeters = null, upperMeters = null, quality = DistanceQuality.LOW)
+
+    @Test fun heuristicSurvivesRefreshWithoutPretendingToHaveMetricUncertainty() {
+        val guess = heuristic()
+        val state = DistanceFusionEngine.fuse(guess, null, now + 250_000_000L)!!
+        assertEquals(DistanceMeasurementStatus.AVAILABLE, state.status)
+        assertEquals(guess, state.estimate)
+        assertEquals(0.0, DistanceFusionEngine.weight(guess), 0.0)
+        assertTrue(DistanceFusionEngine.usableForEstimatedFlash(guess))
+        assertNull(DistanceFusionEngine.fuse(guess, null, now + DISTANCE_TTL_NS + 1))
+    }
+
+    @Test fun realMetricObservationAlwaysReplacesUnverifiedHeuristicWithoutFusingIt() {
+        val motion = estimate(4.0, DistanceSource.MOTION_PARALLAX)
+        val state = DistanceFusionEngine.fuse(heuristic(), motion, now)!!
+        assertEquals(motion, state.estimate)
+        assertEquals(DistanceSource.MOTION_PARALLAX, state.estimate!!.source)
+    }
+
+    @Test fun approximateMetricDistanceUsesNumericErrorRatherThanLowLabelAlone() {
+        val approximate = estimate(2.0, DistanceSource.FOCUS_APPROXIMATE, 0.30, 0.20)
+            .copy(quality = DistanceQuality.LOW)
+        assertTrue(DistanceFusionEngine.usableForFlash(approximate))
+        assertFalse(DistanceFusionEngine.usableForFlash(approximate.copy(lowerMeters = 0.5)))
+        assertFalse(DistanceFusionEngine.usableForFlash(approximate.copy(confidence = 0.01)))
+    }
+
+    @Test fun lowPrecisionFocusRemainsUsableAsAnExplicitApproximation() {
+        val coarse = estimate(10.0, confidence = 0.10, error = 0.4).copy(quality = DistanceQuality.LOW)
+        assertFalse(DistanceFusionEngine.usableForFlash(coarse))
+        assertTrue(DistanceFusionEngine.usableForEstimatedFlash(coarse))
+        assertTrue(coarse.isApproximate)
+        assertTrue(DistanceFusionEngine.usableForEstimatedFlash(coarse.copy(upperMeters = null)))
+        for (bad in listOf(coarse.copy(lowerMeters = null), coarse.copy(lowerMeters = -1.0),
+            coarse.copy(upperMeters = 1.0), coarse.copy(sampleCount = 1),
+            coarse.copy(confidence = Double.NaN))) {
+            assertFalse(DistanceFusionEngine.usableForEstimatedFlash(bad))
+        }
+        assertFalse(DistanceFusionEngine.usableForEstimatedFlash(coarse.copy(source = DistanceSource.MOTION_PARALLAX)))
+    }
 }

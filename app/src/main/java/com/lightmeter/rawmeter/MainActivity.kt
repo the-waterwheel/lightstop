@@ -738,6 +738,7 @@ class MainActivity : Activity(), CameraControllerCallback {
 
     override fun onPause() {
         activityResumed = false
+        meterLayout.cancelAutomaticDistanceNotice()
         manualVerificationDialog?.dismiss()
         manualVerificationDialog = null
         foregroundCameraStartCoordinator.cancel()
@@ -1165,7 +1166,7 @@ class MainActivity : Activity(), CameraControllerCallback {
         }
         state.cameraInfo = info
         if (meterLayout.isFilmNegativeOpen) meterLayout.filmNegativeToolView.updateCamera(info.cameraId)
-        if (!meterLayout.isFilmNegativeOpen && (state.appliedFlashConfiguration?.isAutoDistance == true ||
+        if (!meterLayout.isFilmNegativeOpen && (meterLayout.isFlashAutomaticDistanceEnabled() ||
                 meterLayout.isDepthOfFieldAutomaticDistanceEnabled()) &&
             info.previewStreamGeneration > 0L && (
                 info.previewStreamGeneration != oldInfo.previewStreamGeneration ||
@@ -1211,6 +1212,7 @@ class MainActivity : Activity(), CameraControllerCallback {
                 "focus=${state.focusObservation != null} motion=${state.motionObservation != null} reason=${state.diagnosticReason}")
         }
         this.state.distanceMeasurementState = state
+        meterLayout.onDistanceStateChanged(state)
         meterLayout.refresh()
         updateExposurePreviewFromMeter()
     }

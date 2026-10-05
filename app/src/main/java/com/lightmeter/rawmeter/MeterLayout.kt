@@ -37,6 +37,32 @@ class MeterLayout @JvmOverloads constructor(
 
     private enum class CameraManagementOrigin { SETTINGS, CALIBRATION, PREVIEW_CALIBRATION, VIGNETTING }
     private enum class FilmSelectionTarget { LATITUDE, RECIPROCITY, PARAMETER_RECORD }
+    private val automaticDistanceFeedback = AutomaticDistanceFeedback()
+
+    fun cancelAutomaticDistanceNotice() { automaticDistanceFeedback.selected(false) }
+
+    fun onDistanceStateChanged(distance: DistanceMeasurementState) {
+        if (automaticDistanceFeedback.consumeUnavailable(distance)) {
+            val reason = when (distance.diagnosticReason) {
+                "Fixed-focus lens" -> localized("当前镜头为固定焦点，Auto 测距不可用", "Auto distance unavailable: fixed-focus lens")
+                "CaptureResult has no focus distance" -> localized("当前镜头未提供距离数据，Auto 测距不可用", "Auto distance unavailable: no distance metadata")
+                else -> localized("当前镜头无法自动测距，请使用手动距离", "Auto distance unavailable; select a manual distance")
+            }
+            Toast.makeText(context, reason, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun onDistanceSelectionChanged(automatic: Boolean) {
+        automaticDistanceFeedback.selected(automatic)
+        if (automatic) {
+            // Also starts a sample when the flash tool has not yet been applied.
+            listener?.onAutomaticDistanceRequested()
+            onDistanceStateChanged(state.distanceMeasurementState)
+        } else if (state.appliedFlashConfiguration?.isAutoDistance != true &&
+            !depthOfFieldView.isAutomaticDistanceEnabled()) {
+            listener?.onAutomaticDistanceStopped()
+        }
+    }
 
     internal interface Listener {
         fun onMeasureRequested()
@@ -654,6 +680,7 @@ class MeterLayout @JvmOverloads constructor(
             }
         }
         flashDistanceDialView.onDistanceChanged = { distance ->
+            onDistanceSelectionChanged(distance == null)
             val base = state.appliedFlashConfiguration ?: flashExposureRepository.selected(state.iso)
             flashExposureView.updateConfiguration(base.copy(distanceMeters = distance))
             updateFlashPresentation()
@@ -749,9 +776,15 @@ class MeterLayout @JvmOverloads constructor(
             }
         }
         flashExposureView.listener = object : FlashExposureView.Listener {
+            override fun onDistanceSelectionChanged(automatic: Boolean) {
+                this@MeterLayout.onDistanceSelectionChanged(automatic)
+            }
             override fun onBackToToolsRequested() {
                 activeToolId = null
                 flashExposureView.visibility = View.GONE
+                cancelAutomaticDistanceNotice()
+                if (state.appliedFlashConfiguration?.isAutoDistance != true &&
+                    !depthOfFieldView.isAutomaticDistanceEnabled()) listener?.onAutomaticDistanceStopped()
                 toolsView.visibility = View.VISIBLE
                 toolsView.bringToFront()
             }
@@ -785,7 +818,8 @@ class MeterLayout @JvmOverloads constructor(
 
             override fun onAppliedFlashChanged(configuration: FlashConfiguration?) {
                 state.setAppliedFlashConfiguration(configuration)
-                if (configuration?.isAutoDistance == true) {
+                if (configuration?.isAutoDistance == true ||
+                    (isToolsOpen && activeToolId == ToolId.FLASH_INDEX && flashExposureView.isAutomaticDistanceEnabled())) {
                     listener?.onAutomaticDistanceRequested()
                 } else if (!depthOfFieldView.isAutomaticDistanceEnabled()) {
                     listener?.onAutomaticDistanceStopped()
@@ -1437,6 +1471,8 @@ class MeterLayout @JvmOverloads constructor(
         depthOfFieldView.pausePage()
         activeToolId = null
         isToolsOpen = false
+        cancelAutomaticDistanceNotice()
+        if (state.appliedFlashConfiguration?.isAutoDistance != true) listener?.onAutomaticDistanceStopped()
         grayCardGuideView.setGuide(RectF(), false)
         val rect = toolsPanelRect(width, height)
         val landscape = width > height
@@ -1465,6 +1501,9 @@ class MeterLayout @JvmOverloads constructor(
 
     fun isDepthOfFieldAutomaticDistanceEnabled(): Boolean =
         depthOfFieldView.isAutomaticDistanceEnabled()
+
+    fun isFlashAutomaticDistanceEnabled(): Boolean = state.appliedFlashConfiguration?.isAutoDistance == true ||
+        (isToolsOpen && activeToolId == ToolId.FLASH_INDEX && flashExposureView.isAutomaticDistanceEnabled())
 
     private fun toolsPanelRect(width: Int, height: Int): RectF {
         val density = resources.displayMetrics.density
@@ -1607,6 +1646,7 @@ class MeterLayout @JvmOverloads constructor(
         colorTemperatureView.visibility = View.GONE
         flashExposureView.visibility = View.VISIBLE
         flashExposureView.bringToFront()
+        if (flashExposureView.isAutomaticDistanceEnabled()) listener?.onAutomaticDistanceRequested()
         Log.i("lightstop", "Flash-exposure tool opened")
     }
 
