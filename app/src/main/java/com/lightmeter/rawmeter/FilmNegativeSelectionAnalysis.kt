@@ -4,6 +4,7 @@ import kotlin.math.abs
 import kotlin.math.log10
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.ceil
 
 internal data class FilmNegativeSelection(val region: FilmNegativeRegion,
     val baseRegion: FilmNegativeRegion?, val settings: FilmNegativeSettings,
@@ -63,6 +64,7 @@ internal object FilmNegativeSelectionAnalysis {
     }
     private fun nearbyBase(image: Image, r: FilmNegativeRegion, monochrome: Boolean,
         requireMultipleSides: Boolean = true): FilmBaseCandidate? {
+        if (r.corners != null) return rotatedBase(image, r, monochrome, requireMultipleSides)
         val x0 = r.left * image.w; val x1 = r.right * image.w
         val y0 = r.top * image.h; val y1 = r.bottom * image.h
         if (x1 - x0 < 12 || y1 - y0 < 12) return null
@@ -149,6 +151,35 @@ internal object FilmNegativeSelectionAnalysis {
         return best
     }
 
+    /** Inspect rails parallel to the edited crop, rather than its much larger rotated bounds. */
+    private fun rotatedBase(image: Image, region: FilmNegativeRegion, monochrome: Boolean,
+        requireMultipleSides: Boolean): FilmBaseCandidate? {
+        if (!region.validCorners()) return null
+        val crop = FilmNegativeCrop.from(region, image.w, image.h)
+        if (crop.width < 12 || crop.height < 12) return null
+        val padX = max(7f, min(image.w * .12f, crop.width * .22f))
+        val padY = max(7f, min(image.h * .12f, crop.height * .22f))
+        val spanX = crop.width + 2 * padX; val spanY = crop.height + 2 * padY
+        val scale = min(1f, EDGE / max(spanX, spanY))
+        val w = ceil(spanX * scale).toInt(); val h = ceil(spanY * scale).toInt()
+        fun original(x: Float, y: Float) = crop.point(x * spanX - spanX / 2, y * spanY - spanY / 2)
+        // Nearest-neighbour readback preserves actual encoded RGB used for the film reference.
+        val pixels = IntArray(w * h) { i ->
+            val p = original((i % w + .5f) / w, (i / w + .5f) / h)
+            if (p.x < 0 || p.y < 0 || p.x >= image.w || p.y >= image.h) -1
+            else image.pixels[p.y.toInt() * image.w + p.x.toInt()]
+        }
+        val localRegion = FilmNegativeRegion(padX / spanX, padY / spanY,
+            (padX + crop.width) / spanX, (padY + crop.height) / spanY)
+        val candidate = nearbyBase(Image(w, h, pixels), localRegion, monochrome, requireMultipleSides) ?: return null
+        val r = candidate.region
+        val points = listOf(original(r.left, r.top), original(r.right, r.top),
+            original(r.right, r.bottom), original(r.left, r.bottom))
+        return candidate.copy(region = FilmNegativeRegion((points.minOf { it.x } / image.w).coerceIn(0f, 1f),
+            (points.minOf { it.y } / image.h).coerceIn(0f, 1f), (points.maxOf { it.x } / image.w).coerceIn(0f, 1f),
+            (points.maxOf { it.y } / image.h).coerceIn(0f, 1f)))
+    }
+
     /** Validate actual curved/rotated support, then compute tone only inside that support. */
     fun automatic(frame: FilmNegativeFrozenFrame, settings: FilmNegativeSettings): FilmNegativeSelection? {
         if (!frame.evidence.usable) return null
@@ -167,13 +198,21 @@ internal object FilmNegativeSelectionAnalysis {
 
     fun manual(frame: FilmNegativeFrozenFrame, region: FilmNegativeRegion, settings: FilmNegativeSettings): FilmNegativeSelection? {
         if (listOf(region.left, region.top, region.right, region.bottom).any { !it.isFinite() }) return null
-        val r = FilmNegativeRegion(region.left.coerceIn(0f, 1f), region.top.coerceIn(0f, 1f),
+        if (!region.validCorners()) return null
+        val points = region.corners
+        val r = if (points == null) FilmNegativeRegion(region.left.coerceIn(0f, 1f), region.top.coerceIn(0f, 1f),
             region.right.coerceIn(0f, 1f), region.bottom.coerceIn(0f, 1f))
+        else FilmNegativeRegion(points.minOf { it.x }, points.minOf { it.y },
+            points.maxOf { it.x }, points.maxOf { it.y }, points.toList())
         if (r.right <= r.left || r.bottom <= r.top) return null
         val sampled = image(frame) ?: return null
         val reduced = frame.copy(width = sampled.w, height = sampled.h, pixels = sampled.pixels)
+        val cropMask = if (points == null) null else FilmNegativeMask(sampled.w, sampled.h,
+            BooleanArray(sampled.w * sampled.h) { i -> r.contains((i % sampled.w + .5f) / sampled.w,
+                (i / sampled.w + .5f) / sampled.h) })
+        fun similarity(photo: FilmNegativeShapeDetector.Photograph) = cropMask?.overlap(photo.mask) ?: overlap(photo.region, r)
         val photo = FilmNegativeShapeDetector.find(reduced, settings.monochrome)
-            .filter { overlap(it.region, r) > .85f }.maxByOrNull { overlap(it.region, r) }
+            .filter { similarity(it) > .85f }.maxByOrNull(::similarity)
         return if (photo != null) analyze(reduced, r, settings, photo.base, photo.mask, photo.baseSupport)
         else analyze(frame, r, settings, nearbyBase(frame, r, settings.monochrome))
     }
@@ -187,6 +226,7 @@ internal object FilmNegativeSelectionAnalysis {
         val values = ArrayList<FloatArray>(); val quadrants = ArrayList<Int>(); var total = 0
         val step = max(1, max(x1 - x0, y1 - y0) / 160)
         for (y in y0 until y1 step step) for (x in x0 until x1 step step) {
+            if (!r.contains((x + .5f) / frame.width, (y + .5f) / frame.height)) continue
             if (mask != null && !mask.interior((x + .5f) / frame.width, (y + .5f) / frame.height)) continue
             total++
             val value = rgb(frame.pixels[y * frame.width + x])
