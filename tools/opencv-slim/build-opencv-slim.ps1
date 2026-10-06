@@ -1,5 +1,7 @@
 [CmdletBinding()]
 param(
+    [ValidateSet("compact", "performance")][string]$BuildProfile = "compact",
+    [switch]$RuntimeOnly,
     [string]$OpenCvRoot = "",
     [string]$AndroidSdk = "",
     [string]$NdkVersion = "27.0.12077973",
@@ -34,7 +36,7 @@ function Get-LightstopFileHash {
 }
 
 $openCvVersion = "4.12.0"
-$aarRevision = "r4-perf"
+$aarRevision = if ($BuildProfile -eq "performance") { "r4-perf" } else { "r2" }
 $moduleList = "core,imgproc,imgcodecs,video,videoio,features2d,calib3d,java"
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 
@@ -61,10 +63,11 @@ if (-not (Test-Path -LiteralPath $PythonExecutable)) {
 }
 
 $sourceDir = Join-Path $OpenCvRoot "src\opencv-$openCvVersion"
-$sdkBuildDir = Join-Path $OpenCvRoot "build\android-sdk-$openCvVersion"
-$aarBuildDir = Join-Path $OpenCvRoot "build\aar-$openCvVersion"
+$sdkBuildDir = Join-Path $OpenCvRoot "build\android-sdk-$openCvVersion-$BuildProfile"
+$aarBuildDir = Join-Path $OpenCvRoot "build\aar-$openCvVersion-$BuildProfile"
 $outputDir = Join-Path $OpenCvRoot "outputs"
-$configPath = Join-Path $PSScriptRoot "lightmeter-android.config.py"
+$configFileName = if ($BuildProfile -eq "performance") { "lightmeter-android-performance.config.py" } else { "lightmeter-android.config.py" }
+$configPath = Join-Path $PSScriptRoot $configFileName
 $aarWrapperPath = Join-Path $PSScriptRoot "build_java_shared_aar_windows.py"
 $gradleWrapperProperties = Join-Path $PSScriptRoot "gradle-wrapper.properties"
 $ndkPath = Join-Path $AndroidSdk "ndk\$NdkVersion"
@@ -317,6 +320,14 @@ $versionedAar = Join-Path $outputDir "opencv-slim-$openCvVersion-$aarRevision.aa
 & $PythonExecutable (Join-Path $PSScriptRoot "sanitize-aar-paths.py") $generatedAar $versionedAar
 if ($LASTEXITCODE -ne 0) {
     throw "OpenCV AAR diagnostic-path sanitization failed"
+}
+if ($RuntimeOnly) {
+    $runtimeAar = Join-Path $outputDir "opencv-slim-$openCvVersion-$aarRevision-java.aar"
+    & $PythonExecutable (Join-Path $PSScriptRoot "runtime-aar.py") $versionedAar $runtimeAar
+    if ($LASTEXITCODE -ne 0) {
+        throw "OpenCV runtime-only AAR packaging failed"
+    }
+    $versionedAar = $runtimeAar
 }
 $aarHash = Get-LightstopFileHash -Algorithm SHA256 -LiteralPath $versionedAar
 

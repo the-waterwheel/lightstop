@@ -24,7 +24,7 @@
 .\gradlew.bat :app:testDebugUnitTest :app:assembleDebug
 ```
 
-正式安装包使用 **Build → Generate Signed Bundle / APK → APK → release**，升级版本沿用原有签名密钥。[本次发布说明](docs/releases/v0.6.0.md) · [OpenCV 构建](tools/opencv-slim/README.md)
+正式安装包使用 **Build → Generate Signed Bundle / APK → APK → release**，升级版本沿用原有签名密钥。[本次发布说明](docs/releases/v0.6.1.md) · [OpenCV 构建](tools/opencv-slim/README.md)
 
 APK 默认分别输出 arm64、armv7、x86_64 和通用包。[打包步骤](docs/BUILD_RELEASE_APKS_ZH.md)。传入 `-PsplitApks=false` 可只生成通用包。
 

@@ -1,4 +1,4 @@
-"""Check the conservative AAR's actual payload, acceleration, alignment and JNI surface."""
+"""Check the AAR's profile, alignment and Java/JNI surface against a known baseline."""
 
 import argparse
 import hashlib
@@ -80,6 +80,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("aar", type=Path)
     parser.add_argument("--baseline", type=Path, required=True)
+    parser.add_argument("--profile", choices=("compact", "performance"), default="compact")
     args = parser.parse_args()
     classes, libraries = inspect(args.aar)
     baseline_classes, baseline = inspect(args.baseline)
@@ -95,8 +96,9 @@ def main():
             failures.append(abi + ": JNI exports changed")
         if not library["elf_alignment"] or min(library["elf_alignment"]) < 16384:
             failures.append(abi + ": missing 16 KB ELF alignment")
-        if not re.search(r"Parallel framework:\s+TBB", info):
-            failures.append(abi + ": TBB acceleration missing")
+        framework = "TBB" if args.profile == "performance" else "pthreads"
+        if not re.search(r"Parallel framework:\s+" + framework + r"\b", info):
+            failures.append(abi + ": expected " + framework + " threading")
         for field in ("Baseline", "Dispatched code generation"):
             pattern = re.escape(field) + r":\s*([^\n]+)"
             current_cpu = re.search(pattern, info)
@@ -104,12 +106,15 @@ def main():
             if (current_cpu.group(1).strip() if current_cpu else None) != (
                     baseline_cpu.group(1).strip() if baseline_cpu else None):
                 failures.append(abi + ": CPU " + field + " changed")
-        if abi == "arm64-v8a" and "KleidiCV" not in info:
+        if args.profile == "performance" and abi == "arm64-v8a" and "KleidiCV" not in info:
             failures.append(abi + ": KleidiCV acceleration missing")
         if abi.startswith("arm") and "carotene" not in info:
             failures.append(abi + ": Carotene acceleration missing")
-        if abi == "x86_64" and not re.search(r"Intel IPP:\s+\S", info):
+        if args.profile == "performance" and abi == "x86_64" and not re.search(r"Intel IPP:\s+\S", info):
             failures.append(abi + ": IPP acceleration missing")
+        if args.profile == "compact":
+            if "KleidiCV" in info or re.search(r"Intel IPP:\s+(?!NO\b)\S", info):
+                failures.append(abi + ": compact profile contains an optional acceleration backend")
         flags = next((line for line in info.splitlines() if "C++ flags (Release):" in line), "")
         if "-O3" not in flags or re.search(r"\s-O[szt]\b", flags):
             failures.append(abi + ": expected performance-oriented -O3")
@@ -128,7 +133,7 @@ def main():
     print(json.dumps({"aar": str(args.aar), "sha256": hashlib.sha256(args.aar.read_bytes()).hexdigest(),
                       "aar_bytes": args.aar.stat().st_size, "java_classes": len(classes),
                       "native_bytes": sum(row["bytes"] for row in rows), "libraries": rows,
-                      "passed": not failures, "failures": failures}, indent=2))
+                      "profile": args.profile, "passed": not failures, "failures": failures}, indent=2))
     raise SystemExit(bool(failures))
 
 

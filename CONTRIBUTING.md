@@ -24,7 +24,8 @@ OpenCV must also be tested on a physical device. Release changes should pass:
 
 
 ```powershell
-.\gradlew.bat :app:testDebugUnitTest :app:assembleRelease :app:bundleRelease
+.\gradlew.bat :app:testDebugUnitTest :app:assembleRelease
+.\gradlew.bat :app:bundleRelease
 ```
 
 Never commit signing keystores, passwords, `keystore.properties`, local SDK

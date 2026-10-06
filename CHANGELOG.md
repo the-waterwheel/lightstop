@@ -3,6 +3,14 @@
 All notable user-facing changes are recorded here. The project follows
 [Semantic Versioning](https://semver.org/) for public releases.
 
+## 0.6.1 - Unreleased
+
+- Restored the pinned compact OpenCV r2 runtime used by 0.5.0 after auditing the current Java/JNI calls and new motion-distance path.
+- Generate separate arm64, armv7 and x86_64 APKs plus a universal APK by default; bundle builds automatically disable APK splits.
+- Added compact/performance build profiles and an optional runtime-only AAR packaging tool; recorded module, interface and size evidence.
+
+中文：切回 r2 精简运行库，默认按架构打包，补充当前调用与进一步裁剪审计。应用功能保持；性能尚待同机实测。
+
 ## 0.6.0 - 2026-10-06
 
 - Added negative preview with one-tap inversion, film-base calibration, editable RGB curves, and edge/corner/rotation crop gestures.
