@@ -87,6 +87,7 @@ internal data class FlashAdjustment(
     val flashOnlyAperture: Double?,
     val status: FlashAdjustmentStatus,
     val effectiveDistanceMeters: Double? = null,
+    val isEstimatedDistance: Boolean = false,
 )
 
 /**
@@ -169,6 +170,7 @@ internal object FlashExposureMath {
                         flashOnlyAperture = flashAperture,
                         status = FlashAdjustmentStatus.FLASH_DOMINATES,
                         effectiveDistanceMeters = distance,
+                        isEstimatedDistance = automaticEstimate?.isApproximate == true,
                     )
                 }
                 -log2(1.0 - flashFraction.coerceAtLeast(0.0))
@@ -183,6 +185,7 @@ internal object FlashExposureMath {
             flashOnlyAperture = flashAperture,
             status = FlashAdjustmentStatus.APPLIED,
             effectiveDistanceMeters = distance,
+            isEstimatedDistance = automaticEstimate?.isApproximate == true,
         )
     }
 

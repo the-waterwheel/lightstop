@@ -15,20 +15,24 @@ internal class DistanceCoordinator(
     private var focus: DistanceEstimate? = null
     private var motion: DistanceEstimate? = null
     private var context: DistanceContext? = null
+    private var motionSupported = false
 
-    fun startFocusDistance(context: DistanceContext, capability: FocusDistanceCapability) {
+    fun startFocusDistance(context: DistanceContext, capability: FocusDistanceCapability, motionSupported: Boolean = false) {
         if (this.context != context) { focus = null; motion = null }
         this.context = context
+        this.motionSupported = motionSupported
         acceptFocus(focusProvider.start(context, capability))
     }
 
     fun stop() {
         context = null; focus = null; motion = null
+        motionSupported = false
         publish(focusProvider.stop())
     }
 
     fun invalidate(reason: String) {
         context = null; focus = null; motion = null
+        motionSupported = false
         publish(focusProvider.invalidate(reason))
     }
 
@@ -50,7 +54,10 @@ internal class DistanceCoordinator(
 
     private fun acceptFocus(next: DistanceMeasurementState) {
         focus = next.estimate
-        publish(DistanceFusionEngine.fuse(focus, motion, clock()) ?: next)
+        val fallback = if (next.status == DistanceMeasurementStatus.UNSUPPORTED && motionSupported)
+            next.copy(status = DistanceMeasurementStatus.WAITING_FOR_FOCUS,
+                diagnosticReason = "Waiting for motion distance") else next
+        publish(DistanceFusionEngine.fuse(focus, motion, clock()) ?: fallback)
     }
 
     fun onCaptureResult(context: DistanceContext, result: CaptureResult, fallbackTimestampNs: Long?, motionConfidence: Double = 1.0) {

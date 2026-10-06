@@ -13,19 +13,20 @@ internal data class FocusDistanceCapability(
     val targetConfidence: Double = 1.0,
 )
 
-/** Static and frame-level safety gates for the only Camera2 distance value with metre semantics. */
+/** Capability checks and frame acceptance for metric or explicitly estimated focus distances. */
 internal object Camera2FocusDistancePolicy {
     fun supportReason(capability: FocusDistanceCapability): String? = when {
-        !capability.physicalIdentityKnown -> "Active physical camera is unknown"
         !capability.targetConfidence.isFinite() -> "Invalid target confidence"
         !capability.minimumDiopters.isFinite() || capability.minimumDiopters <= 0f -> "Fixed-focus lens"
-        capability.calibration !in setOf(
-            CameraCharacteristics.LENS_INFO_FOCUS_DISTANCE_CALIBRATION_CALIBRATED,
-            CameraCharacteristics.LENS_INFO_FOCUS_DISTANCE_CALIBRATION_APPROXIMATE,
-        ) -> "Focus distance is not calibrated"
         !capability.resultKeyAvailable -> "CaptureResult has no focus distance"
         else -> null
     }
+
+    fun usesEstimatedScale(capability: FocusDistanceCapability): Boolean =
+        !capability.physicalIdentityKnown || capability.calibration !in setOf(
+            CameraCharacteristics.LENS_INFO_FOCUS_DISTANCE_CALIBRATION_CALIBRATED,
+            CameraCharacteristics.LENS_INFO_FOCUS_DISTANCE_CALIBRATION_APPROXIMATE,
+        )
 
     fun acceptsFrame(afState: Int?, lensState: Int?, diopters: Float?, minimumDiopters: Float): Boolean {
         if (afState != CameraMetadata.CONTROL_AF_STATE_FOCUSED_LOCKED &&
@@ -129,6 +130,8 @@ internal class Camera2FocusDistanceProvider(
         samples += FocusSample(timestampNs, diopters!!,
             (motionConfidence.takeIf { it.isFinite() } ?: 0.1).coerceIn(0.1, 1.0) *
                 if (lensState == null) 0.7 else 1.0)
+        // Legacy previews may run at only 3–5 fps. Allow five stable samples without demanding
+        // a high frame rate, while scans, lens movement and receipt TTL still reset the window.
         val oldestAllowed = timestampNs - SAMPLE_WINDOW_NS
         samples = samples.filter { it.timestampNs >= oldestAllowed }.takeLast(MAX_SAMPLES).toMutableList()
         if (samples.size < MIN_SAMPLES) {
@@ -150,9 +153,26 @@ internal class Camera2FocusDistanceProvider(
         val values = samples.map { it.diopters }.sorted()
         val median = median(values)
         val mad = median(values.map { abs(it - median) }.sorted())
-        val allowedMad = median * MAX_MAD_RATIO
+        val estimatedScale = Camera2FocusDistancePolicy.usesEstimatedScale(capability)
+        val allowedMad = median * if (estimatedScale) ESTIMATED_MAX_MAD_RATIO else MAX_MAD_RATIO
         if (mad > allowedMad || median <= 0.0) return null
         val meters = 1.0 / median
+        if (estimatedScale) {
+            // Best effort, like the original implementation. Stable numeric readings do not
+            // establish physical units, so do not invent a calibrated uncertainty interval.
+            if (meters !in ESTIMATED_MIN_METERS..ESTIMATED_MAX_METERS) return null
+            return DistanceEstimate(
+                meters = meters, lowerMeters = null, upperMeters = null,
+                confidence = (0.30 * (1.0 - mad / allowedMad).coerceIn(0.1, 1.0) *
+                    samples.minOf { it.motionConfidence } * capability.targetConfidence.coerceIn(0.0, 1.0))
+                    .coerceIn(0.01, 0.30),
+                quality = DistanceQuality.LOW, source = DistanceSource.FOCUS_ESTIMATED,
+                timestampNs = samples.last().timestampNs, cameraIdentity = context.cameraIdentity,
+                target = context.target, sampleCount = samples.size, isFresh = true,
+                diagnosticReason = "Uncalibrated focus estimate; physical scale is unverified",
+                receivedAtNs = clock(),
+            )
+        }
         val calibrated = capability.calibration ==
             CameraCharacteristics.LENS_INFO_FOCUS_DISTANCE_CALIBRATION_CALIBRATED
         // Engineering uncertainty envelope, NOT a calibrated statistical confidence interval.
@@ -203,8 +223,11 @@ internal class Camera2FocusDistanceProvider(
     private companion object {
         const val MIN_SAMPLES = 5
         const val MAX_SAMPLES = 10
-        const val SAMPLE_WINDOW_NS = 1_000_000_000L
+        const val SAMPLE_WINDOW_NS = 2_000_000_000L
         const val DEFAULT_TTL_NS = 2_000_000_000L
         const val MAX_MAD_RATIO = 0.12
+        const val ESTIMATED_MAX_MAD_RATIO = 0.20
+        const val ESTIMATED_MIN_METERS = 0.05
+        const val ESTIMATED_MAX_METERS = 30.0
     }
 }

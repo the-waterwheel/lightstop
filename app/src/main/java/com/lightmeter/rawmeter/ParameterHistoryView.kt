@@ -580,6 +580,7 @@ internal class ParameterHistoryView(
         val source = when (distance.source) {
             DistanceSource.FOCUS_CALIBRATED -> "AF"
             DistanceSource.FOCUS_APPROXIMATE -> localized("AF近似", "AF approx")
+            DistanceSource.FOCUS_ESTIMATED -> localized("AF估算", "AF estimate")
             DistanceSource.MOTION_PARALLAX -> localized("运动视差", "Motion parallax")
             DistanceSource.FUSED -> localized("融合", "Fused")
             DistanceSource.MANUAL -> localized("手动", "Manual")

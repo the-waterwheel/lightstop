@@ -75,4 +75,28 @@ class DistanceExposureIntegrationTest {
             .copy(lowerMeters=null), DistanceMeasurementStatus.AVAILABLE)
         assertEquals(FlashAdjustmentStatus.DISTANCE_UNAVAILABLE, calculate(incomplete, 14.0).status)
     }
+
+    @Test fun explicitBestEffortSourceCanDriveEstimatedFlashWithoutInventingAnErrorInterval() {
+        val guess = estimate(2.0, DistanceSource.FOCUS_ESTIMATED).copy(
+            lowerMeters = null, upperMeters = null, confidence = 0.25, quality = DistanceQuality.LOW)
+        val state = DistanceMeasurementState(guess, DistanceMeasurementStatus.AVAILABLE,
+            focusObservation = guess)
+        val result = calculate(state, 10.0)
+        assertEquals(FlashAdjustmentStatus.APPLIED, result.status)
+        assertEquals(2.0, result.effectiveDistanceMeters!!, 0.0)
+        assertTrue(result.isEstimatedDistance)
+        assertEquals(FlashAdjustmentStatus.DISTANCE_UNAVAILABLE,
+            calculate(state.copy(estimate = guess.copy(receivedAtNs = 1L),
+                focusObservation = guess.copy(receivedAtNs = 1L)), 10.0).status)
+    }
+
+    @Test fun legacyFocusWithLowConfidenceStillProducesMarkedExposureEstimate() {
+        val focus = estimate(10.0, DistanceSource.FOCUS_CALIBRATED)
+            .copy(confidence = 0.10, quality = DistanceQuality.LOW, lowerMeters = 6.0, upperMeters = null)
+        val result = calculate(DistanceMeasurementState(focus, DistanceMeasurementStatus.AVAILABLE,
+            focusObservation = focus), 10.0)
+        assertEquals(FlashAdjustmentStatus.APPLIED, result.status)
+        assertEquals(10.0, result.effectiveDistanceMeters!!, 0.0)
+        assertTrue(result.isEstimatedDistance)
+    }
 }

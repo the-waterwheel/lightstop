@@ -39,4 +39,13 @@ class DistanceCoordinatorTest {
         coordinator.onMotionEstimate(context.copy(generation=2), estimate(now))
         assertEquals(DistanceMeasurementStatus.IDLE, state.status)
     }
+
+    @Test fun missingAfDoesNotReportUnavailableWhileAnIndependentMotionSourceCanRun() {
+        var state = DistanceMeasurementState()
+        val coordinator = DistanceCoordinator({ state = it }, { 1_000_000_000L })
+        coordinator.startFocusDistance(context, unsupportedFocus, motionSupported = true)
+        assertEquals(DistanceMeasurementStatus.WAITING_FOR_FOCUS, state.status)
+        coordinator.onMotionEstimate(context, estimate(1_000_000_000L))
+        assertEquals(DistanceMeasurementStatus.AVAILABLE, state.status)
+    }
 }

@@ -17,11 +17,13 @@ enum class DistanceSource {
     MANUAL,
     MOTION_PARALLAX,
     FUSED,
+    /** Reciprocal focus heuristic; the HAL has not guaranteed a metric scale. */
+    FOCUS_ESTIMATED,
 }
 
 enum class DistanceQuality { HIGH, MEDIUM, LOW }
 
-/** A locked physical-distance observation.  Values are metres, never display-rounded values. */
+/** Distance observation or explicitly marked heuristic. Values are never display-rounded. */
 data class DistanceEstimate(
     val meters: Double,
     val lowerMeters: Double?,
@@ -38,6 +40,10 @@ data class DistanceEstimate(
     /** Receipt clock, deliberately separate from the camera sensor's timestamp domain. */
     val receivedAtNs: Long = 0L,
 ) {
+    val isApproximate: Boolean
+        get() = source == DistanceSource.FOCUS_ESTIMATED || source == DistanceSource.FOCUS_APPROXIMATE ||
+            (source == DistanceSource.FOCUS_CALIBRATED && !DistanceFusionEngine.usableForFlash(this))
+
     fun isCurrent(nowNs: Long = System.nanoTime()): Boolean = isFresh &&
         (receivedAtNs == 0L || nowNs - receivedAtNs in 0..DISTANCE_TTL_NS)
 }
@@ -65,7 +71,7 @@ data class DistanceMeasurementState(
     val effectiveMetersForFlash: Double?
         get() = estimate?.takeIf {
             status == DistanceMeasurementStatus.AVAILABLE && it.isCurrent() &&
-                DistanceFusionEngine.usableForFlash(it)
+                (DistanceFusionEngine.usableForFlash(it) || DistanceFusionEngine.usableForEstimatedFlash(it))
         }?.meters
 
     internal fun estimateForFlash(
@@ -77,9 +83,10 @@ data class DistanceMeasurementState(
         } else this
         return resolved?.estimate?.takeIf {
             resolved.status == DistanceMeasurementStatus.AVAILABLE && it.isCurrent(nowNs) &&
-                DistanceFusionEngine.usableForFlash(it) &&
-                maxOf(exposureDifference(it.meters, it.lowerMeters!!),
-                    exposureDifference(it.meters, it.upperMeters!!)) <= DistanceFusionEngine.MAX_FLASH_UNCERTAINTY_EV
+                (DistanceFusionEngine.usableForEstimatedFlash(it) ||
+                    (DistanceFusionEngine.usableForFlash(it) &&
+                        maxOf(exposureDifference(it.meters, it.lowerMeters!!),
+                            exposureDifference(it.meters, it.upperMeters!!)) <= DistanceFusionEngine.MAX_FLASH_UNCERTAINTY_EV))
         }
     }
 }

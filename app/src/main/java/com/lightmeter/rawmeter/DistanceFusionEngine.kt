@@ -22,10 +22,27 @@ internal object DistanceFusionEngine {
 
     fun usableForFlash(value: DistanceEstimate): Boolean =
         value.meters.isFinite() && value.meters > 0 && value.confidence.isFinite() &&
-            value.confidence >= 0.45 && value.quality != DistanceQuality.LOW &&
+            value.confidence >= (if (value.source == DistanceSource.FOCUS_APPROXIMATE) 0.20 else 0.45) &&
+            (value.quality != DistanceQuality.LOW || value.source == DistanceSource.FOCUS_APPROXIMATE) &&
+            value.source != DistanceSource.FOCUS_ESTIMATED &&
             uncertaintyEv(value) <= MAX_FLASH_UNCERTAINTY_EV
 
+    /** Stable AF readings can still drive an explicitly approximate result on older devices. */
+    fun usableForEstimatedFlash(value: DistanceEstimate): Boolean {
+        if (!value.meters.isFinite() || value.meters !in 0.05..30.0 || value.sampleCount < 5 ||
+            !value.confidence.isFinite() || value.confidence <= 0.0) return false
+        if (value.source == DistanceSource.FOCUS_ESTIMATED) return value.quality == DistanceQuality.LOW
+        if (value.source !in setOf(DistanceSource.FOCUS_CALIBRATED, DistanceSource.FOCUS_APPROXIMATE) ||
+            usableForFlash(value)) return false
+        // Wide or open far bounds describe low precision; malformed bounds describe bad data.
+        val lower = value.lowerMeters ?: return false
+        val upper = value.upperMeters
+        return lower.isFinite() && lower > 0.0 && lower <= value.meters &&
+            (upper == null || (upper.isFinite() && upper >= value.meters))
+    }
+
     fun weight(value: DistanceEstimate): Double {
+        if (value.source == DistanceSource.FOCUS_ESTIMATED) return 0.0
         val error = uncertaintyEv(value)
         if (!error.isFinite() || !value.confidence.isFinite()) return 0.0
         // Smoothly fade the near-distance preference around 5 m rather than jumping at 5.000 m.
@@ -44,7 +61,9 @@ internal object DistanceFusionEngine {
         val observations = listOfNotNull(focus, motion).filter {
             it.isCurrent(nowNs) && weight(it) > 0.0 && it.meters.isFinite() && it.meters > 0
         }
-        if (observations.isEmpty()) return null
+        if (observations.isEmpty()) return listOfNotNull(focus, motion).firstOrNull {
+            it.isCurrent(nowNs) && usableForEstimatedFlash(it)
+        }?.let(::available)
         if (observations.size == 1) return available(observations.single())
         val a = observations[0]
         val b = observations[1]
