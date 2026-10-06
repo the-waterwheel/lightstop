@@ -5,7 +5,7 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
-val buildAbiSplits = providers.gradleProperty("splitApks").map { it.toBooleanStrict() }.orElse(false).get()
+val buildAbiSplits = providers.gradleProperty("splitApks").map { it.toBooleanStrict() }.orElse(true).get()
 val uiPreview = providers.gradleProperty("uiPreview").map { it.toBooleanStrict() }.orElse(false).get()
 
 android {
@@ -39,7 +39,7 @@ android {
         }
     }
 
-    // Optional smaller direct-download APKs; retain a universal APK for distribution fallback.
+    // Default to smaller per-ABI downloads; retain a universal APK for distribution fallback.
     splits {
         abi {
             isEnable = buildAbiSplits

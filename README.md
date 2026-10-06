@@ -26,6 +26,8 @@ Open the project in Android Studio with JDK 17, Android SDK 36.1, NDK 27.0.12077
 
 For distribution, use **Build → Generate Signed Bundle / APK → APK → release** with your existing release key. [Release notes](docs/releases/v0.6.0.md) · [OpenCV build](tools/opencv-slim/README.md)
 
+APK builds output separate arm64, armv7 and x86_64 packages plus a universal APK. [Packaging steps](docs/BUILD_RELEASE_APKS_ZH.md). Use `-PsplitApks=false` for only the universal APK.
+
 ## Privacy and license
 
 Camera processing stays on your device. No Internet permission, ads, or analytics. Saved records may be included in system backups; location is optional. [Privacy](PRIVACY.md)
