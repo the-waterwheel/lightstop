@@ -1,6 +1,6 @@
 # 光档：RAW 组合确认后禁止自动降级——问题分析与修改交接文档
 
-日期：2026-09-22。仓库：`D:\Project\lightmeter a`。HEAD：`44b544c`，分支：`codex/camera-controller-components`。
+日期：2026-09-22。仓库：`<workspace>`。HEAD：`44b544c`，分支：`codex/camera-controller-components`。
 
 本文件基于 HEAD **加现有 22 个未提交文件**编写，不是只分析已提交版本。本次只新增文档，不修改运行时代码、不提交、不覆盖已有改动。
 

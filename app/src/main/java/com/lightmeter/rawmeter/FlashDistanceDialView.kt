@@ -31,8 +31,8 @@ internal class FlashDistanceDialView(
 
     private enum class Gesture { NONE, TOGGLE, DIAL }
 
-    private val density = resources.displayMetrics.density
-    private val scaledDensity = resources.displayMetrics.scaledDensity
+    private val density get() = layoutDensity(LayoutProfile.SCROLL)
+    private val scaledDensity get() = layoutTextDensity(LayoutProfile.SCROLL)
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         strokeCap = Paint.Cap.ROUND
@@ -43,9 +43,9 @@ internal class FlashDistanceDialView(
         typeface = Typeface.create("sans", Typeface.BOLD)
         textAlign = Paint.Align.CENTER
     }
-    private val foreground: Int get() = if (state.isDarkMode) Color.rgb(222, 222, 218) else Color.rgb(20, 20, 20)
+    private val foreground: Int get() = InstrumentStyle.foreground(state.isDarkMode)
     private val surface: Int get() = if (state.isDarkMode) Color.rgb(28, 28, 27) else Color.WHITE
-    private val blue = Color.rgb(38, 112, 184)
+    private val blue = InstrumentStyle.blue
 
     private var configuration: FlashConfiguration? = null
     private var distanceState = DistanceMeasurementState()
@@ -116,7 +116,8 @@ internal class FlashDistanceDialView(
             val outer = radius * 0.92f
             paint.style = Paint.Style.STROKE
             paint.strokeWidth = if (selectedTick) 2.2f * density else density
-            paint.color = withAlpha(if (selectedTick) blue else foreground, alpha)
+            val unavailableAuto = index == 0 && distanceState.status == DistanceMeasurementStatus.UNSUPPORTED
+            paint.color = withAlpha(if (unavailableAuto) Color.GRAY else if (selectedTick) blue else foreground, alpha)
             canvas.drawLine(
                 centerX + cos(radians).toFloat() * inner,
                 centerY + sin(radians).toFloat() * inner,
@@ -133,7 +134,7 @@ internal class FlashDistanceDialView(
                 paint.style = Paint.Style.FILL
                 paint.textAlign = Paint.Align.CENTER
                 paint.textSize = 7.8f * scaledDensity
-                paint.color = withAlpha(foreground, alpha)
+                paint.color = withAlpha(if (unavailableAuto) Color.GRAY else foreground, alpha)
                 val labelRadius = radius * 0.63f
                 val metrics = paint.fontMetrics
                 canvas.drawText(
@@ -161,12 +162,14 @@ internal class FlashDistanceDialView(
         boldPaint.color = foreground
         val configuration = configuration ?: return
         if (configuration.isAutoDistance) {
+            if (distanceState.status == DistanceMeasurementStatus.UNSUPPORTED) boldPaint.color = Color.GRAY
             boldPaint.textSize = lerp(9f, 15.5f, expansion) * scaledDensity
             centeredText(canvas, "Auto", centerX, centerY - lerp(5f, 10f, expansion) * density, boldPaint)
             boldPaint.textSize = lerp(7.5f, 12.5f, expansion) * scaledDensity
-            val measured = when (val value = distanceState.estimate?.takeIf { it.isFresh }?.meters) {
+            val estimate = distanceState.estimate?.takeIf { it.isCurrent() }
+            val measured = when (val value = estimate?.meters) {
                 null -> "--"
-                else -> compactLabel(value)
+                else -> (if (estimate.isApproximate) "≈" else "") + compactLabel(value)
             }
             centeredText(canvas, measured, centerX, centerY + lerp(6f, 12f, expansion) * density, boldPaint)
         } else {

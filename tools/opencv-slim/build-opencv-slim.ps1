@@ -34,7 +34,7 @@ function Get-LightstopFileHash {
 }
 
 $openCvVersion = "4.12.0"
-$aarRevision = "r2"
+$aarRevision = "r4-perf"
 $moduleList = "core,imgproc,imgcodecs,video,videoio,features2d,calib3d,java"
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 
@@ -206,77 +206,6 @@ if (-not $buildSdkContents.Contains($buildSdkTestMarker)) {
     )
 }
 
-# The same driver assumes every x86/x86_64 build must contain IPP. Respect an explicit OFF so
-# the runtime does not carry a large optional acceleration package that the app never calls.
-$buildSdkIppMarker = "# lightstop: honor WITH_IPP=OFF for x86 dependency checks"
-$buildSdkIppPattern = '(?m)^        #Check HAVE_IPP x86 / x86_64\r?\n        if abi\.haveIPP\(\):\r?\n'
-$buildSdkContents = [IO.File]::ReadAllText($officialSdkScript)
-if (-not $buildSdkContents.Contains($buildSdkIppMarker)) {
-    $buildSdkIppReplacement = (@'
-        #Check HAVE_IPP x86 / x86_64
-        # lightstop: honor WITH_IPP=OFF for x86 dependency checks
-        if abi.haveIPP() and abi.cmake_vars.get("WITH_IPP", "ON") != "OFF":
-'@) + "`r`n"
-    $patchedBuildSdk = [regex]::Replace(
-        $buildSdkContents,
-        $buildSdkIppPattern,
-        $buildSdkIppReplacement,
-        1
-    )
-    if ($patchedBuildSdk -eq $buildSdkContents) {
-        throw "OpenCV build_sdk.py IPP-check patch point changed; audit before rebuilding."
-    }
-    [IO.File]::WriteAllText(
-        $officialSdkScript,
-        $patchedBuildSdk,
-        [Text.UTF8Encoding]::new($false)
-    )
-}
-
-# OpenCV's Android driver also insists that KleidiCV must be enabled for arm64, even when the
-# selected ABI configuration explicitly disables it. KleidiCV is an optional acceleration layer;
-# a deliberately slim build must skip that dependency assertion while preserving it by default.
-$buildSdkKleidiMarker = "# lightstop: honor WITH_KLEIDICV=OFF for armv8 dependency checks"
-$buildSdkKleidiPattern = '(?m)^        #Check HAVE_KLEIDICV for armv8\r?\n        if abi\.haveKleidiCV\(\):\r?\n'
-$buildSdkContents = [IO.File]::ReadAllText($officialSdkScript)
-if (-not $buildSdkContents.Contains($buildSdkKleidiMarker)) {
-    $buildSdkKleidiReplacement = (@'
-        #Check HAVE_KLEIDICV for armv8
-        # lightstop: honor WITH_KLEIDICV=OFF for armv8 dependency checks
-        if abi.haveKleidiCV() and abi.cmake_vars.get("WITH_KLEIDICV", "ON") != "OFF":
-'@) + "`r`n"
-    $patchedBuildSdk = [regex]::Replace(
-        $buildSdkContents,
-        $buildSdkKleidiPattern,
-        $buildSdkKleidiReplacement,
-        1
-    )
-    if ($patchedBuildSdk -eq $buildSdkContents) {
-        throw "OpenCV build_sdk.py KleidiCV-check patch point changed; audit before rebuilding."
-    }
-    [IO.File]::WriteAllText(
-        $officialSdkScript,
-        $patchedBuildSdk,
-        [Text.UTF8Encoding]::new($false)
-    )
-}
-else {
-    # Repair the output produced by an earlier revision whose here-string did not preserve the
-    # newline before the existing log statement. This branch is idempotent for valid sources.
-    $collapsedKleidiLine = 'if abi.haveKleidiCV() and abi.cmake_vars.get("WITH_KLEIDICV", "ON") != "OFF":           log.info'
-    if ($buildSdkContents.Contains($collapsedKleidiLine)) {
-        $patchedBuildSdk = $buildSdkContents.Replace(
-            $collapsedKleidiLine,
-            "if abi.haveKleidiCV() and abi.cmake_vars.get(`"WITH_KLEIDICV`", `"ON`") != `"OFF`":`r`n           log.info"
-        )
-        [IO.File]::WriteAllText(
-            $officialSdkScript,
-            $patchedBuildSdk,
-            [Text.UTF8Encoding]::new($false)
-        )
-    }
-}
-
 $requiredPaths = @(
     $sourceDir,
     $AndroidSdk,
@@ -300,6 +229,9 @@ New-Item -ItemType Directory -Force -Path $sdkBuildDir, $aarBuildDir, $outputDir
 
 # Keep every dependency downloaded by the OpenCV AAR Gradle build outside the app repo.
 $env:GRADLE_USER_HOME = Join-Path $OpenCvRoot "gradle-home"
+# A long-lived Gradle daemon can retain redirected output handles on Windows and
+# keep this wrapper waiting after a successful SDK build. Use a single-use daemon.
+$env:GRADLE_OPTS = "$($env:GRADLE_OPTS) -Dorg.gradle.daemon=false".Trim()
 $existingGradleHome = Join-Path $env:USERPROFILE ".gradle"
 $existingDependencyCacheRoot = Join-Path $existingGradleHome "caches"
 $existingModulesCache = Join-Path $existingDependencyCacheRoot "modules-2"
@@ -382,7 +314,10 @@ if (-not (Test-Path -LiteralPath $generatedAar)) {
 }
 
 $versionedAar = Join-Path $outputDir "opencv-slim-$openCvVersion-$aarRevision.aar"
-Copy-Item -LiteralPath $generatedAar -Destination $versionedAar -Force
+& $PythonExecutable (Join-Path $PSScriptRoot "sanitize-aar-paths.py") $generatedAar $versionedAar
+if ($LASTEXITCODE -ne 0) {
+    throw "OpenCV AAR diagnostic-path sanitization failed"
+}
 $aarHash = Get-LightstopFileHash -Algorithm SHA256 -LiteralPath $versionedAar
 
 if ($InstallIntoProject) {

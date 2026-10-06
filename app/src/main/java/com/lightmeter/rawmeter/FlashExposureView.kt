@@ -35,18 +35,15 @@ internal class FlashExposureView(
         fun onGuideNumberRequested(configuration: FlashConfiguration)
         fun onMeteringIsoRequested(configuration: FlashConfiguration)
         fun onAppliedFlashChanged(configuration: FlashConfiguration?)
+        fun onDistanceSelectionChanged(automatic: Boolean)
     }
 
     var listener: Listener? = null
 
     private enum class TouchTarget { BACK, CLOSE, SCALE, AUTO_DISTANCE, SETTINGS, GUIDE_NUMBER, METERING_ISO, APPLY, NONE }
 
-    private val density = resources.displayMetrics.density
-    private val scaledDensity = TypedValue.applyDimension(
-        TypedValue.COMPLEX_UNIT_SP,
-        1f,
-        resources.displayMetrics,
-    )
+    private val density get() = layoutDensity(LayoutProfile.TOOL)
+    private val scaledDensity get() = layoutTextDensity(LayoutProfile.TOOL)
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         strokeCap = Paint.Cap.ROUND
@@ -59,13 +56,13 @@ internal class FlashExposureView(
     private val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
         typeface = Typeface.create("sans-serif", Typeface.NORMAL)
     }
-    private val background: Int get() = if (state.isDarkMode) Color.BLACK else Color.WHITE
-    private val foreground: Int get() = if (state.isDarkMode) Color.rgb(218, 218, 214) else Color.rgb(20, 20, 20)
-    private val muted: Int get() = if (state.isDarkMode) Color.rgb(70, 70, 68) else Color.rgb(166, 166, 162)
-    private val panel: Int get() = if (state.isDarkMode) Color.rgb(42, 42, 40) else Color.rgb(235, 235, 232)
-    private val actionSurface: Int get() = if (state.isDarkMode) Color.rgb(24, 24, 22) else Color.WHITE
+    private val background: Int get() = InstrumentStyle.background(state.isDarkMode)
+    private val foreground: Int get() = InstrumentStyle.foreground(state.isDarkMode)
+    private val muted: Int get() = InstrumentStyle.secondary(state.isDarkMode)
+    private val panel: Int get() = InstrumentStyle.panel(state.isDarkMode)
+    private val actionSurface: Int get() = InstrumentStyle.control(state.isDarkMode)
     private val actionActiveSurface: Int get() = if (state.isDarkMode) Color.rgb(31, 56, 83) else Color.rgb(218, 234, 250)
-    private val blue = Color.rgb(38, 112, 184)
+    private val blue = InstrumentStyle.blue
 
     private var geometry = ReciprocityGeometry.EMPTY
     private var configuration = FlashConfiguration(iso = state.iso)
@@ -110,7 +107,12 @@ internal class FlashExposureView(
         if (!initialized) openPage() else invalidate()
     }
 
+    fun isAutomaticDistanceEnabled(): Boolean = initialized && configuration.isAutoDistance
+
     fun updateConfiguration(value: FlashConfiguration) {
+        // The meter's distance dial can edit this hidden View before its first draw after
+        // process recreation. Restore the saved applied flag before notifying the meter.
+        if (!initialized) openPage()
         configuration = value.normalized()
         selectedDistanceIndex = FlashDistanceScale.nearestIndex(configuration.distanceMeters)
         displayedDistancePosition = selectedDistanceIndex.toFloat()
@@ -121,6 +123,7 @@ internal class FlashExposureView(
     }
 
     fun updateDistance(value: Double?) {
+        if (!initialized) openPage()
         configuration = configuration.copy(distanceMeters = value).normalized()
         selectedDistanceIndex = FlashDistanceScale.nearestIndex(configuration.distanceMeters)
         displayedDistancePosition = selectedDistanceIndex.toFloat()
@@ -130,7 +133,7 @@ internal class FlashExposureView(
     }
 
     override fun onSizeChanged(width: Int, height: Int, oldWidth: Int, oldHeight: Int) {
-        geometry = ReciprocityGeometryCalculator.calculate(width, height, density)
+        geometry = ReciprocityGeometryCalculator.calculate(width, height, resources.displayMetrics.density)
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -165,6 +168,7 @@ internal class FlashExposureView(
 
     private fun drawDistanceScale(canvas: Canvas) {
         val rect = geometry.scale
+        val autoUnavailable = state.distanceMeasurementState.status == DistanceMeasurementStatus.UNSUPPORTED
         paint.style = Paint.Style.FILL
         paint.color = background
         canvas.drawRect(rect, paint)
@@ -193,10 +197,11 @@ internal class FlashExposureView(
         canvas.drawCircle(autoButton.centerX(), autoButton.centerY(), autoButton.width() / 2f, paint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1.3f * density
-        paint.color = if (configuration.isAutoDistance) blue else foreground
+        val autoColor = if (autoUnavailable) Color.GRAY else if (configuration.isAutoDistance) blue else foreground
+        paint.color = autoColor
         canvas.drawCircle(autoButton.centerX(), autoButton.centerY(), autoButton.width() / 2f, paint)
         boldPaint.textSize = 10f * scaledDensity
-        boldPaint.color = if (configuration.isAutoDistance) blue else foreground
+        boldPaint.color = autoColor
         centered(canvas, "A", autoButton.centerX(), autoButton.centerY(), boldPaint)
 
         val baseline = rect.centerY() + 14f * density
@@ -213,13 +218,14 @@ internal class FlashExposureView(
             val major = index == selectedDistanceIndex || FlashDistanceScale.isMajorIndex(index)
             paint.style = Paint.Style.STROKE
             paint.strokeWidth = if (index == selectedDistanceIndex) 2f * density else density
-            paint.color = if (index == selectedDistanceIndex) blue else foreground
+            val unavailableAuto = index == 0 && autoUnavailable
+            paint.color = if (unavailableAuto) Color.GRAY else if (index == selectedDistanceIndex) blue else foreground
             canvas.drawLine(x, baseline - (if (major) 14f else 8f) * density, x, baseline + 3f * density, paint)
             if (major) {
                 paint.style = Paint.Style.FILL
                 paint.textAlign = Paint.Align.CENTER
                 paint.textSize = 8f * scaledDensity
-                paint.color = foreground
+                paint.color = if (unavailableAuto) Color.GRAY else foreground
                 canvas.drawText(FlashDistanceScale.label(FlashDistanceScale.meters[index]), x, baseline - 19f * density, paint)
             }
         }
@@ -294,9 +300,8 @@ internal class FlashExposureView(
         centered(canvas, formatGn(configuration.guideNumber), rect.centerX(), rect.centerY() - 5f * density, boldPaint)
 
         val adjustment = previewAdjustment()
-        val detail = when (adjustment.status) {
-            FlashAdjustmentStatus.DISTANCE_UNAVAILABLE -> state.distanceMeasurementState.diagnosticReason
-                ?: localized("等待相机对焦距离", "Waiting for camera focus distance")
+        val detail = (if (adjustment.isEstimatedDistance) localized("估算 · ", "Estimate · ") else "") + when (adjustment.status) {
+            FlashAdjustmentStatus.DISTANCE_UNAVAILABLE -> automaticDistanceMessage()
             FlashAdjustmentStatus.FLASH_DOMINATES -> localized("闪光已覆盖所需曝光", "Flash alone covers the exposure")
             FlashAdjustmentStatus.APPLIED -> localized(
                 "总光量补偿 −%.2f 档",
@@ -411,6 +416,7 @@ internal class FlashExposureView(
             repository.apply(configuration)
             listener?.onAppliedFlashChanged(configuration)
         }
+        listener?.onDistanceSelectionChanged(configuration.isAutoDistance)
     }
 
     private fun selectAutomaticDistance() {
@@ -440,6 +446,7 @@ internal class FlashExposureView(
     private fun previewAdjustment(): FlashAdjustment = FlashExposureMath.adjustment(
         configuration = configuration,
         autofocusDistanceMeters = state.distanceMeasurementState.effectiveMetersForFlash,
+        distanceMeasurementState = state.distanceMeasurementState,
         meteringIso = configuration.iso,
         ambientEv100 = state.ambientEffectiveEv100,
         exposureCompensationEv = state.exposureCompEv,
@@ -450,10 +457,13 @@ internal class FlashExposureView(
 
     private fun currentDistanceLabel(): String {
         if (!configuration.isAutoDistance) return FlashDistanceScale.label(configuration.distanceMeters)
-        val estimate = state.distanceMeasurementState.estimate?.takeIf { it.isFresh } ?: return "Auto"
+        val estimate = state.distanceMeasurementState.estimate?.takeIf { it.isCurrent() } ?: return "Auto"
         val source = when (estimate.source) {
             DistanceSource.FOCUS_CALIBRATED -> localized("AF", "AF")
             DistanceSource.FOCUS_APPROXIMATE -> localized("AF近似", "AF approx")
+            DistanceSource.FOCUS_ESTIMATED -> localized("AF估算", "AF estimate")
+            DistanceSource.MOTION_PARALLAX -> localized("运动视差", "Motion parallax")
+            DistanceSource.FUSED -> localized("融合", "Fused")
             DistanceSource.MANUAL -> localized("手动", "Manual")
         }
         val quality = when (estimate.quality) {
@@ -464,11 +474,18 @@ internal class FlashExposureView(
         return "${FlashDistanceScale.label(estimate.meters)} · $source · $quality"
     }
 
+    private fun automaticDistanceMessage(): String = when (state.distanceMeasurementState.status) {
+        DistanceMeasurementStatus.UNSUPPORTED -> localized("Auto 测距不可用，请设定手动距离", "Auto unavailable; select a manual distance")
+        DistanceMeasurementStatus.STALE -> localized("等待重新对焦", "Waiting for a new focus reading")
+        else -> localized("等待稳定的对焦距离", "Waiting for a stable focus distance")
+    }
+
     private fun distanceValueLabel(): String {
+        val estimate = state.distanceMeasurementState.estimate?.takeIf { it.isCurrent() }
         val meters = configuration.distanceMeters
-            ?: state.distanceMeasurementState.estimate?.takeIf { it.isFresh }?.meters
+            ?: estimate?.meters
             ?: return "-- m"
-        return when {
+        return (if (configuration.isAutoDistance && estimate?.isApproximate == true) "≈" else "") + when {
             meters < 1.0 -> "%.2f m".format(java.util.Locale.US, meters)
             meters < 10.0 -> "%.1f m".format(java.util.Locale.US, meters)
             else -> "%.0f m".format(java.util.Locale.US, meters)

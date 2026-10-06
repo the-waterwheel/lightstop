@@ -43,18 +43,18 @@ internal class FilmSelectorView(
 
     private enum class TouchTarget { BACK, ADD, FAVORITES, ROW_SELECT, ROW_RESET, ROW_FAVORITE, LIST, EMPTY_ADD, NONE }
 
-    private val density = resources.displayMetrics.density
-    private val scaledDensity = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 1f, resources.displayMetrics)
+    private val density get() = layoutDensity(LayoutProfile.SCROLL)
+    private val scaledDensity get() = layoutTextDensity(LayoutProfile.SCROLL)
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans", Typeface.NORMAL) }
     private val boldPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans", Typeface.BOLD) }
-    private val background: Int get() = if (state.isDarkMode) Color.BLACK else Color.WHITE
-    private val foreground: Int get() = if (state.isDarkMode) Color.rgb(224, 224, 220) else Color.rgb(20, 20, 20)
-    private val muted: Int get() = if (state.isDarkMode) Color.rgb(112, 112, 108) else Color.rgb(158, 158, 154)
-    private val divider: Int get() = if (state.isDarkMode) Color.rgb(76, 76, 72) else Color.rgb(205, 205, 201)
+    private val background: Int get() = InstrumentStyle.background(state.isDarkMode)
+    private val foreground: Int get() = InstrumentStyle.foreground(state.isDarkMode)
+    private val muted: Int get() = InstrumentStyle.secondary(state.isDarkMode)
+    private val divider: Int get() = InstrumentStyle.border(state.isDarkMode)
     private val surface: Int get() = if (state.isDarkMode) Color.rgb(38, 38, 36) else Color.rgb(242, 242, 239)
-    private val red = Color.rgb(201, 39, 46)
-    private val blue = Color.rgb(36, 112, 190)
+    private val red = InstrumentStyle.red
+    private val blue = InstrumentStyle.blue
     private var geometry = FilmSelectorGeometry.EMPTY
     private var visibleFilms: List<FilmLatitudeProfile> = emptyList()
     private var mode = FilmSelectorMode.STANDARD
@@ -117,8 +117,8 @@ internal class FilmSelectorView(
         val width = MeasureSpec.getSize(widthMeasureSpec)
         val height = MeasureSpec.getSize(heightMeasureSpec)
         setMeasuredDimension(width, height)
-        val safeTop = rootWindowInsets?.systemWindowInsetTop?.toFloat() ?: 0f
-        geometry = FilmSelectorGeometryCalculator.calculate(width, height, density, safeTop)
+        // SafeAreaHost has already excluded system bars and cutouts for all pages.
+        geometry = FilmSelectorGeometryCalculator.calculate(width, height, resources.displayMetrics.density, 0f)
         searchField.measure(
             MeasureSpec.makeMeasureSpec(geometry.search.width().toInt().coerceAtLeast(1), MeasureSpec.EXACTLY),
             MeasureSpec.makeMeasureSpec(geometry.search.height().toInt().coerceAtLeast(1), MeasureSpec.EXACTLY),

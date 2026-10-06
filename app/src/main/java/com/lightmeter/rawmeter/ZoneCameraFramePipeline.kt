@@ -1,6 +1,7 @@
 package com.lightmeter.rawmeter
 
 import android.media.ImageReader
+import android.media.Image
 import android.os.Handler
 import android.util.Log
 import android.view.Surface
@@ -55,6 +56,7 @@ internal class ZoneCameraFramePipeline(
         reader: ImageReader,
         sensorOrientationDegrees: Int,
         displayRotation: Int,
+        observeImage: (Image) -> Unit = {},
     ) {
         val image = try {
             reader.acquireLatestImage()
@@ -62,6 +64,7 @@ internal class ZoneCameraFramePipeline(
             null
         } ?: return
         try {
+            observeImage(image)
             if (!enabled) return
             val width = image.width
             val height = image.height

@@ -3,6 +3,16 @@
 All notable user-facing changes are recorded here. The project follows
 [Semantic Versioning](https://semver.org/) for public releases.
 
+## 0.6.0 - 2026-10-06
+
+- Added negative preview with one-tap inversion, film-base calibration, editable RGB curves, and edge/corner/rotation crop gestures.
+- Refreshed tool and parameter-record layouts, and improved flash-setting restoration.
+- Improved automatic distance compatibility and feedback while retaining unavailable/approximate status.
+- Updated the slim OpenCV runtime with acceleration and three ABIs preserved.
+- Shortened both READMEs and removed private development paths and device identifiers from release source.
+
+中文：新增负片预览与自由曲线、改进手动选区和界面、完善自动距离与闪光记录，并更新 OpenCV。部分跨设备验证仍待完成；研究文档不代表已上线功能。详见[发布说明](docs/releases/v0.6.0.md)。
+
 ## 0.5.0 - 2026-09-28
 
 - Made RAW combination checks more reliable across camera routes. A manually

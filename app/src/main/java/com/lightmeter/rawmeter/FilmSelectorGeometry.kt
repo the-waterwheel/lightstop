@@ -25,6 +25,7 @@ internal object FilmSelectorGeometryCalculator {
         safeTop: Float,
     ): FilmSelectorGeometry {
         if (width <= 0 || height <= 0) return FilmSelectorGeometry.EMPTY
+        val density = AdaptiveLayout.density(width, height, density, LayoutProfile.SCROLL)
         val w = width.toFloat()
         val h = height.toFloat()
         val pad = max(10f * density, min(w, h) * 0.018f)

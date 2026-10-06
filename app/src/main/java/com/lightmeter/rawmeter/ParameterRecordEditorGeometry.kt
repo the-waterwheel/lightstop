@@ -25,6 +25,7 @@ internal data class ParameterRecordEditorGeometry(
 internal object ParameterRecordEditorGeometryCalculator {
     fun calculate(width: Int, height: Int, density: Float): ParameterRecordEditorGeometry {
         if (width <= 0 || height <= 0) return ParameterRecordEditorGeometry.EMPTY
+        val density = AdaptiveLayout.density(width, height, density, LayoutProfile.EDITOR)
         val w = width.toFloat()
         val h = height.toFloat()
         val pad = max(8f * density, min(w, h) * 0.018f)

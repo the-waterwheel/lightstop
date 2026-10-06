@@ -17,17 +17,18 @@ import kotlin.math.roundToInt
  */
 internal class InstrumentExposureRenderer(
     private val state: MeterState,
-    private val density: Float,
+    private val densityProvider: () -> Float,
 ) {
+    private val density get() = densityProvider()
     private var appliedReciprocityMethod: ReciprocityMethod? = null
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
         typeface = Typeface.create("sans", Typeface.NORMAL)
     }
-    private val lightBlack = Color.rgb(20, 20, 20)
-    private val nightForeground = Color.rgb(210, 210, 206)
-    private val red = Color.rgb(166, 27, 36)
+    private val lightBlack = InstrumentStyle.ink
+    private val nightForeground = InstrumentStyle.nightInk
+    private val red = InstrumentStyle.red
     private val foreground: Int get() = if (state.isDarkMode) nightForeground else lightBlack
     private val surface: Int get() = if (state.isDarkMode) Color.BLACK else Color.WHITE
 
@@ -101,8 +102,8 @@ internal class InstrumentExposureRenderer(
         paint.color = background
         canvas.drawRect(rect, paint)
         paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 1.2f * density
-        paint.color = foreground
+        paint.strokeWidth = 0.8f * density
+        paint.color = InstrumentStyle.border(state.isDarkMode)
         canvas.drawRect(rect, paint)
 
         val titleWidth = 72f * density
@@ -114,7 +115,7 @@ internal class InstrumentExposureRenderer(
         paint.textSize = 12.5f * density
         drawCenteredText(canvas, title, titleLeft + 10f * density, rect.centerY())
         // The exact current value is a primary control readout, not a scale annotation.
-        paint.textSize = 15f * density
+        paint.textSize = 19f * density
         paint.typeface = Typeface.DEFAULT_BOLD
         val shutterSeconds = if (apertureRow) null else {
             ExposureMath.shutterValueForCoordinate(centerCoordinate, state.shutterStep)
@@ -127,6 +128,13 @@ internal class InstrumentExposureRenderer(
             formatExactShutter(shutterSeconds!!)
         }
         val reciprocity = shutterSeconds?.let { ReciprocityMath.calculate(appliedReciprocityMethod, it) }
+        // Keep long values such as 1/8000 inside the existing readout area and off the scale.
+        // Geometry and drag mapping deliberately retain their original dimensions.
+        if (reciprocity?.needsCorrection == true) paint.textSize = 17f * density
+        val readoutWidth = 50f * density
+        if (paint.measureText(exactValue) > readoutWidth) {
+            paint.textSize *= readoutWidth / paint.measureText(exactValue)
+        }
         val readoutX = titleLeft + 44f * density
         drawCenteredText(canvas, exactValue, readoutX, rect.centerY())
         if (reciprocity?.needsCorrection == true) {
@@ -151,7 +159,7 @@ internal class InstrumentExposureRenderer(
 
         canvas.save()
         canvas.clipRect(content)
-        paint.textSize = 7.5f * density
+        paint.textSize = 10f * density
         paint.typeface = Typeface.DEFAULT
         if (apertureRow) {
             var lastLabelRight = content.left - 4f * density
@@ -219,7 +227,7 @@ internal class InstrumentExposureRenderer(
         canvas.drawLine(x, baselineY - tickHeight, x, baselineY + 2f * density, paint)
         if (label != null) {
             paint.style = Paint.Style.FILL
-            paint.textSize = 7.5f * density
+            paint.textSize = 10f * density
             paint.typeface = Typeface.DEFAULT
             drawCenteredText(canvas, label, x, baselineY - 16f * density)
         }

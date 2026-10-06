@@ -442,7 +442,12 @@ class MeterState(context: Context) {
     val isLeftHanded: Boolean get() = handedness == Handedness.LEFT
 
     var sceneEv100: Double? = null
+    internal val parameterRecordDistanceMemory = ParameterRecordDistanceMemory()
     var lastReading: MeterReading? = null
+        set(value) {
+            field = value
+            if (value != null) parameterRecordDistanceMemory.freezeAtMetering()
+        }
     var lastNormalReading: MeterReading? = null
     var measuring: Boolean = false
     /** A camera interaction is in flight (restore/reconfigure) but the spinner is not shown. */
@@ -450,6 +455,10 @@ class MeterState(context: Context) {
     internal var appliedFlashConfiguration: FlashConfiguration? = null
         private set
     internal var distanceMeasurementState: DistanceMeasurementState = DistanceMeasurementState()
+        set(value) {
+            field = value
+            parameterRecordDistanceMemory.observe(value)
+        }
     var cameraInfo: CameraUiInfo = CameraUiInfo(
         status = if (menuLanguage == MenuLanguage.ENGLISH) {
             "Preparing camera"
@@ -499,6 +508,7 @@ class MeterState(context: Context) {
         return FlashExposureMath.adjustment(
             configuration = configuration,
             autofocusDistanceMeters = distanceMeasurementState.effectiveMetersForFlash,
+            distanceMeasurementState = distanceMeasurementState,
             meteringIso = configuration.iso,
             ambientEv100 = ambientEffectiveEv100,
             exposureCompensationEv = exposureCompEv,

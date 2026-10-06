@@ -41,14 +41,14 @@ class InformationView(
 
     var listener: Listener? = null
 
-    private val density = resources.displayMetrics.density
+    private val density get() = layoutDensity(LayoutProfile.SCROLL)
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
     }
     private val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        typeface = Typeface.create("sans", Typeface.BOLD)
+        typeface = InstrumentStyle.labelTypeface
     }
     private val bodyPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
         typeface = Typeface.create("sans", Typeface.NORMAL)
@@ -149,11 +149,11 @@ class InformationView(
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        val background = if (state.isDarkMode) Color.BLACK else Color.WHITE
-        val foreground = if (state.isDarkMode) Color.rgb(210, 210, 206) else Color.rgb(20, 20, 20)
-        val navGray = if (state.isDarkMode) Color.rgb(102, 102, 100) else Color.rgb(226, 226, 223)
-        val divider = if (state.isDarkMode) Color.rgb(72, 72, 70) else Color.rgb(205, 205, 201)
-        val red = Color.rgb(166, 27, 36)
+        val background = InstrumentStyle.background(state.isDarkMode)
+        val foreground = InstrumentStyle.foreground(state.isDarkMode)
+        val navGray = InstrumentStyle.panel(state.isDarkMode)
+        val divider = InstrumentStyle.border(state.isDarkMode)
+        val red = InstrumentStyle.red
         val headerHeight = minOf(height * 0.15f, 76f * density).coerceAtLeast(58f * density)
 
         canvas.drawColor(background)
@@ -301,7 +301,7 @@ class InformationView(
         layout.draw(canvas)
         canvas.restore()
 
-        val divider = if (state.isDarkMode) Color.rgb(72, 72, 70) else Color.rgb(205, 205, 201)
+        val divider = InstrumentStyle.border(state.isDarkMode)
         canvas.save()
         canvas.clipRect(0f, headerHeight, width.toFloat(), height.toFloat())
         paint.style = Paint.Style.FILL

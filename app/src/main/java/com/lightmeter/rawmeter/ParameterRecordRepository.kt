@@ -75,6 +75,14 @@ internal class ParameterRecordRepository(context: Context) {
         .sortedByDescending { it.startedAtEpochMs }
         .toList()
 
+    /** Append order also works when the user disables capture timestamps. */
+    @Synchronized
+    fun latestRecordedDistance(): RecordedDistanceSnapshot? = categories.asReversed()
+        .asSequence()
+        .flatMap { it.records.asReversed().asSequence() }
+        .mapNotNull { it.distance?.takeIf(RecordedDistanceSnapshot::hasDistance) }
+        .firstOrNull()
+
     @Synchronized
     fun category(id: String?): ParameterRecordCategory? = categories.firstOrNull { it.id == id }
 
@@ -598,4 +606,3 @@ internal class ParameterRecordRepository(context: Context) {
         const val PRIVACY_NOTICE_VERSION = 2
     }
 }
-

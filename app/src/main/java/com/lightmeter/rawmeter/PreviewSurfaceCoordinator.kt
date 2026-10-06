@@ -3,7 +3,6 @@ package com.lightmeter.rawmeter
 import android.graphics.Matrix
 import android.os.Handler
 import android.os.SystemClock
-import android.util.Log
 import android.util.Size
 import android.view.Surface
 import android.view.TextureView
@@ -22,6 +21,7 @@ internal class PreviewSurfaceCoordinator(
     private val previewSize: () -> Size?,
     private val sensorOrientationDegrees: () -> Int,
     private val lensFacing: () -> Int,
+    private val processedPreview: () -> Boolean = { false },
 ) {
     @Volatile
     var viewWidth: Int = 0
@@ -73,21 +73,12 @@ internal class PreviewSurfaceCoordinator(
         viewHeight: Int,
         displayRotation: Int,
         displayZoom: Float,
-        cameraHandler: Handler?,
     ) {
         forceRecommitOnNextFrame = true
         confirmationFramesRemaining = CONFIRMATION_FRAMES
         update(viewWidth, viewHeight, displayRotation, displayZoom)
-        cameraHandler?.post {
-            val texture = textureView() ?: return@post
-            val size = previewSize() ?: return@post
-            if (!texture.isAvailable) return@post
-            runCatching {
-                texture.surfaceTexture?.setDefaultBufferSize(size.width, size.height)
-            }.onFailure { error ->
-                Log.w(TAG, "Unable to resynchronize foreground preview buffer size", error)
-            }
-        }
+        // Only CameraSessionCoordinator owns producer buffer dimensions. TextureView may
+        // resize its consumer during this traversal; writing dimensions here races that work.
     }
 
     /** Arms a fresh native-layer transaction after an actual stopped-to-started transition. */
@@ -96,22 +87,6 @@ internal class PreviewSurfaceCoordinator(
     }
 
     fun onPreviewStarted() {
-        // Replacing a CameraCaptureSession can replace the native producer/layer transaction even
-        // though Camera2 deliberately keeps the same TextureView Surface. A few vendor stacks then
-        // forget both the SurfaceTexture default buffer geometry and its native transform while
-        // retaining the Java objects. Reasserting only the Matrix leaves the producer dimensions
-        // ambiguous and can stretch the first new Zone/Normal stream to the View bounds.
-        val texture = textureView()
-        val size = previewSize()
-        if (texture?.isAvailable == true && size != null) {
-            runCatching {
-                texture.surfaceTexture?.setDefaultBufferSize(size.width, size.height)
-            }.onFailure { error ->
-                Log.w(TAG, "Unable to resynchronize preview buffer size after session change", error)
-            }
-        }
-        // Force the same two-step identity/current-matrix transaction used for foreground
-        // recovery on the first frame from every newly started preview session.
         forceRecommitOnNextFrame = true
         confirmationFramesRemaining = CONFIRMATION_FRAMES
     }
@@ -130,18 +105,10 @@ internal class PreviewSurfaceCoordinator(
         val forceRecommitScheduled = forceRecommitOnNextFrame
         if (forceRecommitScheduled) {
             forceRecommitOnNextFrame = false
-            // Some vendor compositors retain the Java Matrix but lose the native transaction while
-            // backgrounded or while replacing a CameraCaptureSession. Publish identity for one
-            // traversal and then the current matrix again.
-            val expectedRevision = revision.incrementAndGet()
-            textureView()?.setTransform(Matrix())
+            // Never publish an intentionally stretched identity frame. Apply the absolute
+            // transform to the current bounds in one transaction, including on resume.
             lastWatchdogAtMs = SystemClock.uptimeMillis()
-            mainHandler.removeCallbacksAndMessages(syncToken)
-            mainHandler.postAtTime(
-                { apply(expectedRevision) },
-                syncToken,
-                SystemClock.uptimeMillis() + FORCE_RECOMMIT_DELAY_MS,
-            )
+            apply(revision.get())
         }
         if (!forceRecommitScheduled && confirmationFramesRemaining > 0) {
             confirmationFramesRemaining -= 1
@@ -184,6 +151,10 @@ internal class PreviewSurfaceCoordinator(
         viewWidth = actualWidth
         viewHeight = actualHeight
         displayRotation = actualRotation
+        if (processedPreview()) {
+            texture.setTransform(Matrix())
+            return
+        }
         texture.setTransform(
             CameraPreviewTransform.create(
                 viewWidth = actualWidth,
@@ -198,10 +169,8 @@ internal class PreviewSurfaceCoordinator(
     }
 
     private companion object {
-        private const val TAG = "lightstop"
         private const val CONFIRMATION_FRAMES = 4
         private const val WATCHDOG_INTERVAL_MS = 500L
-        private const val FORCE_RECOMMIT_DELAY_MS = 16L
         private val CONVERGENCE_DELAYS_MS = longArrayOf(
             0L,
             16L,

@@ -25,7 +25,7 @@ internal class ColorTemperatureView(
     }
 
     var listener: Listener? = null
-    private val density = resources.displayMetrics.density
+    private val density get() = layoutDensity(LayoutProfile.TOOL)
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         typeface = Typeface.create("sans", Typeface.NORMAL)
         strokeCap = Paint.Cap.ROUND
@@ -33,7 +33,7 @@ internal class ColorTemperatureView(
     private val boldPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         typeface = Typeface.create("sans", Typeface.BOLD)
     }
-    private val red = Color.rgb(190, 28, 34)
+    private val red = InstrumentStyle.red
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     private var geometry = ColorTemperatureGeometry.EMPTY
     private var rawSupported = false
@@ -46,9 +46,9 @@ internal class ColorTemperatureView(
     private var scrollAtDown = 0f
     private var dragging = false
 
-    private val background: Int get() = if (state.isDarkMode) Color.BLACK else Color.WHITE
-    private val foreground: Int get() = if (state.isDarkMode) Color.rgb(218, 218, 214) else Color.rgb(24, 24, 24)
-    private val muted: Int get() = if (state.isDarkMode) Color.rgb(128, 128, 124) else Color.rgb(132, 132, 128)
+    private val background: Int get() = InstrumentStyle.background(state.isDarkMode)
+    private val foreground: Int get() = InstrumentStyle.foreground(state.isDarkMode)
+    private val muted: Int get() = InstrumentStyle.secondary(state.isDarkMode)
     private val pressedFill: Int get() = if (state.isDarkMode) Color.rgb(55, 55, 52) else Color.rgb(226, 226, 222)
 
     fun openPage(rawSupported: Boolean) {
@@ -85,7 +85,7 @@ internal class ColorTemperatureView(
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
-        geometry = ColorTemperatureGeometryCalculator.calculate(w, h, density)
+        geometry = ColorTemperatureGeometryCalculator.calculate(w, h, resources.displayMetrics.density)
     }
 
     override fun onDraw(canvas: Canvas) {

@@ -84,18 +84,19 @@ class ZoneSystemView(
     val session = ZoneMeterSession()
     var listener: Listener? = null
 
-    private val density = resources.displayMetrics.density
-    private val lightBlack = Color.rgb(20, 20, 20)
-    private val nightForeground = Color.rgb(210, 210, 206)
+    private val density get() = layoutDensity(LayoutProfile.METER)
+    private val lightBlack = InstrumentStyle.ink
+    private val nightForeground = InstrumentStyle.nightInk
     private val foreground: Int get() = if (state.isDarkMode) nightForeground else lightBlack
     private val surface: Int get() = if (state.isDarkMode) Color.BLACK else Color.WHITE
     private val railColor: Int
         get() = if (state.isDarkMode) Color.rgb(58, 58, 56) else Color.rgb(164, 164, 160)
     private val dividerColor: Int
-        get() = if (state.isDarkMode) Color.rgb(84, 84, 80) else Color.rgb(190, 190, 186)
-    private val red = Color.rgb(166, 27, 36)
+        get() = InstrumentStyle.border(state.isDarkMode)
+    private val red = InstrumentStyle.red
     private val latitudeOutsideRed: Int
         get() = if (state.isDarkMode) Color.rgb(196, 116, 120) else Color.rgb(231, 151, 155)
+    private val zoomRenderer = ZoomControlRenderer()
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
@@ -105,8 +106,8 @@ class ZoneSystemView(
         typeface = Typeface.create("sans", Typeface.BOLD)
     }
     private val ev100BadgeRenderer = Ev100BadgeRenderer(
-        density = density,
-        scaledDensity = resources.displayMetrics.scaledDensity,
+        densityProvider = { density },
+        textDensityProvider = { layoutTextDensity(LayoutProfile.METER) },
     )
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
 
@@ -339,8 +340,8 @@ class ZoneSystemView(
 
     private fun drawPanels(canvas: Canvas, g: Geometry) {
         paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 1.1f * density
-        paint.color = foreground
+        paint.strokeWidth = 0.8f * density
+        paint.color = InstrumentStyle.border(state.isDarkMode)
         canvas.drawRect(g.previewPanel, paint)
         canvas.drawRect(g.cameraFrame, paint)
         canvas.drawRect(g.recordPanel, paint)
@@ -988,8 +989,8 @@ class ZoneSystemView(
         paint.color = surface
         canvas.drawRoundRect(rect, 7f * density, 7f * density, paint)
         paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 1.4f * density
-        paint.color = foreground
+        paint.strokeWidth = 1f * density
+        paint.color = InstrumentStyle.border(state.isDarkMode)
         canvas.drawRoundRect(rect, 7f * density, 7f * density, paint)
         val radius = min(rect.width(), rect.height()) * 0.23f
         paint.strokeWidth = 2f * density
@@ -1014,7 +1015,7 @@ class ZoneSystemView(
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1f * density
-        paint.withAlpha(if (selected) red else foreground, alpha)
+        paint.withAlpha(if (selected) red else InstrumentStyle.border(state.isDarkMode), alpha)
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
         paint.style = Paint.Style.FILL
         paint.withAlpha(if (selected) surface else foreground, alpha)
@@ -1033,12 +1034,13 @@ class ZoneSystemView(
 
     private fun drawOrientationButton(canvas: Canvas, rect: RectF, alpha: Int = 255) {
         paint.style = Paint.Style.FILL
-        paint.withAlpha(surface, alpha)
+        paint.withAlpha(InstrumentStyle.control(state.isDarkMode), alpha)
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1f * density
-        paint.withAlpha(foreground, alpha)
+        paint.withAlpha(InstrumentStyle.border(state.isDarkMode), alpha)
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
+        paint.withAlpha(foreground, alpha)
         val phone = RectF(rect.centerX() - 6f * density, rect.centerY() - 10f * density, rect.centerX() + 6f * density, rect.centerY() + 10f * density)
         canvas.drawRoundRect(phone, 2f * density, 2f * density, paint)
         paint.withAlpha(red, alpha)
@@ -1047,12 +1049,13 @@ class ZoneSystemView(
 
     private fun drawSettingsButton(canvas: Canvas, rect: RectF, alpha: Int = 255) {
         paint.style = Paint.Style.FILL
-        paint.withAlpha(surface, alpha)
+        paint.withAlpha(InstrumentStyle.control(state.isDarkMode), alpha)
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1f * density
-        paint.withAlpha(foreground, alpha)
+        paint.withAlpha(InstrumentStyle.border(state.isDarkMode), alpha)
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
+        paint.withAlpha(foreground, alpha)
         val outerRadius = min(rect.width(), rect.height()) * 0.27f
         val rootRadius = outerRadius * 0.78f
         val innerRadius = outerRadius * 0.31f
@@ -1075,12 +1078,13 @@ class ZoneSystemView(
     /** Four hollow squares with the top-right one rotated 45 degrees around its own center. */
     private fun drawToolsButton(canvas: Canvas, rect: RectF, alpha: Int = 255) {
         paint.style = Paint.Style.FILL
-        paint.withAlpha(surface, alpha)
+        paint.withAlpha(InstrumentStyle.control(state.isDarkMode), alpha)
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1f * density
-        paint.withAlpha(foreground, alpha)
+        paint.withAlpha(InstrumentStyle.border(state.isDarkMode), alpha)
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
+        paint.withAlpha(foreground, alpha)
         val cell = rect.width() * 0.26f
         val innerGap = rect.width() * 0.07f
         val left = rect.centerX() - cell - innerGap / 2f
@@ -1117,34 +1121,11 @@ class ZoneSystemView(
         val vertical = track.height() > track.width()
         val maxZoom = state.cameraInfo.maxDisplayZoom.coerceAtLeast(1.01f)
         val normalized = ((state.zoom - 1f) / (maxZoom - 1f)).coerceIn(0f, 1f)
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 1.1f * density
-        paint.color = foreground
-        if (vertical) {
-            val x = track.centerX()
-            val top = track.top + 18f * density
-            val bottom = track.bottom - 8f * density
-            canvas.drawLine(x, top, x, bottom, paint)
-            for (i in 0..6) {
-                val y = top + (bottom - top) * i / 6f
-                canvas.drawLine(x - 5f * density, y, x + 5f * density, y, paint)
-            }
-            paint.style = Paint.Style.FILL
-            paint.color = red
-            canvas.drawCircle(x, bottom - normalized * (bottom - top), 4.5f * density, paint)
-        } else {
-            val y = track.centerY()
-            val left = track.left + 8f * density
-            val right = track.right - 8f * density
-            canvas.drawLine(left, y, right, y, paint)
-            for (i in 0..6) {
-                val x = left + (right - left) * i / 6f
-                canvas.drawLine(x, y - 5f * density, x, y + 5f * density, paint)
-            }
-            paint.style = Paint.Style.FILL
-            paint.color = red
-            canvas.drawCircle(left + normalized * (right - left), y, 4.5f * density, paint)
-        }
+        val start = if (vertical) track.top + 18f * density else track.left + 8f * density
+        val end = if (vertical) track.bottom - 8f * density else track.right - 8f * density
+        val position = if (vertical) end - normalized * (end - start) else start + normalized * (end - start)
+        zoomRenderer.draw(canvas, vertical, if (vertical) track.centerX() else track.centerY(),
+            start, end, position, density, state.isDarkMode)
     }
 
     private fun drawFormatMenu(canvas: Canvas, g: Geometry) {
@@ -1681,7 +1662,7 @@ class ZoneSystemView(
     }
 
     private fun calculateGeometry(width: Int, height: Int): Geometry =
-        ZoneLayoutCalculator.calculate(width, height, density, state)
+        ZoneLayoutCalculator.calculate(width, height, resources.displayMetrics.density, state)
 
     private fun localized(chinese: String, english: String): String =
         if (state.menuLanguage == MenuLanguage.ENGLISH) english else chinese

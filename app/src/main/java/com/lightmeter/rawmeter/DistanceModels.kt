@@ -15,11 +15,15 @@ enum class DistanceSource {
     FOCUS_CALIBRATED,
     FOCUS_APPROXIMATE,
     MANUAL,
+    MOTION_PARALLAX,
+    FUSED,
+    /** Reciprocal focus heuristic; the HAL has not guaranteed a metric scale. */
+    FOCUS_ESTIMATED,
 }
 
 enum class DistanceQuality { HIGH, MEDIUM, LOW }
 
-/** A locked physical-distance observation.  Values are metres, never display-rounded values. */
+/** Distance observation or explicitly marked heuristic. Values are never display-rounded. */
 data class DistanceEstimate(
     val meters: Double,
     val lowerMeters: Double?,
@@ -33,7 +37,18 @@ data class DistanceEstimate(
     val sampleCount: Int,
     val isFresh: Boolean,
     val diagnosticReason: String? = null,
-)
+    /** Receipt clock, deliberately separate from the camera sensor's timestamp domain. */
+    val receivedAtNs: Long = 0L,
+) {
+    val isApproximate: Boolean
+        get() = source == DistanceSource.FOCUS_ESTIMATED || source == DistanceSource.FOCUS_APPROXIMATE ||
+            (source == DistanceSource.FOCUS_CALIBRATED && !DistanceFusionEngine.usableForFlash(this))
+
+    fun isCurrent(nowNs: Long = System.nanoTime()): Boolean = isFresh &&
+        (receivedAtNs == 0L || nowNs - receivedAtNs in 0..DISTANCE_TTL_NS)
+}
+
+internal const val DISTANCE_TTL_NS = 2_000_000_000L
 
 enum class DistanceMeasurementStatus {
     IDLE,
@@ -49,9 +64,31 @@ data class DistanceMeasurementState(
     val estimate: DistanceEstimate? = null,
     val status: DistanceMeasurementStatus = DistanceMeasurementStatus.IDLE,
     val diagnosticReason: String? = null,
+    /** Unfused observations permit re-evaluation when flash/ambient settings change. */
+    val focusObservation: DistanceEstimate? = null,
+    val motionObservation: DistanceEstimate? = null,
 ) {
     val effectiveMetersForFlash: Double?
-        get() = estimate?.takeIf { it.isFresh && it.meters.isFinite() && it.meters > 0.0 }?.meters
+        get() = estimate?.takeIf {
+            status == DistanceMeasurementStatus.AVAILABLE && it.isCurrent() &&
+                (DistanceFusionEngine.usableForFlash(it) || DistanceFusionEngine.usableForEstimatedFlash(it))
+        }?.meters
+
+    internal fun estimateForFlash(
+        nowNs: Long = System.nanoTime(),
+        exposureDifference: (Double, Double) -> Double,
+    ): DistanceEstimate? {
+        val resolved = if (focusObservation != null || motionObservation != null) {
+            DistanceFusionEngine.fuse(focusObservation, motionObservation, nowNs, exposureDifference)
+        } else this
+        return resolved?.estimate?.takeIf {
+            resolved.status == DistanceMeasurementStatus.AVAILABLE && it.isCurrent(nowNs) &&
+                (DistanceFusionEngine.usableForEstimatedFlash(it) ||
+                    (DistanceFusionEngine.usableForFlash(it) &&
+                        maxOf(exposureDifference(it.meters, it.lowerMeters!!),
+                            exposureDifference(it.meters, it.upperMeters!!)) <= DistanceFusionEngine.MAX_FLASH_UNCERTAINTY_EV))
+        }
+    }
 }
 
 internal data class DistanceContext(

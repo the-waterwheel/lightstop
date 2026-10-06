@@ -24,6 +24,7 @@ internal data class LatitudeGeometry(
 internal object LatitudeGeometryCalculator {
     fun calculate(width: Int, height: Int, density: Float): LatitudeGeometry {
         if (width <= 0 || height <= 0) return LatitudeGeometry.EMPTY
+        val density = AdaptiveLayout.density(width, height, density, LayoutProfile.TOOL)
         val w = width.toFloat()
         val h = height.toFloat()
         val pad = max(8f * density, min(w, h) * 0.018f)

@@ -5,6 +5,9 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+val buildAbiSplits = providers.gradleProperty("splitApks").map { it.toBooleanStrict() }.orElse(false).get()
+val uiPreview = providers.gradleProperty("uiPreview").map { it.toBooleanStrict() }.orElse(false).get()
+
 android {
     namespace = "com.lightmeter.rawmeter"
     compileSdk {
@@ -14,12 +17,16 @@ android {
     }
     ndkVersion = "27.0.12077973"
 
+    buildFeatures {
+        buildConfig = true
+    }
+
     defaultConfig {
         applicationId = "com.lightmeter.rawmeter"
         minSdk = 28
         targetSdk = 36
-        versionCode = 10
-        versionName = "0.5.0"
+        versionCode = 11
+        versionName = "0.6.0"
 
         externalNativeBuild {
             cmake {
@@ -28,7 +35,17 @@ android {
         }
 
         ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+            if (!buildAbiSplits) abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+        }
+    }
+
+    // Optional smaller direct-download APKs; retain a universal APK for distribution fallback.
+    splits {
+        abi {
+            isEnable = buildAbiSplits
+            reset()
+            include("arm64-v8a", "armeabi-v7a", "x86_64")
+            isUniversalApk = true
         }
     }
 
@@ -61,18 +78,32 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+
+    if (uiPreview) {
+        sourceSets.getByName("test").java.srcDir("src/uiPreview/java")
+        testOptions.unitTests.isIncludeAndroidResources = true
+        testOptions.unitTests.all {
+            it.systemProperty("robolectric.dependency.repo.url", "https://repo.maven.apache.org/maven2")
+            it.systemProperty("uiPreview.output", providers.gradleProperty("previewOutput").orElse("build/ui-preview").get())
+            providers.gradleProperty("previewSdkDir").orNull?.let { directory ->
+                it.systemProperty("robolectric.offline", "true")
+                it.systemProperty("robolectric.dependency.dir", rootProject.file(directory).absolutePath)
+            }
+        }
+    }
 }
 
 dependencies {
-    implementation(files("libs/opencv-slim-4.12.0-r2.aar"))
+    implementation(files("libs/opencv-slim-4.12.0-r4-perf.aar"))
     testImplementation("junit:junit:4.13.2")
+    if (uiPreview) testImplementation("org.robolectric:robolectric:4.14.1")
 }
 
 // The slim OpenCV runtime is a pinned local artifact. Fail the build if the bytes change so a
 // swapped AAR cannot silently alter native behavior or licensing.
 val verifyOpenCvAar = tasks.register("verifyOpenCvAar") {
-    val aar = file("libs/opencv-slim-4.12.0-r2.aar")
-    val expected = "321c84621fe818e35cc7b6401953039bc784e4fe4cfb9d35690b4dbedf4d57cd"
+    val aar = file("libs/opencv-slim-4.12.0-r4-perf.aar")
+    val expected = "35e3b7df14f1b304a0eba7c0d6d15dd03900315e1d62d366df734243d7601662"
     inputs.file(aar)
     doLast {
         check(aar.isFile) { "Missing pinned OpenCV AAR: ${aar.absolutePath}" }

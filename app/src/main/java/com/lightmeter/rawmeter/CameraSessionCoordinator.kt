@@ -271,6 +271,13 @@ internal class CameraSessionCoordinator(
             val outputConfigurations = outputs.map { surface ->
                 OutputConfiguration(surface).apply {
                     if (physicalCameraId != null) setPhysicalCameraId(physicalCameraId)
+                    if (surface === preview && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        // The GL renderer owns front-camera mirroring. Preview readback joins
+                        // SENSOR_TIMESTAMP, with no compositor time-base or mirror substitution.
+                        setMirrorMode(OutputConfiguration.MIRROR_MODE_NONE)
+                        setTimestampBase(OutputConfiguration.TIMESTAMP_BASE_SENSOR)
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) setReadoutTimestampEnabled(false)
+                    }
                 }
             }
             val executor = Executor(handler::post)

@@ -17,6 +17,7 @@ class ToolsCatalogTest {
                 ToolId.RECIPROCITY,
                 ToolId.FLASH_INDEX,
                 ToolId.COLOR_TEMPERATURE,
+                ToolId.FILM_NEGATIVE,
             ),
             visibleIds,
         )

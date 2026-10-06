@@ -6,6 +6,7 @@ import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureRequest
 import android.os.Handler
+import android.os.Build
 import android.os.Looper
 import android.util.Log
 import android.util.Range
@@ -34,9 +35,14 @@ internal class CameraPreviewRequestCoordinator(
     private val configureAutoFocus: (CaptureRequest.Builder) -> Unit,
     private val captureCallback: () -> CameraCaptureSession.CaptureCallback,
     private val onRequestFailure: (generation: Int) -> Unit,
+    private val filmPreviewActive: () -> Boolean = { false },
+    private val filmPreviewLocked: () -> Boolean = { false },
+    private val filmPreviewPreparingCapture: () -> Boolean = { false },
+    private val requestCharacteristics: () -> CameraCharacteristics? = characteristics,
 ) {
     private var compatibleYuvRequestActive = false
     private var pausedForRawCapture = false
+    private var filmCurveRejected = false
 
     var requestSequence: Long = 0L
         private set
@@ -60,7 +66,14 @@ internal class CameraPreviewRequestCoordinator(
             )
         if (includeYuv) builder.addTarget(yuvSurface)
         builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
-        val appliedManualExposure = manualExposure()
+        // Geometry is owned by CameraPreviewTransform. Do not let compatibility mode
+        // apply a second rotation/crop as the app moves between window states.
+        if (Build.VERSION.SDK_INT >= 31 && requestCharacteristics()
+                ?.get(CameraCharacteristics.SCALER_AVAILABLE_ROTATE_AND_CROP_MODES)
+                ?.contains(CaptureRequest.SCALER_ROTATE_AND_CROP_NONE) == true) {
+            builder.set(CaptureRequest.SCALER_ROTATE_AND_CROP, CaptureRequest.SCALER_ROTATE_AND_CROP_NONE)
+        }
+        val appliedManualExposure = manualExposure().takeUnless { filmPreviewActive() }
         val fpsRange = previewFpsRange()
         if (appliedManualExposure != null) {
             builder.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
@@ -85,17 +98,48 @@ internal class CameraPreviewRequestCoordinator(
             builder.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
             builder.set(
                 CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION,
-                exposureCompensationSteps(),
+                if (filmPreviewActive()) 0 else exposureCompensationSteps(),
             )
             fpsRange?.let { builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
         }
+        if (filmPreviewActive()) {
+            val chars = requestCharacteristics()
+            if (chars?.get(CameraCharacteristics.CONTROL_AE_LOCK_AVAILABLE) == true) {
+                builder.set(CaptureRequest.CONTROL_AE_LOCK, filmPreviewLocked())
+            }
+            builder.set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO)
+            if (chars?.get(CameraCharacteristics.CONTROL_AWB_LOCK_AVAILABLE) == true) {
+                builder.set(CaptureRequest.CONTROL_AWB_LOCK, filmPreviewLocked())
+            }
+        }
         configureAutoFocus(builder)
-        session.setRepeatingRequest(builder.build(), captureCallback(), cameraHandler())
+        val templateToneMode = builder.get(CaptureRequest.TONEMAP_MODE)
+        val templateCurve = builder.get(CaptureRequest.TONEMAP_CURVE)
+        // Keep the camera's normal viewing tone until calibration actually starts. Applying
+        // a fixed sRGB curve on page entry removes the vendor's contrast and can look washed out.
+        val useFilmCurve = filmPreviewActive() && (filmPreviewPreparingCapture() || filmPreviewLocked()) && !filmCurveRejected &&
+            FilmNegativeCameraProfile.supported(requestCharacteristics())
+        try {
+            if (useFilmCurve) {
+                builder.set(CaptureRequest.TONEMAP_MODE, CaptureRequest.TONEMAP_MODE_CONTRAST_CURVE)
+                builder.set(CaptureRequest.TONEMAP_CURVE, FilmNegativeCameraProfile.curve)
+            }
+            session.setRepeatingRequest(builder.build(), captureCallback(), cameraHandler())
+        } catch (error: Exception) {
+            if (!useFilmCurve) throw error
+            // A vendor may advertise a control it rejects. Retry the original template once.
+            filmCurveRejected = true
+            builder.set(CaptureRequest.TONEMAP_MODE, templateToneMode)
+            builder.set(CaptureRequest.TONEMAP_CURVE, templateCurve)
+            session.setRepeatingRequest(builder.build(), captureCallback(), cameraHandler())
+            Log.w(TAG, "Film tone curve rejected; using approximate preview", error)
+        }
         Log.i(
             TAG,
             "Preview request submitted: fps=$fpsRange yuv=$includeYuv " +
                 "manualExposure=$appliedManualExposure " +
                 "exposureCompensationSteps=${exposureCompensationSteps()} " +
+                "filmCurve=$useFilmCurve " +
                 "profile=${sessionProfile()} tag=$requestTag",
         )
     }
@@ -151,6 +195,7 @@ internal class CameraPreviewRequestCoordinator(
     fun resetCaptureState() {
         compatibleYuvRequestActive = false
         pausedForRawCapture = false
+        filmCurveRejected = false
     }
 
     companion object {

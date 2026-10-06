@@ -38,7 +38,7 @@ class CameraManagementView(
 
     var listener: Listener? = null
 
-    private val density = resources.displayMetrics.density
+    private val density get() = layoutDensity(LayoutProfile.SCROLL)
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         strokeCap = Paint.Cap.ROUND
@@ -46,7 +46,7 @@ class CameraManagementView(
         typeface = Typeface.create("sans", Typeface.NORMAL)
     }
     private val boldPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        typeface = Typeface.create("sans", Typeface.BOLD)
+        typeface = InstrumentStyle.labelTypeface
     }
 
     private var closeRect = RectF()
@@ -66,14 +66,14 @@ class CameraManagementView(
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        val background = if (state.isDarkMode) Color.BLACK else Color.WHITE
-        val foreground = if (state.isDarkMode) Color.rgb(210, 210, 206) else Color.rgb(20, 20, 20)
+        val background = InstrumentStyle.background(state.isDarkMode)
+        val foreground = InstrumentStyle.foreground(state.isDarkMode)
         // This is a nested settings page, so its canvas and header use the same surface color
         // as the settings page it came from instead of looking like a separate gray overlay.
         val navGray = background
-        val divider = if (state.isDarkMode) Color.rgb(72, 72, 70) else Color.rgb(205, 205, 201)
-        val muted = if (state.isDarkMode) Color.rgb(145, 145, 142) else Color.rgb(108, 108, 104)
-        val red = Color.rgb(166, 27, 36)
+        val divider = InstrumentStyle.border(state.isDarkMode)
+        val muted = InstrumentStyle.secondary(state.isDarkMode)
+        val red = InstrumentStyle.red
 
         canvas.drawColor(background)
         val headerHeight = minOf(height * 0.15f, 76f * density).coerceAtLeast(58f * density)

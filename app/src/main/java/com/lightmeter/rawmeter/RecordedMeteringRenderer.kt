@@ -11,9 +11,10 @@ import kotlin.math.roundToInt
 
 /** Meter-like, stateless scene-reproduction UI used by parameter-record history. */
 internal class RecordedMeteringRenderer(
-    private val density: Float,
+    private val densityProvider: () -> Float,
     private val state: MeterState,
 ) {
+    private val density get() = densityProvider()
     private data class Geometry(
         val normalMode: RectF,
         val zoneMode: RectF,
@@ -31,11 +32,11 @@ internal class RecordedMeteringRenderer(
     private val bold = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         typeface = Typeface.create("sans", Typeface.BOLD)
     }
-    private val foreground: Int get() = if (state.isDarkMode) Color.rgb(224, 224, 220) else Color.rgb(20, 20, 20)
-    private val surface: Int get() = if (state.isDarkMode) Color.rgb(35, 35, 33) else Color.WHITE
-    private val panel: Int get() = if (state.isDarkMode) Color.rgb(48, 48, 46) else Color.rgb(235, 235, 232)
-    private val muted: Int get() = if (state.isDarkMode) Color.rgb(100, 100, 96) else Color.rgb(180, 180, 176)
-    private val red = Color.rgb(201, 39, 46)
+    private val foreground: Int get() = InstrumentStyle.foreground(state.isDarkMode)
+    private val surface: Int get() = InstrumentStyle.control(state.isDarkMode)
+    private val panel: Int get() = InstrumentStyle.control(state.isDarkMode)
+    private val muted: Int get() = InstrumentStyle.secondary(state.isDarkMode)
+    private val red = InstrumentStyle.red
 
     fun draw(
         canvas: Canvas,
@@ -85,7 +86,7 @@ internal class RecordedMeteringRenderer(
 
     private fun geometry(rect: RectF, mode: ParameterRecordMode): Geometry {
         val inset = 7f * density
-        val gap = 5f * density
+        val gap = 3f * density
         val left = rect.left + inset
         val right = rect.right - inset
         val top = rect.top + inset
@@ -114,7 +115,7 @@ internal class RecordedMeteringRenderer(
     ) {
         paint.style = Paint.Style.FILL
         paint.color = when {
-            selected -> red
+            selected -> foreground
             enabled -> surface
             state.isDarkMode -> Color.rgb(55, 55, 53)
             else -> Color.rgb(218, 218, 215)
@@ -124,11 +125,11 @@ internal class RecordedMeteringRenderer(
         paint.strokeWidth = 1f * density
         paint.color = when {
             selected -> red
-            enabled -> foreground
+            enabled -> InstrumentStyle.border(state.isDarkMode)
             else -> muted
         }
         canvas.drawRoundRect(rect, 3f * density, 3f * density, paint)
-        bold.color = if (selected) Color.WHITE else if (enabled) foreground else muted
+        bold.color = if (selected) InstrumentStyle.background(state.isDarkMode) else if (enabled) foreground else muted
         bold.textAlign = Paint.Align.CENTER
         bold.textSize = 12f * density
         centered(canvas, label, rect.centerX(), rect.centerY(), bold)
@@ -239,7 +240,7 @@ internal class RecordedMeteringRenderer(
         paint.color = foreground
         canvas.drawRect(rect, paint)
 
-        val titleWidth = (54f * density).coerceAtMost(rect.width() * 0.28f)
+        val titleWidth = (70f * density).coerceAtMost(rect.width() * 0.28f)
         val title = RectF(rect.left, rect.top, rect.left + titleWidth, rect.bottom)
         val content = RectF(title.right + 2f * density, rect.top, rect.right - 4f * density, rect.bottom)
         val centerX = content.centerX()
@@ -254,6 +255,7 @@ internal class RecordedMeteringRenderer(
         canvas.clipRect(content)
         val ticks = if (aperture) ExposureMath.apertureTicks(state.apertureStep) else ExposureMath.shutterTicks(state.shutterStep)
         var lastLabelRight = content.left - 4f * density
+        var lastLabelLeft = content.right + 4f * density
         ticks.forEachIndexed { index, tick ->
             val x = centerX + ((tick.coordinate - centerCoordinate) * pixelsPerStop).toFloat()
             if (x !in content.left..content.right) return@forEachIndexed
@@ -271,12 +273,18 @@ internal class RecordedMeteringRenderer(
             canvas.drawLine(x, baselineY - height, x, baselineY + 2f * density, paint)
             if (label != null) {
                 paint.style = Paint.Style.FILL
-                paint.textSize = 7f * density
+                paint.textSize = 9f * density
                 val half = paint.measureText(label) / 2f
-                if (x - half >= lastLabelRight + 3f * density && x + half <= content.right) {
+                val fits = if (aperture) {
+                    x - half >= lastLabelRight + 3f * density && x + half <= content.right
+                } else {
+                    x + half <= lastLabelLeft - 3f * density && x - half >= content.left
+                }
+                if (fits) {
                     paint.textAlign = Paint.Align.CENTER
                     centered(canvas, label, x, baselineY - 14f * density, paint)
                     lastLabelRight = x + half
+                    lastLabelLeft = x - half
                 }
             }
         }
@@ -298,9 +306,12 @@ internal class RecordedMeteringRenderer(
         bold.color = rowForeground
         bold.textAlign = Paint.Align.CENTER
         bold.textSize = 11f * density
-        centered(canvas, if (aperture) "f" else "s", title.left + title.width() * 0.25f, title.centerY(), bold)
-        bold.textSize = 8f * density
-        centered(canvas, value.removePrefix("f/"), title.left + title.width() * 0.67f, title.centerY(), bold)
+        centered(canvas, if (aperture) "f" else "s", title.left + 9f * density, title.centerY(), bold)
+        val exactValue = value.removePrefix("f/")
+        bold.textSize = 14f * density
+        val valueWidth = title.width() * 0.70f
+        if (bold.measureText(exactValue) > valueWidth) bold.textSize *= valueWidth / bold.measureText(exactValue)
+        centered(canvas, exactValue, title.left + title.width() * 0.63f, title.centerY(), bold)
     }
 
     private fun localized(chinese: String, english: String): String =

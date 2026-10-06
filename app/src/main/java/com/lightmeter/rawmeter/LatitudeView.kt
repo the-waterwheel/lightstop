@@ -41,8 +41,8 @@ internal class LatitudeView(
 
     private enum class TouchTarget { BACK, CLOSE, SHADOW, HIGHLIGHT, SELECT, APPLY, RESET, RECORD, NONE }
 
-    private val density = resources.displayMetrics.density
-    private val scaledDensity = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 1f, resources.displayMetrics)
+    private val density get() = layoutDensity(LayoutProfile.TOOL)
+    private val scaledDensity get() = layoutTextDensity(LayoutProfile.TOOL)
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         strokeCap = Paint.Cap.ROUND
@@ -51,15 +51,15 @@ internal class LatitudeView(
     }
     private val boldPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans-serif", Typeface.BOLD) }
     private val path = Path()
-    private val background: Int get() = if (state.isDarkMode) Color.BLACK else Color.WHITE
-    private val foreground: Int get() = if (state.isDarkMode) Color.rgb(224, 224, 220) else Color.rgb(20, 20, 20)
-    private val muted: Int get() = if (state.isDarkMode) Color.rgb(112, 112, 108) else Color.rgb(168, 168, 164)
-    private val panel: Int get() = if (state.isDarkMode) Color.rgb(44, 44, 42) else Color.rgb(235, 235, 232)
+    private val background: Int get() = InstrumentStyle.background(state.isDarkMode)
+    private val foreground: Int get() = InstrumentStyle.foreground(state.isDarkMode)
+    private val muted: Int get() = InstrumentStyle.secondary(state.isDarkMode)
+    private val panel: Int get() = InstrumentStyle.panel(state.isDarkMode)
     private val inversePanel: Int get() = if (state.isDarkMode) Color.rgb(218, 218, 214) else Color.rgb(48, 48, 46)
-    private val actionSurface: Int get() = if (state.isDarkMode) Color.rgb(24, 24, 22) else Color.WHITE
+    private val actionSurface: Int get() = InstrumentStyle.control(state.isDarkMode)
     private val actionActiveSurface: Int get() = if (state.isDarkMode) Color.rgb(72, 72, 68) else Color.rgb(218, 218, 214)
     private val actionText: Int get() = if (state.isDarkMode) foreground else Color.rgb(22, 22, 22)
-    private val red = Color.rgb(205, 38, 45)
+    private val red = InstrumentStyle.red
     private var geometry = LatitudeGeometry.EMPTY
     private val session = LatitudeSession()
     private var displayedRange = FilmLatitudeRange.FULL_SCALE
@@ -101,7 +101,7 @@ internal class LatitudeView(
     }
 
     override fun onSizeChanged(width: Int, height: Int, oldWidth: Int, oldHeight: Int) {
-        geometry = LatitudeGeometryCalculator.calculate(width, height, density)
+        geometry = LatitudeGeometryCalculator.calculate(width, height, resources.displayMetrics.density)
     }
 
     override fun onDraw(canvas: Canvas) {

@@ -31,8 +31,8 @@ internal class AngleMeteringDialView(
 
     private enum class Gesture { NONE, TOGGLE, DIAL }
 
-    private val density = resources.displayMetrics.density
-    private val scaledDensity = density * resources.configuration.fontScale
+    private val density get() = layoutDensity(LayoutProfile.SCROLL)
+    private val scaledDensity get() = layoutTextDensity(LayoutProfile.SCROLL)
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         strokeCap = Paint.Cap.ROUND
@@ -44,12 +44,12 @@ internal class AngleMeteringDialView(
         textAlign = Paint.Align.CENTER
     }
     private val foreground: Int
-        get() = if (state.isDarkMode) Color.rgb(222, 222, 218) else Color.rgb(20, 20, 20)
+        get() = InstrumentStyle.foreground(state.isDarkMode)
     private val surface: Int
         get() = if (state.isDarkMode) Color.rgb(28, 28, 27) else Color.WHITE
     private val muted: Int
-        get() = if (state.isDarkMode) Color.rgb(92, 92, 89) else Color.rgb(188, 188, 184)
-    private val red = Color.rgb(184, 31, 39)
+        get() = InstrumentStyle.secondary(state.isDarkMode)
+    private val red = InstrumentStyle.red
 
     private var anchor = RectF()
     private var compactCenterOffsetX = 0f

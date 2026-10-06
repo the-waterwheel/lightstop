@@ -41,6 +41,11 @@ internal object ZoneLayoutCalculator {
         density: Float,
         state: MeterState,
     ): ZoneLayoutGeometry {
+        if (width <= 0 || height <= 0) return ZoneLayoutGeometry(false,
+            RectF(), RectF(), RectF(), RectF(), RectF(), RectF(), RectF(), RectF(),
+            RectF(), RectF(), RectF(), RectF(), RectF(), RectF(), RectF(), RectF(),
+            RectF(), RectF(), RectF())
+        val density = AdaptiveLayout.density(width, height, density, LayoutProfile.METER)
         val w = width.toFloat()
         val h = height.toFloat()
         val pad = 10f * density

@@ -51,16 +51,16 @@ class VignettingCalibrationView(
     var isCalibrating: Boolean = false
         private set
 
-    private val density = resources.displayMetrics.density
+    private val density get() = layoutDensity(LayoutProfile.METER)
     private val foreground: Int
-        get() = if (state.isDarkMode) Color.rgb(210, 210, 206) else Color.rgb(20, 20, 20)
+        get() = InstrumentStyle.foreground(state.isDarkMode)
     private val surfaceColor: Int
-        get() = if (state.isDarkMode) Color.BLACK else Color.WHITE
+        get() = InstrumentStyle.background(state.isDarkMode)
     private val muted: Int
-        get() = if (state.isDarkMode) Color.rgb(150, 150, 146) else Color.rgb(112, 112, 108)
+        get() = InstrumentStyle.secondary(state.isDarkMode)
     private val disabled: Int
         get() = if (state.isDarkMode) Color.rgb(64, 64, 62) else Color.rgb(218, 218, 214)
-    private val red = Color.rgb(166, 27, 36)
+    private val red = InstrumentStyle.red
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND

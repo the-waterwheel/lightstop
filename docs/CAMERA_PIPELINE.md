@@ -20,6 +20,21 @@ function. Profiles are capability-driven rather than manufacturer-driven.
 | `PREVIEW_ONLY` | yes | no | no | lowest common Camera2 path |
 | `RAW_ISOLATED` | no | yes | no | short 1–3-frame RAW window while the last preview buffer remains visible |
 
+All preview profiles use a renderer-owned external camera texture and an ES 2.0
+thread writing to the existing `TextureView`. The renderer queries the EGL window
+dimensions on each draw and applies aspect crop, display rotation and zoom once;
+the processed TextureView uses identity. Normal metering and isolated RAW/YUV
+profiles retain their original capture paths.
+The experimental Negative tool temporarily selects `PREVIEW_ONLY`, pauses
+metering and Zone tracking, and opens in original-colour mode. Explicit inversion
+uses three 256-entry channel lookups. Locked frame readback provides an oriented
+original of at most 1280 pixels for zoomable regional selection and image-based
+density endpoints; automatic clear-rebate sampling uses a 192-pixel analysis and
+three distinct stable frames. Pixel samples join CaptureResults by exact timestamp.
+Camera-condition changes invalidate the reference and automatic density window.
+Exiting restores the saved workflow. Advertised ranges at or below 30 fps retain
+the existing lower-rate/default fallback and API 28 minimum.
+
 The user-facing modes search complete workflows rather than mapping one-to-one
 to a resident profile:
 
@@ -291,6 +306,16 @@ lifecycle, calibration stores, stream-profile selection, and user callbacks.
 | `COMPATIBLE` | 有 | 无 | 有 | 不占用 RAW 资源的 ISP 兼容测光 |
 | `PREVIEW_ONLY` | 有 | 无 | 无 | Camera2 最低共同路径 |
 | `RAW_ISOLATED` | 无 | 有 | 无 | 屏幕保留最后一帧时短暂采集 1–3 帧 RAW |
+
+各预览会话均使用渲染器拥有的外部相机纹理，经独立 ES 2.0 线程写回现有
+`TextureView`。每次绘制读取实际 EGL 窗口尺寸，只处理一次等比例裁切、显示旋转
+及缩放，处理后的 TextureView 使用单位矩阵。普通测光和独立 RAW/YUV 采集路径保留。
+测试中的“负片预览”临时采用 `PREVIEW_ONLY`，暂停测光和 Zone 跟踪，默认显示原图。
+明确点击反相后使用三通道 256 项查找表；锁定后的原图回读最长边不超过 1280 像素，
+用于放大圈选片基和按照片选区估计密度端点。自动片基检测采用最长边 192 像素分析，
+再核验三个不同的稳定帧。像素与 CaptureResult 按精确时间戳配对，相机条件变化时
+清除旧参考与自动密度范围。退出后恢复已保存工作流。仍优先请求设备声明的 30 fps
+及以下范围，保留低帧率/默认降级和 API 28 最低版本。
 
 用户可见的三档模式搜索完整工作流，不与某一个常驻会话一一对应：
 

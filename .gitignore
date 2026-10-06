@@ -12,6 +12,8 @@ __pycache__/
 captures/
 /*-latest.png
 dist/
+outputs/
+diagnostics/
 .externalNativeBuild/
 keystore.properties
 *.jks

@@ -11,10 +11,12 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.os.Handler
 import android.os.Looper
+import android.os.Bundle
 import android.text.TextUtils
 import android.text.TextPaint
 import android.util.LruCache
@@ -22,6 +24,7 @@ import android.util.TypedValue
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
+import android.view.accessibility.AccessibilityNodeInfo
 import android.view.animation.DecelerateInterpolator
 import java.io.File
 import java.text.SimpleDateFormat
@@ -45,25 +48,26 @@ internal class ParameterHistoryView(
     var listener: Listener? = null
 
     private enum class Page { CATEGORIES, CATEGORY, DETAIL }
-    private enum class Target { BACK, DELETE, GRID, IMAGE, DATA, METERING, NONE }
+    private enum class Target { BACK, DELETE, GRID, IMAGE, DATA, METERING, DRAWER, NONE }
 
-    private val density = resources.displayMetrics.density
-    private val scaledDensity = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 1f, resources.displayMetrics)
+    private val density get() = layoutDensity(LayoutProfile.SCROLL)
+    private val scaledDensity get() = layoutTextDensity(LayoutProfile.SCROLL)
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans", Typeface.NORMAL) }
-    private val bold = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans", Typeface.BOLD) }
-    private val background: Int get() = if (state.isDarkMode) Color.BLACK else Color.WHITE
-    private val foreground: Int get() = if (state.isDarkMode) Color.rgb(224, 224, 220) else Color.rgb(20, 20, 20)
-    private val muted: Int get() = if (state.isDarkMode) Color.rgb(104, 104, 100) else Color.rgb(174, 174, 170)
-    private val panel: Int get() = if (state.isDarkMode) Color.rgb(45, 45, 43) else Color.rgb(235, 235, 232)
-    private val red = Color.rgb(201, 39, 46)
+    private val bold = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = InstrumentStyle.labelTypeface }
+    private val clipPath = Path()
+    private val background: Int get() = InstrumentStyle.background(state.isDarkMode)
+    private val foreground: Int get() = InstrumentStyle.foreground(state.isDarkMode)
+    private val muted: Int get() = InstrumentStyle.secondary(state.isDarkMode)
+    private val panel: Int get() = InstrumentStyle.panel(state.isDarkMode)
+    private val red = InstrumentStyle.red
     private val handler = Handler(Looper.getMainLooper())
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
     private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
     private val bitmapCache = object : LruCache<String, Bitmap>(12 * 1024) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount / 1024
     }
-    private val meteringRenderer = RecordedMeteringRenderer(density, state)
+    private val meteringRenderer = RecordedMeteringRenderer({ density }, state)
     private var geometry = ParameterHistoryGeometry.EMPTY
     private var page = Page.CATEGORIES
     private var categoryId: String? = null
@@ -90,9 +94,21 @@ internal class ParameterHistoryView(
     private var detailScrollStart = 0f
     private var detailMaxScroll = 0f
     private var imageDrawRect = RectF()
+    private var meteringExpanded = false
+    private var meteringExpansion = 0f
+    private var drawerStartExpansion = 0f
+    private var drawerAnimator: ValueAnimator? = null
+    private var pageAnimator: ValueAnimator? = null
+    private var pageReveal = 1f
+
+    init {
+        isFocusable = true
+        importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_YES
+    }
 
     fun open() {
         imageSlideAnimator?.cancel()
+        resetMeteringDrawer()
         page = Page.CATEGORIES
         categoryId = null
         detailIndex = 0
@@ -101,26 +117,28 @@ internal class ParameterHistoryView(
         detailPlayback = null
         detailImageOffset = 0f
         detailScroll = 0f
-        invalidate()
+        animatePageIn()
     }
 
     fun navigateBack(): Boolean = when (page) {
         Page.DETAIL -> {
             imageSlideAnimator?.cancel()
+            snapAnimator?.cancel()
+            resetMeteringDrawer()
             page = Page.CATEGORY
             detailWorkingRecord = null
             detailPlayback = null
             detailImageOffset = 0f
             detailScroll = 0f
             scroll = 0f
-            invalidate()
+            animatePageIn()
             true
         }
         Page.CATEGORY -> {
             page = Page.CATEGORIES
             categoryId = null
             scroll = 0f
-            invalidate()
+            animatePageIn()
             true
         }
         Page.CATEGORIES -> false
@@ -128,18 +146,28 @@ internal class ParameterHistoryView(
 
     @Suppress("DEPRECATION")
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
-        val safeTop = rootWindowInsets?.systemWindowInsetTop?.toFloat() ?: 0f
-        geometry = ParameterHistoryGeometryCalculator.calculate(w, h, density, safeTop)
+        updateGeometry()
+    }
+
+    private fun updateGeometry() {
+        geometry = ParameterHistoryGeometryCalculator.calculate(width, height,
+            resources.displayMetrics.density, 0f, meteringExpansion)
     }
 
     override fun onDraw(canvas: Canvas) {
         canvas.drawColor(background)
         drawHeader(canvas)
+        canvas.save()
+        canvas.clipRect(geometry.content)
+        val layer = canvas.saveLayerAlpha(geometry.content, (255 * pageReveal).toInt())
+        canvas.translate(0f, (1f - pageReveal) * 8f * density)
         when (page) {
             Page.CATEGORIES -> drawCategories(canvas)
             Page.CATEGORY -> drawCategory(canvas)
             Page.DETAIL -> drawDetail(canvas)
         }
+        canvas.restoreToCount(layer)
+        canvas.restore()
     }
 
     private fun drawHeader(canvas: Canvas) {
@@ -176,15 +204,20 @@ internal class ParameterHistoryView(
                 centered(canvas, "${detailIndex + 1}/$total", geometry.delete.centerX(), geometry.delete.centerY(), paint)
             }
         }
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 0.8f * density
+        paint.color = InstrumentStyle.border(state.isDarkMode)
+        canvas.drawLine(geometry.content.left, geometry.back.bottom,
+            geometry.content.right, geometry.back.bottom, paint)
     }
 
     private fun drawCategories(canvas: Canvas) {
         val categories = repository.categories()
         val gap = 10f * density
-        val columns = 2
-        val cellWidth = (geometry.content.width() - gap) / columns
+        val columns = categoryColumns()
+        val cellWidth = (geometry.content.width() - gap * (columns - 1)) / columns
         val cellHeight = cellWidth * 0.82f
-        val rows = (categories.size + 1) / 2
+        val rows = (categories.size + columns - 1) / columns
         val maxScroll = (rows * (cellHeight + gap) - geometry.content.height()).coerceAtLeast(0f)
         scroll = scroll.coerceIn(0f, maxScroll)
         canvas.save()
@@ -206,22 +239,29 @@ internal class ParameterHistoryView(
 
     private fun drawCategoryTile(canvas: Canvas, rect: RectF, category: ParameterRecordCategory) {
         drawPanel(canvas, rect)
-        val image = RectF(rect.left, rect.top, rect.right, rect.top + rect.height() * 0.68f)
+        val image = RectF(rect.left + 5f * density, rect.top + 5f * density,
+            rect.right - 5f * density, rect.top + rect.height() * 0.64f)
         drawImage(canvas, image, category.coverPath)
-        paint.color = foreground
+        paint.style = Paint.Style.FILL
+        paint.typeface = Typeface.DEFAULT
+        paint.color = muted
         paint.textAlign = Paint.Align.LEFT
         paint.textSize = 9f * scaledDensity
-        canvas.drawText(dateFormat.format(Date(category.startedAtEpochMs)), rect.left + 7f * density, image.bottom + 16f * density, paint)
-        category.filmSummary?.let { film ->
-            val fitted = TextUtils.ellipsize(film, TextPaint(paint), rect.width() - 14f * density, TextUtils.TruncateAt.END)
-            canvas.drawText(fitted.toString(), rect.left + 7f * density, rect.bottom - 8f * density, paint)
-        }
+        val date = TextUtils.ellipsize(dateFormat.format(Date(category.startedAtEpochMs)),
+            TextPaint(paint), rect.width() - 18f * density, TextUtils.TruncateAt.END)
+        canvas.drawText(date.toString(), rect.left + 9f * density, image.bottom + 15f * density, paint)
+        paint.typeface = InstrumentStyle.labelTypeface
+        paint.textSize = 10.5f * scaledDensity
+        paint.color = foreground
+        val label = category.filmSummary ?: localized("${category.records.size} 张记录", "${category.records.size} records")
+        val fitted = TextUtils.ellipsize(label, TextPaint(paint), rect.width() - 18f * density, TextUtils.TruncateAt.END)
+        canvas.drawText(fitted.toString(), rect.left + 9f * density, rect.bottom - 10f * density, paint)
     }
 
     private fun drawCategory(canvas: Canvas) {
         val category = repository.category(categoryId) ?: return
         val gap = 6f * density
-        val columns = 3
+        val columns = recordColumns()
         val cellWidth = (geometry.content.width() - gap * (columns - 1)) / columns
         val cellHeight = cellWidth * 0.76f
         val rows = (category.records.size + columns - 1) / columns
@@ -260,7 +300,98 @@ internal class ParameterHistoryView(
         val playback = detailPlayback ?: RecordedMeteringSession.from(record).also { detailPlayback = it }
         drawDetailImages(canvas, category, record, playback.mode)
         drawDetailText(canvas, geometry.data, record)
-        meteringRenderer.draw(canvas, geometry.metering, record, playback)
+        drawMeteringDrawer(canvas, record, playback)
+    }
+
+    private fun drawMeteringDrawer(canvas: Canvas, record: ParameterRecordEntry, playback: RecordedMeteringSession) {
+        val drawer = geometry.meteringDrawer
+        drawPanel(canvas, drawer)
+        canvas.save()
+        canvas.clipRect(drawer)
+        val handle = geometry.meteringHandle
+        paint.style = Paint.Style.STROKE
+        paint.strokeCap = Paint.Cap.ROUND
+        paint.strokeWidth = 2.5f * density
+        paint.color = InstrumentStyle.border(state.isDarkMode)
+        canvas.drawLine(handle.centerX() - 12f * density, handle.top + 6f * density,
+            handle.centerX() + 12f * density, handle.top + 6f * density, paint)
+        bold.textAlign = Paint.Align.LEFT
+        bold.textSize = 11f * scaledDensity
+        bold.color = foreground
+        centered(canvas, localized("曝光参数", "Exposure"), handle.left + 12f * density,
+            handle.centerY() + 3f * density, bold)
+        val summary = exposureSummary(playback)
+        paint.style = Paint.Style.FILL
+        paint.textAlign = Paint.Align.RIGHT
+        paint.typeface = Typeface.DEFAULT
+        paint.textSize = 10f * scaledDensity
+        paint.color = muted
+        val summaryWidth = (handle.width() - 135f * density).coerceAtLeast(0f)
+        centered(canvas, TextUtils.ellipsize(summary, TextPaint(paint), summaryWidth,
+            TextUtils.TruncateAt.END).toString(), handle.right - 30f * density,
+            handle.centerY() + 3f * density, paint)
+        val x = handle.right - 16f * density
+        val y = handle.centerY() + 3f * density
+        val direction = 1f - 2f * meteringExpansion
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 1.3f * density
+        canvas.drawLine(x - 4f * density, y + direction * 2f * density, x,
+            y - direction * 2f * density, paint)
+        canvas.drawLine(x, y - direction * 2f * density, x + 4f * density,
+            y + direction * 2f * density, paint)
+        if (meteringExpansion > 0f && geometry.metering.height() > 0f) {
+            meteringRenderer.draw(canvas, geometry.metering, record, playback)
+        }
+        canvas.restore()
+    }
+
+    private fun resetMeteringDrawer() {
+        drawerAnimator?.cancel()
+        meteringExpanded = false
+        meteringExpansion = 0f
+        updateGeometry()
+    }
+
+    private fun exposureSummary(playback: RecordedMeteringSession): String =
+        ExposureMath.formatAperture(ExposureMath.apertureValueForCoordinate(
+            playback.apertureCoordinate, state.apertureStep)) + "  " + ExposureMath.formatShutter(
+            ExposureMath.shutterValueForCoordinate(playback.shutterCoordinate, state.shutterStep))
+
+    private fun setMeteringExpanded(value: Boolean) {
+        drawerAnimator?.cancel()
+        meteringExpanded = value
+        val end = if (value) 1f else 0f
+        if (!ValueAnimator.areAnimatorsEnabled()) {
+            meteringExpansion = end
+            updateGeometry()
+            invalidate()
+            return
+        }
+        drawerAnimator = ValueAnimator.ofFloat(meteringExpansion, end).apply {
+            duration = 220L
+            interpolator = DecelerateInterpolator()
+            addUpdateListener {
+                meteringExpansion = it.animatedValue as Float
+                updateGeometry()
+                invalidate()
+            }
+            start()
+        }
+    }
+
+    private fun animatePageIn() {
+        pageAnimator?.cancel()
+        if (!ValueAnimator.areAnimatorsEnabled()) {
+            pageReveal = 1f
+            invalidate()
+            return
+        }
+        pageAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 180L
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { pageReveal = it.animatedValue as Float; invalidate() }
+            start()
+        }
     }
 
     private fun drawDetailImages(
@@ -304,7 +435,7 @@ internal class ParameterHistoryView(
     }
 
     private fun drawDetailText(canvas: Canvas, rect: RectF, record: ParameterRecordEntry) {
-        val viewportBottom = geometry.metering.top - 5f * density
+        val viewportBottom = (geometry.meteringDrawer.top - 8f * density).coerceAtLeast(rect.top)
         val viewportHeight = (viewportBottom - rect.top).coerceAtLeast(0f)
         val lineHeight = 22f * density
         val noteRowHeight = 30f * density
@@ -341,12 +472,14 @@ internal class ParameterHistoryView(
 
         canvas.save()
         canvas.clipRect(rect.left, rect.top, rect.right, viewportBottom)
+        drawPanel(canvas, RectF(rect.left, rect.top, rect.right, viewportBottom))
+        paint.style = Paint.Style.FILL
         paint.color = foreground
         paint.textAlign = Paint.Align.LEFT
         paint.textSize = 11.5f * scaledDensity
         var y = rect.top + 16f * density - detailScroll
-        val textLeft = rect.left + 5f * density
-        val textRight = rect.right - 5f * density
+        val textLeft = rect.left + 12f * density
+        val textRight = rect.right - 12f * density
         fun line(
             text: String,
             color: Int = foreground,
@@ -366,6 +499,7 @@ internal class ParameterHistoryView(
                 text.startsWith("拍摄参数") || text.startsWith("Captured")
             line(
                 text = text,
+                color = if (index == 0 && record.capturedAtEpochMs != null) muted else foreground,
                 textSize = if (emphasized) 13f else 11.5f,
                 typeface = if (emphasized) Typeface.create("sans-serif-medium", Typeface.NORMAL) else Typeface.create("sans-serif", Typeface.NORMAL),
             )
@@ -379,7 +513,7 @@ internal class ParameterHistoryView(
             )
             paint.style = Paint.Style.STROKE
             paint.strokeWidth = 1f * density
-            paint.color = muted
+            paint.color = InstrumentStyle.border(state.isDarkMode)
             canvas.drawLine(textLeft, y - lineHeight * 0.48f, textRight, y - lineHeight * 0.48f, paint)
             record.notes.forEach { note ->
                 paint.style = Paint.Style.FILL
@@ -391,7 +525,7 @@ internal class ParameterHistoryView(
                 y += noteRowHeight
                 paint.style = Paint.Style.STROKE
                 paint.strokeWidth = 1f * density
-                paint.color = muted
+                paint.color = InstrumentStyle.border(state.isDarkMode)
                 canvas.drawLine(textLeft, y - lineHeight * 0.48f, textRight, y - lineHeight * 0.48f, paint)
             }
         }
@@ -442,13 +576,13 @@ internal class ParameterHistoryView(
     }
 
     private fun formatRecordedDistance(distance: RecordedDistanceSnapshot): String {
-        if (!distance.isFreshAtCapture) {
-            return localized("距离  保存时已过期", "Distance  stale at capture")
-        }
         val meters = distance.meters ?: return localized("距离  未记录有效估值", "Distance  no valid estimate recorded")
         val source = when (distance.source) {
             DistanceSource.FOCUS_CALIBRATED -> "AF"
             DistanceSource.FOCUS_APPROXIMATE -> localized("AF近似", "AF approx")
+            DistanceSource.FOCUS_ESTIMATED -> localized("AF估算", "AF estimate")
+            DistanceSource.MOTION_PARALLAX -> localized("运动视差", "Motion parallax")
+            DistanceSource.FUSED -> localized("融合", "Fused")
             DistanceSource.MANUAL -> localized("手动", "Manual")
             null -> localized("未知来源", "unknown source")
         }
@@ -489,9 +623,14 @@ internal class ParameterHistoryView(
     ): RectF? {
         paint.style = Paint.Style.FILL
         paint.color = panel
+        canvas.save()
+        clipPath.reset()
+        clipPath.addRoundRect(target, 8f * density, 8f * density, Path.Direction.CW)
+        canvas.clipPath(clipPath)
         canvas.drawRect(target, paint)
         val bitmap = path?.let(::bitmap) ?: run {
             if (updateInteractionBounds) imageDrawRect.setEmpty()
+            canvas.restore()
             return null
         }
         val scale = min(target.width() / bitmap.width, target.height() / bitmap.height)
@@ -504,6 +643,7 @@ internal class ParameterHistoryView(
             target.centerY() + height / 2f,
         )
         canvas.drawBitmap(bitmap, null, destination, paint)
+        canvas.restore()
         if (updateInteractionBounds) imageDrawRect.set(destination)
         return destination
     }
@@ -523,11 +663,16 @@ internal class ParameterHistoryView(
 
     private fun drawPanel(canvas: Canvas, rect: RectF) {
         paint.style = Paint.Style.FILL
-        paint.color = panel
-        canvas.drawRoundRect(rect, 5f * density, 5f * density, paint)
+        paint.color = InstrumentStyle.control(state.isDarkMode)
+        canvas.drawRoundRect(rect, 10f * density, 10f * density, paint)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 0.8f * density
+        paint.color = InstrumentStyle.border(state.isDarkMode)
+        canvas.drawRoundRect(rect, 10f * density, 10f * density, paint)
     }
 
     private fun drawEmpty(canvas: Canvas) {
+        paint.style = Paint.Style.FILL
         paint.color = muted
         paint.textAlign = Paint.Align.CENTER
         paint.textSize = 13f * scaledDensity
@@ -537,6 +682,7 @@ internal class ParameterHistoryView(
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                pageAnimator?.end()
                 if (page == Page.DETAIL && imageSlideAnimator?.isRunning == true) return false
                 touchStartX = event.x
                 touchStartY = event.y
@@ -545,6 +691,11 @@ internal class ParameterHistoryView(
                 moved = false
                 longPressTriggered = false
                 target = targetAt(event.x, event.y)
+                if (target == Target.DRAWER) {
+                    drawerAnimator?.cancel()
+                    drawerStartExpansion = meteringExpansion
+                    parent?.requestDisallowInterceptTouchEvent(true)
+                }
                 if (page == Page.DETAIL && target == Target.METERING) {
                     snapAnimator?.cancel()
                     detailStartPlayback = detailPlayback
@@ -559,7 +710,12 @@ internal class ParameterHistoryView(
                     moved = true
                     cancelPendingLongPress()
                 }
-                if (target == Target.GRID && page != Page.DETAIL) {
+                if (target == Target.DRAWER) {
+                    val travel = geometry.metering.height().coerceAtLeast(1f)
+                    meteringExpansion = (drawerStartExpansion - dy / travel).coerceIn(0f, 1f)
+                    updateGeometry()
+                    invalidate()
+                } else if (target == Target.GRID && page != Page.DETAIL) {
                     scroll = (scrollStart - dy).coerceAtLeast(0f)
                     invalidate()
                 } else if (target == Target.DATA && page == Page.DETAIL) {
@@ -583,7 +739,18 @@ internal class ParameterHistoryView(
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 cancelPendingLongPress()
                 val cancelled = event.actionMasked == MotionEvent.ACTION_CANCEL
-                if (!cancelled && !longPressTriggered) {
+                if (target == Target.DRAWER) {
+                    parent?.requestDisallowInterceptTouchEvent(false)
+                    val dy = event.y - touchStartY
+                    val expand = when {
+                        cancelled -> meteringExpanded
+                        !moved -> !meteringExpanded
+                        abs(dy) > 24f * density -> dy < 0f
+                        else -> meteringExpansion >= 0.5f
+                    }
+                    if (!cancelled && !moved) performClick()
+                    setMeteringExpanded(expand)
+                } else if (!cancelled && !longPressTriggered) {
                     if (!moved) {
                         performClick()
                         handleTap(event.x, event.y)
@@ -612,14 +779,16 @@ internal class ParameterHistoryView(
         if (geometry.back.contains(x, y)) return Target.BACK
         if (page == Page.CATEGORY && geometry.delete.contains(x, y)) return Target.DELETE
         if (page == Page.DETAIL) {
+            if (geometry.meteringHandle.contains(x, y)) return Target.DRAWER
             if (geometry.image.contains(x, y)) return Target.IMAGE
-            if (geometry.metering.contains(x, y)) {
+            if (geometry.meteringDrawer.contains(x, y) && geometry.metering.contains(x, y)) {
+                if (meteringExpansion < 0.99f) return Target.NONE
                 meteringTarget = detailPlayback?.let { playback ->
                     meteringRenderer.targetAt(geometry.metering, detailWorkingRecord ?: return@let RecordedMeteringTarget.NONE, playback.mode, x, y)
                 } ?: RecordedMeteringTarget.NONE
                 return if (meteringTarget == RecordedMeteringTarget.NONE) Target.NONE else Target.METERING
             }
-            if (geometry.data.contains(x, y)) return Target.DATA
+            if (geometry.data.contains(x, y) && y < geometry.meteringDrawer.top) return Target.DATA
             return Target.NONE
         }
         if (!geometry.content.contains(x, y)) return Target.NONE
@@ -637,7 +806,7 @@ internal class ParameterHistoryView(
                     categoryId = it
                     page = Page.CATEGORY
                     scroll = 0f
-                    invalidate()
+                    animatePageIn()
                 }
             } else {
                 touchedRecordIndex?.let {
@@ -645,7 +814,7 @@ internal class ParameterHistoryView(
                     repository.category(categoryId)?.records?.getOrNull(it)?.let(::showDetailRecord)
                     detailScroll = 0f
                     page = Page.DETAIL
-                    invalidate()
+                    animatePageIn()
                 }
             }
             Target.IMAGE -> editRawPoint(x, y)
@@ -810,31 +979,39 @@ internal class ParameterHistoryView(
         else -> false
     }
 
+    private fun categoryColumns() = AdaptiveLayout.columns(geometry.content.width(), 0f,
+        10f * density, 120f * resources.displayMetrics.density, 2)
+
+    private fun recordColumns() = AdaptiveLayout.columns(geometry.content.width(), 0f,
+        6f * density, 72f * resources.displayMetrics.density, 3)
+
     private fun categoryAt(x: Float, y: Float): String? {
         val categories = repository.categories()
         val gap = 10f * density
-        val width = (geometry.content.width() - gap) / 2f
+        val columns = categoryColumns()
+        val width = (geometry.content.width() - gap * (columns - 1)) / columns
         val height = width * 0.82f
         val column = ((x - geometry.content.left) / (width + gap)).toInt()
         val row = ((y - geometry.content.top + scroll) / (height + gap)).toInt()
-        if (column !in 0..1 || row < 0) return null
+        if (column !in 0 until columns || row < 0) return null
         val rect = RectF(
             geometry.content.left + column * (width + gap),
             geometry.content.top + row * (height + gap) - scroll,
             geometry.content.left + column * (width + gap) + width,
             geometry.content.top + row * (height + gap) - scroll + height,
         )
-        return categories.getOrNull(row * 2 + column)?.id?.takeIf { rect.contains(x, y) }
+        return categories.getOrNull(row * columns + column)?.id?.takeIf { rect.contains(x, y) }
     }
 
     private fun recordAt(x: Float, y: Float): Int? {
         val records = repository.category(categoryId)?.records.orEmpty()
         val gap = 6f * density
-        val width = (geometry.content.width() - gap * 2f) / 3f
+        val columns = recordColumns()
+        val width = (geometry.content.width() - gap * (columns - 1)) / columns
         val height = width * 0.76f
         val column = ((x - geometry.content.left) / (width + gap)).toInt()
         val row = ((y - geometry.content.top + scroll) / (height + gap)).toInt()
-        if (column !in 0..2 || row < 0) return null
+        if (column !in 0 until columns || row < 0) return null
         val rect = RectF(
             geometry.content.left + column * (width + gap),
             geometry.content.top + row * (height + gap) - scroll,
@@ -842,7 +1019,7 @@ internal class ParameterHistoryView(
             geometry.content.top + row * (height + gap) - scroll + height,
         )
         if (!rect.contains(x, y)) return null
-        val index = row * 3 + column
+        val index = row * columns + column
         return index.takeIf { it in records.indices }
     }
 
@@ -912,10 +1089,30 @@ internal class ParameterHistoryView(
         return true
     }
 
+    override fun onInitializeAccessibilityNodeInfo(info: AccessibilityNodeInfo) {
+        super.onInitializeAccessibilityNodeInfo(info)
+        info.contentDescription = localized("过往记录", "History")
+        if (page == Page.DETAIL) {
+            detailPlayback?.let { info.contentDescription = "${info.contentDescription} · ${exposureSummary(it)}" }
+            info.addAction(if (meteringExpanded) AccessibilityNodeInfo.AccessibilityAction.ACTION_COLLAPSE
+                else AccessibilityNodeInfo.AccessibilityAction.ACTION_EXPAND)
+        }
+    }
+
+    override fun performAccessibilityAction(action: Int, arguments: Bundle?): Boolean {
+        if (page == Page.DETAIL && action in listOf(AccessibilityNodeInfo.ACTION_EXPAND, AccessibilityNodeInfo.ACTION_COLLAPSE)) {
+            setMeteringExpanded(action == AccessibilityNodeInfo.ACTION_EXPAND)
+            return true
+        }
+        return super.performAccessibilityAction(action, arguments)
+    }
+
     override fun onDetachedFromWindow() {
         cancelPendingLongPress()
         snapAnimator?.cancel()
         imageSlideAnimator?.cancel()
+        drawerAnimator?.cancel()
+        pageAnimator?.cancel()
         bitmapCache.evictAll()
         super.onDetachedFromWindow()
     }

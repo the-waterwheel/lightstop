@@ -44,17 +44,18 @@ class InstrumentView(
 
     var listener: Listener? = null
 
-    private val density = resources.displayMetrics.density
-    private val lightBlack = Color.rgb(20, 20, 20)
-    private val nightForeground = Color.rgb(210, 210, 206)
+    private val density get() = layoutDensity(LayoutProfile.METER)
+    private val lightBlack = InstrumentStyle.ink
+    private val nightForeground = InstrumentStyle.nightInk
     private val black: Int get() = if (state.isDarkMode) nightForeground else lightBlack
-    private val surfaceColor: Int get() = if (state.isDarkMode) Color.BLACK else Color.WHITE
-    private val red = Color.rgb(166, 27, 36)
-    private val flashBlue = Color.rgb(38, 112, 184)
+    private val surfaceColor: Int get() = InstrumentStyle.background(state.isDarkMode)
+    private val red = InstrumentStyle.red
+    private val flashBlue = InstrumentStyle.blue
     private val paleGray: Int
-        get() = if (state.isDarkMode) Color.rgb(38, 38, 36) else Color.rgb(232, 232, 229)
+        get() = InstrumentStyle.panel(state.isDarkMode)
     private val middleGray = Color.rgb(130, 130, 126)
 
+    private val zoomRenderer = ZoomControlRenderer()
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
@@ -63,10 +64,10 @@ class InstrumentView(
     private val boldPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         typeface = Typeface.create("sans", Typeface.BOLD)
     }
-    private val exposureRenderer = InstrumentExposureRenderer(state, density)
+    private val exposureRenderer = InstrumentExposureRenderer(state) { density }
     private val ev100BadgeRenderer = Ev100BadgeRenderer(
-        density = density,
-        scaledDensity = resources.displayMetrics.scaledDensity,
+        densityProvider = { density },
+        textDensityProvider = { layoutTextDensity(LayoutProfile.METER) },
     )
     private var geometry: LayoutGeometry? = null
     private val accessibilityHelper = CanvasAccessibilityHelper(this, ::handleAccessibilityClick)
@@ -155,8 +156,8 @@ class InstrumentView(
 
     private fun drawPanels(canvas: Canvas, g: LayoutGeometry) {
         paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 1.1f * density
-        paint.color = black
+        paint.strokeWidth = 0.8f * density
+        paint.color = InstrumentStyle.border(state.isDarkMode)
         canvas.drawRect(g.previewPanel, paint)
         canvas.drawRect(g.cameraFrame, paint)
         if (g.landscape) {
@@ -390,12 +391,13 @@ class InstrumentView(
         alpha: Int = 255,
     ) {
         paint.style = Paint.Style.FILL
-        paint.withAlpha(surfaceColor, alpha)
+        paint.withAlpha(InstrumentStyle.control(state.isDarkMode), alpha)
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1.3f * density
-        paint.withAlpha(black, alpha)
+        paint.withAlpha(InstrumentStyle.border(state.isDarkMode), alpha)
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
+        paint.withAlpha(black, alpha)
         val iconW = if (landscape) rect.width() * 0.52f else rect.width() * 0.36f
         val iconH = if (landscape) rect.height() * 0.36f else rect.height() * 0.52f
         canvas.drawRoundRect(
@@ -421,12 +423,13 @@ class InstrumentView(
 
     private fun drawSettingsButton(canvas: Canvas, rect: RectF, alpha: Int = 255) {
         paint.style = Paint.Style.FILL
-        paint.withAlpha(surfaceColor, alpha)
+        paint.withAlpha(InstrumentStyle.control(state.isDarkMode), alpha)
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1.2f * density
-        paint.withAlpha(black, alpha)
+        paint.withAlpha(InstrumentStyle.border(state.isDarkMode), alpha)
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
+        paint.withAlpha(black, alpha)
         val outerRadius = min(rect.width(), rect.height()) * 0.27f
         val rootRadius = outerRadius * 0.78f
         val innerRadius = outerRadius * 0.31f
@@ -449,12 +452,13 @@ class InstrumentView(
     /** Four hollow squares with the top-right one rotated 45 degrees around its own center. */
     private fun drawToolsButton(canvas: Canvas, rect: RectF, alpha: Int = 255) {
         paint.style = Paint.Style.FILL
-        paint.withAlpha(surfaceColor, alpha)
+        paint.withAlpha(InstrumentStyle.control(state.isDarkMode), alpha)
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1.2f * density
-        paint.withAlpha(black, alpha)
+        paint.withAlpha(InstrumentStyle.border(state.isDarkMode), alpha)
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
+        paint.withAlpha(black, alpha)
         val cell = rect.width() * 0.26f
         val innerGap = rect.width() * 0.07f
         val left = rect.centerX() - cell - innerGap / 2f
@@ -490,27 +494,15 @@ class InstrumentView(
     private fun drawZoom(canvas: Canvas, track: RectF) {
         val maxZoom = state.cameraInfo.maxDisplayZoom.coerceAtLeast(1.01f)
         val normalized = ((state.zoom - 1f) / (maxZoom - 1f)).coerceIn(0f, 1f)
-        val x = track.centerX()
         val top = track.top + 22f * density
         val bottom = track.bottom - 16f * density
-        val knobY = bottom - normalized * (bottom - top)
-
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 1.2f * density
-        paint.color = black
-        canvas.drawLine(x, top, x, bottom, paint)
-        for (i in 0..8) {
-            val y = top + (bottom - top) * i / 8f
-            val length = if (i % 2 == 0) 7f * density else 4f * density
-            canvas.drawLine(x - length, y, x + length, y, paint)
-        }
+        zoomRenderer.draw(canvas, true, track.centerX(), top, bottom,
+            bottom - normalized * (bottom - top), density, state.isDarkMode)
         paint.style = Paint.Style.FILL
-        paint.color = red
-        canvas.drawCircle(x, knobY, 5.2f * density, paint)
         paint.textSize = 9f * density
-        paint.typeface = Typeface.DEFAULT_BOLD
+        paint.typeface = InstrumentStyle.labelTypeface
         paint.color = black
-        drawCenteredText(canvas, "${"%.1f".format(state.zoom)}×", x, track.top + 8f * density, paint)
+        drawCenteredText(canvas, "${"%.1f".format(state.zoom)}×", track.centerX(), track.top + 8f * density, paint)
     }
 
     private fun drawExposureRows(canvas: Canvas, g: LayoutGeometry) {
@@ -597,9 +589,10 @@ class InstrumentView(
         paint.color = surfaceColor
         canvas.drawCircle(cx, cy, radius, paint)
         paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 1.4f * density
+        paint.strokeWidth = 1f * density
         paint.color = black
         canvas.drawCircle(cx, cy, radius - density, paint)
+        paint.color = InstrumentStyle.border(state.isDarkMode)
         canvas.drawCircle(cx, cy, radius * 0.72f, paint)
 
         drawIsoScale(canvas, dial, cx, cy, radius)
@@ -615,8 +608,8 @@ class InstrumentView(
         paint.color = paleGray
         canvas.drawCircle(cx, cy, centerRadius, paint)
         paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 1f * density
-        paint.color = black
+        paint.strokeWidth = 0.8f * density
+        paint.color = InstrumentStyle.border(state.isDarkMode)
         canvas.drawCircle(cx, cy, centerRadius, paint)
         canvas.drawLine(cx, cy - centerRadius * 0.62f, cx, cy + centerRadius * 0.62f, paint)
 
@@ -860,11 +853,11 @@ class InstrumentView(
         val rect = g.meterButton
         val radius = min(rect.width(), rect.height()) * 0.18f
         paint.style = Paint.Style.FILL
-        paint.color = if (state.measuring) paleGray else surfaceColor
+        paint.color = if (state.measuring) paleGray else InstrumentStyle.control(state.isDarkMode)
         canvas.drawRoundRect(rect, radius, radius, paint)
         paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 2f * density
-        paint.color = black
+        paint.strokeWidth = 1f * density
+        paint.color = InstrumentStyle.border(state.isDarkMode)
         canvas.drawRoundRect(rect, radius, radius, paint)
         val circleRadius = min(rect.width(), rect.height()) * 0.22f
         paint.strokeWidth = 2f * density
@@ -892,13 +885,14 @@ class InstrumentView(
         alpha: Int = 255,
     ) {
         paint.style = Paint.Style.FILL
-        paint.withAlpha(surfaceColor, alpha)
+        paint.withAlpha(InstrumentStyle.control(state.isDarkMode), alpha)
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1.2f * density
-        paint.withAlpha(if (accented) red else black, alpha)
+        paint.withAlpha(if (accented) red else InstrumentStyle.border(state.isDarkMode), alpha)
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
         paint.style = Paint.Style.FILL
+        paint.withAlpha(if (accented) red else black, alpha)
         paint.textSize = 9f * density
         paint.typeface = Typeface.DEFAULT_BOLD
         drawCenteredText(canvas, text, rect.centerX(), rect.centerY(), paint)

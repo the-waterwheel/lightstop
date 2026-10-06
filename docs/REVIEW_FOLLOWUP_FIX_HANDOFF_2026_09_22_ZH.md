@@ -1,6 +1,6 @@
 # 光档：当前改动复审后的修复交接文档
 
-编写日期：2026-09-22。项目根目录：`D:\Project\lightmeter a`。
+编写日期：2026-09-22。项目根目录：`<workspace>`。
 
 审阅基线：分支 `codex/camera-controller-components`，HEAD `44b544cad04fc69588c13c76edd22aac5a1543bf`，**加当前工作区的 26 个已跟踪文件修改**。仅检出该提交不能复现本文审阅的代码，必须同时保留当前未提交 diff。
 
@@ -403,9 +403,9 @@ minOf(active.maxFrames, maxOf(active.expectedFrames, active.completedFrames + 1)
 ```powershell
 .\gradlew.bat testDebugUnitTest --rerun-tasks
 .\gradlew.bat lintDebug assembleDebug
-& 'C:\Users\15449\AppData\Local\Android\Sdk\platform-tools\adb.exe' devices -l
-& 'C:\Users\15449\AppData\Local\Android\Sdk\platform-tools\adb.exe' -s <当前设备序列号> shell pidof com.lightmeter.rawmeter
-& 'C:\Users\15449\AppData\Local\Android\Sdk\platform-tools\adb.exe' -s <当前设备序列号> logcat -d --pid=<本次进程号> -v threadtime
+& '<user-home>\AppData\Local\Android\Sdk\platform-tools\adb.exe' devices -l
+& '<user-home>\AppData\Local\Android\Sdk\platform-tools\adb.exe' -s <当前设备序列号> shell pidof com.lightmeter.rawmeter
+& '<user-home>\AppData\Local\Android\Sdk\platform-tools\adb.exe' -s <当前设备序列号> logcat -d --pid=<本次进程号> -v threadtime
 ```
 
 占位符需替换后执行。不要 logcat -c 清除首次故障现场；进程重启后重新取 PID。只查看短尾部可能遗漏启动选择和初次降级，采集窗口必须覆盖目标动作。SDK/ADB 若不在上述位置，用 local.properties/本机 SDK 配置发现。

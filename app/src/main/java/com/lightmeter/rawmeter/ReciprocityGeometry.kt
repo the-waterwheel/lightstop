@@ -23,6 +23,7 @@ internal data class ReciprocityGeometry(
 internal object ReciprocityGeometryCalculator {
     fun calculate(width: Int, height: Int, density: Float): ReciprocityGeometry {
         if (width <= 0 || height <= 0) return ReciprocityGeometry.EMPTY
+        val density = AdaptiveLayout.density(width, height, density, LayoutProfile.TOOL)
         val w = width.toFloat()
         val h = height.toFloat()
         val shortSide = min(w, h)

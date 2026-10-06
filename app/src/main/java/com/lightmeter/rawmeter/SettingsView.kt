@@ -39,7 +39,7 @@ class SettingsView(
 
     var listener: Listener? = null
 
-    private val density = resources.displayMetrics.density
+    private val density get() = layoutDensity(LayoutProfile.SCROLL)
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         strokeCap = Paint.Cap.ROUND
@@ -47,7 +47,7 @@ class SettingsView(
         typeface = Typeface.create("sans", Typeface.NORMAL)
     }
     private val boldPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        typeface = Typeface.create("sans", Typeface.BOLD)
+        typeface = InstrumentStyle.labelTypeface
     }
 
     private var selectedSectionIndex = 0
@@ -86,15 +86,11 @@ class SettingsView(
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        val background = if (state.isDarkMode) Color.BLACK else Color.WHITE
-        val foreground = if (state.isDarkMode) {
-            Color.rgb(210, 210, 206)
-        } else {
-            Color.rgb(20, 20, 20)
-        }
-        val navGray = if (state.isDarkMode) Color.rgb(102, 102, 100) else Color.rgb(226, 226, 223)
-        val divider = if (state.isDarkMode) Color.rgb(72, 72, 70) else Color.rgb(205, 205, 201)
-        val red = Color.rgb(166, 27, 36)
+        val background = InstrumentStyle.background(state.isDarkMode)
+        val foreground = InstrumentStyle.foreground(state.isDarkMode)
+        val navGray = InstrumentStyle.panel(state.isDarkMode)
+        val divider = InstrumentStyle.border(state.isDarkMode)
+        val red = InstrumentStyle.red
         val sections = SettingsCatalog.sections
         val section = sections[selectedSectionIndex]
         val nestedMore = section.key == SettingsSectionKey.MORE
@@ -155,7 +151,9 @@ class SettingsView(
                 }
                 drawCenteredText(
                     canvas,
-                    tabSection.label.resolve(state.menuLanguage),
+                    android.text.TextUtils.ellipsize(tabSection.label.resolve(state.menuLanguage),
+                        android.text.TextPaint(boldPaint), (rect.width() - 12f * density).coerceAtLeast(0f),
+                        android.text.TextUtils.TruncateAt.END).toString(),
                     rect.centerX(),
                     rect.centerY(),
                     boldPaint,
@@ -231,12 +229,8 @@ class SettingsView(
             )
             val row = RectF(10f * density, y, width - 10f * density, y + height)
             paint.style = Paint.Style.FILL
-            paint.color = background
-            canvas.drawRect(row, paint)
-            paint.style = Paint.Style.STROKE
-            paint.strokeWidth = 1f * density
-            paint.color = divider
-            canvas.drawRect(row, paint)
+            paint.color = InstrumentStyle.panel(state.isDarkMode)
+            canvas.drawRoundRect(row, 6f * density, 6f * density, paint)
 
             val verticalInset = if (height == compactActionHeight) 6f * density else 9f * density
             val button = RectF(
@@ -247,11 +241,11 @@ class SettingsView(
             )
             paint.style = Paint.Style.FILL
             paint.color = if (sameSurface) background else foreground
-            canvas.drawRoundRect(button, 3f * density, 3f * density, paint)
+            canvas.drawRoundRect(button, 5f * density, 5f * density, paint)
             paint.style = Paint.Style.STROKE
-            paint.strokeWidth = if (sameSurface) 1f * density else 1.4f * density
-            paint.color = if (sameSurface) foreground else red
-            canvas.drawRoundRect(button, 3f * density, 3f * density, paint)
+            paint.strokeWidth = 0.8f * density
+            paint.color = if (sameSurface) divider else foreground
+            canvas.drawRoundRect(button, 5f * density, 5f * density, paint)
 
             boldPaint.textSize = (if (height == compactActionHeight) 9.5f else 11f) * density
             boldPaint.color = if (sameSurface) foreground else background
@@ -284,12 +278,8 @@ class SettingsView(
         section.items.forEachIndexed { itemIndex, item ->
             val row = RectF(10f * density, y, width - 10f * density, y + rowHeight)
             paint.style = Paint.Style.FILL
-            paint.color = background
-            canvas.drawRect(row, paint)
-            paint.style = Paint.Style.STROKE
-            paint.strokeWidth = 1f * density
-            paint.color = divider
-            canvas.drawRect(row, paint)
+            paint.color = InstrumentStyle.panel(state.isDarkMode)
+            canvas.drawRoundRect(row, 6f * density, 6f * density, paint)
 
             boldPaint.textSize = 11f * density
             boldPaint.color = foreground
@@ -315,11 +305,11 @@ class SettingsView(
                 val selected = state.settingValue(item.key) == option.value
                 paint.style = Paint.Style.FILL
                 paint.color = if (selected) foreground else background
-                canvas.drawRoundRect(rect, 3f * density, 3f * density, paint)
+                canvas.drawRoundRect(rect, 5f * density, 5f * density, paint)
                 paint.style = Paint.Style.STROKE
                 paint.strokeWidth = if (selected) 1.4f * density else 0.9f * density
-                paint.color = if (selected) red else foreground
-                canvas.drawRoundRect(rect, 3f * density, 3f * density, paint)
+                paint.color = if (selected) red else divider
+                canvas.drawRoundRect(rect, 5f * density, 5f * density, paint)
                 paint.style = Paint.Style.FILL
                 paint.color = if (selected) background else foreground
                 paint.textSize = 9f * density

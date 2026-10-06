@@ -44,6 +44,7 @@ class MainActivity : Activity(), CameraControllerCallback {
     private lateinit var cameraController: CameraController
     private lateinit var calibrationEnvironmentStore: CalibrationEnvironmentStore
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val filmNegativeCameraSession = FilmNegativeCameraSession()
     private var rawDialogVisible = false
     private var compatibilityModeDialogVisible = false
     private var angleCompatibilityDialogVisible = false
@@ -73,6 +74,8 @@ class MainActivity : Activity(), CameraControllerCallback {
     private lateinit var foregroundCameraStartCoordinator: ForegroundCameraStartCoordinator
     private var backInvokedCallback: OnBackInvokedCallback? = null
     private var lastOverlayBackHandledAtMs = 0L
+    private var lastDistanceDiagnosticAtMs = -2000L
+    private var lastDistanceDiagnosticStatus: DistanceMeasurementStatus? = null
     private lateinit var parameterLocationCoordinator: ParameterLocationCoordinator
     private var manualCombinationCandidates: List<CameraCombinationCandidate> = emptyList()
     private var manualCombinationIndex = -1
@@ -101,6 +104,11 @@ class MainActivity : Activity(), CameraControllerCallback {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        window.attributes = window.attributes.apply {
+            layoutInDisplayCutoutMode = if (Build.VERSION.SDK_INT >= 30) {
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+            } else WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+        }
         state = MeterState(this)
         calibrationEnvironmentStore = CalibrationEnvironmentStore(this)
         applyRequestedOrientationFromState()
@@ -142,6 +150,20 @@ class MainActivity : Activity(), CameraControllerCallback {
         }
         selectedCamera?.let(::activateCameraRoute)
         cameraController.attach(meterLayout.textureView)
+        cameraController.onFilmNegativePreviewError = { message ->
+            if (meterLayout.isFilmNegativeOpen) meterLayout.filmNegativeToolView.showPreviewError(message)
+        }
+        cameraController.onFilmNegativePreviewReady = { cameraId ->
+            if (meterLayout.isFilmNegativeOpen && cameraId == filmNegativeCameraSession.expected(state.selectedCameraId)) {
+                meterLayout.filmNegativeToolView.showPreviewReady()
+            }
+        }
+        cameraController.onFilmNegativeBaseInvalidated = {
+            meterLayout.filmNegativeToolView.invalidateSampledBase()
+        }
+        cameraController.onFilmNegativeProcessingChanged = { controlled ->
+            if (meterLayout.isFilmNegativeOpen) meterLayout.filmNegativeToolView.setProcessingControlled(controlled)
+        }
         foregroundCameraStartCoordinator = ForegroundCameraStartCoordinator(
             mainHandler = mainHandler,
             isEligible = {
@@ -568,6 +590,100 @@ class MainActivity : Activity(), CameraControllerCallback {
                 }
             }
 
+            override fun onFilmNegativePreviewChanged(enabled: Boolean) {
+                if (enabled) filmNegativeCameraSession.open(state.selectedCameraId) else filmNegativeCameraSession.close()
+                cameraController.setPreviewOutputAspectOverride(if (enabled) null else state.currentCameraOutputAspect())
+                cameraController.setFilmNegativePreviewEnabled(enabled)
+                if (enabled) cameraController.stopAutomaticDistance()
+                else activateCameraRoute(state.selectedCameraId)
+                updateExposurePreviewFromMeter()
+            }
+
+            override fun onFilmNegativeSettingsChanged(settings: FilmNegativeSettings) {
+                cameraController.updateFilmNegativeSettings(settings)
+            }
+
+            override fun onFilmNegativeCameraLockChanged(locked: Boolean) {
+                val view = meterLayout.filmNegativeToolView
+                val serial = view.beginCameraLockChange()
+                if (locked) view.showStatus(localized("正在等待相机确认锁定…", "Waiting for camera lock…"))
+                cameraController.setFilmNegativeCameraLocked(locked) { accepted ->
+                    if (!meterLayout.isFilmNegativeOpen || !view.isCameraOperationCurrent(serial)) return@setFilmNegativeCameraLocked
+                    view.setCameraLocked(locked && accepted)
+                    if (!accepted) view.showTransientStatus(localized(
+                        "相机未确认锁定，可重试或手调 RGB", "Camera lock was not confirmed. Retry or adjust RGB manually"))
+                    else view.showStatus(localized(
+                        if (locked) "相机已确认锁定" else "相机已解锁",
+                        if (locked) "Camera lock confirmed" else "Camera unlocked"))
+                }
+            }
+
+            override fun onFilmNegativeBaseSampleRequested() {
+                val view = meterLayout.filmNegativeToolView
+                val serial = view.beginAutomaticBaseRecognition()
+                cameraController.setFilmNegativeCameraLocked(true) { locked ->
+                    if (!meterLayout.isFilmNegativeOpen || !view.isAutomaticBaseRecognitionCurrent(serial)) return@setFilmNegativeCameraLocked
+                    if (!locked) {
+                        view.finishAutomaticBaseRecognition(serial, null, localized(
+                            "无法确认曝光 / 白平衡锁定，请重试或手动调整。", "Exposure / white balance lock unavailable. Retry or adjust manually."))
+                        view.setCameraLocked(false)
+                    } else {
+                        view.setCameraLocked(true)
+                        cameraController.selectFilmNegativeFrame { selection ->
+                            if (!meterLayout.isFilmNegativeOpen) return@selectFilmNegativeFrame
+                            view.finishAutomaticBaseRecognition(serial, selection, if (selection == null) localized(
+                                "这次未能可靠识别。保留照片附近片边、避免模糊后，再点「一键反相」。",
+                                "Detection was inconclusive. Include nearby film borders, avoid blur and tap Auto invert again.")
+                            else if (selection.settings.monochrome) localized(
+                                "已完成黑白负片反相与影调校正，可在下方微调。",
+                                "Black-and-white inversion and tone correction applied. Fine-tune below.")
+                            else if (selection.settings.colorCorrection == null) localized(
+                                "已完成去色罩、反相与影调校正；颜色采用保守处理，可在下方微调。",
+                                "Film base, inversion and tone corrected; colour kept conservative. Fine-tune below.")
+                            else localized("已完成彩色负片反相与校正，可在下方微调。",
+                                "Colour negative inversion and correction applied. Fine-tune below."))
+                        }
+                    }
+                }
+            }
+
+            override fun onFilmNegativeRetryRequested() {
+                meterLayout.beginFilmNegativeCameraSwitch(filmNegativeCameraSession.expected(state.selectedCameraId))
+                cameraController.updateFilmNegativeSettings(meterLayout.filmNegativeToolView.settings)
+                cameraController.retryFilmNegativePreview()
+            }
+
+            override fun onFilmNegativeCameraSelected(cameraId: String) {
+                if (!meterLayout.isFilmNegativeOpen || !filmNegativeCameraSession.select(cameraId, state.availableCameras.map { it.cameraId })) return
+                // The picker is local to this tool; it never writes the metering camera store.
+                meterLayout.beginFilmNegativeCameraSwitch(cameraId)
+                cameraController.updateFilmNegativeSettings(meterLayout.filmNegativeToolView.settings)
+                cameraController.setPreviewOutputAspectOverride(null)
+                cameraController.selectCamera(cameraId)
+            }
+
+            override fun onFilmNegativeFrameRequested(mode: FilmNegativePickMode) {
+                val view = meterLayout.filmNegativeToolView
+                val serial = view.beginFrozenCapture()
+                cameraController.setFilmNegativeCameraLocked(true) { locked ->
+                    if (!meterLayout.isFilmNegativeOpen || !view.isAutomaticBaseRecognitionCurrent(serial)) return@setFilmNegativeCameraLocked
+                    if (!locked) {
+                        view.finishFrozenCapture(serial, null, mode)
+                        view.setCameraLocked(false)
+                    }
+                    else cameraController.captureFilmNegativeFrame { frame ->
+                        if (!meterLayout.isFilmNegativeOpen || !view.isAutomaticBaseRecognitionCurrent(serial)) return@captureFilmNegativeFrame
+                        view.setCameraLocked(true)
+                        view.finishFrozenCapture(serial, frame, mode)
+                    }
+                }
+            }
+
+            override fun onFilmNegativeFrozenSettingsAccepted(frame: FilmNegativeFrozenFrame,
+                settings: FilmNegativeSettings, completion: (Boolean) -> Unit) {
+                cameraController.acceptFilmNegativeFrame(frame, settings, completion)
+            }
+
             override fun onParameterCaptureRequested(
                 draftId: String,
                 snapshot: ParameterMeterSnapshot,
@@ -579,7 +695,10 @@ class MainActivity : Activity(), CameraControllerCallback {
                 captureParameterRecord(draftId, snapshot, options, previewPath, previewAspect, zoom)
             }
         }
-        setContentView(meterLayout)
+        setContentView(SafeAreaHost(this).apply { addView(meterLayout,
+            android.widget.FrameLayout.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT)) })
         registerPredictiveBackCallback()
         window.decorView.post { hideSystemBars() }
         ensureCameraPermission()
@@ -591,10 +710,18 @@ class MainActivity : Activity(), CameraControllerCallback {
         (getSystemService(DISPLAY_SERVICE) as DisplayManager)
             .registerDisplayListener(displayListener, mainHandler)
         hideSystemBars()
+        if (meterLayout.isFilmNegativeOpen) meterLayout.filmNegativeToolView.setCameraLocked(false)
         meterLayout.resumeZoneTracking()
-        cameraController.setTrackingFramesEnabled(meterLayout.isZoneMode)
+        cameraController.setTrackingFramesEnabled(meterLayout.isZoneMode && !meterLayout.isFilmNegativeOpen)
         if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-            refreshCameraCatalog()?.let(::activateCameraRoute)
+            refreshCameraCatalog()?.let { meterCameraId ->
+                if (meterLayout.isFilmNegativeOpen) {
+                    val previewId = filmNegativeCameraSession.reconcile(meterCameraId,
+                        state.availableCameras.map { it.cameraId })
+                    cameraController.setPreviewOutputAspectOverride(null)
+                    cameraController.selectCamera(previewId)
+                } else activateCameraRoute(meterCameraId)
+            }
             scheduleCameraStartAfterForegroundLayout()
             maybeShowCalibrationEnvironmentChange()
             mainHandler.post(::maybeShowFirstMeteringCalibrationPrompt)
@@ -611,6 +738,7 @@ class MainActivity : Activity(), CameraControllerCallback {
 
     override fun onPause() {
         activityResumed = false
+        meterLayout.cancelAutomaticDistanceNotice()
         manualVerificationDialog?.dismiss()
         manualVerificationDialog = null
         foregroundCameraStartCoordinator.cancel()
@@ -922,7 +1050,8 @@ class MainActivity : Activity(), CameraControllerCallback {
     }
 
     private fun handleBackNavigation(): Boolean {
-        val handled = meterLayout.closeCombinationSelectionFromBack() ||
+        val handled = (meterLayout.isFilmNegativeOpen && meterLayout.filmNegativeToolView.handleBack()) ||
+            meterLayout.closeCombinationSelectionFromBack() ||
             meterLayout.closeInformationFromBack() ||
             meterLayout.closeParameterHistoryFromBack() ||
             meterLayout.closeCameraManagement() ||
@@ -1021,21 +1150,23 @@ class MainActivity : Activity(), CameraControllerCallback {
     override fun onCameraInfo(info: CameraUiInfo) {
         val oldInfo = state.cameraInfo
         val oldAspect = state.currentPreviewLandscapeAspect()
+        val expectedCamera = filmNegativeCameraSession.expected(state.selectedCameraId)
         val selectedCameraStillExists = state.availableCameras.any {
-            it.cameraId == state.selectedCameraId
+            it.cameraId == expectedCamera
         }
-        if (info.cameraId.isNotBlank() && state.selectedCameraId.isNotBlank() &&
-            info.cameraId != state.selectedCameraId && selectedCameraStillExists
+        if (info.cameraId.isNotBlank() && expectedCamera.isNotBlank() &&
+            info.cameraId != expectedCamera && selectedCameraStillExists
         ) {
             // Camera2 session callbacks are asynchronous. A closing route can report after the
             // user has selected another camera; it must never overwrite the persisted choice.
             return
         }
-        if (info.cameraId.isNotBlank() && state.selectedCameraId.isBlank()) {
+        if (!meterLayout.isFilmNegativeOpen && info.cameraId.isNotBlank() && state.selectedCameraId.isBlank()) {
             state.selectCamera(info.cameraId)
         }
         state.cameraInfo = info
-        if ((state.appliedFlashConfiguration?.isAutoDistance == true ||
+        if (meterLayout.isFilmNegativeOpen) meterLayout.filmNegativeToolView.updateCamera(info.cameraId)
+        if (!meterLayout.isFilmNegativeOpen && (meterLayout.isFlashAutomaticDistanceEnabled() ||
                 meterLayout.isDepthOfFieldAutomaticDistanceEnabled()) &&
             info.previewStreamGeneration > 0L && (
                 info.previewStreamGeneration != oldInfo.previewStreamGeneration ||
@@ -1051,7 +1182,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             oldInfo.activePhysicalCameraId != info.activePhysicalCameraId ||
             kotlin.math.abs(oldAspect - state.currentPreviewLandscapeAspect()) > 0.001f
         if (geometryChanged) {
-            cameraController.setPreviewOutputAspectOverride(state.currentCameraOutputAspect())
+            cameraController.setPreviewOutputAspectOverride(if (meterLayout.isFilmNegativeOpen) null else state.currentCameraOutputAspect())
         }
         val switchingMessage = localized("正在切换摄像头", "Switching camera")
         if (state.transientMessage == switchingMessage &&
@@ -1060,7 +1191,7 @@ class MainActivity : Activity(), CameraControllerCallback {
         ) {
             state.transientMessage = null
         }
-        if (state.zoom > info.maxDisplayZoom) state.zoom = info.maxDisplayZoom
+        if (!meterLayout.isFilmNegativeOpen && state.zoom > info.maxDisplayZoom) state.zoom = info.maxDisplayZoom
         if (meterLayout.isCalibrationOpen || meterLayout.isExposurePreviewCalibrationOpen) {
             refreshCalibrationCorrections()
         }
@@ -1071,7 +1202,17 @@ class MainActivity : Activity(), CameraControllerCallback {
     }
 
     override fun onDistanceMeasurementState(state: DistanceMeasurementState) {
+        val now = SystemClock.elapsedRealtime()
+        if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0 &&
+            (state.status != lastDistanceDiagnosticStatus || now - lastDistanceDiagnosticAtMs >= 2000L)) {
+            lastDistanceDiagnosticAtMs = now
+            lastDistanceDiagnosticStatus = state.status
+            android.util.Log.i("DistanceDiagnostic", "status=${state.status} source=${state.estimate?.source} " +
+                "meters=${state.estimate?.meters} confidence=${state.estimate?.confidence} " +
+                "focus=${state.focusObservation != null} motion=${state.motionObservation != null} reason=${state.diagnosticReason}")
+        }
         this.state.distanceMeasurementState = state
+        meterLayout.onDistanceStateChanged(state)
         meterLayout.refresh()
         updateExposurePreviewFromMeter()
     }
@@ -1151,7 +1292,7 @@ class MainActivity : Activity(), CameraControllerCallback {
     }
 
     override fun tryReserveZoneTrackingFrame(): Boolean =
-        meterLayout.tryReserveZoneTrackingFrame()
+        !meterLayout.isFilmNegativeOpen && meterLayout.tryReserveZoneTrackingFrame()
 
     override fun cancelZoneTrackingFrameReservation() {
         meterLayout.cancelZoneTrackingFrameReservation()
@@ -1356,7 +1497,8 @@ class MainActivity : Activity(), CameraControllerCallback {
 
     private fun updateExposurePreviewFromMeter() {
         val selection = if (state.exposurePreviewMode == ExposurePreviewMode.ON &&
-            !state.measuring && !calibrationCoordinator.isActive && !vignettingCalibrationPending
+            !meterLayout.isFilmNegativeOpen && !state.measuring &&
+            !calibrationCoordinator.isActive && !vignettingCalibrationPending
         ) {
             meterLayout.currentExposurePreviewSelection()
         } else {
@@ -1660,7 +1802,7 @@ class MainActivity : Activity(), CameraControllerCallback {
     }
 
     private fun maybeShowFirstMeteringCalibrationPrompt() {
-        if (!activityResumed || isFinishing || firstCalibrationPromptVisible ||
+        if (meterLayout.isFilmNegativeOpen || !activityResumed || isFinishing || firstCalibrationPromptVisible ||
             firstCalibrationPromptShownThisProcess ||
             checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED ||
             state.hasMeteringCalibrationArtifacts()
