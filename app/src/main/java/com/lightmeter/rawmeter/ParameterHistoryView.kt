@@ -576,9 +576,6 @@ internal class ParameterHistoryView(
     }
 
     private fun formatRecordedDistance(distance: RecordedDistanceSnapshot): String {
-        if (!distance.isFreshAtCapture) {
-            return localized("距离  保存时已过期", "Distance  stale at capture")
-        }
         val meters = distance.meters ?: return localized("距离  未记录有效估值", "Distance  no valid estimate recorded")
         val source = when (distance.source) {
             DistanceSource.FOCUS_CALIBRATED -> "AF"

@@ -1718,7 +1718,7 @@ class MeterLayout @JvmOverloads constructor(
             ev100 = zoneView.currentMeanEv100(),
             zonePoints = zoneView.recordedZonePoints(),
             flash = ParameterRecordCaptureSnapshot.flash(state),
-            distance = ParameterRecordCaptureSnapshot.distance(state.distanceMeasurementState),
+            distance = state.parameterRecordDistanceMemory.forRecording(parameterRecordRepository.latestRecordedDistance()),
         )
     } else {
         ParameterMeterSnapshot(
@@ -1729,7 +1729,7 @@ class MeterLayout @JvmOverloads constructor(
             ev100 = state.effectiveEv100,
             zonePoints = emptyList(),
             flash = ParameterRecordCaptureSnapshot.flash(state),
-            distance = ParameterRecordCaptureSnapshot.distance(state.distanceMeasurementState),
+            distance = state.parameterRecordDistanceMemory.forRecording(parameterRecordRepository.latestRecordedDistance()),
         )
     }
 

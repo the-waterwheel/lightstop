@@ -48,7 +48,7 @@ data class RecordedFlashSnapshot(
     val guideNumberReferenceIso: Int = 100,
 )
 
-/** Frozen diagnostic state of the active automatic-distance provider at capture start. */
+/** Retained distance observation selected at capture start, with its original diagnostic state. */
 data class RecordedDistanceSnapshot(
     val status: DistanceMeasurementStatus,
     val meters: Double?,

@@ -171,7 +171,7 @@ data class LayoutGeometry(
             val meterButton: RectF
             val ev100Badge: RectF
             if (isLandscape) {
-                rowHeight = (controlsPanel.height() * 0.14f).coerceIn(40f * density, 50f * density)
+                rowHeight = controlsPanel.height() * 0.16f
                 apertureRow = RectF(
                     controlsPanel.left,
                     controlsPanel.top + gap,
@@ -180,9 +180,9 @@ data class LayoutGeometry(
                 )
                 shutterRow = RectF(
                     controlsPanel.left,
-                    apertureRow.bottom + 2f * density,
+                    apertureRow.bottom + gap,
                     controlsPanel.right,
-                    apertureRow.bottom + 2f * density + rowHeight,
+                    apertureRow.bottom + gap + rowHeight,
                 )
                 val lower = RectF(
                     controlsPanel.left,
@@ -236,7 +236,7 @@ data class LayoutGeometry(
                     lower.centerY() + meterSize / 2f - meterButtonNudge,
                 )
             } else {
-                rowHeight = (controlsPanel.height() * 0.15f).coerceIn(40f * density, 50f * density)
+                rowHeight = controlsPanel.height() * 0.20f
                 apertureRow = RectF(
                     controlsPanel.left,
                     controlsPanel.top,
@@ -245,9 +245,9 @@ data class LayoutGeometry(
                 )
                 shutterRow = RectF(
                     controlsPanel.left,
-                    apertureRow.bottom + 2f * density,
+                    apertureRow.bottom + gap * 0.5f,
                     controlsPanel.right,
-                    apertureRow.bottom + 2f * density + rowHeight,
+                    apertureRow.bottom + gap * 0.5f + rowHeight,
                 )
                 val lower = RectF(
                     controlsPanel.left,
