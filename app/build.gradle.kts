@@ -25,8 +25,8 @@ android {
         applicationId = "com.lightmeter.rawmeter"
         minSdk = 28
         targetSdk = 36
-        versionCode = 10
-        versionName = "0.5.0"
+        versionCode = 11
+        versionName = "0.6.0"
 
         externalNativeBuild {
             cmake {
@@ -103,7 +103,7 @@ dependencies {
 // swapped AAR cannot silently alter native behavior or licensing.
 val verifyOpenCvAar = tasks.register("verifyOpenCvAar") {
     val aar = file("libs/opencv-slim-4.12.0-r4-perf.aar")
-    val expected = "0cac465278897a22bdc1d26bcaaa53e06d20b5c295de18992334146330f43848"
+    val expected = "35e3b7df14f1b304a0eba7c0d6d15dd03900315e1d62d366df734243d7601662"
     inputs.file(aar)
     doLast {
         check(aar.isFile) { "Missing pinned OpenCV AAR: ${aar.absolutePath}" }

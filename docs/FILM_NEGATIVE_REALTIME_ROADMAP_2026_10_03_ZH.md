@@ -153,4 +153,4 @@ GPU 运行时检测至少包含 GLES 版本、外部纹理扩展、片段精度�
 
 实施上 A、B、C 层层递进，D 的能力接口和 API 隔离从 A 同步建立；API 19 轻量版留作明确的备用任务。每个完成并验证的任务独立提交 Git，保留已有历史。本文没有证明试验代码已通过实机、流畅度或旧系统验收。
 
-当前工作区的代码评估来自原目录 `D:\Project\lightmeter a`，其中包含尚未提交的负片模块；本次文档在独立工作树提交，未将其他会话的改动混入。进一步的公式与桌面源码分析见同目录 `FILM_NEGATIVE_OPEN_SOURCE_REFACTOR_PLAN_2026_10_03_ZH.md`；其 RAW 静帧扩展属于背景研究，不是本次视频主线。可复查版本见 `research/FILM_NEGATIVE_REALTIME_SOURCES_2026_10_03.json`。
+当前工作区的代码评估来自原目录 `<workspace>`，其中包含尚未提交的负片模块；本次文档在独立工作树提交，未将其他会话的改动混入。进一步的公式与桌面源码分析见同目录 `FILM_NEGATIVE_OPEN_SOURCE_REFACTOR_PLAN_2026_10_03_ZH.md`；其 RAW 静帧扩展属于背景研究，不是本次视频主线。可复查版本见 `research/FILM_NEGATIVE_REALTIME_SOURCES_2026_10_03.json`。

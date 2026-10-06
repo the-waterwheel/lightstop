@@ -2,7 +2,7 @@
 
 测试设备：vivo V2405A，Android 16；竖屏 1260 × 2800，横屏 2800 × 1260。
 测试版本：0.5.0 debug，分支 `codex/film-preview-fix`，代码提交 `6c275e7`。
-独立工作树：`C:\Users\15449\.codex\worktrees\film-preview-fix\lightmeter a`。
+独立工作树：`<workspace>`。
 APK：`app/build/outputs/apk/debug/app-debug.apk`。本次未推送远程，也未覆盖已有提交。
 
 ## 实测结论

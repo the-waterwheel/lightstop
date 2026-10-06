@@ -314,7 +314,10 @@ if (-not (Test-Path -LiteralPath $generatedAar)) {
 }
 
 $versionedAar = Join-Path $outputDir "opencv-slim-$openCvVersion-$aarRevision.aar"
-Copy-Item -LiteralPath $generatedAar -Destination $versionedAar -Force
+& $PythonExecutable (Join-Path $PSScriptRoot "sanitize-aar-paths.py") $generatedAar $versionedAar
+if ($LASTEXITCODE -ne 0) {
+    throw "OpenCV AAR diagnostic-path sanitization failed"
+}
 $aarHash = Get-LightstopFileHash -Algorithm SHA256 -LiteralPath $versionedAar
 
 if ($InstallIntoProject) {

@@ -4,6 +4,8 @@
 
 ## 固定环境
 
+发布前额外通过 `sanitize-aar-paths.py` 清理 ELF `.rodata` 中编译器留下的 Windows 用户目录（例如断言的 `__FILE__`）。替换保持字节长度，保留所有偏移、指令、重定位和导出符号；遇到其他区段或非 ASCII 字符串会停止，要求重新构建。JNI 与 Prefab 的重复库同时处理。当前脱敏 AAR 的 SHA-256 为 `35e3b7df14f1b304a0eba7c0d6d15dd03900315e1d62d366df734243d7601662`；旧构建报告中的大小与散列仅对应当时产物。
+
 - OpenCV：`4.12.0`
 - Android SDK：`34`（OpenCV AAR 自身；应用使用 API 36.1）
 - Android NDK：`27.0.12077973`（启用 flexible page sizes）
@@ -66,8 +68,8 @@ app\libs\opencv-slim-4.12.0-r4-perf.aar
 当前已验证产物（r4-perf，NDK r27，16 KB ELF 对齐，保留运行时加速）：
 
 ```text
-Size: 59,634,187 bytes
-SHA-256: 0CAC465278897A22BDC1D26BCAAA53E06D20B5C295DE18992334146330F43848
+Size: 59,634,171 bytes
+SHA-256: 35E3B7DF14F1B304A0EBA7C0D6D15DD03900315E1D62D366DF734243D7601662
 ```
 
 性能基线产物（r1，NDK r25，仅 4 KB ELF 对齐，含相同加速后端）：

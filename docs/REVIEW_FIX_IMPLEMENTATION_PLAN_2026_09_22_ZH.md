@@ -8,7 +8,7 @@
 
 本文是 2026-09-21 总体整改方案的增量修复清单，针对上一轮审阅确认的 8 项问题，不替代原有长期设计约束。旧方案中已经实现的组件应继续复用，不能把旧计划的“待实现”机械理解为当前仍不存在。
 
-项目根目录为 `D:\Project\lightmeter a`。下文文件表以项目根目录为基准；除特别说明外：
+项目根目录为 `<workspace>`。下文文件表以项目根目录为基准；除特别说明外：
 
 - Kotlin 主文件位于 `app/src/main/java/com/lightmeter/rawmeter/`。
 - 已有 JVM 测试位于 `app/src/test/java/com/lightmeter/rawmeter/`。

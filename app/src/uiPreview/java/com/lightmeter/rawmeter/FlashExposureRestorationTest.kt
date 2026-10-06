@@ -86,5 +86,6 @@ class FlashExposureRestorationTest {
         override fun onGuideNumberRequested(configuration: FlashConfiguration) = Unit
         override fun onMeteringIsoRequested(configuration: FlashConfiguration) = Unit
         override fun onAppliedFlashChanged(configuration: FlashConfiguration?) = Unit
+        override fun onDistanceSelectionChanged(automatic: Boolean) = Unit
     }
 }

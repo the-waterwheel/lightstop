@@ -1,7 +1,7 @@
 # 负片预览：胶片区域选择与自动反演
 
 实现及离线验收日期：2026-10-04。分支：`codex/film-area-preview`。
-工作树：`C:\Users\15449\.codex\worktrees\film-area-preview\lightmeter a`。
+工作树：`<workspace>`。
 基础：已完成上一轮真机测试的 `codex/film-preview-fix`（`b23d1ef`）。
 
 本轮完成照片区域选择、附近片基识别、共享影调范围与保守校色，以及相机条件变化后的参考复位。旋转矩形选区仍暂缓。路线文档作为设计参考；没有把其中的旧系统兼容、视频录制、RAW 扫描或持续自动搜索建议扩展成本轮需求。
