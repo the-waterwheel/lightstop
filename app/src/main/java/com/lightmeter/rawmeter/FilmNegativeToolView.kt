@@ -11,7 +11,6 @@ import android.graphics.Color
 import android.graphics.RectF
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
-import android.text.TextUtils
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -130,11 +129,6 @@ internal class FilmNegativeToolView(context: Context, private val state: MeterSt
         header.addView(button(localized("返回", "Back")) {
             if (!handleBack()) listener?.onBackToToolsRequested()
         }.apply { tag = "back" }, LinearLayout.LayoutParams(dp(68), dp(52)))
-        header.addView(text(localized("负片预览", "Negative preview"), 17f).apply {
-            typeface = InstrumentStyle.labelTypeface
-            maxLines = 1; ellipsize = TextUtils.TruncateAt.END; gravity = Gravity.CENTER
-        }, LinearLayout.LayoutParams(0, dp(52), 1f))
-        header.addView(View(context), LinearLayout.LayoutParams(dp(68), dp(52)))
         addView(header)
         drawer.orientation = LinearLayout.VERTICAL
         drawerHandle.textSize = 12f; drawerHandle.gravity = Gravity.CENTER
@@ -212,8 +206,9 @@ internal class FilmNegativeToolView(context: Context, private val state: MeterSt
             }
             listener?.onSettingsChanged(settings)
         }
-        curveView.contentDescription = localized("RGB 曲线：上下拖动阴影、中间调或高光控制点", "RGB curve: drag shadow, midtone or highlight points vertically")
+        curveView.contentDescription = localized("RGB 曲线：轻点新增控制点，拖动调整，双击复位单点，长按删除内部点", "RGB curve: tap to add, drag to adjust, double tap to reset a point, long press to remove an interior point")
         calibration.addView(curveView, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, dp(164)))
+        calibration.addView(text(localized("轻点加点 · 拖动调整 · 双击复位 · 长按删除", "Tap to add · Drag to adjust · Double tap to reset · Hold to remove"), 12f))
         calibration.addView(button(localized("重置当前曲线", "Reset curve")) {
             val identity = FilmNegativeCurve()
             settings = when (curveChannel) {

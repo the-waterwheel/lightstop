@@ -170,6 +170,45 @@ class FilmNegativeSelectionAnalysisTest {
         assertNull(FilmNegativeSelectionAnalysis.manual(image.copy(pixels = intArrayOf()), region, FilmNegativeSettings()))
     }
 
+    @Test fun editedRotatedCropFindsItsParallelFilmRails() {
+        val crop = FilmNegativeCrop(96f, 72f, 112f, 38f, (Math.PI / 4).toFloat())
+        val image = frame { x, y ->
+            val p = crop.local(x + .5f, y + .5f)
+            when {
+                abs(p.x) < crop.width / 2 && abs(p.y) < crop.height / 2 -> negative(.16 + (p.x / crop.width + .5) * 1.0)
+                abs(p.x) < crop.width / 2 + 8 && abs(p.y) < crop.height / 2 + 8 -> rgb(base)
+                else -> -1
+            }
+        }
+        val region = crop.region(192, 144)
+        val reference = FilmNegativeSelectionAnalysis.nearbyBase(image, region, false)
+        assertNotNull(reference)
+        assertArrayEquals(base, reference!!.rgb, .001f)
+        val result = FilmNegativeSelectionAnalysis.manual(image, region, FilmNegativeSettings())!!
+        assertEquals(FilmNegativeReferenceSource.FILM_BORDER, result.settings.referenceSource)
+        assertEquals(.18f, result.settings.blackDensity, .05f)
+        assertEquals(1.14f, result.settings.whiteDensity, .05f)
+    }
+
+    @Test fun rotatedManualStatisticsExcludeUnselectedBoundingBoxPixels() {
+        val crop = FilmNegativeCrop(96f, 72f, 112f, 38f, .65f)
+        val image = frame { x, y ->
+            val p = crop.local(x + .5f, y + .5f)
+            if (crop.contains(x + .5f, y + .5f)) negative(.2 + (p.x / crop.width + .5) * .8)
+            else negative(2.0)
+        }
+        val result = FilmNegativeSelectionAnalysis.manual(image, crop.region(192, 144), FilmNegativeSettings())!!
+        assertEquals(FilmNegativeReferenceSource.CONTENT_ESTIMATE, result.settings.referenceSource)
+        assertEquals(.77f, result.settings.whiteDensity - result.settings.blackDensity, .06f)
+    }
+
+    @Test fun malformedManualQuadrilateralCannotBeAnalyzedAsItsBounds() {
+        val region = FilmNegativeRegion(.1f, .1f, .9f, .9f, listOf(
+            FilmNegativePoint(.1f, .1f), FilmNegativePoint(.9f, .9f),
+            FilmNegativePoint(.9f, .1f), FilmNegativePoint(.1f, .9f)))
+        assertNull(FilmNegativeSelectionAnalysis.manual(bordered(), region, FilmNegativeSettings()))
+    }
+
     @Test fun automaticSelectionWorksWithRotatedAndMirroredContactSheet() {
         val image = bordered()
         val mirrored = image.copy(pixels = IntArray(image.pixels.size) { i -> image.pixels[(i / 192) * 192 + 191 - i % 192] })

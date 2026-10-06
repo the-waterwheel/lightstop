@@ -553,6 +553,7 @@ class CameraController(
         onRequestFailure = ::handlePreviewRequestFailure,
         filmPreviewActive = { filmNegativeEnabled },
         filmPreviewLocked = { filmNegativeLocked },
+        filmPreviewPreparingCapture = { filmAwaitingConvergence },
         requestCharacteristics = { logicalCharacteristics ?: characteristics },
     )
     private var downgradeAfterCompatibleMeasurement = false

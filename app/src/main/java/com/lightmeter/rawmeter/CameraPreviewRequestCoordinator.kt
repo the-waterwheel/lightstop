@@ -37,6 +37,7 @@ internal class CameraPreviewRequestCoordinator(
     private val onRequestFailure: (generation: Int) -> Unit,
     private val filmPreviewActive: () -> Boolean = { false },
     private val filmPreviewLocked: () -> Boolean = { false },
+    private val filmPreviewPreparingCapture: () -> Boolean = { false },
     private val requestCharacteristics: () -> CameraCharacteristics? = characteristics,
 ) {
     private var compatibleYuvRequestActive = false
@@ -114,7 +115,9 @@ internal class CameraPreviewRequestCoordinator(
         configureAutoFocus(builder)
         val templateToneMode = builder.get(CaptureRequest.TONEMAP_MODE)
         val templateCurve = builder.get(CaptureRequest.TONEMAP_CURVE)
-        val useFilmCurve = filmPreviewActive() && !filmCurveRejected &&
+        // Keep the camera's normal viewing tone until calibration actually starts. Applying
+        // a fixed sRGB curve on page entry removes the vendor's contrast and can look washed out.
+        val useFilmCurve = filmPreviewActive() && (filmPreviewPreparingCapture() || filmPreviewLocked()) && !filmCurveRejected &&
             FilmNegativeCameraProfile.supported(requestCharacteristics())
         try {
             if (useFilmCurve) {
@@ -136,6 +139,7 @@ internal class CameraPreviewRequestCoordinator(
             "Preview request submitted: fps=$fpsRange yuv=$includeYuv " +
                 "manualExposure=$appliedManualExposure " +
                 "exposureCompensationSteps=${exposureCompensationSteps()} " +
+                "filmCurve=$useFilmCurve " +
                 "profile=${sessionProfile()} tag=$requestTag",
         )
     }
