@@ -3,7 +3,7 @@
 All notable user-facing changes are recorded here. The project follows
 [Semantic Versioning](https://semver.org/) for public releases.
 
-## 0.6.1 - Unreleased
+## 0.6.1 - 2026-10-07
 
 - Restored the pinned compact OpenCV r2 runtime used by 0.5.0 after auditing the current Java/JNI calls and new motion-distance path.
 - Generate separate arm64, armv7 and x86_64 APKs plus a universal APK by default; bundle builds automatically disable APK splits.

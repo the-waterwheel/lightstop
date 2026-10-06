@@ -4,7 +4,7 @@ English | [简体中文](README_ZH.md)
 
 An Android light meter for manual exposure and film photography. Android 9 or newer.
 
-[Download](https://github.com/the-waterwheel/lightstop/releases) · [Changes](CHANGELOG.md)
+[Download 0.6.1](https://github.com/the-waterwheel/lightstop/releases/tag/v0.6.1) · [Changes](CHANGELOG.md)
 
 ## What it does
 

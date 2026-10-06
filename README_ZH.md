@@ -4,7 +4,7 @@
 
 一个面向手动曝光与胶片摄影的 Android 测光表，支持 Android 9 及以上。
 
-[下载](https://github.com/the-waterwheel/lightstop/releases) · [更新记录](CHANGELOG.md)
+[下载 0.6.1](https://github.com/the-waterwheel/lightstop/releases/tag/v0.6.1) · [更新记录](CHANGELOG.md)
 
 ## 可以做什么
 
