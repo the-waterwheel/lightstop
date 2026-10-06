@@ -107,6 +107,9 @@ internal class FlashExposureView(
     }
 
     fun updateConfiguration(value: FlashConfiguration) {
+        // The meter's distance dial can edit this hidden View before its first draw after
+        // process recreation. Restore the saved applied flag before notifying the meter.
+        if (!initialized) openPage()
         configuration = value.normalized()
         selectedDistanceIndex = FlashDistanceScale.nearestIndex(configuration.distanceMeters)
         displayedDistancePosition = selectedDistanceIndex.toFloat()
@@ -117,6 +120,7 @@ internal class FlashExposureView(
     }
 
     fun updateDistance(value: Double?) {
+        if (!initialized) openPage()
         configuration = configuration.copy(distanceMeters = value).normalized()
         selectedDistanceIndex = FlashDistanceScale.nearestIndex(configuration.distanceMeters)
         displayedDistancePosition = selectedDistanceIndex.toFloat()

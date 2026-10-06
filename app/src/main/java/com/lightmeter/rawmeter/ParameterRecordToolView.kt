@@ -9,6 +9,8 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Typeface
+import android.text.TextPaint
+import android.text.TextUtils
 import android.util.TypedValue
 import android.view.MotionEvent
 import android.view.accessibility.AccessibilityManager
@@ -40,7 +42,7 @@ internal class ParameterRecordToolView(
     private val density get() = layoutDensity(LayoutProfile.TOOL)
     private val scaledDensity get() = layoutTextDensity(LayoutProfile.TOOL)
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans-serif", Typeface.NORMAL) }
-    private val boldPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans-serif", Typeface.BOLD) }
+    private val boldPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = InstrumentStyle.labelTypeface }
     private val path = Path()
     private val background: Int get() = InstrumentStyle.background(state.isDarkMode)
     private val foreground: Int get() = InstrumentStyle.foreground(state.isDarkMode)
@@ -91,10 +93,12 @@ internal class ParameterRecordToolView(
         drawHeader(canvas)
         drawHistory(canvas)
         val options = repository.options
-        drawOption(canvas, geometry.gpsRow, geometry.gpsToggle, localized("记录 GPS 定位", "Record GPS location"), options.recordGps, true)
-        drawLocationState(canvas, geometry.gpsRow)
-        drawOption(canvas, geometry.timeRow, geometry.timeToggle, localized("记录时间", "Record time"), options.recordTime, true)
-        drawOption(canvas, geometry.rawRow, geometry.rawToggle, localized("记录 RAW 数据", "Record RAW data"), options.recordRaw, state.cameraInfo.rawAvailable)
+        drawOption(canvas, geometry.gpsRow, geometry.gpsToggle, localized("记录 GPS 定位", "Record GPS location"),
+            locationDescription(), options.recordGps, true)
+        drawOption(canvas, geometry.timeRow, geometry.timeToggle, localized("记录时间", "Record time"),
+            localized("保存拍摄时间", "Keep capture time"), options.recordTime, true)
+        drawOption(canvas, geometry.rawRow, geometry.rawToggle, localized("记录 RAW 数据", "Record RAW data"),
+            localized("保留原始测光数据", "Keep original metering data"), options.recordRaw, state.cameraInfo.rawAvailable)
         drawHelp(canvas)
         drawFinishAction(canvas, repository.activeCategoryId != null)
         drawStartStopAction(canvas)
@@ -114,15 +118,19 @@ internal class ParameterRecordToolView(
         boldPaint.color = foreground
         boldPaint.textSize = 14f * scaledDensity
         centered(canvas, localized("参数记录", "Parameter log"), width / 2f, y, boldPaint)
+        paint.color = InstrumentStyle.border(state.isDarkMode)
+        paint.strokeWidth = 0.8f * density
+        canvas.drawLine(geometry.history.left, geometry.back.bottom,
+            geometry.history.right, geometry.back.bottom, paint)
     }
 
     private fun drawHistory(canvas: Canvas) {
         drawPanel(canvas, geometry.history)
         val icon = RectF(
-            geometry.history.left + 12f * density,
-            geometry.history.top + 10f * density,
-            geometry.history.left + 50f * density,
-            geometry.history.bottom - 10f * density,
+            geometry.history.left + 14f * density,
+            geometry.history.centerY() - 18f * density,
+            geometry.history.left + 43f * density,
+            geometry.history.centerY() + 18f * density,
         )
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1.5f * density
@@ -138,15 +146,44 @@ internal class ParameterRecordToolView(
         boldPaint.textAlign = Paint.Align.LEFT
         boldPaint.color = foreground
         boldPaint.textSize = 14f * scaledDensity
-        centered(canvas, localized("过往记录", "History"), icon.right + 12f * density, geometry.history.centerY(), boldPaint)
+        centered(canvas, localized("过往记录", "History"), icon.right + 14f * density,
+            geometry.history.centerY() - 7f * density, boldPaint)
+        paint.style = Paint.Style.FILL
+        paint.color = muted
+        paint.textSize = 10f * scaledDensity
+        paint.textAlign = Paint.Align.LEFT
+        val count = repository.categories().sumOf { it.records.size }
+        centered(canvas, localized("$count 张已保存", "$count saved records"), icon.right + 14f * density,
+            geometry.history.centerY() + 13f * density, paint)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 1.4f * density
+        val x = geometry.history.right - 18f * density
+        val y = geometry.history.centerY()
+        canvas.drawLine(x - 3f * density, y - 5f * density, x + 2f * density, y, paint)
+        canvas.drawLine(x + 2f * density, y, x - 3f * density, y + 5f * density, paint)
     }
 
-    private fun drawOption(canvas: Canvas, row: RectF, toggle: RectF, label: String, enabled: Boolean, available: Boolean) {
+    private fun drawOption(canvas: Canvas, row: RectF, toggle: RectF, label: String,
+        description: String, enabled: Boolean, available: Boolean) {
         drawPanel(canvas, row)
         boldPaint.textAlign = Paint.Align.LEFT
         boldPaint.textSize = 12.5f * scaledDensity
         boldPaint.color = if (available) foreground else muted
-        centered(canvas, label, row.left + 12f * density, row.centerY(), boldPaint)
+        val availableWidth = (toggle.left - row.left - 22f * density).coerceAtLeast(0f)
+        val spacious = row.height() >= 66f * density
+        val fitted = TextUtils.ellipsize(label, TextPaint(boldPaint), availableWidth, TextUtils.TruncateAt.END)
+        centered(canvas, fitted.toString(), row.left + 12f * density,
+            row.centerY() - if (spacious) 9f * density else 0f, boldPaint)
+        if (spacious) {
+            paint.style = Paint.Style.FILL
+            paint.typeface = Typeface.DEFAULT
+            paint.textAlign = Paint.Align.LEFT
+            paint.textSize = 9.5f * scaledDensity
+            paint.color = muted
+            centered(canvas, TextUtils.ellipsize(description, TextPaint(paint), availableWidth,
+                TextUtils.TruncateAt.END).toString(), row.left + 12f * density,
+                row.centerY() + 13f * density, paint)
+        }
         val track = RectF(
             toggle.centerX() - 20f * density,
             toggle.centerY() - 9f * density,
@@ -155,31 +192,26 @@ internal class ParameterRecordToolView(
         )
         paint.style = Paint.Style.FILL
         paint.color = when {
-            !available -> muted
+            !available -> InstrumentStyle.border(state.isDarkMode)
             enabled -> red
-            else -> Color.rgb(150, 150, 146)
+            else -> InstrumentStyle.border(state.isDarkMode)
         }
         canvas.drawRoundRect(track, track.height() / 2f, track.height() / 2f, paint)
-        paint.color = if (enabled && available) Color.WHITE else panel
+        paint.color = if (enabled && available) Color.WHITE else actionSurface
         val x = if (enabled && available) track.right - 9f * density else track.left + 9f * density
         canvas.drawCircle(x, track.centerY(), 7f * density, paint)
     }
 
-    private fun drawLocationState(canvas: Canvas, row: RectF) {
-        val text = when (locationState) {
-            ParameterLocationDisplayState.DISABLED -> return
+    private fun locationDescription(): String = when (locationState) {
+            ParameterLocationDisplayState.DISABLED -> localized("保存拍摄位置", "Keep capture location")
             ParameterLocationDisplayState.REQUESTING -> localized("定位中…", "Locating…")
             ParameterLocationDisplayState.FINE_FIX -> localized("已定位", "Located")
             ParameterLocationDisplayState.COARSE_FIX -> localized("粗略位置", "Coarse")
             ParameterLocationDisplayState.NO_FIX -> localized("无有效定位", "No fix")
-        }
-        boldPaint.textAlign = Paint.Align.RIGHT
-        boldPaint.textSize = 10.5f * scaledDensity
-        boldPaint.color = muted
-        canvas.drawText(text, row.right - 58f * density, row.centerY() + 4f * density, boldPaint)
     }
 
-    private fun drawHelp(canvas: Canvas) {        paint.style = Paint.Style.STROKE
+    private fun drawHelp(canvas: Canvas) {
+        paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1.2f * density
         paint.color = if (state.cameraInfo.rawAvailable) foreground else muted
         val radius = 9f * density
@@ -193,10 +225,15 @@ internal class ParameterRecordToolView(
     private fun drawFinishAction(canvas: Canvas, enabled: Boolean) {
         val rect = geometry.finishCategory
         paint.style = Paint.Style.FILL
-        paint.color = if (enabled) red else muted
+        paint.color = actionSurface
+        canvas.drawRoundRect(rect, 6f * density, 6f * density, paint)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = density
+        paint.color = InstrumentStyle.border(state.isDarkMode)
         canvas.drawRoundRect(rect, 6f * density, 6f * density, paint)
         val iconSize = minOf(rect.width(), rect.height()) * 0.30f
-        paint.color = Color.WHITE
+        paint.style = Paint.Style.FILL
+        paint.color = if (enabled) red else muted
         canvas.drawRect(
             rect.centerX() - iconSize / 2f,
             rect.centerY() - iconSize / 2f,
@@ -222,15 +259,19 @@ internal class ParameterRecordToolView(
         paint.color = if (recording) panel else actionSurface
         canvas.drawCircle(rect.centerX(), rect.centerY(), radius, paint)
         paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 2f * density
-        paint.color = red
+        paint.strokeWidth = density
+        paint.color = InstrumentStyle.border(state.isDarkMode)
         canvas.drawCircle(rect.centerX(), rect.centerY(), radius - density, paint)
+        paint.strokeWidth = 1.6f * density
+        paint.color = red
+        canvas.drawCircle(rect.centerX(), rect.centerY(), radius * 0.62f, paint)
         paint.style = Paint.Style.FILL
         paint.color = red
-        val iconSize = radius * 0.36f
+        val iconSize = radius * 0.26f
         if (!recording) {
             canvas.drawCircle(rect.centerX(), rect.centerY(), iconSize, paint)
-        }
+        } else canvas.drawRoundRect(RectF(rect.centerX() - iconSize, rect.centerY() - iconSize,
+            rect.centerX() + iconSize, rect.centerY() + iconSize), 2f * density, 2f * density, paint)
         boldPaint.textAlign = Paint.Align.CENTER
         boldPaint.textSize = 12.5f * scaledDensity
         boldPaint.color = foreground
@@ -244,12 +285,12 @@ internal class ParameterRecordToolView(
 
     private fun drawPanel(canvas: Canvas, rect: RectF) {
         paint.style = Paint.Style.FILL
-        paint.color = panel
-        canvas.drawRoundRect(rect, 6f * density, 6f * density, paint)
+        paint.color = actionSurface
+        canvas.drawRoundRect(rect, 9f * density, 9f * density, paint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 0.8f * density
-        paint.color = muted
-        canvas.drawRoundRect(rect, 6f * density, 6f * density, paint)
+        paint.color = InstrumentStyle.border(state.isDarkMode)
+        canvas.drawRoundRect(rect, 9f * density, 9f * density, paint)
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -355,7 +396,8 @@ internal class ParameterRecordToolView(
         return true
     }
 
-    private fun handle(target: Target) {        when (target) {
+    private fun handle(target: Target) {
+        when (target) {
             Target.BACK -> listener?.onBackToToolsRequested()
             Target.CLOSE -> listener?.onCloseRequested()
             Target.HISTORY -> listener?.onHistoryRequested()

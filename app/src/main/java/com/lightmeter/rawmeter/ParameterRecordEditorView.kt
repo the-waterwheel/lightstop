@@ -74,7 +74,7 @@ internal class ParameterRecordEditorView(
     private val scaledDensity get() = layoutTextDensity(LayoutProfile.EDITOR)
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans-serif", Typeface.NORMAL) }
-    private val boldPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans-serif", Typeface.BOLD) }
+    private val boldPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = InstrumentStyle.labelTypeface }
     private val notePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans-serif", Typeface.NORMAL) }
     private val background: Int get() = InstrumentStyle.background(state.isDarkMode)
     private val foreground: Int get() = InstrumentStyle.foreground(state.isDarkMode)
@@ -193,19 +193,24 @@ internal class ParameterRecordEditorView(
 
     private fun drawFilm(canvas: Canvas, value: ParameterCaptureDraft) {
         paint.style = Paint.Style.FILL
-        paint.color = red
+        paint.color = panel
+        canvas.drawRoundRect(geometry.film, 6f * density, 6f * density, paint)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 0.8f * density
+        paint.color = InstrumentStyle.border(state.isDarkMode)
         canvas.drawRoundRect(geometry.film, 6f * density, 6f * density, paint)
         boldPaint.textAlign = Paint.Align.LEFT
-        boldPaint.color = Color.WHITE
+        boldPaint.color = foreground
         boldPaint.textSize = 13f * scaledDensity
         val label = value.filmName ?: localized("选择胶片类型", "Select film")
         val fitted = TextUtils.ellipsize(label, boldPaint, geometry.film.width() - geometry.filmEdit.width() - 20f * density, TextUtils.TruncateAt.END)
         centered(canvas, fitted.toString(), geometry.film.left + 10f * density, geometry.film.centerY(), boldPaint)
         boldPaint.textAlign = Paint.Align.CENTER
+        boldPaint.color = red
         centered(canvas, localized("修改", "Edit"), geometry.filmEdit.centerX(), geometry.filmEdit.centerY(), boldPaint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1f * density
-        paint.color = Color.WHITE
+        paint.color = InstrumentStyle.border(state.isDarkMode)
         canvas.drawLine(geometry.filmEdit.left, geometry.filmEdit.top + 7f * density, geometry.filmEdit.left, geometry.filmEdit.bottom - 7f * density, paint)
     }
 
@@ -255,7 +260,7 @@ internal class ParameterRecordEditorView(
 
     private fun drawSave(canvas: Canvas) {
         paint.style = Paint.Style.FILL
-        paint.color = red
+        paint.color = InstrumentStyle.foreground(false)
         canvas.drawRoundRect(geometry.save, 7f * density, 7f * density, paint)
         boldPaint.textAlign = Paint.Align.CENTER
         boldPaint.color = Color.WHITE
@@ -269,7 +274,7 @@ internal class ParameterRecordEditorView(
         canvas.drawRoundRect(rect, 5f * density, 5f * density, paint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 0.8f * density
-        paint.color = muted
+        paint.color = InstrumentStyle.border(state.isDarkMode)
         canvas.drawRoundRect(rect, 5f * density, 5f * density, paint)
     }
 
