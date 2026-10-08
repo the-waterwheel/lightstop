@@ -129,6 +129,13 @@ internal class FilmNegativeToolView(context: Context, private val state: MeterSt
         header.addView(button(localized("返回", "Back")) {
             if (!handleBack()) listener?.onBackToToolsRequested()
         }.apply { tag = "back" }, LinearLayout.LayoutParams(dp(68), dp(52)))
+        header.addView(text(localized("负片预览", "Negative preview"), 14f).apply {
+            gravity = Gravity.CENTER
+            typeface = InstrumentStyle.labelTypeface
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }, LinearLayout.LayoutParams(0, dp(52), 1f))
+        header.addView(View(context), LinearLayout.LayoutParams(dp(68), dp(52)))
         addView(header)
         drawer.orientation = LinearLayout.VERTICAL
         drawerHandle.textSize = 12f; drawerHandle.gravity = Gravity.CENTER
@@ -256,6 +263,11 @@ internal class FilmNegativeToolView(context: Context, private val state: MeterSt
             cornerRadii = floatArrayOf(dp(12).toFloat(), dp(12).toFloat(), dp(12).toFloat(), dp(12).toFloat(), 0f, 0f, 0f, 0f)
             setStroke(dp(1), InstrumentStyle.border(this@FilmNegativeToolView.state.isDarkMode))
         }
+        // A quiet header band separates the drawer handle from the action area.
+        drawerHandle.background = GradientDrawable().apply {
+            setColor(InstrumentStyle.panel(this@FilmNegativeToolView.state.isDarkMode))
+            cornerRadii = floatArrayOf(dp(12).toFloat(), dp(12).toFloat(), dp(12).toFloat(), dp(12).toFloat(), 0f, 0f, 0f, 0f)
+        }
         drawerHandle.setTextColor(InstrumentStyle.secondary(state.isDarkMode))
         for (label in themedTexts) label.setTextColor(foreground)
         for ((view, primary) in themedButtons) {
@@ -264,6 +276,13 @@ internal class FilmNegativeToolView(context: Context, private val state: MeterSt
                 view.background = RippleDrawable(ColorStateList.valueOf(0x18a61b24),
                     android.graphics.drawable.ColorDrawable(surface), null)
             }
+        }
+        for (section in listOf(calibrationToggle, basicToggle)) {
+            section.background = RippleDrawable(ColorStateList.valueOf(0x18a61b24),
+                GradientDrawable().apply {
+                    setColor(InstrumentStyle.panel(this@FilmNegativeToolView.state.isDarkMode))
+                    cornerRadius = dp(6).toFloat()
+                }, null)
         }
         for (view in themedSwitches) {
             view.setTextColor(foreground)

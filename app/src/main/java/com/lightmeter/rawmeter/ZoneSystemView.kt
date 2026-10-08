@@ -90,12 +90,13 @@ class ZoneSystemView(
     private val foreground: Int get() = if (state.isDarkMode) nightForeground else lightBlack
     private val surface: Int get() = if (state.isDarkMode) Color.BLACK else Color.WHITE
     private val railColor: Int
-        get() = if (state.isDarkMode) Color.rgb(58, 58, 56) else Color.rgb(164, 164, 160)
+        get() = InstrumentStyle.panel(state.isDarkMode)
     private val dividerColor: Int
         get() = InstrumentStyle.border(state.isDarkMode)
     private val red = InstrumentStyle.red
     private val latitudeOutsideRed: Int
         get() = if (state.isDarkMode) Color.rgb(196, 116, 120) else Color.rgb(231, 151, 155)
+    private val chrome = ToolChromeRenderer()
     private val zoomRenderer = ZoomControlRenderer()
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         strokeCap = Paint.Cap.ROUND
@@ -798,13 +799,8 @@ class ZoneSystemView(
     }
 
     private fun drawMarkerRail(canvas: Canvas, g: Geometry) {
-        paint.style = Paint.Style.FILL
-        paint.color = railColor
-        canvas.drawRect(g.markerRail, paint)
+        chrome.surface(canvas, g.markerRail, density, state.isDarkMode, fill = railColor)
         paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 1f * density
-        paint.color = foreground
-        canvas.drawRect(g.markerRail, paint)
         drawLatitudeBoundaries(canvas, g.markerRail, g.landscape)
         val meanZone = session.weightedMeanZone(session.iso)
         if (meanZone != null) {
@@ -842,7 +838,7 @@ class ZoneSystemView(
             paint.strokeWidth = 1f * density
             paint.color = if (outsideLatitude || marker.id == session.selectedMarkerId) red else foreground
             canvas.drawCircle(x, y, radius, paint)
-            boldPaint.color = if (outsideLatitude && !state.isDarkMode) Color.WHITE else foreground
+            boldPaint.color = if ((outsideLatitude || marker.id == session.selectedMarkerId) && !state.isDarkMode) Color.WHITE else foreground
             boldPaint.textSize = 6f * density
             drawCenteredText(canvas, marker.id.toString(), x, y, boldPaint)
         }
@@ -854,7 +850,7 @@ class ZoneSystemView(
         canvas.drawRect(g.recordPanel, paint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1f * density
-        paint.color = foreground
+        paint.color = dividerColor
         canvas.drawRect(g.recordPanel, paint)
 
         drawClearSlider(canvas, g)
@@ -881,18 +877,18 @@ class ZoneSystemView(
             val swipe = if (marker.id == listMarkerId) listSwipeDistance else 0f
             val shifted = RectF(row).apply { offset(swipe, 0f) }
             paint.style = Paint.Style.FILL
-            paint.color = surface
-            canvas.drawRoundRect(shifted, 3f * density, 3f * density, paint)
+            paint.color = InstrumentStyle.control(state.isDarkMode)
+            canvas.drawRoundRect(shifted, 6f * density, 6f * density, paint)
             paint.style = Paint.Style.STROKE
             paint.strokeWidth = 0.8f * density
             paint.color = if (marker.id == session.selectedMarkerId) red else dividerColor
-            canvas.drawRoundRect(shifted, 3f * density, 3f * density, paint)
+            canvas.drawRoundRect(shifted, 6f * density, 6f * density, paint)
             val evText = marker.ev100?.let { "%.2f".format(it) } ?: "…"
             val zoneText = session.formattedZone(marker, session.iso)
             paint.style = Paint.Style.FILL
             paint.color = if (isOutsideAppliedLatitude(marker)) latitudeOutsideRed else foreground
             paint.textSize = 8f * density
-            paint.typeface = Typeface.DEFAULT_BOLD
+            paint.typeface = InstrumentStyle.labelTypeface
             canvas.drawText("${marker.id}   EV100 $evText   $zoneText", shifted.left + 10f * density, shifted.centerY() + 3f * density, paint)
             if (swipe > 0f) {
                 canvas.save()
@@ -919,7 +915,7 @@ class ZoneSystemView(
     private fun drawClearSlider(canvas: Canvas, g: Geometry) {
         val track = g.clearTrack
         paint.style = Paint.Style.FILL
-        paint.color = surface
+        paint.color = InstrumentStyle.control(state.isDarkMode)
         canvas.drawRoundRect(track, 3f * density, 3f * density, paint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1f * density

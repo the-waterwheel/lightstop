@@ -106,6 +106,15 @@ class UiPreviewTest {
             val views = linkedMapOf<String, () -> View>(
                 "meter" to { InstrumentView(context, state) },
                 "zone" to { ZoneSystemView(context, state).apply { enter() } },
+                "zone-points" to { ZoneSystemView(context, state).apply {
+                    enter()
+                    for ((index, ev) in listOf(7.0, 10.0, 13.0).withIndex()) {
+                        session.beginMarker(state.iso, .25f + index * .25f, .35f + index * .15f)
+                        session.completePending(MeterReading(ev, .18, 0.0, 3, 100, 8_000_000L, 2f),
+                            state.iso, state.exposureLockMode)
+                    }
+                    session.selectMarker(2)
+                } },
                 "settings" to { SettingsView(context, state) },
                 "tools" to { ToolsView(context, state) },
                 "negative" to { FilmNegativeToolView(context, state) },
@@ -114,6 +123,25 @@ class UiPreviewTest {
                 "reciprocity" to { ReciprocityView(context, state, latitude, reciprocity) },
                 "flash" to { FlashExposureView(context, state, FlashExposureRepository(context)) },
                 "temperature" to { ColorTemperatureView(context, state) },
+                "temperature-reading" to { ColorTemperatureView(context, state).apply {
+                    openPage(true)
+                    showReading(ColorTemperatureReading(5500, ColorTemperatureConfidence.HIGH, .01, 0.0, .18))
+                } },
+                "temperature-busy" to { ColorTemperatureView(context, state).apply {
+                    openPage(true); setMeasuring(true)
+                } },
+                "flash-applied" to {
+                    val flashRepository = FlashExposureRepository(context)
+                    val previous = flashRepository.applied(state.iso)
+                    val selected = flashRepository.selected(state.iso)
+                    flashRepository.apply(FlashConfiguration(iso = 400, distanceMeters = 2.0))
+                    FlashExposureView(context, state, flashRepository).apply {
+                        openPage()
+                        // Keep the fixture's applied flag in this View, not in later previews.
+                        if (previous == null) flashRepository.clearApplied() else flashRepository.apply(previous)
+                        flashRepository.saveSelected(selected)
+                    }
+                },
                 "records" to { ParameterRecordToolView(context, state, records) },
                 "record-editor" to { ParameterRecordEditorView(context, state).apply {
                     open(RecordPreviewFixtures.draft(records))
@@ -129,10 +157,19 @@ class UiPreviewTest {
                 "negative-adjustments" to { FilmNegativeToolView(context, state).apply {
                     findButton(this, if (state.menuLanguage == MenuLanguage.ENGLISH) "Manual adjustments" else "手动调整")!!.performClick()
                 } },
+                "negative-busy" to { FilmNegativeToolView(context, state).apply { beginAutomaticBaseRecognition() } },
+                "negative-picker" to { FilmNegativeToolView(context, state).apply {
+                    // Neutral synthetic frame: verifies selection chrome, not film processing.
+                    val evidence = FilmNegativeFrameEvidence(1L, "fixture", true, 8_000_000L,
+                        100, listOf(1f, 1f, 1f, 1f), "fixture")
+                    showFrozenFrame(FilmNegativeFrozenFrame(600, 400,
+                        IntArray(600 * 400) { Color.rgb(100, 100, 96) }, evidence), FilmNegativePickMode.FRAME)
+                } },
             )
             for ((name, create) in views) {
                 val view = create()
-                val fullPage = name.startsWith("history") || name in listOf("meter", "zone", "negative", "negative-adjustments", "about", "calibration")
+                val fullPage = name.startsWith("history") || name.startsWith("zone") || name.startsWith("negative") ||
+                    name in listOf("meter", "about", "calibration")
                 val w = if (!fullPage && size.first > size.second) 960 else size.first * 2
                 val h = if (!fullPage && size.first < size.second) (size.second * 1.05f).toInt() else size.second * 2
                 view.measure(View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY),

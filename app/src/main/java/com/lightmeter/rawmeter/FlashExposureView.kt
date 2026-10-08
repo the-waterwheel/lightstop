@@ -45,13 +45,14 @@ internal class FlashExposureView(
     private val density get() = layoutDensity(LayoutProfile.TOOL)
     private val scaledDensity get() = layoutTextDensity(LayoutProfile.TOOL)
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
+    private val chrome = ToolChromeRenderer()
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
         typeface = Typeface.create("sans-serif", Typeface.NORMAL)
     }
     private val boldPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-        typeface = Typeface.create("sans-serif", Typeface.BOLD)
+        typeface = InstrumentStyle.labelTypeface
     }
     private val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
         typeface = Typeface.create("sans-serif", Typeface.NORMAL)
@@ -148,34 +149,14 @@ internal class FlashExposureView(
     }
 
     private fun drawHeader(canvas: Canvas) {
-        val y = geometry.back.centerY()
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 1.6f * density
-        paint.color = foreground
-        canvas.drawLine(geometry.back.centerX() + 5f * density, y - 8f * density, geometry.back.centerX() - 4f * density, y, paint)
-        canvas.drawLine(geometry.back.centerX() - 4f * density, y, geometry.back.centerX() + 5f * density, y + 8f * density, paint)
-        val closeX = geometry.close.centerX()
-        canvas.drawLine(closeX - 7f * density, y - 7f * density, closeX + 7f * density, y + 7f * density, paint)
-        canvas.drawLine(closeX + 7f * density, y - 7f * density, closeX - 7f * density, y + 7f * density, paint)
-        boldPaint.textAlign = Paint.Align.CENTER
-        boldPaint.color = foreground
-        boldPaint.textSize = 14f * scaledDensity
-        centered(canvas, localized("闪光曝光", "Flash exposure"), width / 2f, y, boldPaint)
-        paint.style = Paint.Style.FILL
-        paint.color = muted
-        canvas.drawRect(0f, geometry.back.bottom - density, width.toFloat(), geometry.back.bottom, paint)
+        chrome.header(canvas, width.toFloat(), geometry.back, geometry.close,
+            localized("闪光曝光", "Flash exposure"), density, scaledDensity, state.isDarkMode)
     }
 
     private fun drawDistanceScale(canvas: Canvas) {
         val rect = geometry.scale
         val autoUnavailable = state.distanceMeasurementState.status == DistanceMeasurementStatus.UNSUPPORTED
-        paint.style = Paint.Style.FILL
-        paint.color = background
-        canvas.drawRect(rect, paint)
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 1.1f * density
-        paint.color = foreground
-        canvas.drawRect(rect, paint)
+        chrome.surface(canvas, rect, density, state.isDarkMode)
 
         val titleWidth = distanceTitleWidth(rect)
         val content = if (state.isLeftHanded) {
@@ -239,11 +220,11 @@ internal class FlashExposureView(
     private fun drawSettingsCard(canvas: Canvas) {
         paint.style = Paint.Style.FILL
         paint.color = panel
-        canvas.drawRoundRect(geometry.filmCard, 6f * density, 6f * density, paint)
+        canvas.drawRoundRect(geometry.filmCard, 8f * density, 8f * density, paint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = density
-        paint.color = muted
-        canvas.drawRoundRect(geometry.filmCard, 6f * density, 6f * density, paint)
+        paint.color = InstrumentStyle.border(state.isDarkMode)
+        canvas.drawRoundRect(geometry.filmCard, 8f * density, 8f * density, paint)
 
         val x = geometry.filmCard.left + 9f * density
         val available = geometry.filmCard.width() - 18f * density
@@ -275,11 +256,11 @@ internal class FlashExposureView(
         val rect = geometry.result
         paint.style = Paint.Style.FILL
         paint.color = actionSurface
-        canvas.drawRoundRect(rect, 7f * density, 7f * density, paint)
+        canvas.drawRoundRect(rect, 8f * density, 8f * density, paint)
         paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 1.4f * density
-        paint.color = blue
-        canvas.drawRoundRect(rect, 7f * density, 7f * density, paint)
+        paint.strokeWidth = 1f * density
+        paint.color = InstrumentStyle.border(state.isDarkMode)
+        canvas.drawRoundRect(rect, 8f * density, 8f * density, paint)
 
         textPaint.textAlign = Paint.Align.CENTER
         textPaint.color = foreground
@@ -320,11 +301,11 @@ internal class FlashExposureView(
         val rect = geometry.apply
         paint.style = Paint.Style.FILL
         paint.color = if (applied) actionActiveSurface else actionSurface
-        canvas.drawRoundRect(rect, 7f * density, 7f * density, paint)
+        canvas.drawRoundRect(rect, 8f * density, 8f * density, paint)
         paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 1.8f * density
+        paint.strokeWidth = 1.1f * density
         paint.color = blue
-        canvas.drawRoundRect(rect, 7f * density, 7f * density, paint)
+        canvas.drawRoundRect(rect, 8f * density, 8f * density, paint)
         boldPaint.textAlign = Paint.Align.CENTER
         boldPaint.color = foreground
         boldPaint.textSize = min(13f * scaledDensity, rect.height() * 0.23f)
@@ -548,11 +529,11 @@ internal class FlashExposureView(
     private fun drawNeutralButton(rect: RectF, label: String, canvas: Canvas) {
         paint.style = Paint.Style.FILL
         paint.color = panel
-        canvas.drawRoundRect(rect, 6f * density, 6f * density, paint)
+        canvas.drawRoundRect(rect, 8f * density, 8f * density, paint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = density
-        paint.color = muted
-        canvas.drawRoundRect(rect, 6f * density, 6f * density, paint)
+        paint.color = InstrumentStyle.border(state.isDarkMode)
+        canvas.drawRoundRect(rect, 8f * density, 8f * density, paint)
         boldPaint.textAlign = Paint.Align.CENTER
         boldPaint.color = foreground
         boldPaint.textSize = min(12f * scaledDensity, rect.height() * 0.30f)

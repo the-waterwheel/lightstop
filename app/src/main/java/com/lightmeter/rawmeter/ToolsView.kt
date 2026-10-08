@@ -51,6 +51,7 @@ class ToolsView(
         get() = InstrumentStyle.border(state.isDarkMode)
     private val cellColor: Int
         get() = InstrumentStyle.iconTile(state.isDarkMode)
+    private val chrome = ToolChromeRenderer()
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
@@ -139,7 +140,7 @@ class ToolsView(
             width - g.pad,
             (g.headerHeight + closeSize) / 2f,
         )
-        paint.color = dividerColor
+        paint.color = foreground
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1.5f * density
         canvas.drawLine(
@@ -168,13 +169,7 @@ class ToolsView(
             if (!RectF.intersects(cell, RectF(0f, g.headerHeight, width.toFloat(), height.toFloat()))) {
                 return@forEachIndexed
             }
-            paint.style = Paint.Style.FILL
-            paint.color = cellColor
-            canvas.drawRoundRect(cell, 8f * density, 8f * density, paint)
-            paint.style = Paint.Style.STROKE
-            paint.strokeWidth = 0.75f * density
-            paint.color = dividerColor
-            canvas.drawRoundRect(cell, 8f * density, 8f * density, paint)
+            chrome.surface(canvas, cell, density, state.isDarkMode)
             paint.style = Paint.Style.FILL
             boldPaint.color = foreground
             boldPaint.textSize = TOOL_LABEL_TEXT_SP * scaledDensity
@@ -188,6 +183,9 @@ class ToolsView(
                 cell.right - 17f * density,
                 cell.bottom - textBlockHeight - 17f * density,
             )
+            paint.color = cellColor
+            canvas.drawRoundRect(RectF(iconBox).apply { inset(-5f * density, -5f * density) },
+                6f * density, 6f * density, paint)
             toolIcons[spec.id]?.let { icon ->
                 drawIconFitCenter(canvas, icon, iconBox)
             }
