@@ -34,6 +34,9 @@ paths, device captures, or generated build directories.
 ## Code and dependency changes
 
 - Keep Camera2 lifecycle work separate from pure geometry and exposure math.
+- Treat `CameraController` as a lifecycle/routing facade: feature state, image analysis,
+  UI strings and persistence belong to their own owners. Read
+  [controller boundaries](docs/CAMERA_CONTROLLER_BOUNDARIES_ZH.md) before adding a responsibility.
 - Add or update unit tests for pure logic changes.
 - Preserve the existing application ID unless a deliberately incompatible app
   fork is being created.
