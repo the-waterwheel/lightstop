@@ -106,7 +106,16 @@ internal object ProcessedLumaMath {
         uCode: Int,
         vCode: Int,
         encoding: YuvColorEncoding,
-    ): EncodedRgb {
+    ): EncodedRgb = withEncodedRgb(yCode, uCode, vCode, encoding, ::EncodedRgb)
+
+    /** Same conversion with scalar channels: the region loop needs no per-pixel RGB object. */
+    inline fun <T> withEncodedRgb(
+        yCode: Int,
+        uCode: Int,
+        vCode: Int,
+        encoding: YuvColorEncoding,
+        consume: (red: Double, green: Double, blue: Double) -> T,
+    ): T {
         val y = when (encoding.range) {
             YuvCodeRange.FULL -> yCode.coerceIn(0, 255) / 255.0
             YuvCodeRange.LIMITED -> ((yCode.coerceIn(0, 255) - 16.0) / 219.0)
@@ -118,26 +127,66 @@ internal object ProcessedLumaMath {
         val kr = encoding.redLumaCoefficient
         val kb = encoding.blueLumaCoefficient
         val kg = encoding.greenLumaCoefficient
-        if (kr <= 0.0 || kb <= 0.0 || kg <= 0.0) return EncodedRgb(y, y, y)
+        if (kr <= 0.0 || kb <= 0.0 || kg <= 0.0) return consume(y, y, y)
         val red = y + 2.0 * (1.0 - kr) * cr
         val blue = y + 2.0 * (1.0 - kb) * cb
         val green = (y - kr * red - kb * blue) / kg
-        return EncodedRgb(
-            red = red.coerceIn(0.0, 1.0),
-            green = green.coerceIn(0.0, 1.0),
-            blue = blue.coerceIn(0.0, 1.0),
+        return consume(
+            red.coerceIn(0.0, 1.0),
+            green.coerceIn(0.0, 1.0),
+            blue.coerceIn(0.0, 1.0),
         )
     }
 
+    /** Exact median of the valid prefix, in place. No histogram quantization or sample reduction. */
     fun median(values: DoubleArray, size: Int = values.size): Double? {
         if (size <= 0 || size > values.size) return null
-        values.sort(0, size)
         val middle = size / 2
-        return if (size % 2 == 0) {
-            (values[middle - 1] + values[middle]) * 0.5
-        } else {
-            values[middle]
+        select(values, size, middle)
+        if (size % 2 != 0) return values[middle]
+        // Selection partitions the prefix around the upper middle. The lower middle is its max.
+        var lowerMiddle = values[0]
+        for (index in 1 until middle) {
+            if (values[index].compareTo(lowerMiddle) > 0) lowerMiddle = values[index]
         }
+        return (lowerMiddle + values[middle]) * 0.5
+    }
+
+    private fun select(values: DoubleArray, size: Int, target: Int) {
+        var left = 0
+        var right = size - 1
+        // Bound adversarial partitions; fall back to the old sort on the remaining subrange.
+        var budget = 2 * (32 - Integer.numberOfLeadingZeros(size))
+        while (left < right) {
+            if (right - left < 24 || budget-- <= 0) {
+                values.sort(left, right + 1)
+                return
+            }
+            val pivot = values[left + (right - left) / 2]
+            var lower = left
+            var current = left
+            var upper = right
+            while (current <= upper) {
+                // Match DoubleArray.sort ordering, including NaN and signed zero.
+                val order = values[current].compareTo(pivot)
+                when {
+                    order < 0 -> { swap(values, lower, current); lower++; current++ }
+                    order > 0 -> { swap(values, current, upper); upper-- }
+                    else -> current++
+                }
+            }
+            when {
+                target < lower -> right = lower - 1
+                target > upper -> left = upper + 1
+                else -> return
+            }
+        }
+    }
+
+    private fun swap(values: DoubleArray, first: Int, second: Int) {
+        val temporary = values[first]
+        values[first] = values[second]
+        values[second] = temporary
     }
 }
 

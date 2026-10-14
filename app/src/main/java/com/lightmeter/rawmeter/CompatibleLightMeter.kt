@@ -31,8 +31,8 @@ internal interface CompatibleLightMeterListener {
  *
  * The preferred path consumes one YUV frame already produced by the preview session. If YUV is
  * absent or invalid, it takes one small TextureView bitmap instead. This component owns the YUV
- * timeout, reusable luma buffer and all compatible-measurement cancellation state; it never owns
- * the camera device, session, ImageReader or TextureView.
+ * timeout and all compatible-measurement cancellation state; per-frame YUV scratch belongs to
+ * YuvRegionAnalyzer. It never owns the camera device, session, ImageReader or TextureView.
  *
  * YUV callbacks and analysis run on the camera handler. TextureView access and listener callbacks
  * run on the main handler. [cancel] may be called during camera shutdown to invalidate both paths.

@@ -5,6 +5,7 @@ import android.opengl.EGL14
 import android.opengl.EGLConfig
 import android.opengl.EGLContext
 import android.opengl.EGLDisplay
+import android.opengl.EGLExt
 import android.opengl.EGLSurface
 import android.opengl.GLES11Ext
 import android.opengl.GLES20
@@ -442,7 +443,20 @@ internal class FilmNegativeRenderer(
         GLES20.glViewport(0, 0, outputDimensions[0], outputDimensions[1])
         draw(0)
         checkGl()
-        check(EGL14.eglSwapBuffers(display, window)) { "Preview swap failed: ${EGL14.eglGetError()}" }
+        if (!presentPreviewFrame(
+                cameraTimestampNs = inputTexture?.timestamp ?: 0L,
+                setPresentationTime = { timestamp ->
+                    check(EGLExt.eglPresentationTimeANDROID(display, window, timestamp)) {
+                        "Preview timestamp binding failed: ${EGL14.eglGetError()}"
+                    }
+                },
+                swapBuffers = {
+                    check(EGL14.eglSwapBuffers(display, window)) {
+                        "Preview swap failed: ${EGL14.eglGetError()}"
+                    }
+                },
+            )
+        ) return
         if (!firstFrameReported) {
             firstFrameReported = true
             onFirstFrame()
