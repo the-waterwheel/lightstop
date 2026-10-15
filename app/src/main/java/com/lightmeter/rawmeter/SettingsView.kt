@@ -22,6 +22,7 @@ class SettingsView(
     interface Listener {
         fun onCloseRequested()
         fun onSettingChanged(key: SettingKey)
+        fun onManualCombinationSelectionRequested()
         fun onSettingRejected(key: SettingKey, value: String)
         fun onActionRequested(key: SettingActionKey)
     }
@@ -53,6 +54,7 @@ class SettingsView(
     private var selectedSectionIndex = 0
     private var closeRect = RectF()
     private var nestedBackRect = RectF()
+    private val itemCardRect = RectF()
     private var tabRects: List<RectF> = emptyList()
     private var tabSections: List<SettingsSectionSpec> = emptyList()
     private var optionTargets: List<OptionHitTarget> = emptyList()
@@ -195,6 +197,7 @@ class SettingsView(
         val bottomPadding = 18f * density
         val rowGap = 10f * density
         val rowHeight = if (width > height) 74f * density else 84f * density
+        val presetRowHeight = 42f * density
         val compactActionHeight = if (width > height) 48f * density else 54f * density
         val inlineActions = section.inlineActions.values.flatten()
         val allActions = inlineActions + section.actions
@@ -206,11 +209,13 @@ class SettingsView(
             -> compactActionHeight
             else -> rowHeight
         }
-        val rowCount = section.items.size + allActions.size
+        val visibleItems = section.items.filter(::isItemVisible)
+        val presetRows = visibleItems.count { it.key == SettingKey.METERING_PIPELINE }
+        val rowCount = visibleItems.size + allActions.size
         val contentHeight = topPadding +
-            section.items.size * rowHeight +
+            (visibleItems.size - presetRows) * rowHeight + presetRows * presetRowHeight +
             allActions.sumOf { actionHeight(it).toDouble() }.toFloat() +
-            max(0, rowCount - 1) * rowGap +
+            max(0, rowCount - 1 - presetRows) * rowGap +
             bottomPadding
         maxScrollOffset = max(0f, contentHeight - (height - headerHeight))
         scrollOffset = scrollOffset.coerceIn(0f, maxScrollOffset)
@@ -276,20 +281,32 @@ class SettingsView(
         }
         section.inlineActions[0].orEmpty().forEach(drawAction)
         section.items.forEachIndexed { itemIndex, item ->
-            val row = RectF(10f * density, y, width - 10f * density, y + rowHeight)
-            paint.style = Paint.Style.FILL
-            paint.color = InstrumentStyle.panel(state.isDarkMode)
-            canvas.drawRoundRect(row, 6f * density, 6f * density, paint)
+            if (!isItemVisible(item)) {
+                // Inline actions retain their original catalog anchors when a row is hidden.
+                section.inlineActions[itemIndex + 1].orEmpty().forEach(drawAction)
+                return@forEachIndexed
+            }
+            val preset = item.key == SettingKey.METERING_PIPELINE
+            val hasPresets = item.key == SettingKey.COMBINATION_SELECTION &&
+                state.meteringCombinationSelectionMode == MeteringCombinationSelectionMode.SYSTEM
+            val row = RectF(10f * density, y, width - 10f * density,
+                y + if (preset) presetRowHeight else rowHeight)
+            if (!preset) {
+                paint.style = Paint.Style.FILL
+                paint.color = InstrumentStyle.panel(state.isDarkMode)
+                val card = itemCardRect.apply {
+                    set(row)
+                    if (hasPresets) bottom += presetRowHeight
+                }
+                canvas.drawRoundRect(card, 6f * density, 6f * density, paint)
 
-            boldPaint.textSize = 11f * density
-            boldPaint.color = foreground
-            drawTextAtBaseline(
-                canvas,
-                item.label.resolve(state.menuLanguage),
-                row.left + 12f * density,
-                row.top + 23f * density,
-                boldPaint,
-            )
+                boldPaint.textSize = 11f * density
+                boldPaint.color = foreground
+                drawTextAtBaseline(
+                    canvas, item.label.resolve(state.menuLanguage),
+                    row.left + 12f * density, row.top + 23f * density, boldPaint,
+                )
+            }
 
             val optionTop = row.bottom - 36f * density
             val optionBottom = row.bottom - 8f * density
@@ -330,7 +347,7 @@ class SettingsView(
                 )
                 newTargets += OptionHitTarget(item, option, rect)
             }
-            y += rowHeight + rowGap
+            y += row.height() + if (hasPresets) 0f else rowGap
             section.inlineActions[itemIndex + 1].orEmpty().forEach(drawAction)
         }
         section.actions.forEach(drawAction)
@@ -358,7 +375,6 @@ class SettingsView(
 
     private fun accessibilityNodes(): List<CanvasAccessibilityHelper.VirtualNode> = buildList {
         accessibilityRects.clear()
-        var nextId = A11Y_DYNAMIC_BASE
         fun add(id: Int, rect: RectF, label: CharSequence, selected: Boolean = false) {
             accessibilityRects[id] = RectF(rect)
             add(CanvasAccessibilityHelper.VirtualNode(id, rect, label, selected))
@@ -381,7 +397,9 @@ class SettingsView(
         }
         optionTargets.forEach { target ->
             add(
-                nextId++,
+                // Hiding presets must not reassign their accessibility ids to other settings.
+                A11Y_DYNAMIC_BASE + target.item.key.ordinal * A11Y_OPTION_STRIDE +
+                    target.item.options.indexOf(target.option),
                 target.rect,
                 "${target.item.label.resolve(state.menuLanguage)}: " +
                     target.option.label.resolve(state.menuLanguage),
@@ -390,7 +408,7 @@ class SettingsView(
         }
         actionTargets.forEach { target ->
             add(
-                nextId++,
+                A11Y_ACTION_BASE + target.action.key.ordinal,
                 target.rect,
                 target.action.label.resolve(state.menuLanguage),
             )
@@ -493,7 +511,17 @@ class SettingsView(
             return
         }
         val target = optionTargets.firstOrNull { it.rect.contains(x, y) } ?: return
-        if (state.settingValue(target.item.key) == target.option.value) return
+        if (!isItemVisible(target.item)) return
+        if (state.settingValue(target.item.key) == target.option.value) {
+            // Manual selection remains an entry point even after a workflow has been confirmed.
+            if (target.item.key == SettingKey.COMBINATION_SELECTION &&
+                target.option.value == MeteringCombinationSelectionMode.MANUAL.name
+            ) {
+                haptic()
+                listener?.onManualCombinationSelectionRequested()
+            }
+            return
+        }
         if (!state.updateSetting(target.item.key, target.option.value)) {
             haptic()
             listener?.onSettingRejected(target.item.key, target.option.value)
@@ -503,6 +531,10 @@ class SettingsView(
         listener?.onSettingChanged(target.item.key)
         invalidate()
     }
+
+    private fun isItemVisible(item: SettingItemSpec): Boolean =
+        item.key != SettingKey.METERING_PIPELINE ||
+            state.meteringCombinationSelectionMode == MeteringCombinationSelectionMode.SYSTEM
 
     private fun haptic() {
         performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
@@ -535,5 +567,7 @@ class SettingsView(
         private const val A11Y_BACK = 2
         private const val A11Y_TAB_BASE = 10
         private const val A11Y_DYNAMIC_BASE = 1_000
+        private const val A11Y_OPTION_STRIDE = 16
+        private const val A11Y_ACTION_BASE = 2_000
     }
 }

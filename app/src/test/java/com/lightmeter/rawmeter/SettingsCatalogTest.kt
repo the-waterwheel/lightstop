@@ -11,9 +11,9 @@ class SettingsCatalogTest {
         val selection = metering.items.single { it.key == SettingKey.COMBINATION_SELECTION }
         val engine = metering.items.single { it.key == SettingKey.METERING_PIPELINE }
 
-        assertEquals("测光组合选择", selection.label.resolve(MenuLanguage.CHINESE))
+        assertEquals("系统测光组合", selection.label.resolve(MenuLanguage.CHINESE))
         assertEquals(
-            "Metering combination selection",
+            "System metering combination",
             selection.label.resolve(MenuLanguage.ENGLISH),
         )
         assertEquals(
@@ -23,7 +23,7 @@ class SettingsCatalogTest {
             ),
             selection.options.map { it.value },
         )
-        assertEquals("系统测光模式", engine.label.resolve(MenuLanguage.CHINESE))
+        assertEquals("系统测光组合", engine.label.resolve(MenuLanguage.CHINESE))
 
         assertEquals(
             listOf(
@@ -34,14 +34,14 @@ class SettingsCatalogTest {
             engine.options.map { it.value },
         )
         assertEquals(
-            listOf("高精度（推荐）", "稳定模式", "兼容模式"),
+            listOf("高精度", "稳定", "兼容"),
             engine.options.map { it.label.resolve(MenuLanguage.CHINESE) },
         )
         assertEquals(
             listOf(
-                "High accuracy (recommended)",
+                "High accuracy",
                 "Stable",
-                "Compatibility mode",
+                "Compatibility",
             ),
             engine.options.map { it.label.resolve(MenuLanguage.ENGLISH) },
         )

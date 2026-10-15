@@ -264,6 +264,20 @@ class MeterLayout @JvmOverloads constructor(
                 }
             }
             settingsView.listener = object : SettingsView.Listener {
+                private fun notifyCombinationSelection() {
+                    val notify: () -> Unit = {
+                        value?.onCombinationSelectionModeChanged(state.meteringCombinationSelectionMode)
+                        Unit
+                    }
+                    if (settingsOpenedFromZone &&
+                        state.meteringCombinationSelectionMode == MeteringCombinationSelectionMode.MANUAL
+                    ) {
+                        exitZoneForAction(notify)
+                    } else {
+                        notify()
+                    }
+                }
+
                 override fun onCloseRequested() {
                     closeSettings()
                 }
@@ -281,22 +295,11 @@ class MeterLayout @JvmOverloads constructor(
                     settingsView.invalidate()
                     value?.onControlsChanged(frameChanged)
                     if (key == SettingKey.COMBINATION_SELECTION) {
-                        val notifySelectionChange: () -> Unit = {
-                            value?.onCombinationSelectionModeChanged(
-                                state.meteringCombinationSelectionMode,
-                            )
-                            Unit
-                        }
-                        if (settingsOpenedFromZone &&
-                            state.meteringCombinationSelectionMode ==
-                            MeteringCombinationSelectionMode.MANUAL
-                        ) {
-                            exitZoneForAction(notifySelectionChange)
-                        } else {
-                            notifySelectionChange()
-                        }
+                        notifyCombinationSelection()
                     }
                 }
+
+                override fun onManualCombinationSelectionRequested() = notifyCombinationSelection()
 
                 override fun onSettingRejected(key: SettingKey, rejectedValue: String) {
                     value?.onSettingRejected(key, rejectedValue)
