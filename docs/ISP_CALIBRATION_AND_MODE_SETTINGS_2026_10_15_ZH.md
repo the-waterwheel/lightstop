@@ -11,6 +11,10 @@
 
 组合不只是 RAW/YUV/ISP 的名称，还包括普通测光与 Zone 跟踪分别常驻哪些输出、测光时是否临时切换到独立 RAW 会话，以及恢复哪种会话。两个设置因此分别管理自动策略与组合选择方式。
 
+它们属于同一套组合选择机制的两个层级，最终决定一条实际测光工作流：先决定“自动选择还是手动选择”，自动选择时再决定“按高精度、稳定还是兼容策略筛选”。例如自动高精度和手动确认同一个 RAW 组合，最终可以使用相同工作流；手动确认 YUV 组合时，自动策略中的“高精度”不会把该组合改回 RAW。当前把两个层级平铺成独立设置，容易让人误以为有两套同时执行的测光方式。
+
+提交备注：ISP 迟到元数据配对修复为 `cf5eed5`，前置显示时间戳修复为 `c0a3ffb`；前者已通过下述 639 项测试。本次仅补充设置层级和提交关系的说明，不改动运行行为。
+
 代码依据：`SettingsCatalog`、`CameraCombinationPolicy.planAllowedByMode`、`CameraOpenConfigurationResolver` 的 matrixCandidates/systemCandidates，以及 `CameraController` 的手动/自动组合分支。
 
 ## 高精度模式为何仍校准 ISP
