@@ -27,6 +27,7 @@ internal data class MeteringFrameStat(
     val saturatedChannelCount: Int = 0,
     /** Valid RAW samples used for the median, for quality assessment. */
     val sampleCount: Int = 0,
+    val evaluative: EvaluativeFrameStats? = null,
 )
 
 internal data class RawColorSample(
@@ -50,7 +51,14 @@ internal object MeteringAnalysis {
         calibrationStore: CameraCalibrationStore,
         target: ZoneMeteringTarget? = null,
         meteringRoiFraction: Float? = null,
+        evaluativeViewport: EvaluativeMeteringViewport? = null,
     ): MeteringFrameStat? {
+        if (meteringMode == MeteringMode.AVERAGE) {
+            if (target != null) return null // Global statistics must never replace a Zone point.
+            return evaluativeViewport?.let {
+                EvaluativeFrameAnalyzer.preview(bitmap, result, characteristics, cameraId, calibrationStore, it)
+            }
+        }
         val centerX = target?.previewX ?: 0.5f
         val centerY = target?.previewY ?: 0.5f
         val lumaDecoder = ProcessedLumaMetadata.decoder(result)
@@ -113,7 +121,12 @@ internal object MeteringAnalysis {
         meteringMode: MeteringMode,
         calibrationStore: CameraCalibrationStore,
         meteringRoiFraction: Float? = null,
+        evaluativeViewport: EvaluativeMeteringViewport? = null,
+        previewGeometry: PreviewStreamGeometry? = null,
     ): MeteringFrameStat? {
+        if (meteringMode == MeteringMode.AVERAGE) return evaluativeViewport?.let {
+            EvaluativeFrameAnalyzer.yuv(image, result, characteristics, cameraId, calibrationStore, it, previewGeometry)
+        }
         if (image.format != android.graphics.ImageFormat.YUV_420_888) return null
         val planes = image.planes
         if (planes.size < 3 || image.width <= 1 || image.height <= 1) return null
@@ -181,6 +194,12 @@ internal object MeteringAnalysis {
         applyVignettingCalibration: Boolean = false,
         meteringRoiFraction: Float? = null,
     ): MeteringFrameStat? {
+        if (meteringMode == MeteringMode.AVERAGE) {
+            if (rawMeterPoint != null) return null
+            return EvaluativeFrameAnalyzer.raw(
+                image, result, characteristics, cameraInfo, frameAspect, zoom, calibrationStore, vignettingStore,
+            )
+        }
         val plane = image.planes.firstOrNull() ?: return null
         val black = result.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)
             ?: fixedBlackLevels(characteristics)
@@ -205,22 +224,26 @@ internal object MeteringAnalysis {
             rawMeterPoint = rawMeterPoint,
             preservePhysicalAngle = meteringMode == MeteringMode.ANGLE,
         )
+        var saturatedChannelCount = RawExposureRetryPolicy.saturatedChannelCount(spotValues)
         val values = if (meteringMode == MeteringMode.CENTER_WEIGHTED) {
+            val wideValues = analyzeRawRegion(
+                image = image,
+                bufferOffset = bufferOffset,
+                cfa = cfa,
+                black = black,
+                white = white,
+                activeArray = cameraInfo.activeArray,
+                frameAspect = frameAspect,
+                zoom = zoom,
+                roiFraction = CENTER_WEIGHTED_ROI_FRACTION,
+                rawMeterPoint = rawMeterPoint,
+                preservePhysicalAngle = false,
+            )
+            // Check the contributing regions before blending can hide a clipped metering point.
+            saturatedChannelCount = maxOf(saturatedChannelCount, RawExposureRetryPolicy.saturatedChannelCount(wideValues))
             blendRawRegions(
                 spotValues,
-                analyzeRawRegion(
-                    image = image,
-                    bufferOffset = bufferOffset,
-                    cfa = cfa,
-                    black = black,
-                    white = white,
-                    activeArray = cameraInfo.activeArray,
-                    frameAspect = frameAspect,
-                    zoom = zoom,
-                    roiFraction = CENTER_WEIGHTED_ROI_FRACTION,
-                    rawMeterPoint = rawMeterPoint,
-                    preservePhysicalAngle = false,
-                ),
+                wideValues,
             )
         } else {
             spotValues
@@ -310,9 +333,7 @@ internal object MeteringAnalysis {
             aperture = aperture,
             ev100BeforeUserCalibration = cameraEv + log2(luma / RAW_REFERENCE_LEVEL) + baselineCalibrationEv,
             appliedUserCorrectionEv = userCalibrationEv,
-            saturatedChannelCount = (0..3).count {
-                values[it] >= RawExposureRetryPolicy.CHANNEL_SATURATION_LEVEL
-            },
+            saturatedChannelCount = saturatedChannelCount,
             sampleCount = values[5].toInt(),
         )
     }
@@ -649,7 +670,7 @@ internal object MeteringAnalysis {
         return Rect(left, top, left + roiSize, top + roiSize)
     }
 
-    private fun rawMeterCrop(
+    internal fun rawMeterCrop(
         imageWidth: Int,
         imageHeight: Int,
         reportedActiveArray: Rect?,
@@ -723,7 +744,7 @@ internal object MeteringAnalysis {
         }
     }
 
-    private fun centeredCrop(bounds: RectF, aspect: Float, zoom: Float): RectF {
+    internal fun centeredCrop(bounds: RectF, aspect: Float, zoom: Float): RectF {
         val safeAspect = aspect.coerceAtLeast(0.01f)
         var cropWidth = bounds.width()
         var cropHeight = bounds.height()

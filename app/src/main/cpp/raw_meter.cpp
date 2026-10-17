@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "evaluative_raw_sampler.h"
+
 namespace {
 
 int channel_for_position(int cfa, int x, int y) {
@@ -51,6 +53,46 @@ float median(std::vector<float>& values) {
 constexpr int kMaxSamplesPerChannel = 65'536;
 
 } // namespace
+
+extern "C"
+JNIEXPORT jdoubleArray JNICALL
+Java_com_lightmeter_rawmeter_RawMeterBridge_sampleEvaluativeRaw(
+        JNIEnv* env, jobject, jobject buffer, jint offset, jint limit,
+        jint width, jint height, jint row_stride, jint pixel_stride,
+        jint cfa, jfloatArray black_array, jint white,
+        jint left, jint top, jint right, jint bottom, jdoubleArray coefficients_array,
+        jint shading_columns, jint shading_rows, jfloatArray shading_bounds, jfloatArray shading_gains) {
+    const auto* bytes = static_cast<const uint8_t*>(env->GetDirectBufferAddress(buffer));
+    const auto capacity = env->GetDirectBufferCapacity(buffer);
+    std::vector<double> values;
+    if (bytes && limit >= 0 && limit <= capacity && black_array && coefficients_array &&
+        env->GetArrayLength(black_array) == 4 && env->GetArrayLength(coefficients_array) == 4) {
+        std::array<float, 4> black{};
+        std::array<double, 4> coefficients{};
+        env->GetFloatArrayRegion(black_array, 0, 4, black.data());
+        env->GetDoubleArrayRegion(coefficients_array, 0, 4, coefficients.data());
+        evaluative::Shading shading;
+        if (shading_columns >= 2 && shading_columns <= 256 && shading_rows >= 2 && shading_rows <= 256 &&
+            shading_bounds && env->GetArrayLength(shading_bounds) == 4 && shading_gains &&
+            env->GetArrayLength(shading_gains) == shading_columns * shading_rows) {
+            std::array<float, 4> bounds{};
+            env->GetFloatArrayRegion(shading_bounds, 0, 4, bounds.data());
+            shading.columns = shading_columns;
+            shading.rows = shading_rows;
+            shading.left = bounds[0]; shading.top = bounds[1];
+            shading.right = bounds[2]; shading.bottom = bounds[3];
+            shading.gains.resize(shading_columns * shading_rows);
+            env->GetFloatArrayRegion(shading_gains, 0, shading.gains.size(), shading.gains.data());
+        }
+        if (!env->ExceptionCheck()) values = evaluative::sample(
+            bytes, limit, offset, width, height, row_stride, pixel_stride, cfa, black, white,
+            left, top, right, bottom, coefficients, shading);
+    }
+    if (env->ExceptionCheck()) return nullptr;
+    auto output = env->NewDoubleArray(values.size());
+    if (output && !values.empty()) env->SetDoubleArrayRegion(output, 0, values.size(), values.data());
+    return output;
+}
 
 extern "C"
 JNIEXPORT jdoubleArray JNICALL

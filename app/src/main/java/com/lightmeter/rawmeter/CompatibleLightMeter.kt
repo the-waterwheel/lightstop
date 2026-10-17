@@ -18,6 +18,8 @@ internal data class CompatibleMeteringContext(
     val takeResultForTimestamp: (Long) -> CaptureResult?,
     val characteristics: () -> CameraCharacteristics?,
     val cameraId: () -> String,
+    val evaluativeViewport: EvaluativeMeteringViewport? = null,
+    val previewGeometry: PreviewStreamGeometry? = null,
 )
 
 internal interface CompatibleLightMeterListener {
@@ -216,6 +218,8 @@ internal class CompatibleLightMeter(
                 measurement.meteringMode,
                 calibrationStore,
                 measurement.meteringRoiFraction,
+                measurement.context.evaluativeViewport,
+                measurement.context.previewGeometry,
             )
         } else {
             null
@@ -373,6 +377,7 @@ internal class CompatibleLightMeter(
                 MeteringAnalysis.analyzePreview(
                     capture.bitmap, result, characteristics, capture.context.cameraId(),
                     capture.meteringMode, calibrationStore, capture.target, capture.meteringRoiFraction,
+                    capture.context.evaluativeViewport,
                 )
             }
         } finally {

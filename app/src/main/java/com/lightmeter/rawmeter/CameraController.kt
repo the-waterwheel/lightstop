@@ -50,6 +50,7 @@ import kotlin.math.roundToInt
 class CameraController(
     private val context: Context,
     private val callback: CameraControllerCallback,
+    private val meteringViewport: () -> EvaluativeMeteringViewport? = { null },
 ) : TextureView.SurfaceTextureListener {
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -2254,6 +2255,8 @@ class CameraController(
         takeResultForTimestamp = previewResultStore::takeExact,
         characteristics = { characteristics },
         cameraId = ::calibrationCameraId,
+        evaluativeViewport = meteringViewport(),
+        previewGeometry = geometryContext.preview,
     )
 
     private fun measureProcessedPreview(

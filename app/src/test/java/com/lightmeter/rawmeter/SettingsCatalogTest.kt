@@ -59,6 +59,7 @@ class SettingsCatalogTest {
                 MeteringMode.CENTER_WEIGHTED.name,
                 MeteringMode.SPOT.name,
                 MeteringMode.ANGLE.name,
+                MeteringMode.AVERAGE.name,
             ),
             area.options.map { it.value },
         )

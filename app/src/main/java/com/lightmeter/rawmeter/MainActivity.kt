@@ -130,7 +130,7 @@ class MainActivity : Activity(), CameraControllerCallback {
                 meterLayout.setParameterLocationState(ParameterLocationDisplayState.NO_FIX)
             },
         )
-        cameraController = CameraController(this, this)
+        cameraController = CameraController(this, this, meterLayout::evaluativeMeteringViewport)
         appliedPipelineMode = state.meteringPipelineMode
         cameraController.setMeteringPipelineMode(state.meteringPipelineMode)
         cameraController.setCombinationSelectionMode(state.meteringCombinationSelectionMode)
@@ -461,6 +461,7 @@ class MainActivity : Activity(), CameraControllerCallback {
                 target: ZoneMeteringTarget?,
             ): Boolean {
                 if (zoneMeasurementPending || meteringInteractionBusy) return false
+                if (!canStartZoneMetering()) return false
                 zoneMeasurementPending = true
                 state.measuring = true
                 meterLayout.zoneView.invalidate()
@@ -468,7 +469,7 @@ class MainActivity : Activity(), CameraControllerCallback {
                     state.frameFormat,
                     state.frameLandscape,
                     state.zoom,
-                    state.meteringMode,
+                    MeteringAreaPolicy.zoneMode(state.meteringMode),
                     target,
                     meteringAngleDegrees = state.angleMeteringDegrees,
                 )
@@ -505,6 +506,7 @@ class MainActivity : Activity(), CameraControllerCallback {
                     ).show()
                     return
                 }
+                if (!canStartZoneMetering()) return
                 val requests = meterLayout.beginZoneRemeasureBatch(markerIds)
                 if (requests.isEmpty()) {
                     Toast.makeText(
@@ -531,7 +533,7 @@ class MainActivity : Activity(), CameraControllerCallback {
                     state.frameFormat,
                     state.frameLandscape,
                     state.zoom,
-                    state.meteringMode,
+                    MeteringAreaPolicy.zoneMode(state.meteringMode),
                     requests,
                     meteringAngleDegrees = state.angleMeteringDegrees,
                 )
@@ -1395,10 +1397,9 @@ class MainActivity : Activity(), CameraControllerCallback {
             return
         }
         state.measuring = false
-        state.lastReading = reading
-        state.lastNormalReading = reading
-        state.sceneEv100 = reading.sceneEv100
+        state.acceptNormalReading(reading)
         state.transientMessage = when {
+            reading.evaluative != null -> EvaluativeMeteringPresentation.message(reading.evaluative, state.menuLanguage)
             reading.source != MeteringSource.RAW ->
                 localized(
                     "预览流测光完成 · EV ${"%.1f".format(reading.sceneEv100)}",
@@ -1558,7 +1559,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             state.frameFormat,
             state.frameLandscape,
             state.zoom,
-            state.meteringMode,
+            MeteringAreaPolicy.localMode(state.meteringMode),
             meteringAngleDegrees = state.angleMeteringDegrees,
             requestedSource = step.source,
         )
@@ -1943,6 +1944,12 @@ class MainActivity : Activity(), CameraControllerCallback {
             }
             .setOnDismissListener { compatibilityModeDialogVisible = false }
             .show()
+    }
+
+    private fun canStartZoneMetering(): Boolean {
+        if (MeteringAreaPolicy.canSelect(MeteringAreaPolicy.zoneMode(state.meteringMode), state.meteringPipelineMode)) return true
+        showAngleCompatibilityWarning()
+        return false
     }
 
     private fun showAngleCompatibilityWarning() {

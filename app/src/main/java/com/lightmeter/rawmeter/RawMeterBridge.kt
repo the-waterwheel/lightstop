@@ -26,4 +26,14 @@ object RawMeterBridge {
         roiWidth: Int,
         roiHeight: Int,
     ): DoubleArray
+
+    /** Clipped/dark area, sample count, then bounded local linear luminances. */
+    external fun sampleEvaluativeRaw(
+        buffer: ByteBuffer, bufferOffset: Int, bufferLimit: Int,
+        width: Int, height: Int, rowStride: Int, pixelStride: Int,
+        cfa: Int, blackLevels: FloatArray, whiteLevel: Int,
+        left: Int, top: Int, right: Int, bottom: Int,
+        lumaCoefficients: DoubleArray,
+        shadingColumns: Int, shadingRows: Int, shadingBounds: FloatArray, shadingGains: FloatArray,
+    ): DoubleArray
 }

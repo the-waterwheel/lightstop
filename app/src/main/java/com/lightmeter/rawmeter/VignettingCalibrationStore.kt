@@ -288,6 +288,11 @@ internal class VignettingCalibrationStore(context: Context) {
             .toDouble()
     }
 
+    /** Pin one validated immutable map for a synchronous whole-frame scan. */
+    @Synchronized
+    fun measurementMap(cameraId: String): VignettingCalibrationMap? =
+        load(cameraId)?.takeIf { activeContext == null || signatureState(cameraId).isApplicable }
+
     private fun fileFor(cameraId: String): File {
         val encoded = Base64.getUrlEncoder().withoutPadding()
             .encodeToString(cameraId.toByteArray(Charsets.UTF_8))

@@ -102,6 +102,7 @@ object SettingsCatalog {
                         ),
                         option(MeteringMode.SPOT, "点测光", "Spot"),
                         option(MeteringMode.ANGLE, "按角度测光", "Angle"),
+                        option(MeteringMode.AVERAGE, "全局测光", "Global"),
                     ),
                 ),
                 SettingItemSpec(

@@ -11,41 +11,65 @@ internal data class RawExposureRetryInput(
     val currentStage: Int,
     /** Diagnostic only; never triggers a retry by itself. */
     val clippedFraction: Double,
+    /** A whole-frame algorithm's actually used bright-end statistic was censored. */
+    val statisticsClipped: Boolean = false,
+    val meteringMode: MeteringMode = MeteringMode.SPOT,
 )
 
 /**
  * Pure state policy for RAW exposure recaptures.
  *
- * A saturated-pixel fraction is deliberately not a quality gate: a few specular highlights do not
- * distort a robust per-channel median. A recapture is requested only when the statistic actually
- * used for metering is pinned at the white level, i.e. enough channel medians are saturated.
+ * Saturated-pixel fraction is diagnostic. Local modes use channel medians and five-EV steps;
+ * average metering supplies its bright-end censoring evidence and uses three-EV steps.
+ * Both continue until their statistic clears or the camera cannot reduce exposure further.
  */
 internal object RawExposureRetryPolicy {
-    const val EXPOSURE_STEP_EV = 3
-    const val MAX_RECAPTURE_STAGE = 2
+    private const val AVERAGE_EXPOSURE_STEP_EV = 3
+    private const val LOCAL_EXPOSURE_STEP_EV = 5
     const val SINGLE_FRAME_COUNT = 1
 
     /** Normalized median at which a channel's typical value is effectively at the white level. */
     const val CHANNEL_SATURATION_LEVEL = 0.985
 
-    /** Two saturated channel medians (for example both green channels) indicate a distorted read. */
-    const val REQUIRED_SATURATED_CHANNELS = 2
+    /** Even one clipped channel median can bias the local brightness reading. */
+    const val REQUIRED_SATURATED_CHANNELS = 1
+
+    fun saturatedChannelCount(channelMedians: DoubleArray): Int =
+        if (channelMedians.size < 4) 0 else (0..3).count { channelMedians[it] >= CHANNEL_SATURATION_LEVEL }
+
+    private fun exposureStepEv(mode: MeteringMode): Int =
+        if (mode == MeteringMode.AVERAGE) AVERAGE_EXPOSURE_STEP_EV else LOCAL_EXPOSURE_STEP_EV
 
     fun nextStage(input: RawExposureRetryInput): Int? {
-        if (input.currentStage >= MAX_RECAPTURE_STAGE) return null
-        val statisticsDistorted =
-            input.saturatedChannelCount >= REQUIRED_SATURATED_CHANNELS
+        val step = exposureStepEv(input.meteringMode)
+        if (input.currentStage < 0 || input.currentStage >= Int.MAX_VALUE / step) return null
+        val statisticsDistorted = if (input.meteringMode == MeteringMode.AVERAGE) input.statisticsClipped
+            else input.saturatedChannelCount >= REQUIRED_SATURATED_CHANNELS
         return if (statisticsDistorted) input.currentStage + 1 else null
     }
 
-    fun exposureReductionEv(stage: Int): Int =
-        stage.coerceIn(0, MAX_RECAPTURE_STAGE) * EXPOSURE_STEP_EV
+    fun exposureReductionEv(stage: Int, meteringMode: MeteringMode = MeteringMode.SPOT): Int {
+        val step = exposureStepEv(meteringMode)
+        return stage.coerceIn(0, Int.MAX_VALUE / step) * step
+    }
 }
 
 internal data class ManualExposurePlan(
     val exposureTimeNs: Long,
     val sensitivity: Int,
 )
+
+/** Stop at the sensor/AE boundary instead of resubmitting an identical clipped exposure forever. */
+internal object RawExposureRetryProgressPolicy {
+    fun canReduceManual(current: ManualExposurePlan, next: ManualExposurePlan): Boolean =
+        current.exposureTimeNs > 0 && current.sensitivity > 0 &&
+            next.exposureTimeNs > 0 && next.sensitivity > 0 &&
+            next.exposureTimeNs.toDouble() * next.sensitivity <
+            current.exposureTimeNs.toDouble() * current.sensitivity
+
+    fun canReduceAeCompensation(currentSteps: Int?, nextSteps: Int?): Boolean =
+        nextSteps != null && nextSteps < (currentSteps ?: 0)
+}
 
 /** Converts an EV reduction into a bounded manual sensor exposure. */
 internal object ExposureReductionPlanner {

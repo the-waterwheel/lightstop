@@ -123,6 +123,7 @@ data class MeterReading(
     val source: MeteringSource = MeteringSource.RAW,
     /** Present only when this reading can be used for a calibration save. */
     val calibrationSample: CalibrationMeasurementSample? = null,
+    val evaluative: EvaluativeMeteringResult? = null,
 )
 
 /** A Zone touch expressed in both the film-frame viewport and the full preview TextureView. */
@@ -184,6 +185,7 @@ enum class MeteringMode {
     CENTER_WEIGHTED,
     SPOT,
     ANGLE,
+    AVERAGE, // Stable preference identifier; displayed as Global metering.
 }
 
 enum class MeteringPipelineMode {
@@ -373,10 +375,14 @@ class MeterState(context: Context) {
             persist()
         }
 
-    var meteringMode: MeteringMode = preferences.enumValue(
-        "metering_mode",
-        MeteringMode.CENTER_WEIGHTED,
+    private val meteringModeSelection = MeteringModeSelection(
+        preferences.enumValue("metering_mode", MeteringMode.CENTER_WEIGHTED),
     )
+    var meteringMode: MeteringMode
+        get() = meteringModeSelection.current
+        set(value) { meteringModeSelection.current = value }
+
+    internal fun setZoneMeteringActive(active: Boolean) = meteringModeSelection.setZoneActive(active)
 
     var angleMeteringDegrees: Int = AngleMeteringMath.nearestSelectableDegrees(
         preferences.getInt(
@@ -442,6 +448,19 @@ class MeterState(context: Context) {
     val isLeftHanded: Boolean get() = handedness == Handedness.LEFT
 
     var sceneEv100: Double? = null
+        set(value) {
+            field = value
+            automaticMeteringReductionEv = 0.0
+        }
+    internal var automaticMeteringReductionEv: Double = 0.0
+        private set
+
+    internal fun acceptNormalReading(reading: MeterReading) {
+        lastReading = reading
+        lastNormalReading = reading
+        sceneEv100 = reading.sceneEv100
+        automaticMeteringReductionEv = reading.evaluative?.exposureReductionEv ?: 0.0
+    }
     internal val parameterRecordDistanceMemory = ParameterRecordDistanceMemory()
     var lastReading: MeterReading? = null
         set(value) {
@@ -473,7 +492,7 @@ class MeterState(context: Context) {
     var transientMessage: String? = null
 
     val ambientEffectiveEv100: Double?
-        get() = sceneEv100?.minus(exposureCompEv)
+        get() = sceneEv100?.plus(automaticMeteringReductionEv)?.minus(exposureCompEv)
 
     val effectiveEv100: Double?
         get() = ambientEffectiveEv100?.let { ambient ->
@@ -965,7 +984,7 @@ class MeterState(context: Context) {
             .putString("aperture_step", apertureStep.name)
             .putString("shutter_step", shutterStep.name)
             .putString("exposure_compensation_step", exposureCompensationStep.name)
-            .putString("metering_mode", meteringMode.name)
+            .putString("metering_mode", meteringModeSelection.normalMode.name)
             .putString("metering_pipeline_mode", meteringPipelineMode.name)
             .putString(
                 "metering_combination_selection_mode",
