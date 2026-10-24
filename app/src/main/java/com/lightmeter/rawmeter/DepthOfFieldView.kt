@@ -46,6 +46,7 @@ class DepthOfFieldView(
 
     private val density get() = layoutDensity(LayoutProfile.TOOL)
     private val scaledDensity get() = layoutTextDensity(LayoutProfile.TOOL)
+    private val chrome = ToolChromeRenderer()
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
@@ -54,7 +55,7 @@ class DepthOfFieldView(
     private val boldPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
-        typeface = Typeface.create("sans-serif", Typeface.BOLD)
+        typeface = InstrumentStyle.labelTypeface
     }
     private val path = Path()
     private var geometry = DepthOfFieldGeometry.EMPTY
@@ -162,43 +163,12 @@ class DepthOfFieldView(
     }
 
     private fun drawHeader(canvas: Canvas) {
-        val centerY = geometry.headerBack.centerY()
-        paint.color = foreground
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 1.6f * density
-        canvas.drawLine(
-            geometry.headerBack.centerX() + 5f * density,
-            centerY - 8f * density,
-            geometry.headerBack.centerX() - 4f * density,
-            centerY,
-            paint,
-        )
-        canvas.drawLine(
-            geometry.headerBack.centerX() - 4f * density,
-            centerY,
-            geometry.headerBack.centerX() + 5f * density,
-            centerY + 8f * density,
-            paint,
-        )
-        val closeX = geometry.headerClose.centerX()
-        canvas.drawLine(closeX - 7f * density, centerY - 7f * density, closeX + 7f * density, centerY + 7f * density, paint)
-        canvas.drawLine(closeX + 7f * density, centerY - 7f * density, closeX - 7f * density, centerY + 7f * density, paint)
-        boldPaint.color = foreground
-        boldPaint.textSize = 14f * scaledDensity
-        boldPaint.textAlign = Paint.Align.CENTER
-        drawTextCentered(
-            canvas,
-            localized("景深计算", "Depth of field"),
-            width / 2f,
-            centerY,
-            boldPaint,
-        )
-        paint.style = Paint.Style.FILL
-        paint.color = muted
-        canvas.drawRect(0f, geometry.headerBack.bottom - density, width.toFloat(), geometry.headerBack.bottom, paint)
+        chrome.header(canvas, width.toFloat(), geometry.headerBack, geometry.headerClose,
+            localized("景深计算", "Depth of field"), density, scaledDensity, state.isDarkMode)
     }
 
     private fun drawDistanceRuler(canvas: Canvas) {
+        chrome.surface(canvas, geometry.ruler, density, state.isDarkMode)
         val lineLeft = geometry.ruler.left + 17f * density
         val lineRight = geometry.ruler.right - 17f * density
         val rulerY = geometry.ruler.top + 24f * density
@@ -344,6 +314,12 @@ class DepthOfFieldView(
         paint.strokeWidth = 1.25f * density
         paint.color = foreground
         canvas.drawCircle(centerX, centerY, radius - 0.8f * density, paint)
+        paint.style = Paint.Style.FILL
+        paint.color = background
+        canvas.drawCircle(centerX, centerY, radius * 0.70f, paint)
+        paint.style = Paint.Style.STROKE
+        paint.color = InstrumentStyle.border(state.isDarkMode)
+        paint.strokeWidth = density
         canvas.drawCircle(centerX, centerY, radius * 0.70f, paint)
 
         for (baseAngle in floatArrayOf(-90f, 90f)) {
@@ -392,11 +368,11 @@ class DepthOfFieldView(
     private fun drawSelector(canvas: Canvas, bounds: RectF, title: String, value: String) {
         paint.style = Paint.Style.FILL
         paint.color = panel
-        canvas.drawRoundRect(bounds, 5f * density, 5f * density, paint)
+        canvas.drawRoundRect(bounds, 8f * density, 8f * density, paint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1.1f * density
-        paint.color = foreground
-        canvas.drawRoundRect(bounds, 5f * density, 5f * density, paint)
+        paint.color = InstrumentStyle.border(state.isDarkMode)
+        canvas.drawRoundRect(bounds, 8f * density, 8f * density, paint)
         paint.style = Paint.Style.FILL
         paint.color = secondaryStrong
         paint.textAlign = Paint.Align.CENTER

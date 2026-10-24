@@ -26,12 +26,13 @@ internal class ColorTemperatureView(
 
     var listener: Listener? = null
     private val density get() = layoutDensity(LayoutProfile.TOOL)
+    private val chrome = ToolChromeRenderer()
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         typeface = Typeface.create("sans", Typeface.NORMAL)
         strokeCap = Paint.Cap.ROUND
     }
     private val boldPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        typeface = Typeface.create("sans", Typeface.BOLD)
+        typeface = InstrumentStyle.labelTypeface
     }
     private val red = InstrumentStyle.red
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
@@ -100,24 +101,13 @@ internal class ColorTemperatureView(
             if (showingReference) "常见色温对照" else "白色温估算",
             if (showingReference) "Common color temperatures" else "Color temperature",
         )
-        boldPaint.textSize = fittedTextSize(title, width - 100f * density, 17f, 11f)
-        centeredText(canvas, title, width / 2f, geometry.headerHeight / 2f, boldPaint)
-        paint.color = foreground
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 1.8f * density
-        val cy = geometry.headerHeight / 2f
-        canvas.drawLine(22f * density, cy, 31f * density, cy - 8f * density, paint)
-        canvas.drawLine(22f * density, cy, 31f * density, cy + 8f * density, paint)
-        val cx = width - 24f * density
-        canvas.drawLine(cx - 7f * density, cy - 7f * density, cx + 7f * density, cy + 7f * density, paint)
-        canvas.drawLine(cx + 7f * density, cy - 7f * density, cx - 7f * density, cy + 7f * density, paint)
-        paint.color = if (state.isDarkMode) Color.rgb(76, 76, 72) else Color.rgb(205, 205, 200)
-        paint.style = Paint.Style.FILL
-        canvas.drawRect(0f, geometry.headerHeight - density, width.toFloat(), geometry.headerHeight, paint)
+        chrome.header(canvas, width.toFloat(), geometry.back, geometry.close, title,
+            density, layoutTextDensity(LayoutProfile.TOOL), state.isDarkMode)
     }
 
     private fun drawEstimator(canvas: Canvas) {
         val area = geometry.content
+        chrome.surface(canvas, RectF(area).apply { top += 8f * density }, density, state.isDarkMode)
         boldPaint.color = if (rawSupported) foreground else muted
         boldPaint.textSize = (30f * density).coerceAtMost(area.height() * 0.3f)
         val resultText = reading?.let { "${it.kelvin} K" } ?: "— — K"
@@ -186,17 +176,17 @@ internal class ColorTemperatureView(
 
     private fun drawButton(canvas: Canvas, rect: RectF, label: String, enabled: Boolean, emphasized: Boolean) {
         paint.style = Paint.Style.FILL
-        paint.color = if (measuring && emphasized) pressedFill else background
+        paint.color = if (measuring && emphasized) pressedFill else InstrumentStyle.control(state.isDarkMode)
         canvas.drawRoundRect(rect, 8f * density, 8f * density, paint)
         paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 1.7f * density
+        paint.strokeWidth = density
         paint.color = when {
-            !enabled -> muted
+            !enabled -> InstrumentStyle.border(state.isDarkMode)
             emphasized -> red
-            else -> foreground
+            else -> InstrumentStyle.border(state.isDarkMode)
         }
         canvas.drawRoundRect(rect, 8f * density, 8f * density, paint)
-        boldPaint.color = paint.color
+        boldPaint.color = if (!enabled) muted else foreground
         boldPaint.textSize = fittedTextSize(label, rect.width() - 12f * density, 11.5f, 7.5f)
         centeredText(canvas, label, rect.centerX(), rect.centerY(), boldPaint)
     }
