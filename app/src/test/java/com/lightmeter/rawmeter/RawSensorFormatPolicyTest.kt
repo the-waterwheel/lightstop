@@ -18,10 +18,10 @@ class RawSensorFormatPolicyTest {
     }
 
     @Test
-    fun rawMeteringNeedsCapabilityOutputNonLegacyHardwareAndBayerCfa() {
-        assertTrue(RawSensorFormatPolicy.supportsBayerMetering(true, true, false, 0))
-        assertFalse(RawSensorFormatPolicy.supportsBayerMetering(true, true, false, 4))
-        assertFalse(RawSensorFormatPolicy.supportsBayerMetering(true, true, true, 0))
-        assertFalse(RawSensorFormatPolicy.supportsBayerMetering(true, false, false, 0))
+    fun rawOutputAndBayerLayoutAreSufficientRegardlessOfCapabilityFlagsOrHardwareLevel() {
+        (0..3).forEach { cfa -> assertTrue(RawSensorFormatPolicy.supportsBayerMetering(true, cfa)) }
+        assertFalse(RawSensorFormatPolicy.supportsBayerMetering(true, 4))
+        assertFalse(RawSensorFormatPolicy.supportsBayerMetering(false, 0))
+        assertFalse(RawSensorFormatPolicy.supportsBayerMetering(true, null))
     }
 }

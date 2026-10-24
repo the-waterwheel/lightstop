@@ -8,13 +8,12 @@ package com.lightmeter.rawmeter
 internal object RawSensorFormatPolicy {
     fun isBayerCfa(colorFilterArrangement: Int?): Boolean = colorFilterArrangement in BAYER_CFAS
 
+    // Vendors can omit the RAW capability flag or report Legacy while exposing usable RAW.
+    // Trust the actual output declaration; CFA is needed to interpret the bytes correctly.
     fun supportsBayerMetering(
-        rawCapabilityAdvertised: Boolean,
         hasRawSensorOutput: Boolean,
-        isLegacyHardware: Boolean,
         colorFilterArrangement: Int?,
-    ): Boolean = rawCapabilityAdvertised && hasRawSensorOutput && !isLegacyHardware &&
-        isBayerCfa(colorFilterArrangement)
+    ): Boolean = hasRawSensorOutput && isBayerCfa(colorFilterArrangement)
 
     // CameraMetadata's arrangement values are stable back to API 21. Numeric values avoid
     // accidentally referencing a newer inline constant on an API-28 device build.

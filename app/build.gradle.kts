@@ -30,6 +30,7 @@ android {
         targetSdk = 36
         versionCode = 12
         versionName = "0.6.1"
+        testInstrumentationRunner = "com.lightmeter.rawmeter.DeviceMeteringInstrumentation"
 
         externalNativeBuild {
             cmake {

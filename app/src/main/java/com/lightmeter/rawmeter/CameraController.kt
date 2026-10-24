@@ -254,7 +254,6 @@ class CameraController(
                 if (zoneRaw.onReading(reading)) return
                 resumePreviewAfterRawCapture()
                 meteringOperationActive = false
-                recoveryState.recordRawMeasurementSucceeded()
                 mainHandler.post { callback.onMeterReading(freezeCalibrationSample(reading)) }
             }
 
@@ -262,7 +261,6 @@ class CameraController(
                 if (zoneRaw.onBatchReading(results)) return
                 resumePreviewAfterRawCapture()
                 meteringOperationActive = false
-                recoveryState.recordRawMeasurementSucceeded()
                 mainHandler.post { callback.onZoneMeteringBatchResult(results) }
             }
 
@@ -285,11 +283,7 @@ class CameraController(
                 val canUsePreview = textureView?.isAvailable == true &&
                     cameraDevice != null && captureSession != null
                 if (canUsePreview) {
-                    // A calibration-only RAW failure must not downgrade the user's normal
-                    // session. The coordinator will record the failed source and continue with
-                    // the dedicated YUV/ISP stages.
-                    downgradeAfterCompatibleMeasurement = calibrationStorageCameraId == null &&
-                        recoveryState.recordRawMeasurementFailed(meteringPipelineMode)
+                    // Fallback applies to this reading only. The next request still tries RAW.
                     measureCompatiblePreview(meteringMode, target, meteringRoiFraction)
                 } else {
                     meteringOperationActive = false
@@ -437,7 +431,6 @@ class CameraController(
     private var absoluteExposureMetadataAvailable = false
     private val recoveryState = CameraRecoveryStateMachine(
         maxRecoveryAttempts = MAX_TOTAL_RECOVERY_ATTEMPTS,
-        rawFailuresBeforeDowngrade = RAW_FAILURES_BEFORE_DOWNGRADE,
     )
     private val sessionProfile: CameraSessionProfile?
         get() = activeSessionProfile ?: calibrationSessionProfile ?: recoveryState.profile
@@ -467,11 +460,8 @@ class CameraController(
             override fun postInfo(info: CameraUiInfo) = this@CameraController.postInfo(info)
             override fun finishOperation(rawSucceeded: Boolean) {
                 meteringOperationActive = false
-                if (rawSucceeded) recoveryState.recordRawMeasurementSucceeded()
             }
             override fun fallbackToCompatible(failure: ZoneRawFailure) {
-                downgradeAfterCompatibleMeasurement = calibrationStorageCameraId == null &&
-                    recoveryState.recordRawMeasurementFailed(meteringPipelineMode)
                 measureCompatiblePreview(failure.meteringMode, failure.target, failure.meteringRoiFraction)
             }
             override fun postMeterError(message: String) = this@CameraController.postMeterError(message)
@@ -540,7 +530,6 @@ class CameraController(
         filmPreviewPreparingCapture = { filmPreview.isPreparingCapture },
         requestCharacteristics = { logicalCharacteristics ?: characteristics },
     )
-    private var downgradeAfterCompatibleMeasurement = false
     @Volatile
     private var meteringOperationActive = false
     private val zoneCameraFrames = ZoneCameraFramePipeline(
@@ -2281,13 +2270,11 @@ class CameraController(
             if (calibrationRunActive) {
                 // MainActivity may already have queued the next isolated source or the normal
                 // session restore. Do not race it with the ordinary YUV fallback downgrade.
-                downgradeAfterCompatibleMeasurement = false
                 return@post
             }
             if (isConfirmedRawWorkflow()) {
                 // A compatible frame may be explicitly requested for calibration, but it must
                 // never become a runtime replacement for the confirmed RAW workflow.
-                downgradeAfterCompatibleMeasurement = false
                 return@post
             }
             when {
@@ -2310,9 +2297,7 @@ class CameraController(
                             switchResidentSession(CameraSessionProfile.PREVIEW_ONLY)
                             return@post
                         }
-                        if (trackingFramesEnabled && recoveryState.profile?.usesRaw == true &&
-                            !downgradeAfterCompatibleMeasurement
-                        ) {
+                        if (trackingFramesEnabled && recoveryState.profile?.usesRaw == true) {
                             // Losing Zone YUV must not also disable a separately working RAW path.
                             zoneYuvSessionUnavailable = true
                             switchResidentSession(CameraSessionProfile.PREVIEW_ONLY)
@@ -2327,49 +2312,6 @@ class CameraController(
                             )
                         }
                     }
-                }
-                downgradeAfterCompatibleMeasurement -> {
-                    downgradeAfterCompatibleMeasurement = false
-                    if (!started || cameraDevice == null) return@post
-                    if (advanceSystemCombination(
-                            localized(
-                                "RAW 组合连续失败，正在测试下一个组合",
-                                "The RAW combination failed repeatedly. Testing the next one",
-                            ),
-                        )
-                    ) {
-                        return@post
-                    }
-                    val compatible = if (trackingHardwareAvailable && compatibleMeter.yuvAvailable) {
-                        CameraSessionProfile.COMPATIBLE
-                    } else {
-                        CameraSessionProfile.PREVIEW_ONLY
-                    }
-                    if (combinationSelectionMode == MeteringCombinationSelectionMode.MANUAL) {
-                        activeCombinationPlan = if (compatible == CameraSessionProfile.COMPATIBLE) {
-                            CameraCombinationPolicy.stableYuv
-                        } else {
-                            CameraCombinationPolicy.compatibilityIsp
-                        }
-                    }
-                    if (sessionProfile == compatible) {
-                        recoveryState.forceProfile(compatible)
-                        val readyInfo = cameraInfo.copy(
-                            rawAvailable = false,
-                            status = readyCameraStatus(),
-                        )
-                        cameraInfo = readyInfo
-                        postInfo(readyInfo)
-                        return@post
-                    }
-                    scheduleRecovery(
-                        compatible,
-                        localized(
-                            "RAW 流不可用，已改用预览流",
-                            "RAW is unavailable; using the preview stream",
-                        ),
-                        SESSION_RECOVERY_DELAY_MS,
-                    )
                 }
             }
         }
@@ -2991,7 +2933,6 @@ class CameraController(
         pendingSystemWorkflowProbePlanId = null
         manualSafePreviewActive = false
         zoneYuvSessionUnavailable = false
-        downgradeAfterCompatibleMeasurement = false
         frameRateController.resetForCamera()
         if (filmPreview.isEnabled) frameRateController.limitToStandardRate()
         previewHealth.resetRecoveryState()
@@ -3421,7 +3362,6 @@ class CameraController(
         zoneRaw.reset()
         pendingResidentSessionProfile = null
         meteringOperationActive = false
-        downgradeAfterCompatibleMeasurement = false
         previewRequests.resetCaptureState()
         vignettingCapture.cancel(cameraHandler)
         sessionCoordinator.close()
@@ -3499,6 +3439,5 @@ class CameraController(
         private const val SESSION_RECOVERY_DELAY_MS = 300L
         private const val STABLE_PREVIEW_RESET_DELAY_MS = 10_000L
         private const val MAX_TOTAL_RECOVERY_ATTEMPTS = 6
-        private const val RAW_FAILURES_BEFORE_DOWNGRADE = 2
     }
 }

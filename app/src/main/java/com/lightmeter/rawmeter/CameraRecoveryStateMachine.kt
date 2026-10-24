@@ -5,14 +5,13 @@ package com.lightmeter.rawmeter
  *
  * [CameraRecoveryPolicy] contains the stateless decision table. This state machine adds the facts
  * that must survive a reopen: the active stream profile, per-error attempts, the global recovery
- * budget, camera-route fallback, and consecutive RAW measurement failures.
+ * budget, and camera-route fallback. Measurement failures do not change hardware capability.
  *
  * Calls are confined to the camera handler after CameraController starts. [reset] may also be used
  * before that handler is created.
  */
 internal class CameraRecoveryStateMachine(
     private val maxRecoveryAttempts: Int,
-    private val rawFailuresBeforeDowngrade: Int,
 ) {
     var profile: CameraSessionProfile? = null
         private set
@@ -23,7 +22,6 @@ internal class CameraRecoveryStateMachine(
     private val failureAttempts =
         mutableMapOf<Triple<CameraSessionProfile, CameraFailureKind, CameraFailureStage>, Int>()
     private var totalRecoveryAttempts = 0
-    private var consecutiveRawMeasurementFailures = 0
 
     fun resolveProfile(
         mode: MeteringPipelineMode,
@@ -92,17 +90,6 @@ internal class CameraRecoveryStateMachine(
         return true
     }
 
-    fun recordRawMeasurementSucceeded() {
-        consecutiveRawMeasurementFailures = 0
-    }
-
-    /** Returns true when AUTO mode should remain on the compatible pipeline after this failure. */
-    fun recordRawMeasurementFailed(mode: MeteringPipelineMode): Boolean {
-        consecutiveRawMeasurementFailures += 1
-        return mode == MeteringPipelineMode.AUTO &&
-            consecutiveRawMeasurementFailures >= rawFailuresBeforeDowngrade
-    }
-
     /** A sustained preview proves the camera recovered, so only transient attempt counters reset. */
     fun markPreviewStable() {
         failureAttempts.clear()
@@ -113,13 +100,11 @@ internal class CameraRecoveryStateMachine(
     fun forceProfile(profile: CameraSessionProfile) {
         this.profile = profile
         markPreviewStable()
-        consecutiveRawMeasurementFailures = 0
     }
 
     fun reset() {
         profile = null
         routeCandidateIndex = 0
         markPreviewStable()
-        consecutiveRawMeasurementFailures = 0
     }
 }
