@@ -118,6 +118,14 @@ internal object AngleMeteringMath {
 
 /** Compatibility-mode restriction kept independent from the settings UI. */
 internal object MeteringAreaPolicy {
+    /** Source calibration measures a local response without Global's exposure preference. */
+    fun localMode(mode: MeteringMode): MeteringMode =
+        if (mode == MeteringMode.AVERAGE) MeteringMode.SPOT else mode
+
+    /** Global is Normal-only; Zone starts with the existing per-camera angle selection. */
+    fun zoneMode(mode: MeteringMode): MeteringMode =
+        if (mode == MeteringMode.AVERAGE) MeteringMode.ANGLE else mode
+
     fun canSelect(mode: MeteringMode, pipeline: MeteringPipelineMode): Boolean =
         mode != MeteringMode.ANGLE || pipeline != MeteringPipelineMode.FAST
 

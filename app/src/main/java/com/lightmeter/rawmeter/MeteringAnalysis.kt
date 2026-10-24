@@ -27,6 +27,7 @@ internal data class MeteringFrameStat(
     val saturatedChannelCount: Int = 0,
     /** Valid RAW samples used for the median, for quality assessment. */
     val sampleCount: Int = 0,
+    val evaluative: EvaluativeFrameStats? = null,
 )
 
 internal data class RawColorSample(
@@ -50,7 +51,14 @@ internal object MeteringAnalysis {
         calibrationStore: CameraCalibrationStore,
         target: ZoneMeteringTarget? = null,
         meteringRoiFraction: Float? = null,
+        evaluativeViewport: EvaluativeMeteringViewport? = null,
     ): MeteringFrameStat? {
+        if (meteringMode == MeteringMode.AVERAGE) {
+            if (target != null) return null // Global statistics must never replace a Zone point.
+            return evaluativeViewport?.let {
+                EvaluativeFrameAnalyzer.preview(bitmap, result, characteristics, cameraId, calibrationStore, it)
+            }
+        }
         val centerX = target?.previewX ?: 0.5f
         val centerY = target?.previewY ?: 0.5f
         val lumaDecoder = ProcessedLumaMetadata.decoder(result)
@@ -113,25 +121,30 @@ internal object MeteringAnalysis {
         meteringMode: MeteringMode,
         calibrationStore: CameraCalibrationStore,
         meteringRoiFraction: Float? = null,
+        evaluativeViewport: EvaluativeMeteringViewport? = null,
+        previewGeometry: PreviewStreamGeometry? = null,
     ): MeteringFrameStat? {
+        if (meteringMode == MeteringMode.AVERAGE) return evaluativeViewport?.let {
+            EvaluativeFrameAnalyzer.yuv(image, result, characteristics, cameraId, calibrationStore, it, previewGeometry)
+        }
         if (image.format != android.graphics.ImageFormat.YUV_420_888) return null
-        if (image.planes.size < 3) return null
+        val planes = image.planes
+        if (planes.size < 3 || image.width <= 1 || image.height <= 1) return null
         val lumaDecoder = ProcessedLumaMetadata.decoder(result)
         val yuvEncoding = ProcessedLumaMetadata.yuvEncoding(image)
-        val spot = analyzeYuvRegion(
-            image,
-            spotRoiFraction(meteringMode, meteringRoiFraction),
-            lumaDecoder,
-            yuvEncoding,
-        ) ?: return null
+        val spotFraction = spotRoiFraction(meteringMode, meteringRoiFraction)
+        val maxFraction = if (meteringMode == MeteringMode.CENTER_WEIGHTED) {
+            max(spotFraction, CENTER_WEIGHTED_ROI_FRACTION)
+        } else spotFraction
+        fun reader(plane: Image.Plane) = YuvPlaneReader(plane.buffer, plane.rowStride, plane.pixelStride)
+        val analyzer = YuvRegionAnalyzer(
+            image.width, image.height, reader(planes[0]), reader(planes[1]), reader(planes[2]),
+            lumaDecoder, yuvEncoding, maxFraction,
+        )
+        val spot = analyzer.analyze(spotFraction) ?: return null
         val region = if (meteringMode == MeteringMode.CENTER_WEIGHTED) {
-            val wide = analyzeYuvRegion(
-                image,
-                CENTER_WEIGHTED_ROI_FRACTION,
-                lumaDecoder,
-                yuvEncoding,
-            ) ?: return null
-            PreviewRegionStat(
+            val wide = analyzer.analyze(CENTER_WEIGHTED_ROI_FRACTION) ?: return null
+            YuvRegionStat(
                 luma = spot.luma * CENTER_SPOT_WEIGHT + wide.luma * CENTER_WIDE_WEIGHT,
                 clipped = spot.clipped * CENTER_SPOT_WEIGHT +
                     wide.clipped * CENTER_WIDE_WEIGHT,
@@ -181,6 +194,12 @@ internal object MeteringAnalysis {
         applyVignettingCalibration: Boolean = false,
         meteringRoiFraction: Float? = null,
     ): MeteringFrameStat? {
+        if (meteringMode == MeteringMode.AVERAGE) {
+            if (rawMeterPoint != null) return null
+            return EvaluativeFrameAnalyzer.raw(
+                image, result, characteristics, cameraInfo, frameAspect, zoom, calibrationStore, vignettingStore,
+            )
+        }
         val plane = image.planes.firstOrNull() ?: return null
         val black = result.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)
             ?: fixedBlackLevels(characteristics)
@@ -205,22 +224,26 @@ internal object MeteringAnalysis {
             rawMeterPoint = rawMeterPoint,
             preservePhysicalAngle = meteringMode == MeteringMode.ANGLE,
         )
+        var saturatedChannelCount = RawExposureRetryPolicy.saturatedChannelCount(spotValues)
         val values = if (meteringMode == MeteringMode.CENTER_WEIGHTED) {
+            val wideValues = analyzeRawRegion(
+                image = image,
+                bufferOffset = bufferOffset,
+                cfa = cfa,
+                black = black,
+                white = white,
+                activeArray = cameraInfo.activeArray,
+                frameAspect = frameAspect,
+                zoom = zoom,
+                roiFraction = CENTER_WEIGHTED_ROI_FRACTION,
+                rawMeterPoint = rawMeterPoint,
+                preservePhysicalAngle = false,
+            )
+            // Check the contributing regions before blending can hide a clipped metering point.
+            saturatedChannelCount = maxOf(saturatedChannelCount, RawExposureRetryPolicy.saturatedChannelCount(wideValues))
             blendRawRegions(
                 spotValues,
-                analyzeRawRegion(
-                    image = image,
-                    bufferOffset = bufferOffset,
-                    cfa = cfa,
-                    black = black,
-                    white = white,
-                    activeArray = cameraInfo.activeArray,
-                    frameAspect = frameAspect,
-                    zoom = zoom,
-                    roiFraction = CENTER_WEIGHTED_ROI_FRACTION,
-                    rawMeterPoint = rawMeterPoint,
-                    preservePhysicalAngle = false,
-                ),
+                wideValues,
             )
         } else {
             spotValues
@@ -310,9 +333,7 @@ internal object MeteringAnalysis {
             aperture = aperture,
             ev100BeforeUserCalibration = cameraEv + log2(luma / RAW_REFERENCE_LEVEL) + baselineCalibrationEv,
             appliedUserCorrectionEv = userCalibrationEv,
-            saturatedChannelCount = (0..3).count {
-                values[it] >= RawExposureRetryPolicy.CHANNEL_SATURATION_LEVEL
-            },
+            saturatedChannelCount = saturatedChannelCount,
             sampleCount = values[5].toInt(),
         )
     }
@@ -539,55 +560,6 @@ internal object MeteringAnalysis {
         return PreviewRegionStat(luma, clipped.toDouble() / pixels.size)
     }
 
-    private fun analyzeYuvRegion(
-        image: Image,
-        roiFraction: Float,
-        lumaDecoder: ProcessedLumaDecoder,
-        yuvEncoding: YuvColorEncoding,
-    ): PreviewRegionStat? {
-        val width = image.width
-        val height = image.height
-        if (width <= 1 || height <= 1 || image.planes.size < 3) return null
-        val yPlane = YuvPlaneReader(image.planes[0])
-        val uPlane = YuvPlaneReader(image.planes[1])
-        val vPlane = YuvPlaneReader(image.planes[2])
-        val roiWidth = (width * roiFraction).roundToInt().coerceIn(2, width)
-        val roiHeight = (height * roiFraction).roundToInt().coerceIn(2, height)
-        val left = (width - roiWidth) / 2
-        val top = (height - roiHeight) / 2
-        val luminances = DoubleArray(roiWidth * roiHeight)
-        var clipped = 0
-        var count = 0
-        for (row in top until top + roiHeight) {
-            for (column in left until left + roiWidth) {
-                val yCode = yPlane.sample(column, row) ?: continue
-                val uCode = uPlane.sample(column / 2, row / 2) ?: continue
-                val vCode = vPlane.sample(column / 2, row / 2) ?: continue
-                val rgb = ProcessedLumaMath.yuvToEncodedRgb(yCode, uCode, vCode, yuvEncoding)
-                luminances[count] = lumaDecoder.linearLuma(rgb.red, rgb.green, rgb.blue)
-                if (rgb.clipped) clipped += 1
-                count += 1
-            }
-        }
-        val luma = ProcessedLumaMath.median(luminances, count) ?: return null
-        return PreviewRegionStat(luma, clipped.toDouble() / count)
-    }
-
-    /** Absolute reads preserve each vendor plane's initial buffer offset and row/pixel padding. */
-    private class YuvPlaneReader(plane: Image.Plane) {
-        private val buffer = plane.buffer.duplicate()
-        private val start = buffer.position()
-        private val rowStride = plane.rowStride
-        private val pixelStride = plane.pixelStride
-
-        fun sample(column: Int, row: Int): Int? {
-            if (column < 0 || row < 0 || rowStride <= 0 || pixelStride <= 0) return null
-            val offset = start.toLong() + row.toLong() * rowStride + column.toLong() * pixelStride
-            if (offset < start || offset >= buffer.limit()) return null
-            return buffer.get(offset.toInt()).toInt() and 0xff
-        }
-    }
-
     private fun analyzeRawRegion(
         image: Image,
         bufferOffset: Int,
@@ -698,7 +670,7 @@ internal object MeteringAnalysis {
         return Rect(left, top, left + roiSize, top + roiSize)
     }
 
-    private fun rawMeterCrop(
+    internal fun rawMeterCrop(
         imageWidth: Int,
         imageHeight: Int,
         reportedActiveArray: Rect?,
@@ -772,7 +744,7 @@ internal object MeteringAnalysis {
         }
     }
 
-    private fun centeredCrop(bounds: RectF, aspect: Float, zoom: Float): RectF {
+    internal fun centeredCrop(bounds: RectF, aspect: Float, zoom: Float): RectF {
         val safeAspect = aspect.coerceAtLeast(0.01f)
         var cropWidth = bounds.width()
         var cropHeight = bounds.height()

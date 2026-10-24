@@ -102,16 +102,17 @@ object SettingsCatalog {
                         ),
                         option(MeteringMode.SPOT, "点测光", "Spot"),
                         option(MeteringMode.ANGLE, "按角度测光", "Angle"),
+                        option(MeteringMode.AVERAGE, "全局测光", "Global"),
                     ),
                 ),
                 SettingItemSpec(
                     key = SettingKey.COMBINATION_SELECTION,
-                    label = LocalizedLabel("测光组合选择", "Metering combination selection"),
+                    label = LocalizedLabel("系统测光组合", "System metering combination"),
                     options = listOf(
                         option(
                             MeteringCombinationSelectionMode.SYSTEM,
-                            "系统设置",
-                            "System",
+                            "系统预设",
+                            "System presets",
                         ),
                         option(
                             MeteringCombinationSelectionMode.MANUAL,
@@ -122,22 +123,23 @@ object SettingsCatalog {
                 ),
                 SettingItemSpec(
                     key = SettingKey.METERING_PIPELINE,
-                    label = LocalizedLabel("系统测光模式", "System metering mode"),
+                    // Nested options within the system-combination card; no second visible title.
+                    label = LocalizedLabel("系统测光组合", "System metering combination"),
                     options = listOf(
                         option(
                             MeteringPipelineMode.AUTO,
-                            "高精度（推荐）",
-                            "High accuracy (recommended)",
+                            "高精度",
+                            "High accuracy",
                         ),
                         option(
                             MeteringPipelineMode.ISOLATED,
-                            "稳定模式",
+                            "稳定",
                             "Stable",
                         ),
                         option(
                             MeteringPipelineMode.FAST,
-                            "兼容模式",
-                            "Compatibility mode",
+                            "兼容",
+                            "Compatibility",
                         ),
                     ),
                 ),

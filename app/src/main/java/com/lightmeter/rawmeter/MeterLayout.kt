@@ -200,7 +200,10 @@ class MeterLayout @JvmOverloads constructor(
     val isFilmNegativeOpen: Boolean get() = isToolsOpen && activeToolId == ToolId.FILM_NEGATIVE
     private var filmSelectionTarget = FilmSelectionTarget.LATITUDE
     var isZoneMode: Boolean = false
-        private set
+        private set(value) {
+            field = value
+            state.setZoneMeteringActive(value)
+        }
     private var zoneTransitionFraction = 0f
     private var zoneAnimator: ValueAnimator? = null
     private var zoneTransitionPrepared = false
@@ -228,6 +231,12 @@ class MeterLayout @JvmOverloads constructor(
             }
         }
     }
+    @Volatile
+    private var evaluativeViewport = EvaluativeMeteringViewport(1f, 1f, NormalizedSensorViewport.FULL)
+
+    internal fun evaluativeMeteringViewport(): EvaluativeMeteringViewport =
+        evaluativeViewport.copy(zoom = state.zoom)
+
     internal var listener: Listener? = null
         set(value) {
             field = value
@@ -264,6 +273,20 @@ class MeterLayout @JvmOverloads constructor(
                 }
             }
             settingsView.listener = object : SettingsView.Listener {
+                private fun notifyCombinationSelection() {
+                    val notify: () -> Unit = {
+                        value?.onCombinationSelectionModeChanged(state.meteringCombinationSelectionMode)
+                        Unit
+                    }
+                    if (settingsOpenedFromZone &&
+                        state.meteringCombinationSelectionMode == MeteringCombinationSelectionMode.MANUAL
+                    ) {
+                        exitZoneForAction(notify)
+                    } else {
+                        notify()
+                    }
+                }
+
                 override fun onCloseRequested() {
                     closeSettings()
                 }
@@ -281,22 +304,11 @@ class MeterLayout @JvmOverloads constructor(
                     settingsView.invalidate()
                     value?.onControlsChanged(frameChanged)
                     if (key == SettingKey.COMBINATION_SELECTION) {
-                        val notifySelectionChange: () -> Unit = {
-                            value?.onCombinationSelectionModeChanged(
-                                state.meteringCombinationSelectionMode,
-                            )
-                            Unit
-                        }
-                        if (settingsOpenedFromZone &&
-                            state.meteringCombinationSelectionMode ==
-                            MeteringCombinationSelectionMode.MANUAL
-                        ) {
-                            exitZoneForAction(notifySelectionChange)
-                        } else {
-                            notifySelectionChange()
-                        }
+                        notifyCombinationSelection()
                     }
                 }
+
+                override fun onManualCombinationSelectionRequested() = notifyCombinationSelection()
 
                 override fun onSettingRejected(key: SettingKey, rejectedValue: String) {
                     value?.onSettingRejected(key, rejectedValue)
@@ -1181,6 +1193,21 @@ class MeterLayout @JvmOverloads constructor(
             top = (cameraFrame.top - textureFrame.top) / textureFrame.height(),
             right = (cameraFrame.right - textureFrame.left) / textureFrame.width(),
             bottom = (cameraFrame.bottom - textureFrame.top) / textureFrame.height(),
+        )
+        evaluativeViewport = EvaluativeMeteringViewport(
+            sensorFrameAspect = CameraPreviewTransform.screenAspectInSensorCoordinates(
+                cameraFrame.width() / cameraFrame.height(), state.cameraInfo.sensorOrientationDegrees,
+                textureView.display?.rotation ?: android.view.Surface.ROTATION_0, state.cameraInfo.lensFacing,
+            ),
+            zoom = state.zoom,
+            displayCrop = NormalizedSensorViewport(
+                ((cameraFrame.left - textureFrame.left) / textureFrame.width()).coerceIn(0f, 1f),
+                ((cameraFrame.top - textureFrame.top) / textureFrame.height()).coerceIn(0f, 1f),
+                ((cameraFrame.right - textureFrame.left) / textureFrame.width()).coerceIn(0f, 1f),
+                ((cameraFrame.bottom - textureFrame.top) / textureFrame.height()).coerceIn(0f, 1f),
+            ),
+            screenFrameAspect = cameraFrame.width() / cameraFrame.height(),
+            displayRotation = textureView.display?.rotation ?: android.view.Surface.ROTATION_0,
         )
         instrumentView.layout(0, 0, width, height)
         settingsView.layout(0, 0, width, height)

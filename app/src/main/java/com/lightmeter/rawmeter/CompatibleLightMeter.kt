@@ -1,5 +1,6 @@
 package com.lightmeter.rawmeter
 
+import android.graphics.Bitmap
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CaptureResult
 import android.media.Image
@@ -17,6 +18,8 @@ internal data class CompatibleMeteringContext(
     val takeResultForTimestamp: (Long) -> CaptureResult?,
     val characteristics: () -> CameraCharacteristics?,
     val cameraId: () -> String,
+    val evaluativeViewport: EvaluativeMeteringViewport? = null,
+    val previewGeometry: PreviewStreamGeometry? = null,
 )
 
 internal interface CompatibleLightMeterListener {
@@ -31,8 +34,8 @@ internal interface CompatibleLightMeterListener {
  *
  * The preferred path consumes one YUV frame already produced by the preview session. If YUV is
  * absent or invalid, it takes one small TextureView bitmap instead. This component owns the YUV
- * timeout, reusable luma buffer and all compatible-measurement cancellation state; it never owns
- * the camera device, session, ImageReader or TextureView.
+ * timeout and all compatible-measurement cancellation state; per-frame YUV scratch belongs to
+ * YuvRegionAnalyzer. It never owns the camera device, session, ImageReader or TextureView.
  *
  * YUV callbacks and analysis run on the camera handler. TextureView access and listener callbacks
  * run on the main handler. [cancel] may be called during camera shutdown to invalidate both paths.
@@ -51,6 +54,18 @@ internal class CompatibleLightMeter(
         var attemptedFrames: Int = 0,
     )
 
+    /** One displayed bitmap awaiting only its own exposure metadata, on the camera handler. */
+    private data class DisplayCapture(
+        val id: Int,
+        val timestamp: Long,
+        val bitmap: Bitmap,
+        val meteringMode: MeteringMode,
+        val target: ZoneMeteringTarget?,
+        val meteringRoiFraction: Float?,
+        val context: CompatibleMeteringContext,
+        val attempt: Int,
+    )
+
     @Volatile
     var isMeasuring: Boolean = false
         private set
@@ -67,6 +82,8 @@ internal class CompatibleLightMeter(
         releaseImage = Image::close,
     )
     private var yuvTimeout: Runnable? = null
+    private var pendingDisplayCapture: DisplayCapture? = null
+    private var displayMetadataTimeout: Runnable? = null
     private var downgradeYuvSessionAfterSuccess = false
 
     fun preferredSource(trackingReaderAvailable: Boolean): MeteringSource =
@@ -112,12 +129,17 @@ internal class CompatibleLightMeter(
         return true
     }
 
-    /** Pairs preview metadata with the YUV buffer that has the identical sensor timestamp. */
+    /** Feeds exact metadata to a pending YUV buffer or displayed-preview bitmap, in either order. */
     fun onCaptureResult(result: CaptureResult, fallbackSensorTimestamp: Long? = null) {
-        val measurement = activeYuvMeasurement ?: return
         val timestamp = result.get(CaptureResult.SENSOR_TIMESTAMP)
             ?: fallbackSensorTimestamp
             ?: return
+        pendingDisplayCapture?.takeIf { it.timestamp == timestamp }?.let { capture ->
+            clearDisplayCapture(recycle = false)
+            analyzeDisplayCapture(capture, result)
+            return
+        }
+        val measurement = activeYuvMeasurement ?: return
         yuvFramePairer.offerResult(timestamp, result)?.let { pair ->
             processYuvFramePair(pair, measurement)
         }
@@ -130,6 +152,7 @@ internal class CompatibleLightMeter(
         yuvFramePairer.clear()
         isMeasuring = false
         cancelYuvTimeout(handler)
+        clearDisplayCapture()
         if (resetYuvAvailability) {
             yuvAvailable = true
             downgradeYuvSessionAfterSuccess = false
@@ -195,6 +218,8 @@ internal class CompatibleLightMeter(
                 measurement.meteringMode,
                 calibrationStore,
                 measurement.meteringRoiFraction,
+                measurement.context.evaluativeViewport,
+                measurement.context.previewGeometry,
             )
         } else {
             null
@@ -289,63 +314,90 @@ internal class CompatibleLightMeter(
             return
         }
         val accepted = handler.post {
-            val result = context.takeResultForTimestamp(endTimestamp)
-            if (result == null) {
+            if (!isCurrent(id)) {
                 bitmap.recycle()
-                mainHandler.post {
-                    retryProcessedPreviewCapture(
-                        id,
-                        meteringMode,
-                        target,
-                        meteringRoiFraction,
-                        context,
-                        attempt,
-                    )
-                }
                 return@post
             }
-            val stat = try {
-                context.characteristics()?.let { characteristics ->
-                    MeteringAnalysis.analyzePreview(
-                        bitmap,
-                        result,
-                        characteristics,
-                        context.cameraId(),
-                        meteringMode,
-                        calibrationStore,
-                        target,
-                        meteringRoiFraction,
-                    )
-                }
-            } finally {
-                bitmap.recycle()
+            val capture = DisplayCapture(
+                id, endTimestamp, bitmap, meteringMode, target, meteringRoiFraction, context, attempt,
+            )
+            val result = context.takeResultForTimestamp(endTimestamp)
+            if (result == null) {
+                awaitDisplayMetadata(capture, handler)
+                return@post
             }
-            mainHandler.post finishAnalysis@{
-                if (!isCurrent(id)) return@finishAnalysis
-                val reading = stat?.let {
-                    MeteringFusion.fuse(listOf(it), MeteringSource.ISP_PREVIEW)
-                }
-                if (reading == null) {
-                    retryProcessedPreviewCapture(
-                        id = id,
-                        meteringMode = meteringMode,
-                        target = target,
-                        meteringRoiFraction = meteringRoiFraction,
-                        context = context,
-                        attempt = attempt,
-                        finalError = localized(
-                            "连续多帧无法取得预览亮度或曝光参数",
-                            "Preview brightness or exposure data remained unavailable across multiple frames",
-                        ),
-                    )
-                } else {
-                    finishWithReading(id, reading)
-                }
-            }
+            analyzeDisplayCapture(capture, result)
         }
         if (!accepted) {
             bitmap.recycle()
             finishWithError(id, localized("相机预览已关闭", "The camera preview has closed"))
+        }
+    }
+
+    private fun awaitDisplayMetadata(capture: DisplayCapture, handler: Handler) {
+        pendingDisplayCapture = capture
+        // Retain this bitmap briefly rather than chasing a newer frame whose metadata is also late.
+        // Waiting consumes the existing retry slots, so total retry time does not grow per bitmap.
+        val waitSteps = minOf(
+            CompatibleMeteringPolicy.DISPLAY_METADATA_WAIT_STEPS,
+            CompatibleMeteringPolicy.DISPLAY_CAPTURE_ATTEMPTS - capture.attempt - 1,
+        ).coerceAtLeast(0)
+        val timeout = Runnable {
+            if (pendingDisplayCapture !== capture) return@Runnable
+            clearDisplayCapture()
+            mainHandler.post {
+                retryProcessedPreviewCapture(
+                    capture.id, capture.meteringMode, capture.target, capture.meteringRoiFraction,
+                    capture.context, capture.attempt + waitSteps,
+                )
+            }
+        }
+        displayMetadataTimeout = timeout
+        if (!handler.postDelayed(timeout, waitSteps * CompatibleMeteringPolicy.DISPLAY_CAPTURE_RETRY_DELAY_MS)) {
+            clearDisplayCapture()
+            finishWithError(capture.id, localized("相机预览已关闭", "The camera preview has closed"))
+        }
+    }
+
+    private fun clearDisplayCapture(recycle: Boolean = true) {
+        val capture = pendingDisplayCapture
+        displayMetadataTimeout?.let { capture?.context?.cameraHandler?.removeCallbacks(it) }
+        displayMetadataTimeout = null
+        pendingDisplayCapture = null
+        if (recycle) capture?.bitmap?.recycle()
+    }
+
+    private fun analyzeDisplayCapture(capture: DisplayCapture, result: CaptureResult) {
+        if (!isCurrent(capture.id)) {
+            capture.bitmap.recycle()
+            return
+        }
+        val stat = try {
+            capture.context.characteristics()?.let { characteristics ->
+                MeteringAnalysis.analyzePreview(
+                    capture.bitmap, result, characteristics, capture.context.cameraId(),
+                    capture.meteringMode, calibrationStore, capture.target, capture.meteringRoiFraction,
+                    capture.context.evaluativeViewport,
+                )
+            }
+        } finally {
+            capture.bitmap.recycle()
+        }
+        mainHandler.post finishAnalysis@{
+            if (!isCurrent(capture.id)) return@finishAnalysis
+            val reading = stat?.let { MeteringFusion.fuse(listOf(it), MeteringSource.ISP_PREVIEW) }
+            if (reading == null) {
+                retryProcessedPreviewCapture(
+                    capture.id, capture.meteringMode, capture.target, capture.meteringRoiFraction,
+                    capture.context, capture.attempt,
+                    finalError = localized(
+                        "连续多帧无法取得预览亮度或曝光参数",
+                        "Preview brightness or exposure data remained unavailable across multiple frames",
+                    ),
+                )
+            } else {
+                finishWithReading(capture.id, reading)
+            }
         }
     }
 
@@ -403,6 +455,7 @@ internal class CompatibleLightMeter(
         isMeasuring = false
         activeYuvMeasurement = null
         yuvFramePairer.clear()
+        clearDisplayCapture()
         Log.e(TAG, "Compatible metering failed: $message")
         mainHandler.post {
             if (id == measurementId) listener.onCompatibleMeteringError(message)

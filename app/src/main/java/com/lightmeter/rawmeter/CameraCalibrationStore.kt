@@ -65,6 +65,31 @@ class CameraCalibrationStore(context: Context) {
         return response?.correctionEv(inputLuma, fallback) ?: fallback
     }
 
+    /** Resolve preferences/signature once per frame, not once per sampled pixel. */
+    @Synchronized
+    internal fun responseCorrectionSnapshot(cameraId: String, source: MeteringSource): (Double) -> Double {
+        val fallback = userCorrection(cameraId, source)
+        if (activeContext != null && !signatureState(cameraId, source).isApplicable) return { 0.0 }
+        val anchors = ProcessedResponseCalibration.parse(preferences.getString(responseKey(cameraId, source), null))
+            ?.anchors?.sortedBy { it.inputLuma }.orEmpty()
+        return correction@ { luma ->
+            if (anchors.isEmpty()) return@correction fallback
+            if (anchors.size == 1 || !luma.isFinite() || luma <= anchors.first().inputLuma) {
+                return@correction anchors.first().correctionEv
+            }
+            for (index in 1 until anchors.size) {
+                val left = anchors[index - 1]
+                val right = anchors[index]
+                if (luma > right.inputLuma) continue
+                val width = right.inputLuma - left.inputLuma
+                if (width <= 1e-9) return@correction right.correctionEv
+                val fraction = (luma - left.inputLuma) / width
+                return@correction left.correctionEv * (1 - fraction) + right.correctionEv * fraction
+            }
+            anchors.last().correctionEv
+        }
+    }
+
     @Synchronized
     fun userCorrection(cameraId: String, source: MeteringSource = MeteringSource.RAW): Double {
         if (!CalibrationEnvironmentStore.isCalibrationTimestampValid(

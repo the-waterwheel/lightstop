@@ -18,6 +18,8 @@ internal object CompatibleMeteringPolicy {
     const val YUV_TIMEOUT_MS = 1_500L
     const val DISPLAY_CAPTURE_ATTEMPTS = 48
     const val DISPLAY_CAPTURE_RETRY_DELAY_MS = 32L
+    // At most three existing retry slots (96 ms) for one displayed frame's late CaptureResult.
+    const val DISPLAY_METADATA_WAIT_STEPS = 3
 
     fun decide(attemptedFrames: Int, frameValid: Boolean): CompatibleFrameDecision = when {
         frameValid -> CompatibleFrameDecision.COMPLETE

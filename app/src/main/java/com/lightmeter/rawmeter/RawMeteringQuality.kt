@@ -23,8 +23,13 @@ internal data class RawQualityAssessment(
 )
 
 /**
- * Pure RAW quality model. The first integration phase only records its result; frame counts stay
- * governed by [RawMeteringPolicy] until device data justifies changing the decision.
+ * Pure RAW quality model. The base burst still follows [RawMeteringPolicy]; measured inter-frame
+ * spread may request a bounded extra frame. This is not a single-frame early-accept model.
+ *
+ * Cost boundary: reuse the ROI statistics already produced by MeteringAnalysis/native sampling.
+ * Do not add a full-frame scan, Bitmap, denoising or feature extraction to this decision.
+ * A null inter-frame spread means insufficient evidence, not zero noise: ACCEPT for one valid
+ * frame is NOT proof that its noise is low enough to replace the configured multi-frame burst.
  */
 internal object RawMeteringQualityPolicy {
     /** Below this sample count the channel medians are not stable enough to trust. */

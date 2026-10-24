@@ -26,6 +26,7 @@ object ReadingQualityPolicy {
             MeteringSource.ISP_PREVIEW -> "ISP"
         }
         val lowConfidence = value.source != MeteringSource.RAW ||
+            value.evaluative?.highlightsConfirmed == false ||
             value.clippedFraction > CLIPPED_FRACTION_LIMIT ||
             !value.rawLuma.isFinite() ||
             value.rawLuma < WEAK_LUMA_LIMIT

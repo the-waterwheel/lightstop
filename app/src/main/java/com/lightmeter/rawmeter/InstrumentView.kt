@@ -188,11 +188,17 @@ class InstrumentView(
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1.1f * density
         paint.color = surfaceColor
-        canvas.drawCircle(g.cameraFrame.centerX(), g.cameraFrame.centerY(), spotRadius + density, paint)
-        paint.color = black
-        paint.strokeWidth = 0.9f * density
-        canvas.drawCircle(g.cameraFrame.centerX(), g.cameraFrame.centerY(), spotRadius, paint)
-        canvas.drawCircle(g.cameraFrame.centerX(), g.cameraFrame.centerY(), 1.4f * density, paint)
+        if (state.meteringMode == MeteringMode.AVERAGE) {
+            paint.color = black
+            canvas.drawRect(g.cameraFrame.left + 6f * density, g.cameraFrame.top + 6f * density,
+                g.cameraFrame.right - 6f * density, g.cameraFrame.bottom - 6f * density, paint)
+        } else {
+            canvas.drawCircle(g.cameraFrame.centerX(), g.cameraFrame.centerY(), spotRadius + density, paint)
+            paint.color = black
+            paint.strokeWidth = 0.9f * density
+            canvas.drawCircle(g.cameraFrame.centerX(), g.cameraFrame.centerY(), spotRadius, paint)
+            canvas.drawCircle(g.cameraFrame.centerX(), g.cameraFrame.centerY(), 1.4f * density, paint)
+        }
 
         if (state.measuring) {
             drawMeteringSpinner(canvas, g.cameraFrame, spotRadius)

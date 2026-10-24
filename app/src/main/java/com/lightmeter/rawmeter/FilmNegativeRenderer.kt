@@ -5,6 +5,7 @@ import android.opengl.EGL14
 import android.opengl.EGLConfig
 import android.opengl.EGLContext
 import android.opengl.EGLDisplay
+import android.opengl.EGLExt
 import android.opengl.EGLSurface
 import android.opengl.GLES11Ext
 import android.opengl.GLES20
@@ -25,16 +26,16 @@ import java.util.concurrent.atomic.AtomicLong
  * All EGL/GL access and input-texture destruction are confined to the render thread.
  */
 internal class FilmNegativeRenderer(
-    val outputTexture: SurfaceTexture,
+    override val outputTexture: SurfaceTexture,
     initialSettings: FilmNegativeSettings,
     private val onReady: (SurfaceTexture) -> Unit,
     private val onFirstFrame: () -> Unit,
     private val onFailure: (Exception) -> Unit,
-) {
+) : CameraFilmPreviewRenderer {
     private val thread = HandlerThread("film-negative-gl").apply { start() }
     private val handler = Handler(thread.looper)
     private val released = AtomicBoolean(false)
-    @Volatile var inputTexture: SurfaceTexture? = null
+    @Volatile override var inputTexture: SurfaceTexture? = null
         private set
     private var display: EGLDisplay = EGL14.EGL_NO_DISPLAY
     private var context: EGLContext = EGL14.EGL_NO_CONTEXT
@@ -52,7 +53,7 @@ internal class FilmNegativeRenderer(
     @Volatile private var mirrored = false
     @Volatile private var zoom = 1f
     private val orientationSerial = AtomicLong(0)
-    val orientationToken: Long get() = orientationSerial.get()
+    override val orientationToken: Long get() = orientationSerial.get()
     private val outputDimensions = IntArray(2)
     private var hasFrame = false
     private var firstFrameReported = false
@@ -90,7 +91,7 @@ internal class FilmNegativeRenderer(
             position(0)
         }
 
-    fun start() {
+    override fun start() {
         handler.post {
             if (released.get()) return@post
             guarded {
@@ -100,7 +101,7 @@ internal class FilmNegativeRenderer(
         }
     }
 
-    fun resize(width: Int, height: Int) {
+    override fun resize(width: Int, height: Int) {
         handler.post {
             if (released.get()) return@post
             this.width = width
@@ -111,14 +112,14 @@ internal class FilmNegativeRenderer(
         }
     }
 
-    fun orient(displayDegrees: Int, mirrored: Boolean, zoom: Float = 1f) {
+    override fun orient(displayDegrees: Int, mirrored: Boolean, zoom: Float) {
         if (this.displayDegrees != displayDegrees || this.mirrored != mirrored) orientationSerial.incrementAndGet()
         this.displayDegrees = displayDegrees
         this.mirrored = mirrored
         this.zoom = zoom
     }
 
-    fun update(settings: FilmNegativeSettings) {
+    override fun update(settings: FilmNegativeSettings) {
         pendingSettings.set(settings)
         queueSettings()
     }
@@ -141,7 +142,7 @@ internal class FilmNegativeRenderer(
     private fun curveSettings(value: FilmNegativeSettings) = value.copy(gamma = 1f, exposureEv = 0f,
         saturation = 1f, monochrome = false, warmth = 0f, tint = 0f, contrast = 1f, inverted = false, showGuide = false)
 
-    fun observe(evidence: FilmNegativeFrameEvidence) {
+    override fun observe(evidence: FilmNegativeFrameEvidence) {
         if (released.get()) return
         handler.post {
             if (released.get()) return@post
@@ -155,7 +156,7 @@ internal class FilmNegativeRenderer(
     }
 
     /** Original camera colors, without inversion or guides; metadata uses the same timestamp. */
-    fun captureFrame(maxEdge: Int = 1280, completion: (FilmNegativeFrozenFrame?) -> Unit) {
+    override fun captureFrame(maxEdge: Int, completion: (FilmNegativeFrozenFrame?) -> Unit) {
         handler.post {
             finishFrame(null)
             if (released.get() || !hasFrame || failureReported) {
@@ -247,7 +248,7 @@ internal class FilmNegativeRenderer(
     }
 
     /** Read only new frames after the user request; wait for matching locked CaptureResults. */
-    fun sampleBase(automatic: Boolean = false, completion: (FilmNegativeBaseSample?) -> Unit) {
+    override fun sampleBase(automatic: Boolean, completion: (FilmNegativeBaseSample?) -> Unit) {
         handler.post {
             finishSample(null)
             if (released.get() || !hasFrame || failureReported) {
@@ -320,7 +321,7 @@ internal class FilmNegativeRenderer(
     }
 
     /** The owner must close the Camera2 producer before calling this. Never releases outputTexture. */
-    fun release(completion: () -> Unit = {}) {
+    override fun release(completion: () -> Unit) {
         if (!released.compareAndSet(false, true)) return
         handler.post {
             finishSample(null)
@@ -442,7 +443,20 @@ internal class FilmNegativeRenderer(
         GLES20.glViewport(0, 0, outputDimensions[0], outputDimensions[1])
         draw(0)
         checkGl()
-        check(EGL14.eglSwapBuffers(display, window)) { "Preview swap failed: ${EGL14.eglGetError()}" }
+        if (!presentPreviewFrame(
+                cameraTimestampNs = inputTexture?.timestamp ?: 0L,
+                setPresentationTime = { timestamp ->
+                    check(EGLExt.eglPresentationTimeANDROID(display, window, timestamp)) {
+                        "Preview timestamp binding failed: ${EGL14.eglGetError()}"
+                    }
+                },
+                swapBuffers = {
+                    check(EGL14.eglSwapBuffers(display, window)) {
+                        "Preview swap failed: ${EGL14.eglGetError()}"
+                    }
+                },
+            )
+        ) return
         if (!firstFrameReported) {
             firstFrameReported = true
             onFirstFrame()

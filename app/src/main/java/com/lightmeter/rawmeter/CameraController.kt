@@ -27,7 +27,6 @@ import android.view.Surface
 import android.view.TextureView
 import java.io.File
 import java.util.concurrent.atomic.AtomicLong
-import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.roundToInt
@@ -38,13 +37,24 @@ import kotlin.math.roundToInt
  * This class selects capabilities and coordinates lifecycle, calibration and fallback. Camera2
  * resources, RAW metering, compatible metering, result pairing and recovery history are owned by
  * dedicated internal components below this facade.
+ *
+ * 维护边界 / Maintenance boundary:
+ * - 这里只保留 Camera2 生命周期、能力/会话选择和跨组件调度；不要继续堆放功能实现。
+ * - 新增功能的状态、超时和取消由对应 Coordinator 持有，数学/图像分析放在独立算法类。
+ * - 负片流程归 CameraFilmPreviewCoordinator，参考图采样归 CameraPreviewReferenceSampler，
+ *   状态文案归 CameraStatusFormatter，临时 RAW 事务归 CameraZoneRawCoordinator；不要搬回本类。
+ * - 公共入口可以薄委托，但不能通过把本 Controller 传给组件来绕过状态所有权。
+ * - 拆分必须保持线程、generation、Image/Surface 所有权及 RAW/YUV 隔离恢复契约。
+ * See docs/CAMERA_CONTROLLER_BOUNDARIES_ZH.md before adding another responsibility.
  */
 class CameraController(
     private val context: Context,
     private val callback: CameraControllerCallback,
+    private val meteringViewport: () -> EvaluativeMeteringViewport? = { null },
 ) : TextureView.SurfaceTextureListener {
 
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val statusFormatter = CameraStatusFormatter(::localized)
     private val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
     private val sessionCoordinator = CameraSessionCoordinator(
         cameraManager = cameraManager,
@@ -84,22 +94,8 @@ class CameraController(
                 ) {
                     return
                 }
-                val transaction = zoneRawTransaction
-                if (transaction?.sessionState?.phase == ZoneRawSessionPhase.SWITCHING_TO_RAW &&
-                    activeSessionProfile == CameraSessionProfile.RAW_ISOLATED
-                ) {
-                    if (!transaction.sessionState.markRawSessionConfigured()) return
-                    transaction.rawSessionConfiguredAtNs = System.nanoTime()
-                    postInfo(
-                        cameraInfo.copy(
-                            rawAvailable = true,
-                            status = localized("正在读取 RAW", "Reading RAW"),
-                        ),
-                    )
-                    startMeasurement(transaction.plan)
-                    return
-                }
-                if (transaction == null && calibrationSessionProfile == null &&
+                if (zoneRaw.onRawSessionConfigured(activeSessionProfile)) return
+                if (!zoneRaw.isActive && calibrationSessionProfile == null &&
                     pendingResidentSessionProfile == null
                 ) {
                     val desiredProfile = desiredResidentSessionProfile()
@@ -108,6 +104,7 @@ class CameraController(
                         return
                     }
                 }
+                val restoringZoneRaw = zoneRaw.isRestoring
                 val preview = previewSurface
                 if (preview == null) {
                     onSessionConfigurationFailed(
@@ -121,9 +118,7 @@ class CameraController(
                     failManualAcceptance(IllegalStateException("Manual workflow preview failed to start"))
                     return
                 }
-                if (transaction?.sessionState?.phase == ZoneRawSessionPhase.RESTORING) {
-                    completeZoneRawTransaction(transaction)
-                }
+                if (restoringZoneRaw) zoneRaw.onResidentSessionConfigured()
                 if (pendingManualAcceptance != null) completeManualAcceptance()
             }
 
@@ -146,7 +141,7 @@ class CameraController(
                     )
                     return
                 }
-                if (handleZoneRawSessionFailure(error) || handleResidentSessionFailure(error)) {
+                if (zoneRaw.onSessionFailure(error) || handleResidentSessionFailure(error)) {
                     return
                 }
                 handleSessionFailure(generation)
@@ -245,18 +240,8 @@ class CameraController(
                 result: CaptureResult,
                 totalResult: TotalCaptureResult,
             ) {
-                val transaction = zoneRawTransaction
                 updateActivePhysicalCamera(totalResult)
-                val expectedPhysicalId = transaction?.expectedPhysicalCameraId
-                val activePhysicalId = cameraInfo.activePhysicalCameraId
-                if (ZoneSessionPolicy.physicalCameraChanged(expectedPhysicalId, activePhysicalId)) {
-                    transaction?.physicalCameraChanged = true
-                    Log.w(
-                        TAG,
-                        "Zone RAW changed physical camera expected=$expectedPhysicalId " +
-                            "actual=$activePhysicalId; the RAW reading will be discarded",
-                    )
-                }
+                zoneRaw.observePhysicalCamera(cameraInfo.activePhysicalCameraId)
                 latestResult = result
                 updateDynamicLensInfo(result)
             }
@@ -266,25 +251,7 @@ class CameraController(
             }
 
             override fun onRawMeteringReading(reading: MeterReading) {
-                val transaction = zoneRawTransaction
-                if (transaction?.sessionState?.phase == ZoneRawSessionPhase.METERING) {
-                    if (transaction.physicalCameraChanged) {
-                        transaction.failure = ZoneRawFailure(
-                            message = localized(
-                                "RAW 流切换了物理镜头，已改用当前预览流测光",
-                                "RAW switched physical lenses; using the current preview stream",
-                            ),
-                            meteringMode = transaction.plan.meteringMode,
-                            target = transaction.plan.target,
-                            meteringRoiFraction = transaction.plan.meteringRoiFraction,
-                        )
-                    } else {
-                        transaction.reading = reading
-                        deliverZoneRawResult(transaction, reading)
-                    }
-                    restoreZoneResidentSession(transaction)
-                    return
-                }
+                if (zoneRaw.onReading(reading)) return
                 resumePreviewAfterRawCapture()
                 meteringOperationActive = false
                 recoveryState.recordRawMeasurementSucceeded()
@@ -292,25 +259,7 @@ class CameraController(
             }
 
             override fun onRawZoneBatchReading(results: List<ZoneMeteringResult>) {
-                val transaction = zoneRawTransaction
-                if (transaction?.sessionState?.phase == ZoneRawSessionPhase.METERING) {
-                    if (transaction.physicalCameraChanged) {
-                        transaction.failure = ZoneRawFailure(
-                            message = localized(
-                                "RAW 流切换了物理镜头，本次批量测光未应用",
-                                "RAW switched physical lenses; this batch was not applied",
-                            ),
-                            meteringMode = transaction.plan.meteringMode,
-                            target = null,
-                            meteringRoiFraction = transaction.plan.meteringRoiFraction,
-                        )
-                    } else {
-                        transaction.batchResults = results
-                        deliverZoneRawBatchResult(transaction, results)
-                    }
-                    restoreZoneResidentSession(transaction)
-                    return
-                }
+                if (zoneRaw.onBatchReading(results)) return
                 resumePreviewAfterRawCapture()
                 meteringOperationActive = false
                 recoveryState.recordRawMeasurementSucceeded()
@@ -323,17 +272,10 @@ class CameraController(
                 target: ZoneMeteringTarget?,
                 meteringRoiFraction: Float?,
             ) {
-                val transaction = zoneRawTransaction
-                if (transaction?.sessionState?.phase == ZoneRawSessionPhase.METERING) {
-                    transaction.failure = ZoneRawFailure(
-                        message = message,
-                        meteringMode = meteringMode,
-                        target = target,
-                        meteringRoiFraction = meteringRoiFraction,
+                if (zoneRaw.onMeteringError(
+                        ZoneRawFailure(message, meteringMode, target, meteringRoiFraction),
                     )
-                    restoreZoneResidentSession(transaction)
-                    return
-                }
+                ) return
                 resumePreviewAfterRawCapture()
                 if (isConfirmedRawWorkflow()) {
                     meteringOperationActive = false
@@ -503,9 +445,50 @@ class CameraController(
     private var cameraGeneration = 0
     private var calibrationSessionProfile: CameraSessionProfile? = null
     private var pendingCalibrationMeteringPlan: MeteringPlan? = null
-    private val zoneRawTransactions = ZoneRawTransactionCoordinator()
-    private val zoneRawTransaction: ZoneRawTransaction?
-        get() = zoneRawTransactions.active
+    private val zoneRaw = CameraZoneRawCoordinator(
+        mainHandler = mainHandler,
+        host = object : CameraZoneRawHost {
+            override val rawSessionReady get() = started && cameraDevice != null &&
+                captureSession != null && rawOutputSize != null
+            override val started get() = this@CameraController.started
+            override val cameraInfo get() = this@CameraController.cameraInfo
+            override val characteristics get() = this@CameraController.characteristics
+            override val rawHardwareAvailable get() = this@CameraController.rawHardwareAvailable
+            override val confirmedRawWorkflow get() = isConfirmedRawWorkflow()
+            override fun resetCaptureState() = previewRequests.resetCaptureState()
+            override fun clearPendingResidentSession() { pendingResidentSessionProfile = null }
+            override fun desiredResidentProfile() = desiredResidentSessionProfile()
+            override fun restoreCharacteristics(characteristics: CameraCharacteristics?) {
+                this@CameraController.characteristics = characteristics
+            }
+            override fun reconfigureSession(profile: CameraSessionProfile) =
+                this@CameraController.reconfigureSession(profile)
+            override fun startMeasurement(plan: MeteringPlan) = this@CameraController.startMeasurement(plan)
+            override fun postInfo(info: CameraUiInfo) = this@CameraController.postInfo(info)
+            override fun finishOperation(rawSucceeded: Boolean) {
+                meteringOperationActive = false
+                if (rawSucceeded) recoveryState.recordRawMeasurementSucceeded()
+            }
+            override fun fallbackToCompatible(failure: ZoneRawFailure) {
+                downgradeAfterCompatibleMeasurement = calibrationStorageCameraId == null &&
+                    recoveryState.recordRawMeasurementFailed(meteringPipelineMode)
+                measureCompatiblePreview(failure.meteringMode, failure.target, failure.meteringRoiFraction)
+            }
+            override fun postMeterError(message: String) = this@CameraController.postMeterError(message)
+            override fun recoverSafePreview() = scheduleRecovery(
+                CameraSessionProfile.PREVIEW_ONLY,
+                localized("正在恢复安全预览", "Restoring safe preview"),
+                delayMs = 0L,
+            )
+        },
+        listener = object : CameraZoneRawListener {
+            override fun onRestoreStateChanged(restoring: Boolean) = callback.onMeteringRestoreStateChanged(restoring)
+            override fun onReading(reading: MeterReading) = callback.onMeterReading(reading)
+            override fun onBatchReading(results: List<ZoneMeteringResult>) = callback.onZoneMeteringBatchResult(results)
+        },
+        latestReferenceFrame = { zoneCameraFrames.latestFrame(MAX_METERING_REFERENCE_AGE_NS) },
+        localized = ::localized,
+    )
     private var pendingResidentSessionProfile: CameraSessionProfile? = null
     private var zoneYuvSessionUnavailable = false
     @Volatile
@@ -525,6 +508,7 @@ class CameraController(
     @Volatile
     private var latestResult: CaptureResult? = null
     private val previewResultStore = TimestampedCaptureResultStore<CaptureResult>()
+    private val previewReferenceSampler = CameraPreviewReferenceSampler { textureView }
     private var trackingFramesEnabled = false
     private val exposurePreviewState = ExposurePreviewStateCoordinator(
         onRequestChanged = ::updatePreviewRepeatingRequest,
@@ -551,9 +535,9 @@ class CameraController(
         configureAutoFocus = distanceCapture::configureAutoFocus,
         captureCallback = { previewCaptureCallback },
         onRequestFailure = ::handlePreviewRequestFailure,
-        filmPreviewActive = { filmNegativeEnabled },
-        filmPreviewLocked = { filmNegativeLocked },
-        filmPreviewPreparingCapture = { filmAwaitingConvergence },
+        filmPreviewActive = { filmPreview.isEnabled },
+        filmPreviewLocked = { filmPreview.isLocked },
+        filmPreviewPreparingCapture = { filmPreview.isPreparingCapture },
         requestCharacteristics = { logicalCharacteristics ?: characteristics },
     )
     private var downgradeAfterCompatibleMeasurement = false
@@ -583,7 +567,7 @@ class CameraController(
         previewSize = { previewSize },
         sensorOrientationDegrees = { cameraInfo.sensorOrientationDegrees },
         lensFacing = { cameraInfo.lensFacing },
-        processedPreview = { filmNegativeRenderer != null },
+        processedPreview = { filmPreview.hasRenderer },
     )
     private val lastViewWidth: Int get() = previewSurfaceCoordinator.viewWidth
     private val lastViewHeight: Int get() = previewSurfaceCoordinator.viewHeight
@@ -595,7 +579,7 @@ class CameraController(
         started = { started },
         cameraGeneration = { cameraGeneration },
         sessionTransitionActive = {
-            zoneRawTransaction != null || pendingResidentSessionProfile != null
+            zoneRaw.isActive || pendingResidentSessionProfile != null
         },
         retryAtStandardFrameRate = {
             if ((previewFpsRange?.upper ?: 0) > PreviewFrameRateMode.LOW.requestedCeiling &&
@@ -660,336 +644,53 @@ class CameraController(
         texture.surfaceTextureListener = this
     }
 
-    @Volatile private var filmNegativeEnabled = false
-    @Volatile private var filmNegativeSettings = FilmNegativeSettings()
-    @Volatile private var filmNegativeLocked = false
-    @Volatile private var filmNegativeRenderer: FilmNegativeRenderer? = null
-    private var filmNegativeRendererFailed = false
-    private val filmRendererReleases = AtomicInteger(0)
-    private var filmLockCompletion: ((Boolean) -> Unit)? = null
-    private var filmLockSerial = 0L
-    private var filmAwaitingConvergence = false
-    private var filmConvergedFrames = 0
-    private var filmSampleSerial = 0L
-    private var filmEvidence: FilmNegativeFrameEvidence? = null
-    private var filmSampleReference: FilmNegativeBaseSample? = null
-    private var filmControlledCurve: Boolean? = null
-    internal var onFilmNegativePreviewError: ((String) -> Unit)? = null
-    internal var onFilmNegativePreviewReady: ((String) -> Unit)? = null
-    internal var onFilmNegativeBaseInvalidated: (() -> Unit)? = null
-    internal var onFilmNegativeProcessingChanged: ((Boolean) -> Unit)? = null
+    private val filmPreview = CameraFilmPreviewCoordinator(
+        mainHandler = mainHandler,
+        localized = ::localized,
+        host = object : CameraFilmPreviewHost {
+            override val cameraHandler get() = this@CameraController.cameraHandler
+            override val cameraGeneration get() = this@CameraController.cameraGeneration
+            override val cameraInfo get() = this@CameraController.cameraInfo
+            override val requestCharacteristics get() = logicalCharacteristics ?: characteristics
+            override val sessionAvailable get() = captureSession != null
+            override val textureView get() = this@CameraController.textureView
+            override val started get() = this@CameraController.started
+            override val stopInProgress get() = this@CameraController.stopInProgress
+            override val displayRotation get() = lastDisplayRotation
+            override val displayZoom get() = lastDisplayZoom
+            override fun closeCamera() = this@CameraController.closeCamera()
+            override fun resetRecoveryState() = this@CameraController.resetRecoveryState()
+            override fun openCamera(output: SurfaceTexture?) = this@CameraController.openCamera(output)
+            override fun updatePreviewRepeatingRequest() = this@CameraController.updatePreviewRepeatingRequest()
+            override fun finishCameraFailure(message: String) = this@CameraController.finishCameraFailure(message)
+        },
+    )
+    internal var onFilmNegativePreviewError: ((String) -> Unit)?
+        get() = filmPreview.onError
+        set(value) { filmPreview.onError = value }
+    internal var onFilmNegativePreviewReady: ((String) -> Unit)?
+        get() = filmPreview.onReady
+        set(value) { filmPreview.onReady = value }
+    internal var onFilmNegativeBaseInvalidated: (() -> Unit)?
+        get() = filmPreview.onBaseInvalidated
+        set(value) { filmPreview.onBaseInvalidated = value }
+    internal var onFilmNegativeProcessingChanged: ((Boolean) -> Unit)?
+        get() = filmPreview.onProcessingChanged
+        set(value) { filmPreview.onProcessingChanged = value }
 
-    internal fun setFilmNegativePreviewEnabled(enabled: Boolean) {
-        if (filmNegativeEnabled == enabled) return
-        filmNegativeEnabled = enabled
-        filmNegativeLocked = false
-        val handler = cameraHandler ?: return
-        handler.post {
-            closeCamera()
-            resetRecoveryState()
-            filmNegativeRendererFailed = false
-            releaseFilmRenderer()
-            if (started) openCamera(textureView?.surfaceTexture)
-        }
-    }
-
-    internal fun updateFilmNegativeSettings(settings: FilmNegativeSettings) {
-        filmNegativeSettings = settings
-        cameraHandler?.post {
-            val latest = filmNegativeSettings
-            // Manual colour/density edits still belong to the capture setup that supplied them.
-            if (filmNegativeEnabled) filmNegativeRenderer?.update(latest)
-        }
-    }
-
-    internal fun setFilmNegativeCameraLocked(locked: Boolean, completion: (Boolean) -> Unit) {
-        val handler = cameraHandler
-        if (handler == null) { mainHandler.post { completion(false) }; return }
-        handler.post {
-            filmLockCompletion?.let { old -> mainHandler.post { old(false) } }
-            filmLockCompletion = null
-            val serial = ++filmLockSerial
-            val chars = logicalCharacteristics ?: characteristics
-            val supported = chars?.get(CameraCharacteristics.CONTROL_AE_LOCK_AVAILABLE) == true &&
-                chars.get(CameraCharacteristics.CONTROL_AWB_LOCK_AVAILABLE) == true
-            val accepted = filmNegativeEnabled && captureSession != null && (!locked || supported)
-            val waitForLock = locked && accepted
-            filmAwaitingConvergence = waitForLock && !filmNegativeLocked
-            filmConvergedFrames = 0
-            if (!waitForLock) { filmNegativeLocked = false; invalidateFilmBase() }
-            if (waitForLock) filmLockCompletion = completion
-            if (filmNegativeEnabled) previewRequests.update()
-            if (!waitForLock) mainHandler.post { if (serial == filmLockSerial) completion(accepted) }
-            else handler.postDelayed({
-                if (serial == filmLockSerial && filmLockCompletion != null) {
-                    val pending = filmLockCompletion
-                    filmLockCompletion = null
-                    filmAwaitingConvergence = false
-                    filmNegativeLocked = false
-                    invalidateFilmBase()
-                    previewRequests.update()
-                    mainHandler.post { if (serial == filmLockSerial) pending?.invoke(false) }
-                }
-            }, 2500L)
-        }
-    }
-
-    internal fun sampleFilmNegativeBase(automatic: Boolean = false, completion: (FloatArray?) -> Unit) {
-        val handler = cameraHandler
-        if (handler == null) { mainHandler.post { completion(null) }; return }
-        handler.post {
-            val sampleSerial = ++filmSampleSerial
-            val renderer = filmNegativeRenderer
-            val generation = cameraGeneration
-            if (!filmNegativeEnabled || renderer == null || !filmNegativeLocked || filmLockCompletion != null) {
-                mainHandler.post { completion(null) }
-            } else {
-                renderer.sampleBase(automatic) { sample -> handler.post sampleResult@{
-                    if (sampleSerial != filmSampleSerial || generation != cameraGeneration || !filmNegativeEnabled || filmNegativeRenderer !== renderer) return@sampleResult
-                    val accepted = sample?.takeIf { filmNegativeLocked && filmEvidence?.compatible(it.evidence) == true }
-                    if (accepted != null) filmSampleReference = accepted
-                    mainHandler.post {
-                        if (sampleSerial == filmSampleSerial && generation == cameraGeneration && filmNegativeEnabled && filmNegativeRenderer === renderer) {
-                            completion(accepted?.takeIf { filmSampleReference === it }?.rgb)
-                        }
-                    }
-                } }
-            }
-        }
-    }
-
-    internal fun captureFilmNegativeFrame(maxEdge: Int = 1280, completion: (FilmNegativeFrozenFrame?) -> Unit) {
-        val handler = cameraHandler
-        if (handler == null) { mainHandler.post { completion(null) }; return }
-        handler.post {
-            val renderer = filmNegativeRenderer
-            val generation = cameraGeneration
-            if (!filmNegativeEnabled || renderer == null || !filmNegativeLocked || filmLockCompletion != null) {
-                mainHandler.post { completion(null) }
-            } else renderer.captureFrame(maxEdge) { frame -> handler.post {
-                val accepted = frame?.takeIf { generation == cameraGeneration && filmNegativeEnabled &&
-                    filmNegativeRenderer === renderer && filmNegativeLocked && filmEvidence?.compatible(it.evidence) == true }
-                if (frame != null && accepted == null) Log.i("FilmFrameDiagnostic",
-                    "Frozen frame conditions changed: processing=${frame.evidence.processingKey}->${filmEvidence?.processingKey} locked=$filmNegativeLocked")
-                mainHandler.post { completion(accepted?.takeIf { generation == cameraGeneration && filmNegativeEnabled }) }
-            } }
-        }
-    }
-
-    /** Freeze one locked original, analyze it once, then reuse its display correction. */
-    internal fun selectFilmNegativeFrame(completion: (FilmNegativeSelection?) -> Unit) {
-        val handler = cameraHandler
-        if (handler == null) { mainHandler.post { completion(null) }; return }
-        handler.post {
-            val serial = ++filmSampleSerial
-            val generation = cameraGeneration
-            val renderer = filmNegativeRenderer
-            val snapshot = filmNegativeSettings
-            if (renderer == null || !filmNegativeEnabled || !filmNegativeLocked || filmLockCompletion != null) {
-                mainHandler.post { completion(null) }
-                return@post
-            }
-            val orientation = renderer.orientationToken
-            val started = android.os.SystemClock.elapsedRealtime()
-            if (BuildConfig.DEBUG) Log.i("FilmSelectionDiagnostic", "start serial=$serial mode=single-frame")
-            var completed = false
-            var timeout: Runnable? = null
-            fun current() = serial == filmSampleSerial && generation == cameraGeneration &&
-                filmNegativeEnabled && filmNegativeLocked && filmNegativeRenderer === renderer
-            fun finish(result: FilmNegativeSelection?) {
-                if (completed) return
-                completed = true
-                timeout?.let { handler.removeCallbacks(it) }
-                if (!current()) return
-                val accepted = result?.takeIf { filmEvidence?.compatible(it.evidence) == true && renderer.orientationToken == it.orientationToken }
-                if (BuildConfig.DEBUG) Log.i("FilmSelectionDiagnostic",
-                    "finish serial=$serial accepted=${accepted != null} mode=single-frame elapsedMs=${android.os.SystemClock.elapsedRealtime() - started}")
-                if (accepted != null) {
-                    filmSampleReference = FilmNegativeBaseSample(FloatArray(3) { accepted.settings.base(it) }, accepted.evidence)
-                    filmNegativeSettings = accepted.settings
-                    renderer.update(accepted.settings)
-                }
-                mainHandler.post { if (current()) completion(accepted?.takeIf { renderer.orientationToken == it.orientationToken }) }
-            }
-            timeout = Runnable { finish(null) }
-            handler.postDelayed(checkNotNull(timeout), 6500L)
-            renderer.captureFrame(FilmNegativeSelectionAnalysis.ANALYSIS_EDGE) { frame -> handler.post captureResult@{
-                    if (!current() || completed) return@captureResult
-                    if (frame == null || filmEvidence?.compatible(frame.evidence) != true ||
-                        frame.orientationToken != orientation || renderer.orientationToken != orientation) { finish(null); return@captureResult }
-                    Thread({
-                        val analysisStarted = android.os.SystemClock.elapsedRealtime()
-                        val result = runCatching { FilmNegativeSelectionAnalysis.automatic(frame, snapshot) }.getOrNull()
-                        if (BuildConfig.DEBUG) Log.i("FilmSelectionDiagnostic", "analysis serial=$serial mode=single-frame " +
-                            "elapsedMs=${android.os.SystemClock.elapsedRealtime() - analysisStarted} region=${result?.region} " +
-                            "monochrome=${result?.settings?.monochrome} base=${result?.settings?.let { "${it.baseRed},${it.baseGreen},${it.baseBlue}" }} " +
-                            "tone=${result?.settings?.let { "${it.blackDensity},${it.whiteDensity}" }}")
-                        handler.post analysisResult@{
-                            if (!current() || completed) return@analysisResult
-                            if (filmEvidence?.compatible(frame.evidence) != true ||
-                                renderer.orientationToken != orientation) { finish(null); return@analysisResult }
-                            finish(result)
-                        }
-                    }, "film-selection-analysis").start()
-                } }
-        }
-    }
-
+    internal fun setFilmNegativePreviewEnabled(enabled: Boolean) = filmPreview.setEnabled(enabled)
+    internal fun updateFilmNegativeSettings(settings: FilmNegativeSettings) = filmPreview.updateSettings(settings)
+    internal fun setFilmNegativeCameraLocked(locked: Boolean, completion: (Boolean) -> Unit) =
+        filmPreview.setCameraLocked(locked, completion)
+    internal fun sampleFilmNegativeBase(automatic: Boolean = false, completion: (FloatArray?) -> Unit) =
+        filmPreview.sampleBase(automatic, completion)
+    internal fun captureFilmNegativeFrame(maxEdge: Int = 1280, completion: (FilmNegativeFrozenFrame?) -> Unit) =
+        filmPreview.captureFrame(maxEdge, completion)
+    internal fun selectFilmNegativeFrame(completion: (FilmNegativeSelection?) -> Unit) =
+        filmPreview.selectFrame(completion)
     internal fun acceptFilmNegativeFrame(frame: FilmNegativeFrozenFrame, settings: FilmNegativeSettings,
-        completion: (Boolean) -> Unit) {
-        val handler = cameraHandler
-        if (handler == null) { mainHandler.post { completion(false) }; return }
-        handler.post {
-            val generation = cameraGeneration
-            val accepted = filmNegativeEnabled && filmNegativeLocked && filmEvidence?.compatible(frame.evidence) == true
-                && filmNegativeRenderer?.orientationToken == frame.orientationToken
-            val reference = if (accepted) FilmNegativeBaseSample(FloatArray(3) { settings.base(it) }, frame.evidence) else null
-            if (accepted) {
-                filmSampleReference = reference
-                filmNegativeSettings = settings
-                filmNegativeRenderer?.update(settings)
-            }
-            mainHandler.post { completion(accepted && generation == cameraGeneration && filmNegativeEnabled &&
-                filmNegativeLocked && filmSampleReference === reference && filmNegativeSettings === settings) }
-        }
-    }
-
-    private fun invalidateFilmBase() {
-        ++filmSampleSerial
-        if (filmSampleReference == null && !filmNegativeSettings.inverted &&
-            filmNegativeSettings.referenceSource == FilmNegativeReferenceSource.DEFAULT) return
-        filmSampleReference = null
-        val resetSettings = filmNegativeSettings.withoutReference()
-        filmNegativeSettings = resetSettings
-        filmNegativeRenderer?.update(resetSettings)
-        mainHandler.post { if (filmNegativeSettings === resetSettings) onFilmNegativeBaseInvalidated?.invoke() }
-    }
-
-    private fun observeFilmNegativeResult(request: CaptureRequest, result: CaptureResult, timestamp: Long?) {
-        if (!filmNegativeEnabled || timestamp == null) return
-        if (filmAwaitingConvergence) {
-            val converged = result.get(CaptureResult.CONTROL_AE_STATE) == CaptureResult.CONTROL_AE_STATE_CONVERGED &&
-                result.get(CaptureResult.CONTROL_AWB_STATE) == CaptureResult.CONTROL_AWB_STATE_CONVERGED
-            filmConvergedFrames = if (converged) filmConvergedFrames + 1 else 0
-            if (filmConvergedFrames >= 2) {
-                filmAwaitingConvergence = false
-                filmNegativeLocked = true
-                previewRequests.update()
-            }
-        }
-        val gains = result.get(CaptureResult.COLOR_CORRECTION_GAINS)
-        val controlled = FilmNegativeCameraProfile.controlled(result)
-        if (filmControlledCurve != controlled) {
-            filmControlledCurve = controlled
-            mainHandler.post { if (filmNegativeEnabled) onFilmNegativeProcessingChanged?.invoke(controlled) }
-        }
-        val evidence = FilmNegativeFrameEvidence(
-            timestampNs = timestamp,
-            cameraKey = "${cameraInfo.cameraId}:${cameraInfo.physicalCameraId}:${cameraGeneration}",
-            locked = filmNegativeLocked && request.get(CaptureRequest.CONTROL_AE_LOCK) == true &&
-                request.get(CaptureRequest.CONTROL_AWB_LOCK) == true &&
-                result.get(CaptureResult.CONTROL_AE_STATE) == CaptureResult.CONTROL_AE_STATE_LOCKED &&
-                result.get(CaptureResult.CONTROL_AWB_STATE) == CaptureResult.CONTROL_AWB_STATE_LOCKED,
-            exposureNs = result.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: 0L,
-            sensitivity = result.get(CaptureResult.SENSOR_SENSITIVITY) ?: 0,
-            colorGains = gains?.let { listOf(it.red, it.greenEven, it.greenOdd, it.blue) } ?: emptyList(),
-            processingKey = "${result.get(CaptureResult.TONEMAP_MODE)}:" +
-                "${result.get(CaptureResult.COLOR_CORRECTION_TRANSFORM)?.hashCode()}:${result.get(CaptureResult.CONTROL_POST_RAW_SENSITIVITY_BOOST)}",
-            processingCurve = FilmNegativeCameraProfile.signature(result.get(CaptureResult.TONEMAP_CURVE)),
-        )
-        filmEvidence = evidence
-        if (evidence.locked && filmLockCompletion != null) {
-            val pending = filmLockCompletion
-            val serial = filmLockSerial
-            filmLockCompletion = null
-            mainHandler.post { if (serial == filmLockSerial && filmNegativeLocked) pending?.invoke(true) }
-        }
-        filmSampleReference?.let { if (!it.evidence.compatible(evidence)) {
-            if (BuildConfig.DEBUG) Log.i("FilmSelectionDiagnostic", "reference-invalidated " +
-                "locked=${evidence.locked} exposure=${it.evidence.exposureNs}->${evidence.exposureNs} " +
-                "iso=${it.evidence.sensitivity}->${evidence.sensitivity} " +
-                "gains=${it.evidence.colorGains}->${evidence.colorGains} " +
-                "processing=${it.evidence.processingKey}->${evidence.processingKey} " +
-                "curveChanged=${it.evidence.processingCurve != evidence.processingCurve}")
-            filmNegativeLocked = false
-            invalidateFilmBase()
-            previewRequests.update()
-        } }
-        filmNegativeRenderer?.observe(evidence)
-    }
-
-    internal fun retryFilmNegativePreview() {
-        cameraHandler?.post {
-            if (!filmNegativeEnabled) return@post
-            closeCamera()
-            resetRecoveryState()
-            filmNegativeLocked = false
-            filmNegativeRendererFailed = false
-            releaseFilmRenderer()
-            if (started) openCamera(textureView?.surfaceTexture)
-        }
-    }
-
-    private fun releaseFilmRenderer() {
-        val renderer = filmNegativeRenderer ?: return
-        filmNegativeRenderer = null
-        filmRendererReleases.incrementAndGet()
-        renderer.release {
-            filmRendererReleases.decrementAndGet()
-            // GL cleanup may finish after stop() has retired the camera thread. Resolve
-            // the live handler on the lifecycle thread so a resumed session can reopen.
-            mainHandler.post {
-                if (!started || stopInProgress) return@post
-                val handler = cameraHandler ?: return@post
-                handler.post {
-                    if (started && cameraHandler === handler && filmRendererReleases.get() == 0) {
-                        openCamera(textureView?.surfaceTexture)
-                    }
-                }
-            }
-        }
-    }
-
-    private fun filmPreviewInput(output: SurfaceTexture): SurfaceTexture? {
-        if (filmNegativeRendererFailed || filmRendererReleases.get() > 0) return null
-        filmNegativeRenderer?.let { renderer ->
-            if (renderer.outputTexture === output) return renderer.inputTexture
-            releaseFilmRenderer()
-            return null
-        }
-        lateinit var renderer: FilmNegativeRenderer
-        renderer = FilmNegativeRenderer(output, if (filmNegativeEnabled) filmNegativeSettings
-            else FilmNegativeSettings(inverted = false, showGuide = false),
-            onReady = {
-                cameraHandler?.post {
-                    if (started && filmNegativeRenderer === renderer &&
-                        textureView?.surfaceTexture === output) openCamera(output)
-                }
-            },
-            onFirstFrame = {
-                mainHandler.post {
-                    if (filmNegativeEnabled && filmNegativeRenderer === renderer) {
-                        onFilmNegativePreviewReady?.invoke(cameraInfo.cameraId)
-                    }
-                }
-            },
-            onFailure = { error ->
-                cameraHandler?.post {
-                    if (filmNegativeRenderer !== renderer) return@post
-                    filmNegativeRendererFailed = true
-                    closeCamera()
-                    releaseFilmRenderer()
-                    val message = localized("取景渲染失败，请重启预览或应用", "Preview rendering failed. Restart the preview or app")
-                    Log.e(TAG, message, error)
-                    mainHandler.post { if (filmNegativeEnabled) onFilmNegativePreviewError?.invoke(message) }
-                    if (!filmNegativeEnabled) finishCameraFailure(message)
-                }
-            })
-        filmNegativeRenderer = renderer
-        orientFilmRenderer()
-        renderer.start()
-        return null
-    }
+        completion: (Boolean) -> Unit) = filmPreview.acceptFrame(frame, settings, completion)
+    internal fun retryFilmNegativePreview() = filmPreview.retry()
 
     fun setTrackingFramesEnabled(enabled: Boolean) {
         zoneCameraFrames.setEnabled(enabled, cameraHandler)
@@ -1002,7 +703,7 @@ class CameraController(
             if (trackingFramesEnabled == enabled) return@post
             trackingFramesEnabled = enabled
             if (!started || calibrationSessionProfile != null ||
-                zoneRawTransaction != null || meteringOperationActive || combinationWorkflowProbe.isActive
+                zoneRaw.isActive || meteringOperationActive || combinationWorkflowProbe.isActive
             ) {
                 return@post
             }
@@ -1443,9 +1144,8 @@ class CameraController(
             failManualAcceptance(IllegalStateException("Camera selection changed"))
             resetRecoveryState()
             closeCamera()
-            if (filmNegativeEnabled) {
-                filmNegativeLocked = false
-                releaseFilmRenderer()
+            if (filmPreview.isEnabled) {
+                filmPreview.releaseRenderer()
             }
             val pending = cameraCatalog.discover().firstOrNull { it.cameraId == cameraId }
             postInfo(
@@ -1471,7 +1171,7 @@ class CameraController(
         // SurfaceTexture recommit request.
         previewSurfaceCoordinator.armForFreshStart()
         started = true
-        filmNegativeRendererFailed = false
+        filmPreview.onCameraStart()
         previewHealth.refreshMonitoring()
         // A new foreground lifecycle is a fresh capability probe. Session downgrades remain
         // sticky only for the current run, preventing a transient HAL failure from permanently
@@ -1496,8 +1196,7 @@ class CameraController(
             handler.post {
                 failManualAcceptance(IllegalStateException("Camera stopped"))
                 closeCamera()
-                filmNegativeLocked = false
-                releaseFilmRenderer()
+                filmPreview.releaseRenderer()
                 thread.quitSafely()
                 mainHandler.post {
                     if (cameraHandler !== handler) return@post
@@ -1512,8 +1211,7 @@ class CameraController(
             }
         } else {
             closeCamera()
-            filmNegativeLocked = false
-            releaseFilmRenderer()
+            filmPreview.releaseRenderer()
             cameraThread = null
             cameraHandler = null
         }
@@ -1526,19 +1224,8 @@ class CameraController(
         displayZoom: Float,
     ) {
         previewSurfaceCoordinator.update(viewWidth, viewHeight, displayRotation,
-            if (filmNegativeEnabled) 1f else displayZoom)
-        orientFilmRenderer()
-    }
-
-    private fun orientFilmRenderer() {
-        val degrees = when (textureView?.display?.rotation ?: lastDisplayRotation) {
-            Surface.ROTATION_90 -> 90
-            Surface.ROTATION_180 -> 180
-            Surface.ROTATION_270 -> 270
-            else -> 0
-        }
-        filmNegativeRenderer?.orient(degrees, CameraPreviewTransform.shouldMirrorPreview(cameraInfo.lensFacing),
-            if (filmNegativeEnabled) 1f else lastDisplayZoom)
+            if (filmPreview.isEnabled) 1f else displayZoom)
+        filmPreview.orient()
     }
 
     /**
@@ -1556,7 +1243,7 @@ class CameraController(
             viewWidth = viewWidth,
             viewHeight = viewHeight,
             displayRotation = displayRotation,
-            displayZoom = if (filmNegativeEnabled) 1f else displayZoom,
+            displayZoom = if (filmPreview.isEnabled) 1f else displayZoom,
         )
     }
 
@@ -1569,7 +1256,7 @@ class CameraController(
         meteringAngleDegrees: Int = AngleMeteringMath.DEFAULT_DEGREES,
         requestedSource: MeteringSource? = null,
     ): Boolean {
-        if (filmNegativeEnabled || filmRendererReleases.get() > 0 ||
+        if (filmPreview.isEnabled || filmPreview.isReleasingRenderer ||
             meteringOperationActive || combinationWorkflowProbe.isActive ||
             manualRawCaptureBlocked()
         ) return false
@@ -1599,7 +1286,7 @@ class CameraController(
         } else {
             null
         }
-        val displayedPreviewReference = target?.let(::captureDisplayedPreviewReference)
+        val displayedPreviewReference = target?.let(previewReferenceSampler::capture)
         val plan = MeteringPlan(
             frameFormat = frameFormat,
             displayZoom = displayZoom,
@@ -1671,7 +1358,7 @@ class CameraController(
         } else {
             null
         }
-        val displayedReferences = captureDisplayedPreviewReferences(requests)
+        val displayedReferences = previewReferenceSampler.captureBatch(requests)
         val plan = MeteringPlan(
             frameFormat = frameFormat,
             displayZoom = displayZoom,
@@ -1750,7 +1437,7 @@ class CameraController(
         meteringOperationActive = true
         prepareMeteringPreviewBaseline {
             if (plan.zoneBatchTargets.isNotEmpty()) {
-                beginZoneRawTransaction(plan)
+                zoneRaw.begin(plan)
                 return@prepareMeteringPreviewBaseline
             }
             val workflowMeteringProfile = activeCombinationPlan?.let { workflow ->
@@ -1770,7 +1457,7 @@ class CameraController(
                     manualSafePreview = manualSafePreviewActive,
                 )
             ) {
-                beginZoneRawTransaction(plan)
+                zoneRaw.begin(plan)
             } else {
                 startMeasurement(plan)
             }
@@ -1794,70 +1481,10 @@ class CameraController(
         openCamera(texture)
     }
 
-    /** Freezes the Zone reference, then swaps preview + YUV for one short RAW-only session. */
-    private fun beginZoneRawTransaction(plan: MeteringPlan) {
-        if (!started || cameraDevice == null || captureSession == null || rawOutputSize == null) {
-            meteringOperationActive = false
-            postMeterError(localized("RAW 流尚未就绪", "The RAW stream is not ready"))
-            return
-        }
-        val frozenPlan = freezeZoneReference(plan)
-        val transaction = zoneRawTransactions.begin(
-            plan = frozenPlan,
-            expectedPhysicalCameraId = cameraInfo.activePhysicalCameraId,
-            residentCameraInfo = cameraInfo,
-            residentCharacteristics = characteristics,
-        )
-        pendingResidentSessionProfile = null
-        previewRequests.resetCaptureState()
-        postInfo(
-            cameraInfo.copy(
-                rawAvailable = false,
-                status = localized("正在切换到 RAW 测光", "Switching to RAW metering"),
-            ),
-        )
-        if (!reconfigureSession(CameraSessionProfile.RAW_ISOLATED)) {
-            transaction.failure = ZoneRawFailure(
-                message = localized("无法启动 RAW 测光，请重试", "Unable to start RAW metering"),
-                meteringMode = plan.meteringMode,
-                target = plan.target,
-                meteringRoiFraction = plan.meteringRoiFraction,
-            )
-            restoreZoneResidentSession(transaction)
-        }
-    }
-
-    private fun freezeZoneReference(plan: MeteringPlan): MeteringPlan {
-        val recentFrame = zoneCameraFrames.latestFrame(MAX_METERING_REFERENCE_AGE_NS)
-            ?: return plan
-        if (plan.zoneBatchTargets.isNotEmpty()) {
-            return plan.copy(
-                zoneBatchTargets = plan.zoneBatchTargets.map { batchTarget ->
-                    batchTarget.copy(
-                        previewReference = MeteringAnalysis.createPreviewReference(
-                            frame = recentFrame,
-                            frameAspect = plan.screenAspect,
-                            zoom = plan.displayZoom,
-                            target = batchTarget.target,
-                        ) ?: batchTarget.previewReference,
-                    )
-                },
-            )
-        }
-        val target = plan.target ?: return plan
-        val reference = MeteringAnalysis.createPreviewReference(
-            frame = recentFrame,
-            frameAspect = plan.screenAspect,
-            zoom = plan.displayZoom,
-            target = target,
-        ) ?: return plan
-        return plan.copy(displayedPreviewReference = reference)
-    }
-
     private fun desiredResidentSessionProfile(): CameraSessionProfile {
         // The tool owns the preview producer. Resident restoration must obey the same
         // constraint as openCamera, including callbacks arriving after a lifecycle change.
-        if (filmNegativeEnabled) return CameraSessionProfile.PREVIEW_ONLY
+        if (filmPreview.isEnabled) return CameraSessionProfile.PREVIEW_ONLY
         val calibrationProfile = calibrationSessionProfile
         if (calibrationProfile != null) return calibrationProfile
         if (manualSafePreviewActive) return CameraSessionProfile.PREVIEW_ONLY
@@ -2045,153 +1672,6 @@ class CameraController(
         return true
     }
 
-    private fun restoreZoneResidentSession(transaction: ZoneRawTransaction) {
-        if (!zoneRawTransactions.isActive(transaction)) return
-        if (!transaction.sessionState.beginRestore()) return
-        transaction.restoreStartedAtNs = System.nanoTime()
-        previewRequests.resetCaptureState()
-        val residentProfile = desiredResidentSessionProfile()
-        characteristics = transaction.residentCharacteristics
-        postInfo(
-            transaction.residentCameraInfo.copy(
-                rawAvailable = residentProfile.usesRaw && rawHardwareAvailable,
-                status = localized("正在恢复预览", "Restoring preview"),
-            ),
-        )
-        if (!reconfigureSession(residentProfile)) {
-            failZoneRawRestore(transaction)
-        }
-    }
-
-    private fun completeZoneRawTransaction(transaction: ZoneRawTransaction) {
-        if (!zoneRawTransactions.isActive(transaction)) return
-        if (!transaction.sessionState.markResidentSessionConfigured()) return
-        transaction.restoreCompletedAtNs = System.nanoTime()
-        if (!zoneRawTransactions.clear(transaction)) return
-        if (transaction.resultDelivered) {
-            meteringOperationActive = false
-            recoveryState.recordRawMeasurementSucceeded()
-            logZoneRawLatency(transaction)
-            mainHandler.post { callback.onMeteringRestoreStateChanged(false) }
-            return
-        }
-        val failure = transaction.failure ?: ZoneRawFailure(
-            message = localized("RAW 测光失败，请重试", "RAW metering failed. Please try again"),
-            meteringMode = transaction.plan.meteringMode,
-            target = transaction.plan.target,
-            meteringRoiFraction = transaction.plan.meteringRoiFraction,
-        )
-        if (transaction.plan.zoneBatchTargets.isNotEmpty()) {
-            meteringOperationActive = false
-            postMeterError(failure.message)
-            return
-        }
-        if (isConfirmedRawWorkflow()) {
-            meteringOperationActive = false
-            postMeterError(failure.message)
-            return
-        }
-        downgradeAfterCompatibleMeasurement = calibrationStorageCameraId == null &&
-            recoveryState.recordRawMeasurementFailed(meteringPipelineMode)
-        measureCompatiblePreview(
-            failure.meteringMode,
-            failure.target,
-            failure.meteringRoiFraction,
-        )
-    }
-
-    private fun handleZoneRawSessionFailure(error: Exception?): Boolean {
-        val transaction = zoneRawTransaction ?: return false
-        return when (transaction.sessionState.phase) {
-            ZoneRawSessionPhase.SWITCHING_TO_RAW -> {
-                transaction.failure = transaction.failure ?: ZoneRawFailure(
-                    message = localized(
-                        "当前设备无法启动独立 RAW 流，已恢复预览流测光",
-                        "This device could not start isolated RAW; preview metering was restored",
-                    ),
-                    meteringMode = transaction.plan.meteringMode,
-                    target = transaction.plan.target,
-                    meteringRoiFraction = transaction.plan.meteringRoiFraction,
-                )
-                Log.w(TAG, "Isolated Zone RAW session failed; restoring resident session", error)
-                restoreZoneResidentSession(transaction)
-                true
-            }
-            ZoneRawSessionPhase.RESTORING -> {
-                Log.e(TAG, "Unable to restore resident session after Zone RAW", error)
-                failZoneRawRestore(transaction)
-                true
-            }
-            ZoneRawSessionPhase.METERING,
-            ZoneRawSessionPhase.COMPLETE,
-            -> false
-        }
-    }
-
-    private fun failZoneRawRestore(transaction: ZoneRawTransaction) {
-        if (!zoneRawTransactions.clear(transaction)) return
-        pendingResidentSessionProfile = null
-        meteringOperationActive = false
-        if (transaction.resultDelivered) {
-            logZoneRawLatency(transaction)
-            mainHandler.post { callback.onMeteringRestoreStateChanged(false) }
-        }
-        postMeterError(
-            transaction.failure?.message
-                ?: localized("无法恢复相机预览，本次测光已中止", "Unable to restore preview; metering stopped"),
-        )
-        if (started) {
-            scheduleRecovery(
-                CameraSessionProfile.PREVIEW_ONLY,
-                localized("正在恢复安全预览", "Restoring safe preview"),
-                delayMs = 0L,
-            )
-        }
-    }
-
-    /** Delivers one reliable Zone point before restoring preview/YUV; the operation remains locked. */
-    private fun deliverZoneRawResult(transaction: ZoneRawTransaction, reading: MeterReading) {
-        if (transaction.resultDelivered || !zoneRawTransactions.isActive(transaction)) return
-        transaction.resultDelivered = true
-        transaction.resultReadyAtNs = System.nanoTime()
-        mainHandler.post {
-            callback.onMeteringRestoreStateChanged(true)
-            callback.onMeterReading(reading)
-        }
-    }
-
-    private fun deliverZoneRawBatchResult(
-        transaction: ZoneRawTransaction,
-        results: List<ZoneMeteringResult>,
-    ) {
-        if (transaction.resultDelivered || !zoneRawTransactions.isActive(transaction)) return
-        transaction.resultDelivered = true
-        transaction.resultReadyAtNs = System.nanoTime()
-        mainHandler.post {
-            callback.onMeteringRestoreStateChanged(true)
-            callback.onZoneMeteringBatchResult(results)
-        }
-    }
-
-    private fun logZoneRawLatency(transaction: ZoneRawTransaction) {
-        val requested = transaction.plan.requestedAtNs
-        val rawConfigured = transaction.rawSessionConfiguredAtNs
-        val resultReady = transaction.resultReadyAtNs
-        val restoreStarted = transaction.restoreStartedAtNs
-        val restoreCompleted = transaction.restoreCompletedAtNs
-        fun elapsed(from: Long?, to: Long?): Long? =
-            if (from == null || to == null || to < from) null else (to - from) / 1_000_000L
-        Log.i(
-            TAG,
-            "Zone RAW latency tapToRawConfigMs=${elapsed(requested, rawConfigured)} " +
-                "tapToResultMs=${elapsed(requested, resultReady)} " +
-                "rawResultToRestoreMs=${elapsed(resultReady, restoreStarted)} " +
-                "restoreMs=${elapsed(restoreStarted, restoreCompleted)} " +
-                "tapToReadyMs=${elapsed(requested, restoreCompleted)} " +
-                "resultDelivered=${transaction.resultDelivered}",
-        )
-    }
-
     private fun handleResidentSessionFailure(error: Exception?): Boolean {
         val failedProfile = pendingResidentSessionProfile ?: return false
         pendingResidentSessionProfile = null
@@ -2334,19 +1814,12 @@ class CameraController(
     }
 
     private fun finishMeasurementStartFailure(plan: MeteringPlan, message: String) {
-        val transaction = zoneRawTransaction
-        if (transaction?.sessionState?.phase == ZoneRawSessionPhase.METERING) {
-            transaction.failure = ZoneRawFailure(
-                message = message,
-                meteringMode = plan.meteringMode,
-                target = plan.target,
-                meteringRoiFraction = plan.meteringRoiFraction,
+        if (zoneRaw.onMeteringError(
+                ZoneRawFailure(message, plan.meteringMode, plan.target, plan.meteringRoiFraction),
             )
-            restoreZoneResidentSession(transaction)
-        } else {
-            meteringOperationActive = false
-            postMeterError(message)
-        }
+        ) return
+        meteringOperationActive = false
+        postMeterError(message)
     }
 
     /** Captures one full-resolution DNG and a compact RAW sample map for history point metering. */
@@ -2614,58 +2087,6 @@ class CameraController(
         }
     }
 
-    private fun captureDisplayedPreviewReference(
-        target: ZoneMeteringTarget,
-    ): PreviewLumaReference? {
-        val texture = textureView ?: return null
-        if (Looper.myLooper() != Looper.getMainLooper() ||
-            !texture.isAvailable || texture.width <= 1 || texture.height <= 1
-        ) return null
-        val scale = PREVIEW_REFERENCE_LONG_EDGE.toFloat() /
-            max(texture.width, texture.height)
-        val bitmapWidth = (texture.width * scale).roundToInt().coerceAtLeast(2)
-        val bitmapHeight = (texture.height * scale).roundToInt().coerceAtLeast(2)
-        val bitmap = try {
-            texture.getBitmap(bitmapWidth, bitmapHeight)
-        } catch (_: RuntimeException) {
-            null
-        } ?: return null
-        return try {
-            MeteringAnalysis.createPreviewReference(bitmap, target)
-        } finally {
-            bitmap.recycle()
-        }
-    }
-
-    /** Reads TextureView only once so every batch feature patch describes the same preview frame. */
-    private fun captureDisplayedPreviewReferences(
-        requests: List<ZoneMeteringRequest>,
-    ): Map<Int, PreviewLumaReference?> {
-        val texture = textureView ?: return emptyMap()
-        if (Looper.myLooper() != Looper.getMainLooper() ||
-            !texture.isAvailable || texture.width <= 1 || texture.height <= 1
-        ) return emptyMap()
-        val scale = PREVIEW_REFERENCE_LONG_EDGE.toFloat() /
-            max(texture.width, texture.height)
-        val bitmapWidth = (texture.width * scale).roundToInt().coerceAtLeast(2)
-        val bitmapHeight = (texture.height * scale).roundToInt().coerceAtLeast(2)
-        val bitmap = try {
-            texture.getBitmap(bitmapWidth, bitmapHeight)
-        } catch (_: RuntimeException) {
-            null
-        } ?: return emptyMap()
-        return try {
-            requests.associate { request ->
-                request.markerId to MeteringAnalysis.createPreviewReference(
-                    bitmap,
-                    request.target,
-                )
-            }
-        } finally {
-            bitmap.recycle()
-        }
-    }
-
     @Synchronized
     fun currentUserCalibrationRecord(): CameraCalibrationRecord? =
         calibrationStore.record(calibrationCameraId())
@@ -2834,6 +2255,8 @@ class CameraController(
         takeResultForTimestamp = previewResultStore::takeExact,
         characteristics = { characteristics },
         cameraId = ::calibrationCameraId,
+        evaluativeViewport = meteringViewport(),
+        previewGeometry = geometryContext.preview,
     )
 
     private fun measureProcessedPreview(
@@ -2963,7 +2386,7 @@ class CameraController(
     override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
         cameraHandler?.post {
             closeCamera()
-            releaseFilmRenderer()
+            filmPreview.releaseRenderer()
         }
         return true
     }
@@ -2973,8 +2396,8 @@ class CameraController(
         previewHealth.onTextureUpdated(
             textureView = textureView,
             surface = surface,
-            samplingAllowed = !filmNegativeEnabled &&
-                filmRendererReleases.get() == 0 && !combinationWorkflowProbe.isActive &&
+            samplingAllowed = !filmPreview.isEnabled &&
+                !filmPreview.isReleasingRenderer && !combinationWorkflowProbe.isActive &&
                 combinationSelectionMode != MeteringCombinationSelectionMode.MANUAL,
         )
     }
@@ -2982,8 +2405,8 @@ class CameraController(
     @SuppressLint("MissingPermission")
     private fun openCamera(surfaceTexture: SurfaceTexture?) {
         if (!started || opening || cameraDevice != null || surfaceTexture == null ||
-            filmRendererReleases.get() > 0) return
-        val cameraInputTexture = filmPreviewInput(surfaceTexture) ?: return
+            filmPreview.isReleasingRenderer) return
+        val cameraInputTexture = filmPreview.inputFor(surfaceTexture) ?: return
         if (context.checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             postInfo(
                 cameraInfo.copy(
@@ -3061,7 +2484,7 @@ class CameraController(
                 trackingSupported = trackingHardwareAvailable,
                 zoneYuvUnavailable = zoneYuvSessionUnavailable,
             )
-            if (filmNegativeEnabled) profile = CameraSessionProfile.PREVIEW_ONLY
+            if (filmPreview.isEnabled) profile = CameraSessionProfile.PREVIEW_ONLY
             val availableRawSize = configuration.rawSize
             rawOutputSize = availableRawSize
             trackingOutputSize = trackingSize
@@ -3074,7 +2497,7 @@ class CameraController(
                 closeCamera(preserveExposurePreview = true)
                 return
             }
-            if (calibrationSessionProfile == null && !manualSafePreviewActive && !filmNegativeEnabled) {
+            if (calibrationSessionProfile == null && !manualSafePreviewActive && !filmPreview.isEnabled) {
                 val manualRead = if (combinationSelectionMode ==
                     MeteringCombinationSelectionMode.MANUAL
                 ) combinationSelectionStore.readManualSelection(activeCameraId)
@@ -3262,7 +2685,7 @@ class CameraController(
             postInfo(cameraInfo)
             publishCalibrationContext()
 
-            filmNegativeRenderer?.resize(chosenPreview.width, chosenPreview.height)
+            filmPreview.resize(chosenPreview.width, chosenPreview.height)
             sessionCoordinator.configureOutputs(
                 surfaceTexture = cameraInputTexture,
                 previewSize = chosenPreview,
@@ -3307,7 +2730,7 @@ class CameraController(
 
     private fun handleSessionFailure(generation: Int) {
         if (generation != cameraGeneration) return
-        if (filmNegativeEnabled) {
+        if (filmPreview.isEnabled) {
             if (!tryNextCameraRoute()) finishCameraFailure(localized(
                 "负片预览无法启动，请重启预览或切换摄像头", "Negative preview could not start. Retry or select another camera"))
             return
@@ -3365,7 +2788,7 @@ class CameraController(
             val error = IllegalStateException("Camera failed during manual verification: $failure")
             failManualAcceptance(error)
             combinationWorkflowProbe.cancel(error)
-            finishCameraFailure(finalFailureMessage(failure))
+            finishCameraFailure(statusFormatter.failure(failure))
             return
         }
         if (abortIsolatedCalibrationSessionIfActive()) return
@@ -3379,12 +2802,12 @@ class CameraController(
         )
         if (isConfirmedRawWorkflow()) {
             if (decision.action == CameraRecoveryAction.STOP) {
-                finishCameraFailure(finalFailureMessage(failure))
+                finishCameraFailure(statusFormatter.failure(failure))
             } else {
                 scheduleRecovery(
                     sessionProfile ?: activeCombinationPlan?.normalResidentProfile
                         ?: CameraSessionProfile.RAW_ONLY,
-                    recoveryMessage(failure),
+                    statusFormatter.recovery(failure),
                     decision.delayMs,
                 )
             }
@@ -3393,18 +2816,18 @@ class CameraController(
         when (decision.action) {
             CameraRecoveryAction.RETRY -> scheduleRecovery(
                 decision.profile ?: sessionProfile ?: CameraSessionProfile.PREVIEW_ONLY,
-                recoveryMessage(failure),
+                statusFormatter.recovery(failure),
                 decision.delayMs,
             )
 
             CameraRecoveryAction.DOWNGRADE -> if (!advanceSystemCombination(
-                    recoveryMessage(failure),
+                    statusFormatter.recovery(failure),
                     decision.delayMs,
                 )
             ) {
                 scheduleRecovery(
                     decision.profile ?: sessionProfile ?: CameraSessionProfile.PREVIEW_ONLY,
-                    recoveryMessage(failure),
+                    statusFormatter.recovery(failure),
                     decision.delayMs,
                 )
             }
@@ -3415,7 +2838,7 @@ class CameraController(
                     failure == CameraFailureKind.DISCONNECTED ||
                     failure == CameraFailureKind.UNKNOWN
                 if (!canChangeCameraRoute || !tryNextCameraRoute()) {
-                    finishCameraFailure(finalFailureMessage(failure))
+                    finishCameraFailure(statusFormatter.failure(failure))
                 }
             }
         }
@@ -3425,7 +2848,7 @@ class CameraController(
         message: String,
         delayMs: Long = SESSION_RECOVERY_DELAY_MS,
     ): Boolean {
-        if (filmNegativeEnabled || combinationSelectionMode != MeteringCombinationSelectionMode.SYSTEM ||
+        if (filmPreview.isEnabled || combinationSelectionMode != MeteringCombinationSelectionMode.SYSTEM ||
             isConfirmedRawWorkflow()
         ) return false
         val active = activeCombinationPlan ?: return false
@@ -3536,17 +2959,7 @@ class CameraController(
         previewHealth.clearConfirmation()
         closeCamera()
         postInfo(cameraInfo.copy(rawAvailable = false, status = message))
-        if (filmNegativeEnabled) {
-            filmNegativeLocked = false
-            filmNegativeRendererFailed = true
-            releaseFilmRenderer()
-            val generation = cameraGeneration
-            mainHandler.post {
-                if (filmNegativeEnabled && generation == cameraGeneration) {
-                    onFilmNegativePreviewError?.invoke(message)
-                }
-            }
-        }
+        filmPreview.onCameraFailure(message)
     }
 
     private fun notifyInterruptedOperations() {
@@ -3569,68 +2982,6 @@ class CameraController(
         }
     }
 
-    private fun recoveryMessage(failure: CameraFailureKind): String = when (failure) {
-        CameraFailureKind.IN_USE -> localized(
-            "相机正被其他应用使用，正在重试",
-            "Another app is using the camera. Retrying",
-        )
-        CameraFailureKind.RESOURCE_LIMIT -> localized(
-            "相机暂时不可用，正在重试",
-            "The camera is temporarily unavailable. Retrying",
-        )
-        CameraFailureKind.DISABLED -> localized(
-            "相机已被系统停用",
-            "The camera has been disabled by the system",
-        )
-        CameraFailureKind.DEVICE -> localized(
-            "相机运行异常，正在尝试更稳定的方式",
-            "The camera stopped unexpectedly. Trying a more stable method",
-        )
-        CameraFailureKind.SERVICE -> localized(
-            "相机暂时无响应，正在重试",
-            "The camera is not responding. Retrying",
-        )
-        CameraFailureKind.DISCONNECTED -> localized(
-            "相机连接中断，正在重新连接",
-            "The camera was disconnected. Reconnecting",
-        )
-        CameraFailureKind.UNKNOWN -> localized(
-            "相机暂时无法使用，正在重试",
-            "The camera is temporarily unavailable. Retrying",
-        )
-    }
-
-    private fun finalFailureMessage(failure: CameraFailureKind): String = when (failure) {
-        CameraFailureKind.IN_USE -> localized(
-            "相机正被其他应用使用，请关闭其他相机应用后重试",
-            "Another app is using the camera. Close it and try again",
-        )
-        CameraFailureKind.RESOURCE_LIMIT -> localized(
-            "相机资源不足，请关闭其他相机应用后重试",
-            "Camera resources are busy. Close other camera apps and try again",
-        )
-        CameraFailureKind.DISABLED -> localized(
-            "相机已被系统停用，请检查隐私或管理设置",
-            "The camera is disabled. Check privacy or device management settings",
-        )
-        CameraFailureKind.DEVICE -> localized(
-            "相机无法正常启动，请尝试稳定模式或兼容模式，或重启手机",
-            "The camera could not start. Try Stable or Compatibility mode, or restart the phone",
-        )
-        CameraFailureKind.SERVICE -> localized(
-            "相机服务无法恢复，请重启手机后重试",
-            "The camera could not recover. Restart the phone and try again",
-        )
-        CameraFailureKind.DISCONNECTED -> localized(
-            "相机连接已中断，请稍后重试",
-            "The camera was disconnected. Try again later",
-        )
-        CameraFailureKind.UNKNOWN -> localized(
-            "相机暂时无法使用，请稍后重试",
-            "The camera is unavailable. Try again later",
-        )
-    }
-
     private fun resetRecoveryState() {
         if (pendingSystemWorkflowProbePlanId != null) combinationWorkflowProbe.abandon()
         recoveryState.reset()
@@ -3642,7 +2993,7 @@ class CameraController(
         zoneYuvSessionUnavailable = false
         downgradeAfterCompatibleMeasurement = false
         frameRateController.resetForCamera()
-        if (filmNegativeEnabled) frameRateController.limitToStandardRate()
+        if (filmPreview.isEnabled) frameRateController.limitToStandardRate()
         previewHealth.resetRecoveryState()
     }
 
@@ -3664,7 +3015,7 @@ class CameraController(
             cameraInfo = readyInfo
             postInfo(readyInfo)
             if (!readyInfo.rawAvailable && !transientZoneRawAvailable() &&
-                !filmNegativeEnabled && !manualSafePreviewActive &&
+                !filmPreview.isEnabled && !manualSafePreviewActive &&
                 meteringPipelineMode == MeteringPipelineMode.AUTO &&
                 calibrationSessionProfile == null
             ) {
@@ -3836,42 +3187,19 @@ class CameraController(
         }
     }
 
-    private fun readyCameraStatus(): String {
-        val size = "${cameraInfo.previewSize?.width}×${cameraInfo.previewSize?.height}"
-        if (frameRateController.isLowLight) {
-            return if (previewFpsRange?.let {
-                    it.lower < it.upper || it.upper < PreviewFrameRateMode.LOW.requestedCeiling
-                } == true
-            ) {
-                localized(
-                    "$size · 环境光较暗，已自动降低取景帧率",
-                    "$size · Low light; viewfinder frame rate reduced",
-                )
-            } else {
-                localized(
-                    "$size · 环境光过暗",
-                    "$size · Ambient light is too low",
-                )
-            }
-        }
-        if (manualSafePreviewActive) {
-            return localized("$size · 手动安全预览", "$size · Manual safe preview")
-        }
-        return when (meteringPipelineMode) {
-            MeteringPipelineMode.AUTO -> if (cameraInfo.rawAvailable || transientZoneRawAvailable()) {
-                localized("$size · 高精度测光", "$size · High-accuracy metering")
-            } else {
-                localized("$size · 预览流测光", "$size · Preview-stream metering")
-            }
-            MeteringPipelineMode.ISOLATED ->
-                localized("$size · 稳定模式", "$size · Stable mode")
-            MeteringPipelineMode.FAST ->
-                localized("$size · 兼容模式", "$size · Compatibility mode")
-        }
-    }
+    private fun readyCameraStatus(): String = statusFormatter.ready(
+        cameraInfo = cameraInfo,
+        pipelineMode = meteringPipelineMode,
+        lowLight = frameRateController.isLowLight,
+        reducedFrameRate = previewFpsRange?.let {
+            it.lower < it.upper || it.upper < PreviewFrameRateMode.LOW.requestedCeiling
+        } == true,
+        safePreview = manualSafePreviewActive,
+        transientRawAvailable = transientZoneRawAvailable(),
+    )
 
     private fun previewFrameRateCeiling(): Int? = frameRateController.requestCeiling?.let {
-        if (filmNegativeEnabled) it.coerceAtMost(30) else it
+        if (filmPreview.isEnabled) it.coerceAtMost(30) else it
     }
 
     private fun choosePreviewFpsRange(profile: CameraSessionProfile): Range<Int>? {
@@ -3961,7 +3289,7 @@ class CameraController(
                 ?: effectiveResult.get(CaptureResult.SENSOR_TIMESTAMP)
             if (timestamp != null) previewResultStore.put(timestamp, effectiveResult)
             if (session === captureSession && (request.tag as? PreviewRequestTag)?.cameraGeneration == cameraGeneration) {
-                observeFilmNegativeResult(request, effectiveResult, timestamp)
+                filmPreview.observeResult(request, effectiveResult, timestamp)
             }
             runtimeMetadata.observeActualPreviewFps(timestamp, cameraInfo)
                 ?.let(::postRuntimeInfo)
@@ -4057,15 +3385,7 @@ class CameraController(
     }
 
     private fun closeCamera(preserveExposurePreview: Boolean = false) {
-        ++filmLockSerial
-        ++filmSampleSerial
-        filmAwaitingConvergence = false
-        filmLockCompletion?.let { pending -> mainHandler.post { pending(false) } }
-        filmLockCompletion = null
-        filmNegativeLocked = false
-        filmEvidence = null
-        filmControlledCurve = null
-        invalidateFilmBase()
+        filmPreview.onCameraClosed()
         pendingManualAcceptance?.let {
             finishManualAcceptance(it, ManualAcceptanceOutcome.Cancelled(it.approvalSaved))
         }
@@ -4098,7 +3418,7 @@ class CameraController(
         }
         rawMeter.cancel(cameraHandler)
         compatibleMeter.cancel(cameraHandler, resetYuvAvailability = true)
-        zoneRawTransactions.reset()
+        zoneRaw.reset()
         pendingResidentSessionProfile = null
         meteringOperationActive = false
         downgradeAfterCompatibleMeasurement = false
@@ -4176,7 +3496,6 @@ class CameraController(
         private const val TAG = "lightstop"
         private const val REJECTED_METADATA_LOG_INTERVAL_MS = 5_000L
         private const val MAX_METERING_REFERENCE_AGE_NS = 350_000_000L
-        private const val PREVIEW_REFERENCE_LONG_EDGE = 384
         private const val SESSION_RECOVERY_DELAY_MS = 300L
         private const val STABLE_PREVIEW_RESET_DELAY_MS = 10_000L
         private const val MAX_TOTAL_RECOVERY_ATTEMPTS = 6

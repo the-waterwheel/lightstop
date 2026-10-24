@@ -19,6 +19,7 @@ internal object MeteringFusion {
 
     fun fuse(stats: List<MeteringFrameStat>, source: MeteringSource): MeterReading? {
         if (stats.isEmpty()) return null
+        if (stats.any { it.evaluative != null }) return EvaluativeMeteringFusion.fuse(stats, source)
         val representative = stats[stats.size / 2]
         return MeterReading(
             sceneEv100 = median(stats.map(MeteringFrameStat::ev100).sorted()),

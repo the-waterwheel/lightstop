@@ -90,6 +90,7 @@ private data class MeasurementAccumulator(
     var submittedFrames: Int = 0,
     var completedFrames: Int = 0,
     var rawMeterPoint: RawMeterPoint? = null,
+    var evaluativeBase: MeteringFrameStat? = null,
 )
 
 /**
@@ -460,6 +461,13 @@ internal class RawLightMeter(
             pair.image.close()
             active.completedFrames += 1
         }
+        stat = stat?.let { frame ->
+            if (frame.evaluative?.baseReliable == true &&
+                (active.highlightProtectionStage == 0 || active.evaluativeBase == null)
+            ) active.evaluativeBase = frame
+            EvaluativeMeteringFusion.recoverBase(frame, active.evaluativeBase,
+                preferReference = active.highlightProtectionStage > 0)
+        }
         if (stat != null && retryForDistortedStatistics(active, stat)) return
         stat?.let(active.stats::add)
         when (
@@ -504,6 +512,9 @@ internal class RawLightMeter(
         try {
             if (context != null) {
                 active.batchTargets.forEach { batchTarget ->
+                    // Keep an earlier valid point when a brighter point needs a shorter exposure.
+                    // The next shared RAW may put this already-measured point below the noise floor.
+                    if (active.highlightProtectionStage > 0 && batchTarget.stats.isNotEmpty()) return@forEach
                     if (batchTarget.rawMeterPoint == null) {
                         batchTarget.rawMeterPoint = MeteringAnalysis.resolveRawMeteringPoint(
                             pair.image,
@@ -555,11 +566,14 @@ internal class RawLightMeter(
                     saturatedChannelCount = stat.saturatedChannelCount,
                     currentStage = active.highlightProtectionStage,
                     clippedFraction = stat.clipped,
+                    meteringMode = MeteringAreaPolicy.localMode(active.meteringMode),
                 ),
             ) != null
         }?.second
+        frameStats.forEach { (target, stat) ->
+            if (stat.saturatedChannelCount < RawExposureRetryPolicy.REQUIRED_SATURATED_CHANNELS) target.stats += stat
+        }
         if (retryStat != null && retryForDistortedStatistics(active, retryStat)) return
-        frameStats.forEach { (target, stat) -> target.stats += stat }
         when {
             active.completedFrames < active.expectedFrames -> fillPipeline(active)
             active.completedFrames >= active.maxFrames -> finishWithBatchReadings(active)
@@ -593,16 +607,34 @@ internal class RawLightMeter(
         active: MeasurementAccumulator,
         stat: MeteringFrameStat,
     ): Boolean {
+        val mode = if (stat.evaluative != null) MeteringMode.AVERAGE else MeteringAreaPolicy.localMode(active.meteringMode)
         val nextStage = RawExposureRetryPolicy.nextStage(
             RawExposureRetryInput(
                 saturatedChannelCount = stat.saturatedChannelCount,
                 currentStage = active.highlightProtectionStage,
                 clippedFraction = stat.clipped,
+                statisticsClipped = stat.evaluative?.highlightClipped == true,
+                meteringMode = mode,
             ),
         ) ?: return false
         if (activeMeasurement?.id != active.id) return true
         val context = activeContext ?: return false
-        val reductionEv = RawExposureRetryPolicy.exposureReductionEv(nextStage)
+        val reductionEv = RawExposureRetryPolicy.exposureReductionEv(nextStage, mode)
+        val nextRequest = try {
+            buildCaptureRequest(context, reductionEv)
+        } catch (error: Exception) {
+            Log.e(TAG, "Unable to build RAW highlight-protection recapture", error)
+            finishWithError(localized("无法进行高光保护重拍，请重试", "Unable to recapture protected highlights"))
+            return true
+        }
+        if (!canReduceExposure(activeRequest, nextRequest)) {
+            Log.w(TAG, "RAW highlights remain clipped at the camera exposure limit: stage=${active.highlightProtectionStage}")
+            if (stat.evaluative == null) {
+                finishWithError(localized("测光点仍溢出，已达相机曝光下限", "The metering point is still clipped at the camera exposure limit"))
+                return true
+            }
+            return false
+        }
         active.framePairer.clear()
         val retry = MeasurementAccumulator(
             id = ++nextMeasurementId,
@@ -619,6 +651,7 @@ internal class RawLightMeter(
             batchTargets = active.batchTargets.map { previous ->
                 BatchTargetAccumulator(
                     request = previous.request,
+                    stats = previous.stats.toMutableList(),
                     rawMeterPoint = previous.rawMeterPoint,
                 )
             },
@@ -626,10 +659,11 @@ internal class RawLightMeter(
             startedAtNs = active.startedAtNs,
             pairingToleranceNs = active.pairingToleranceNs,
             rawMeterPoint = active.rawMeterPoint,
+            evaluativeBase = active.evaluativeBase,
         )
         activeMeasurement = retry
         return try {
-            activeRequest = buildCaptureRequest(context, reductionEv)
+            activeRequest = nextRequest
             scheduleTimeout(retry, context.handler)
             Log.w(
                 TAG,
@@ -647,6 +681,23 @@ internal class RawLightMeter(
             )
             true
         }
+    }
+
+    private fun canReduceExposure(current: CaptureRequest?, next: CaptureRequest): Boolean {
+        current ?: return false
+        if (next.get(CaptureRequest.CONTROL_AE_MODE) == CameraMetadata.CONTROL_AE_MODE_OFF) {
+            val currentTime = current.get(CaptureRequest.SENSOR_EXPOSURE_TIME) ?: return false
+            val currentIso = current.get(CaptureRequest.SENSOR_SENSITIVITY) ?: return false
+            val nextTime = next.get(CaptureRequest.SENSOR_EXPOSURE_TIME) ?: return false
+            val nextIso = next.get(CaptureRequest.SENSOR_SENSITIVITY) ?: return false
+            return RawExposureRetryProgressPolicy.canReduceManual(
+                ManualExposurePlan(currentTime, currentIso), ManualExposurePlan(nextTime, nextIso),
+            )
+        }
+        return RawExposureRetryProgressPolicy.canReduceAeCompensation(
+            current.get(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION),
+            next.get(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION),
+        )
     }
 
     /** Keeps the rolling request window at one until all frames are processed. */
