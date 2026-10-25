@@ -19,6 +19,7 @@ internal object RecordedRawGridSampler {
         sensorFrameAspect: Float,
         zoom: Float,
         screenToSensorTransform: ScreenToSensorCoordinateTransform,
+        sensorCrop: NormalizedSensorViewport? = null,
     ): RecordedRawGrid? {
         val plane = image.planes.firstOrNull() ?: return null
         if (image.width <= 0 || image.height <= 0 || plane.pixelStride < 2) return null
@@ -60,7 +61,8 @@ internal object RecordedRawGridSampler {
         val bounds = if (active != null && active.left >= 0 && active.top >= 0 &&
             active.right <= image.width && active.bottom <= image.height
         ) RectF(active) else RectF(0f, 0f, image.width.toFloat(), image.height.toFloat())
-        val crop = centeredCrop(bounds, sensorFrameAspect, zoom)
+        val crop = sensorCrop?.let { ViewfinderGeometry.rect(bounds, it) }
+            ?: centeredCrop(bounds, sensorFrameAspect, zoom)
         val normalizedCrop = RectF(
             crop.left / image.width,
             crop.top / image.height,

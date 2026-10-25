@@ -19,6 +19,7 @@ internal class YuvRegionAnalyzer(
     private val lumaDecoder: ProcessedLumaDecoder,
     private val encoding: YuvColorEncoding,
     maxRoiFraction: Float,
+    private val bounds: NormalizedSensorViewport? = null,
 ) {
     private val luminances = DoubleArray(roiWidth(maxRoiFraction) * roiHeight(maxRoiFraction))
 
@@ -26,8 +27,10 @@ internal class YuvRegionAnalyzer(
         val roiWidth = roiWidth(roiFraction)
         val roiHeight = roiHeight(roiFraction)
         require(roiWidth * roiHeight <= luminances.size)
-        val left = (width - roiWidth) / 2
-        val top = (height - roiHeight) / 2
+        val left = if (bounds == null) (width - roiWidth) / 2 else
+            (((bounds.left + bounds.right) / 2 * width) - roiWidth / 2f).roundToInt().coerceIn(0, width - roiWidth)
+        val top = if (bounds == null) (height - roiHeight) / 2 else
+            (((bounds.top + bounds.bottom) / 2 * height) - roiHeight / 2f).roundToInt().coerceIn(0, height - roiHeight)
         var count = 0
         var clipped = 0
         for (row in top until top + roiHeight) {
@@ -49,8 +52,9 @@ internal class YuvRegionAnalyzer(
         return YuvRegionStat(luma, clipped.toDouble() / count)
     }
 
-    private fun roiWidth(fraction: Float) = (width * fraction).roundToInt().coerceIn(2, width)
-    private fun roiHeight(fraction: Float) = (height * fraction).roundToInt().coerceIn(2, height)
+    private fun shortSide() = bounds?.let { minOf(it.width * width, it.height * height) }
+    private fun roiWidth(fraction: Float) = ((shortSide() ?: width.toFloat()) * fraction).roundToInt().coerceIn(2, width)
+    private fun roiHeight(fraction: Float) = ((shortSide() ?: height.toFloat()) * fraction).roundToInt().coerceIn(2, height)
 }
 
 /** Absolute reads preserve the vendor plane's offset/limit and padding; -1 avoids boxing Int?. */

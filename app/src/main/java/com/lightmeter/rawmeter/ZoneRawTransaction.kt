@@ -16,6 +16,7 @@ internal data class MeteringPlan(
     val meteringRoiFraction: Float?,
     val displayedPreviewReference: PreviewLumaReference?,
     val zoneBatchTargets: List<ZoneRawBatchTarget> = emptyList(),
+    val viewport: EvaluativeMeteringViewport? = null,
     /** Monotonic request time used only for phase-by-phase latency diagnostics. */
     val requestedAtNs: Long = System.nanoTime(),
 )

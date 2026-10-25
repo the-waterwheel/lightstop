@@ -28,21 +28,17 @@ internal object RawPreviewRegistration {
         val rotated = rotation == 90 || rotation == 270
         val orientedWidth = if (rotated) frame.height else frame.width
         val orientedHeight = if (rotated) frame.width else frame.height
-        val crop = centeredCrop(
-            RectF(0f, 0f, orientedWidth.toFloat(), orientedHeight.toFloat()),
-            frameAspect,
-            zoom,
-        )
         val halfSpan = referenceHalfSpan(target.frameX, target.frameY)
         val samples = FloatArray(GRID_SIZE * GRID_SIZE)
         for (row in 0 until GRID_SIZE) {
             val offsetY = normalizedGridOffset(row, GRID_SIZE) * halfSpan
             for (column in 0 until GRID_SIZE) {
                 val offsetX = normalizedGridOffset(column, GRID_SIZE) * halfSpan
-                val screenX = (target.frameX + offsetX).coerceIn(0f, 1f)
-                val screenY = (target.frameY + offsetY).coerceIn(0f, 1f)
-                val orientedX = crop.left + screenX * crop.width()
-                val orientedY = crop.top + screenY * crop.height()
+                val (previewX, previewY) = frameToPreviewCoordinate(
+                    (target.frameX + offsetX).coerceIn(0f, 1f),
+                    (target.frameY + offsetY).coerceIn(0f, 1f), target, zoom)
+                val orientedX = (target.sourceViewport.left + previewX * target.sourceViewport.width) * (orientedWidth - 1)
+                val orientedY = (target.sourceViewport.top + previewY * target.sourceViewport.height) * (orientedHeight - 1)
                 samples[row * GRID_SIZE + column] = sampleRotatedLuma(
                     frame,
                     orientedX,

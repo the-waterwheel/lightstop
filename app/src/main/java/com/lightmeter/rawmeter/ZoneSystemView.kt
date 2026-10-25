@@ -294,9 +294,17 @@ class ZoneSystemView(
         invalidate()
     }
 
+    private val previewPinch = ViewfinderPinch(context) { factor ->
+        state.previewZoom *= factor
+        listener?.onZoomMappingChanged(state.previewZoom)
+        listener?.onControlsChanged(false)
+        invalidate()
+    }
+
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val g = geometry ?: calculateGeometry(width, height).also { geometry = it }
+        state.viewfinderAspect = g.cameraFrame.width() / g.cameraFrame.height().coerceAtLeast(1f)
         drawSurfaceOutsidePreview(canvas, g.cameraFrame)
         drawPanels(canvas, g)
         drawCameraOverlay(canvas, g)
@@ -331,12 +339,7 @@ class ZoneSystemView(
     }
 
     private fun drawSurfaceOutsidePreview(canvas: Canvas, frame: RectF) {
-        paint.style = Paint.Style.FILL
-        paint.color = surface
-        canvas.drawRect(0f, 0f, width.toFloat(), frame.top, paint)
-        canvas.drawRect(0f, frame.top, frame.left, frame.bottom, paint)
-        canvas.drawRect(frame.right, frame.top, width.toFloat(), frame.bottom, paint)
-        canvas.drawRect(0f, frame.bottom, width.toFloat(), height.toFloat(), paint)
+        ViewfinderOverlay.outside(canvas, frame, width, height, surface, density)
     }
 
     private fun drawPanels(canvas: Canvas, g: Geometry) {
@@ -344,7 +347,7 @@ class ZoneSystemView(
         paint.strokeWidth = 0.8f * density
         paint.color = InstrumentStyle.border(state.isDarkMode)
         canvas.drawRect(g.previewPanel, paint)
-        canvas.drawRect(g.cameraFrame, paint)
+        canvas.drawRoundRect(g.cameraFrame, 12f * density, 12f * density, paint)
         canvas.drawRect(g.recordPanel, paint)
         if (g.landscape) {
             val dividerX = if (g.previewPanel.centerX() < g.zoneScale.centerX()) {
@@ -359,6 +362,7 @@ class ZoneSystemView(
     }
 
     private fun drawCameraOverlay(canvas: Canvas, g: Geometry) {
+        if (!state.isUnframed) ViewfinderOverlay.framing(canvas, g.cameraFrame, state.displayedFramingCrop(g.landscape), density)
         val roiFraction = if (state.meteringMode == MeteringMode.ANGLE) {
             state.angleMeteringIndicatorFraction() ?: DEFAULT_SPOT_DIAMETER_FRACTION
         } else {
@@ -369,7 +373,7 @@ class ZoneSystemView(
             ).coerceAtLeast(4f * density)
         canvas.save()
         // Clip the fixed-angle guide rather than shrinking it when display crop zoom increases.
-        canvas.clipRect(g.cameraFrame)
+        ViewfinderOverlay.clip(canvas, g.cameraFrame, density)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 2f * density
         paint.color = surface
@@ -1115,8 +1119,8 @@ class ZoneSystemView(
 
     private fun drawZoom(canvas: Canvas, track: RectF) {
         val vertical = track.height() > track.width()
-        val maxZoom = state.cameraInfo.maxDisplayZoom.coerceAtLeast(1.01f)
-        val normalized = ((state.zoom - 1f) / (maxZoom - 1f)).coerceIn(0f, 1f)
+        val maxZoom = state.zoomControlMaximum
+        val normalized = ((state.zoomControlValue - 1f) / (maxZoom - 1f)).coerceIn(0f, 1f)
         val start = if (vertical) track.top + 18f * density else track.left + 8f * density
         val end = if (vertical) track.bottom - 8f * density else track.right - 8f * density
         val position = if (vertical) end - normalized * (end - start) else start + normalized * (end - start)
@@ -1126,11 +1130,12 @@ class ZoneSystemView(
 
     private fun drawFormatMenu(canvas: Canvas, g: Geometry) {
         formatOptionRects(g).forEachIndexed { index, rect ->
-            val selected = index == state.frameIndex
+            val orientation = index == FrameFormat.ALL.size
+            val selected = if (orientation) !state.frameLandscape else index == state.frameIndex
             drawOutlinedButton(
                 canvas,
                 rect,
-                FrameFormat.ALL[index].displayLabel(state.menuLanguage),
+                if (orientation) localized(if (state.frameLandscape) "竖拍构图" else "横拍构图", if (state.frameLandscape) "Portrait frame" else "Landscape frame") else FrameFormat.ALL[index].displayLabel(state.menuLanguage),
                 selected,
             )
         }
@@ -1138,6 +1143,11 @@ class ZoneSystemView(
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         val g = geometry ?: return false
+        if (previewPinch.consume(event, g.cameraFrame, !state.measuring && !state.meteringInteractionBusy)) {
+            cancelMarkButtonLongPress()
+            touchTarget = TouchTarget.NONE
+            return true
+        }
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 touchStartX = event.x
@@ -1145,11 +1155,11 @@ class ZoneSystemView(
                 if (formatMenuOpen) {
                     val option = formatOptionRects(g).indexOfFirst { it.contains(event.x, event.y) }
                     if (option >= 0) {
-                        state.selectFrame(option)
+                        if (option == FrameFormat.ALL.size) state.toggleFrameOrientation()
+                        else state.selectFrame(option)
                         formatMenuOpen = false
                         haptic()
                         listener?.onControlsChanged(true)
-                        listener?.onPreviewMappingChanged()
                         geometry = calculateGeometry(width, height)
                         invalidate()
                         return true
@@ -1547,14 +1557,15 @@ class ZoneSystemView(
         } else {
             ((x - track.left) / track.width()).coerceIn(0f, 1f)
         }
-        val maxZoom = state.cameraInfo.maxDisplayZoom.coerceAtLeast(1.01f)
+        val maxZoom = state.zoomControlMaximum
         val newZoom = ((1f + fraction * (maxZoom - 1f)) * 10f).roundToInt() / 10f
-        if (abs(newZoom - state.zoom) < 0.001f) return
-        state.zoom = newZoom
+        if (abs(newZoom - state.zoomControlValue) < 0.001f) return
+        state.setZoomControl(newZoom)
+        if (state.isUnframed) listener?.onZoomMappingChanged(state.previewZoom)
         listener?.onControlsChanged(false)
         // The tracker remains entirely in the unzoomed 1x coordinate space. This callback only
         // changes how those stable coordinates are projected into the cropped UI.
-        listener?.onZoomMappingChanged(newZoom)
+        // Focal framing does not move any preview feature or tracking anchor.
     }
 
     private fun markerAt(x: Float, y: Float, frame: RectF): Int? =
@@ -1631,7 +1642,7 @@ class ZoneSystemView(
         val itemHeight = 28f * density
         val itemWidth = 85f * density
         val grid = InstrumentPresentation.formatMenuGridWithMaximumRows(
-            FrameFormat.ALL.size,
+            FrameFormat.ALL.size + 1,
             MAX_FORMAT_MENU_ROWS,
         )
         if (grid.columns == 0) return emptyList()
@@ -1648,7 +1659,7 @@ class ZoneSystemView(
         } else {
             (g.formatButton.top - gap - menuHeight).coerceAtLeast(gap)
         }
-        return FrameFormat.ALL.indices.map { index ->
+        return (0..FrameFormat.ALL.size).map { index ->
             val column = index / grid.rows
             val row = index % grid.rows
             val left = menuLeft + column * (itemWidth + gap)

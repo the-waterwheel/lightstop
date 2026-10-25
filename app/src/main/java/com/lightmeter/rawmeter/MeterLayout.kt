@@ -69,6 +69,7 @@ class MeterLayout @JvmOverloads constructor(
         fun onOrientationToggle()
         fun onPreviewGeometryChanged(width: Int, height: Int)
         fun onControlsChanged(frameChanged: Boolean)
+        fun onOriginalPreviewRequested(completion: (Bitmap?) -> Unit) { completion(null) }
         fun onAutomaticDistanceRequested()
         fun onAutomaticDistanceStopped()
         fun onSettingRejected(key: SettingKey, value: String)
@@ -115,6 +116,7 @@ class MeterLayout @JvmOverloads constructor(
             previewPath: String,
             previewAspect: Float,
             zoom: Float,
+            sensorCrop: NormalizedSensorViewport,
         )
     }
 
@@ -234,8 +236,32 @@ class MeterLayout @JvmOverloads constructor(
     @Volatile
     private var evaluativeViewport = EvaluativeMeteringViewport(1f, 1f, NormalizedSensorViewport.FULL)
 
-    internal fun evaluativeMeteringViewport(): EvaluativeMeteringViewport =
-        evaluativeViewport.copy(zoom = state.zoom)
+    internal fun evaluativeMeteringViewport(): EvaluativeMeteringViewport {
+        if (textureView.width <= 0 || textureView.height <= 0) return evaluativeViewport
+        val aspect = textureView.width.toFloat() / textureView.height
+        state.viewfinderAspect = aspect
+        val rotation = textureView.display?.rotation ?: Surface.ROTATION_0
+        val info = state.cameraInfo
+        val transform = ScreenToSensorCoordinateTransform(
+            CameraPreviewTransform.relativeRotationDegrees(info.sensorOrientationDegrees, rotation, info.lensFacing),
+            CameraPreviewTransform.shouldMirrorPreview(info.lensFacing), info.previewSensorViewport)
+        val source = state.sourcePreviewCrop(width > height)
+        val crop = state.framingCrop(width > height)
+        val original = ViewfinderGeometry.compose(source, crop)
+        val visible = ViewfinderGeometry.compose(source, ViewfinderGeometry.project(NormalizedSensorViewport.FULL, 1f / state.previewZoom))
+        return EvaluativeMeteringViewport(
+            sensorFrameAspect = CameraPreviewTransform.screenAspectInSensorCoordinates(aspect, info.sensorOrientationDegrees, rotation, info.lensFacing),
+            zoom = state.zoom,
+            displayCrop = ViewfinderGeometry.project(crop, state.previewZoom),
+            screenFrameAspect = aspect,
+            displayRotation = rotation,
+            sensorCrop = ViewfinderGeometry.sensorCrop(original, transform),
+            previewZoom = state.previewZoom,
+            previewSensorCrop = ViewfinderGeometry.sensorCrop(visible, transform),
+            previewSensorViewport = ViewfinderGeometry.sensorCrop(source, transform),
+            originalDisplayCrop = original,
+        )
+    }
 
     internal var listener: Listener? = null
         set(value) {
@@ -1083,8 +1109,6 @@ class MeterLayout @JvmOverloads constructor(
             width,
             height,
             resources.displayMetrics.density,
-            state.frameFormat,
-            state.frameLandscape,
             state.isLeftHanded,
         )
         val cameraFrame = if (isCombinationSelectionOpen || isFilmNegativeOpen) {
@@ -1113,11 +1137,7 @@ class MeterLayout @JvmOverloads constructor(
                     height = height,
                     showFullPreview = isVignettingCalibrationOpen,
                 )
-            else -> normalZonePreviewTextureFrame(
-                normalCameraFrame = geometry.cameraFrame,
-                width = width,
-                height = height,
-            )
+            else -> RectF(cameraFrame)
         }
         textureView.measure(
             MeasureSpec.makeMeasureSpec(textureFrame.width().toInt(), MeasureSpec.EXACTLY),
@@ -1146,8 +1166,6 @@ class MeterLayout @JvmOverloads constructor(
             width,
             height,
             resources.displayMetrics.density,
-            state.frameFormat,
-            state.frameLandscape,
             state.isLeftHanded,
         )
         val cameraFrame = if (isCombinationSelectionOpen || isFilmNegativeOpen) {
@@ -1176,11 +1194,7 @@ class MeterLayout @JvmOverloads constructor(
                     height = height,
                     showFullPreview = isVignettingCalibrationOpen,
                 )
-            else -> normalZonePreviewTextureFrame(
-                normalCameraFrame = geometry.cameraFrame,
-                width = width,
-                height = height,
-            )
+            else -> RectF(cameraFrame)
         }
         textureView.layout(
             textureFrame.left.toInt(),
@@ -1188,12 +1202,9 @@ class MeterLayout @JvmOverloads constructor(
             textureFrame.right.toInt(),
             textureFrame.bottom.toInt(),
         )
-        zoneMarkerTracker.setVisibleViewport(
-            left = (cameraFrame.left - textureFrame.left) / textureFrame.width(),
-            top = (cameraFrame.top - textureFrame.top) / textureFrame.height(),
-            right = (cameraFrame.right - textureFrame.left) / textureFrame.width(),
-            bottom = (cameraFrame.bottom - textureFrame.top) / textureFrame.height(),
-        )
+        state.viewfinderAspect = textureFrame.width() / textureFrame.height().coerceAtLeast(1f)
+        val sourceCrop = state.sourcePreviewCrop(width > height)
+        zoneMarkerTracker.setVisibleViewport(sourceCrop.left, sourceCrop.top, sourceCrop.right, sourceCrop.bottom)
         evaluativeViewport = EvaluativeMeteringViewport(
             sensorFrameAspect = CameraPreviewTransform.screenAspectInSensorCoordinates(
                 cameraFrame.width() / cameraFrame.height(), state.cameraInfo.sensorOrientationDegrees,
@@ -1542,8 +1553,6 @@ class MeterLayout @JvmOverloads constructor(
                 width,
                 height,
                 density,
-                state.frameFormat,
-                state.frameLandscape,
                 state.isLeftHanded,
             ).previewPanel
         }
@@ -1846,102 +1855,71 @@ class MeterLayout @JvmOverloads constructor(
         val snapshot = currentParameterSnapshot()
         // Freeze the crop and zoom at capture start so an asynchronous RAW request cannot pick up
         // a later viewfinder change.
-        val previewAspect = if (state.frameLandscape) {
-            state.frameFormat.landscapeAspect
-        } else {
-            1f / state.frameFormat.landscapeAspect
-        }
-        val zoom = state.zoom
+        val previewAspect = state.frameAspect()
+        val zoom = state.zoomControlValue
         val previewFile = parameterRecordRepository.createPendingPreviewFile(id)
-        val source = capturePreviewBitmap()
-        if (source == null) {
-            parameterCaptureGuard.cancel()
-            recordCaptureSliderView.setCapturePending(false)
-            Toast.makeText(
-                context,
-                if (state.menuLanguage == MenuLanguage.ENGLISH) {
-                    "Unable to capture the current preview. Try again."
-                } else {
-                    "无法截取当前画面，请重试"
-                },
-                Toast.LENGTH_LONG,
-            ).show()
-            return
-        }
-        // Crop geometry depends on live view layout, so it is resolved on the main thread before
-        // the bitmap is handed to the I/O dispatcher, which owns and recycles it.
-        val crop = calculateParameterCrop(source.width, source.height)
+        val framing = state.originalFramingCrop(width > height)
+        val sensorCrop = checkNotNull(evaluativeMeteringViewport().sensorCrop)
         val token = activeCaptureToken
-        parameterIoDispatcher.submit(
-            background = { writeParameterPreview(source, crop, previewFile) },
-            onMain = { path ->
-                if (!parameterCaptureGuard.isCurrent(token, id)) {
-                    path?.let { File(it).delete() }
-                    return@submit
-                }
-                if (path == null) {
-                    parameterCaptureGuard.cancel()
-                    recordCaptureSliderView.setCapturePending(false)
-                    Toast.makeText(
-                        context,
-                        if (state.menuLanguage == MenuLanguage.ENGLISH) {
-                            "Unable to capture the current preview. Try again."
-                        } else {
-                            "无法截取当前画面，请重试"
-                        },
-                        Toast.LENGTH_LONG,
-                    ).show()
-                } else {
-                    listener?.onParameterCaptureRequested(
-                        id,
-                        snapshot,
-                        options,
-                        path,
-                        previewAspect,
-                        zoom,
-                    ) ?: recordCaptureSliderView.setCapturePending(false)
-                }
-            },
-        )
+        val receive: (Bitmap?) -> Unit = receive@ { source ->
+            if (!parameterCaptureGuard.isCurrent(token, id)) { source?.recycle(); return@receive }
+            if (source == null) {
+                parameterCaptureGuard.cancel()
+                recordCaptureSliderView.setCapturePending(false)
+                Toast.makeText(
+                    context,
+                    if (state.menuLanguage == MenuLanguage.ENGLISH) {
+                        "Unable to capture the current preview. Try again."
+                    } else {
+                        "无法截取当前画面，请重试"
+                    },
+                    Toast.LENGTH_LONG,
+                ).show()
+                return@receive
+            }
+            // Crop geometry depends on live view layout, so it is resolved on the main thread before
+            // the bitmap is handed to the I/O dispatcher, which owns and recycles it.
+            val crop = PixelCrop((framing.left * source.width).roundToInt().coerceIn(0, source.width - 1),
+                (framing.top * source.height).roundToInt().coerceIn(0, source.height - 1),
+                (framing.right * source.width).roundToInt().coerceIn(1, source.width),
+                (framing.bottom * source.height).roundToInt().coerceIn(1, source.height))
+            parameterIoDispatcher.submit(
+                background = { writeParameterPreview(source, crop, previewFile) },
+                onMain = { path ->
+                    if (!parameterCaptureGuard.isCurrent(token, id)) {
+                        path?.let { File(it).delete() }
+                        return@submit
+                    }
+                    if (path == null) {
+                        parameterCaptureGuard.cancel()
+                        recordCaptureSliderView.setCapturePending(false)
+                        Toast.makeText(
+                            context,
+                            if (state.menuLanguage == MenuLanguage.ENGLISH) {
+                                "Unable to capture the current preview. Try again."
+                            } else {
+                                "无法截取当前画面，请重试"
+                            },
+                            Toast.LENGTH_LONG,
+                        ).show()
+                    } else {
+                        listener?.onParameterCaptureRequested(
+                            id,
+                            snapshot,
+                            options,
+                            path,
+                            previewAspect,
+                            zoom,
+                            sensorCrop,
+                        ) ?: recordCaptureSliderView.setCapturePending(false)
+                    }
+                },
+            )
+        }
+        listener?.onOriginalPreviewRequested(receive) ?: receive(null)
     }
-
-    private fun capturePreviewBitmap(): Bitmap? = runCatching {
-        val sourceWidth = textureView.width.coerceAtLeast(1)
-        val sourceHeight = textureView.height.coerceAtLeast(1)
-        val scale = min(1f, 1600f / max(sourceWidth, sourceHeight).toFloat())
-        textureView.getBitmap(
-            (sourceWidth * scale).roundToInt().coerceAtLeast(1),
-            (sourceHeight * scale).roundToInt().coerceAtLeast(1),
-        )
-    }.getOrNull()
 
     private data class PixelCrop(val left: Int, val top: Int, val right: Int, val bottom: Int)
-
-    private fun calculateParameterCrop(sourceWidth: Int, sourceHeight: Int): PixelCrop {
-        val viewWidth = textureView.width.coerceAtLeast(1)
-        val viewHeight = textureView.height.coerceAtLeast(1)
-        val cameraFrame = if (isZoneMode) {
-            zoneView.calculatePreviewFrame(width, height)
-        } else {
-            LayoutGeometry.calculate(
-                width,
-                height,
-                resources.displayMetrics.density,
-                state.frameFormat,
-                state.frameLandscape,
-                state.isLeftHanded,
-            ).cameraFrame
-        }
-        val cropLeft = (((cameraFrame.left - textureView.left) / viewWidth) * sourceWidth)
-            .roundToInt().coerceIn(0, sourceWidth - 1)
-        val cropTop = (((cameraFrame.top - textureView.top) / viewHeight) * sourceHeight)
-            .roundToInt().coerceIn(0, sourceHeight - 1)
-        val cropRight = (((cameraFrame.right - textureView.left) / viewWidth) * sourceWidth)
-            .roundToInt().coerceIn(cropLeft + 1, sourceWidth)
-        val cropBottom = (((cameraFrame.bottom - textureView.top) / viewHeight) * sourceHeight)
-            .roundToInt().coerceIn(cropTop + 1, sourceHeight)
-        return PixelCrop(cropLeft, cropTop, cropRight, cropBottom)
-    }
 
     /** Runs on the I/O dispatcher; owns and recycles [source] and any cropped copy. */
     private fun writeParameterPreview(source: Bitmap, crop: PixelCrop, file: File): String? {
@@ -2847,39 +2825,9 @@ class MeterLayout @JvmOverloads constructor(
         }
     }
 
-    /**
-     * Keeps the native TextureView layer identical while Normal and Zone animate between their
-     * differently shaped viewports. Resizing a live SurfaceTexture on every animation frame makes
-     * some vendor compositors keep the previous sampling geometry, leaving the destination mode
-     * stretched until the Activity is backgrounded. The union is only a transport surface: each
-     * mode still clips and maps through its own [cameraFrame].
-     */
-    private fun normalZonePreviewTextureFrame(
-        normalCameraFrame: RectF,
-        width: Int,
-        height: Int,
-    ): RectF {
-        val zoneCameraFrame = zoneView.calculatePreviewFrame(width, height)
-        val coverageFrame = RectF(
-            minOf(normalCameraFrame.left, zoneCameraFrame.left),
-            minOf(normalCameraFrame.top, zoneCameraFrame.top),
-            maxOf(normalCameraFrame.right, zoneCameraFrame.right),
-            maxOf(normalCameraFrame.bottom, zoneCameraFrame.bottom),
-        )
-        return previewTextureFrame(coverageFrame, width, height)
-    }
-
     private fun zoneMeteringTarget(marker: ZoneMarker): ZoneMeteringTarget {
         val cameraFrame = zoneView.calculatePreviewFrame(width, height)
-        val normalCameraFrame = LayoutGeometry.calculate(
-            width,
-            height,
-            resources.displayMetrics.density,
-            state.frameFormat,
-            state.frameLandscape,
-            state.isLeftHanded,
-        ).cameraFrame
-        val textureFrame = normalZonePreviewTextureFrame(normalCameraFrame, width, height)
+        val textureFrame = RectF(textureView.left.toFloat(), textureView.top.toFloat(), textureView.right.toFloat(), textureView.bottom.toFloat())
         val screenX = cameraFrame.left + marker.normalizedX * cameraFrame.width()
         val screenY = cameraFrame.top + marker.normalizedY * cameraFrame.height()
         return ZoneMeteringTarget(
@@ -2893,6 +2841,7 @@ class MeterLayout @JvmOverloads constructor(
                 (cameraFrame.width() / textureFrame.width()).coerceIn(0f, 1f),
             previewFrameHeightFraction =
                 (cameraFrame.height() / textureFrame.height()).coerceIn(0f, 1f),
+            sourceViewport = state.sourcePreviewCrop(width > height),
         )
     }
 

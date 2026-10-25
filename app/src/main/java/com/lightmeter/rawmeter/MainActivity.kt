@@ -10,6 +10,7 @@ import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.graphics.Color
+import android.graphics.Bitmap
 import android.graphics.drawable.ColorDrawable
 import android.hardware.display.DisplayManager
 import android.net.Uri
@@ -184,7 +185,7 @@ class MainActivity : Activity(), CameraControllerCallback {
                 )
             },
             onReady = { geometry ->
-                val zoom = if (meterLayout.isVignettingCalibrationOpen) 1f else state.zoom
+                val zoom = if (meterLayout.isVignettingCalibrationOpen) 1f else state.previewZoom
                 cameraController.prepareForForegroundPreview(
                     geometry.width,
                     geometry.height,
@@ -195,11 +196,14 @@ class MainActivity : Activity(), CameraControllerCallback {
             },
         )
         meterLayout.listener = object : MeterLayout.Listener {
+            override fun onOriginalPreviewRequested(completion: (Bitmap?) -> Unit) {
+                cameraController.captureRecordPreview(completion)
+            }
             override fun onMeasureRequested() {
                 cameraController.measure(
                     state.frameFormat,
                     state.frameLandscape,
-                    state.zoom,
+                    state.previewZoom,
                     state.meteringMode,
                     meteringAngleDegrees = state.angleMeteringDegrees,
                 )
@@ -468,7 +472,7 @@ class MainActivity : Activity(), CameraControllerCallback {
                 val accepted = cameraController.measure(
                     state.frameFormat,
                     state.frameLandscape,
-                    state.zoom,
+                    state.previewZoom,
                     MeteringAreaPolicy.zoneMode(state.meteringMode),
                     target,
                     meteringAngleDegrees = state.angleMeteringDegrees,
@@ -532,7 +536,7 @@ class MainActivity : Activity(), CameraControllerCallback {
                 val accepted = cameraController.measureZoneBatch(
                     state.frameFormat,
                     state.frameLandscape,
-                    state.zoom,
+                    state.previewZoom,
                     MeteringAreaPolicy.zoneMode(state.meteringMode),
                     requests,
                     meteringAngleDegrees = state.angleMeteringDegrees,
@@ -581,7 +585,7 @@ class MainActivity : Activity(), CameraControllerCallback {
                 }
                 cameraController.estimateColorTemperature(
                     screenAspect = screenAspect,
-                    zoom = state.zoom,
+                    zoom = state.previewZoom,
                 ) { result ->
                     result.onSuccess(meterLayout::showColorTemperatureReading)
                         .onFailure { error ->
@@ -693,8 +697,9 @@ class MainActivity : Activity(), CameraControllerCallback {
                 previewPath: String,
                 previewAspect: Float,
                 zoom: Float,
+                sensorCrop: NormalizedSensorViewport,
             ) {
-                captureParameterRecord(draftId, snapshot, options, previewPath, previewAspect, zoom)
+                captureParameterRecord(draftId, snapshot, options, previewPath, previewAspect, zoom, sensorCrop)
             }
         }
         setContentView(SafeAreaHost(this).apply { addView(meterLayout,
@@ -1558,7 +1563,7 @@ class MainActivity : Activity(), CameraControllerCallback {
         val accepted = cameraController.measure(
             state.frameFormat,
             state.frameLandscape,
-            state.zoom,
+            state.previewZoom,
             MeteringAreaPolicy.localMode(state.meteringMode),
             meteringAngleDegrees = state.angleMeteringDegrees,
             requestedSource = step.source,
@@ -2237,6 +2242,7 @@ class MainActivity : Activity(), CameraControllerCallback {
         previewPath: String,
         previewAspect: Float,
         zoom: Float,
+        sensorCrop: NormalizedSensorViewport,
     ) {
         val locationFix = if (options.recordGps) parameterLocationCoordinator.snapshot() else null
         if (options.recordGps && locationFix == null) {
@@ -2267,7 +2273,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             return
         }
         val rawFile = meterLayout.createParameterRawFile(draftId)
-        cameraController.captureRawRecord(rawFile, previewAspect, zoom) { result ->
+        cameraController.captureRawRecord(rawFile, previewAspect, zoom, sensorCrop) { result ->
             val completed = result.fold(
                 onSuccess = { artifact ->
                     draft.copy(
@@ -2300,7 +2306,7 @@ class MainActivity : Activity(), CameraControllerCallback {
         if (width <= 0 || height <= 0) return
         @Suppress("DEPRECATION")
         val rotation = meterLayout.textureView.display?.rotation ?: Surface.ROTATION_0
-        val zoom = if (meterLayout.isVignettingCalibrationOpen) 1f else state.zoom
+        val zoom = if (meterLayout.isVignettingCalibrationOpen) 1f else state.previewZoom
         cameraController.updatePreviewTransform(width, height, rotation, zoom)
     }
 

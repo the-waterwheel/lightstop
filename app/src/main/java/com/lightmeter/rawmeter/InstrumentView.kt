@@ -116,17 +116,22 @@ class InstrumentView(
         invalidate()
     }
 
+    private val previewPinch = ViewfinderPinch(context) { factor ->
+        state.previewZoom *= factor
+        listener?.onControlsChanged(false)
+        invalidate()
+    }
+
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val g = LayoutGeometry.calculate(
             width,
             height,
             density,
-            state.frameFormat,
-            state.frameLandscape,
             state.isLeftHanded,
         )
         geometry = g
+        state.viewfinderAspect = g.cameraFrame.width() / g.cameraFrame.height().coerceAtLeast(1f)
         accessibilityHelper.update(accessibilityNodes(g))
         drawSurfaceOutsidePreview(canvas, g.cameraFrame)
         drawPanels(canvas, g)
@@ -146,12 +151,7 @@ class InstrumentView(
     }
 
     private fun drawSurfaceOutsidePreview(canvas: Canvas, frame: RectF) {
-        paint.style = Paint.Style.FILL
-        paint.color = surfaceColor
-        canvas.drawRect(0f, 0f, width.toFloat(), frame.top, paint)
-        canvas.drawRect(0f, frame.top, frame.left, frame.bottom, paint)
-        canvas.drawRect(frame.right, frame.top, width.toFloat(), frame.bottom, paint)
-        canvas.drawRect(0f, frame.bottom, width.toFloat(), height.toFloat(), paint)
+        ViewfinderOverlay.outside(canvas, frame, width, height, surfaceColor, density)
     }
 
     private fun drawPanels(canvas: Canvas, g: LayoutGeometry) {
@@ -159,7 +159,7 @@ class InstrumentView(
         paint.strokeWidth = 0.8f * density
         paint.color = InstrumentStyle.border(state.isDarkMode)
         canvas.drawRect(g.previewPanel, paint)
-        canvas.drawRect(g.cameraFrame, paint)
+        canvas.drawRoundRect(g.cameraFrame, 12f * density, 12f * density, paint)
         if (g.landscape) {
             val dividerX = if (g.previewPanel.centerX() < g.apertureRow.centerX()) {
                 (g.previewPanel.right + g.apertureRow.left) / 2f
@@ -174,6 +174,7 @@ class InstrumentView(
     }
 
     private fun drawCameraOverlay(canvas: Canvas, g: LayoutGeometry) {
+        if (!state.isUnframed) ViewfinderOverlay.framing(canvas, g.cameraFrame, state.displayedFramingCrop(g.landscape), density)
         val roiFraction = if (state.meteringMode == MeteringMode.ANGLE) {
             state.angleMeteringIndicatorFraction() ?: DEFAULT_SPOT_DIAMETER_FRACTION
         } else {
@@ -184,14 +185,12 @@ class InstrumentView(
             ).coerceAtLeast(4f * density)
         canvas.save()
         // A fixed physical angle can extend outside an electronically cropped viewfinder.
-        canvas.clipRect(g.cameraFrame)
+        ViewfinderOverlay.clip(canvas, g.cameraFrame, density)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1.1f * density
         paint.color = surfaceColor
         if (state.meteringMode == MeteringMode.AVERAGE) {
-            paint.color = black
-            canvas.drawRect(g.cameraFrame.left + 6f * density, g.cameraFrame.top + 6f * density,
-                g.cameraFrame.right - 6f * density, g.cameraFrame.bottom - 6f * density, paint)
+            // The framing overlay itself identifies the entire metered scene region.
         } else {
             canvas.drawCircle(g.cameraFrame.centerX(), g.cameraFrame.centerY(), spotRadius + density, paint)
             paint.color = black
@@ -365,7 +364,8 @@ class InstrumentView(
 
     private fun drawFormatMenu(canvas: Canvas, g: LayoutGeometry) {
         InstrumentPresentation.formatOptionRects(g, density).forEachIndexed { index, rect ->
-            val selected = index == state.frameIndex
+            val orientation = index == FrameFormat.ALL.size
+            val selected = if (orientation) !state.frameLandscape else index == state.frameIndex
             paint.style = Paint.Style.FILL
             paint.color = if (selected) black else surfaceColor
             canvas.drawRoundRect(rect, 3f * density, 3f * density, paint)
@@ -379,7 +379,7 @@ class InstrumentView(
             paint.typeface = Typeface.DEFAULT_BOLD
             drawCenteredText(
                 canvas,
-                InstrumentPresentation.formatShortLabel(
+                if (orientation) localized(if (state.frameLandscape) "竖拍" else "横拍", if (state.frameLandscape) "Portrait" else "Landscape") else InstrumentPresentation.formatShortLabel(
                     FrameFormat.ALL[index],
                     state.menuLanguage,
                 ),
@@ -498,8 +498,8 @@ class InstrumentView(
     }
 
     private fun drawZoom(canvas: Canvas, track: RectF) {
-        val maxZoom = state.cameraInfo.maxDisplayZoom.coerceAtLeast(1.01f)
-        val normalized = ((state.zoom - 1f) / (maxZoom - 1f)).coerceIn(0f, 1f)
+        val maxZoom = state.zoomControlMaximum
+        val normalized = ((state.zoomControlValue - 1f) / (maxZoom - 1f)).coerceIn(0f, 1f)
         val top = track.top + 22f * density
         val bottom = track.bottom - 16f * density
         zoomRenderer.draw(canvas, true, track.centerX(), top, bottom,
@@ -508,7 +508,7 @@ class InstrumentView(
         paint.textSize = 9f * density
         paint.typeface = InstrumentStyle.labelTypeface
         paint.color = black
-        drawCenteredText(canvas, "${"%.1f".format(state.zoom)}×", track.centerX(), track.top + 8f * density, paint)
+        drawCenteredText(canvas, "${"%.1f".format(state.zoomControlValue)}×", track.centerX(), track.top + 8f * density, paint)
     }
 
     private fun drawExposureRows(canvas: Canvas, g: LayoutGeometry) {
@@ -552,8 +552,6 @@ class InstrumentView(
             width,
             height,
             density,
-            state.frameFormat,
-            state.frameLandscape,
             state.isLeftHanded,
         ).meterButton,
     )
@@ -926,13 +924,18 @@ class InstrumentView(
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         val g = geometry ?: return false
+        if (previewPinch.consume(event, g.cameraFrame, !state.measuring && !state.meteringInteractionBusy)) {
+            touchTarget = TouchTarget.NONE
+            return true
+        }
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 if (formatMenuOpen) {
                     val selectedFormat = InstrumentPresentation.formatOptionRects(g, density)
                         .indexOfFirst { it.contains(event.x, event.y) }
                     if (selectedFormat >= 0) {
-                        state.selectFrame(selectedFormat)
+                        if (selectedFormat == FrameFormat.ALL.size) state.toggleFrameOrientation()
+                        else state.selectFrame(selectedFormat)
                         formatMenuOpen = false
                         haptic()
                         listener?.onControlsChanged(true)
@@ -1190,9 +1193,9 @@ class InstrumentView(
         val top = track.top + 22f * density
         val bottom = track.bottom - 16f * density
         val fraction = ((bottom - y) / (bottom - top)).coerceIn(0f, 1f)
-        val max = state.cameraInfo.maxDisplayZoom.coerceAtLeast(1.01f)
+        val max = state.zoomControlMaximum
         val raw = 1f + fraction * (max - 1f)
-        state.zoom = (raw * 10f).roundToInt() / 10f
+        state.setZoomControl((raw * 10f).roundToInt() / 10f)
         listener?.onControlsChanged(false)
         invalidate()
     }

@@ -1,6 +1,7 @@
 package com.lightmeter.rawmeter
 
 import android.graphics.SurfaceTexture
+import android.graphics.Bitmap
 import android.opengl.EGL14
 import android.opengl.EGLConfig
 import android.opengl.EGLContext
@@ -188,6 +189,56 @@ internal class FilmNegativeRenderer(
         val evidence = frameEvidence[frozenTimestamp] ?: return
         if (evidence.usable) finishFrame(FilmNegativeFrozenFrame(frozenWidth, frozenHeight, pixels, evidence, frameOrientationToken))
         else frozenPixels = null // Wait for a later locked frame, never accept an unlocked image.
+    }
+
+    override fun captureMeteringFrame(maxEdge: Int, completion: (Bitmap?, Long) -> Unit) {
+        val accepted = handler.post {
+            if (released.get() || !hasFrame || failureReported) {
+                completion(null, 0L)
+                return@post
+            }
+            val timestamp = inputTexture?.timestamp ?: 0L
+            val swapped = kotlin.math.abs(textureMatrix[1]) > kotlin.math.abs(textureMatrix[0])
+            val rotated = displayDegrees % 180 != 0
+            val sourceWidth = if (swapped xor rotated) height else width
+            val sourceHeight = if (swapped xor rotated) width else height
+            val scale = minOf(1f, maxEdge.coerceIn(96, 1600).toFloat() / maxOf(sourceWidth, sourceHeight))
+            val w = (sourceWidth * scale).toInt().coerceAtLeast(1)
+            val h = (sourceHeight * scale).toInt().coerceAtLeast(1)
+            val texture = IntArray(1)
+            val framebuffer = IntArray(1)
+            var bitmap: Bitmap? = null
+            try {
+                GLES20.glGenTextures(1, texture, 0)
+                configureTexture(GLES20.GL_TEXTURE_2D, texture[0])
+                GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, w, h, 0,
+                    GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null)
+                GLES20.glGenFramebuffers(1, framebuffer, 0)
+                GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, framebuffer[0])
+                GLES20.glFramebufferTexture2D(GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0,
+                    GLES20.GL_TEXTURE_2D, texture[0], 0)
+                check(GLES20.glCheckFramebufferStatus(GLES20.GL_FRAMEBUFFER) == GLES20.GL_FRAMEBUFFER_COMPLETE)
+                GLES20.glViewport(0, 0, w, h)
+                draw(2, w, h)
+                val bytes = ByteBuffer.allocateDirect(w * h * 4)
+                GLES20.glReadPixels(0, 0, w, h, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, bytes)
+                checkGl()
+                val pixels = IntArray(w * h) { index ->
+                    val offset = ((h - 1 - index / w) * w + index % w) * 4
+                    (255 shl 24) or ((bytes.get(offset).toInt() and 255) shl 16) or
+                        ((bytes.get(offset + 1).toInt() and 255) shl 8) or (bytes.get(offset + 2).toInt() and 255)
+                }
+                bitmap = Bitmap.createBitmap(pixels, w, h, Bitmap.Config.ARGB_8888)
+            } catch (error: Exception) {
+                Log.w(TAG, "Unzoomed metering readback failed", error)
+            } finally {
+                GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+                if (framebuffer[0] != 0) GLES20.glDeleteFramebuffers(1, framebuffer, 0)
+                if (texture[0] != 0) GLES20.glDeleteTextures(1, texture, 0)
+            }
+            completion(bitmap, timestamp)
+        }
+        if (!accepted) completion(null, 0L)
     }
 
     private fun captureFrozenFrame() {

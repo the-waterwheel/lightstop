@@ -42,6 +42,7 @@ internal class RawRecordCaptureCoordinator(
         val screenAspect: Float,
         val zoom: Float,
         val callback: (Result<RawRecordArtifact>) -> Unit,
+        val sensorCrop: NormalizedSensorViewport?,
         val framePairer: TimestampedResultPairer<Image, CaptureResult> =
             TimestampedResultPairer(releaseImage = Image::close),
     )
@@ -63,6 +64,7 @@ internal class RawRecordCaptureCoordinator(
         request: () -> CaptureRequest,
         beforeCapture: () -> Unit,
         completion: (Result<RawRecordArtifact>) -> Unit,
+        sensorCrop: NormalizedSensorViewport? = null,
     ): Boolean {
         if (active != null) return false
         val capture = ActiveCapture(
@@ -72,6 +74,7 @@ internal class RawRecordCaptureCoordinator(
             screenAspect = screenAspect,
             zoom = zoom,
             callback = completion,
+            sensorCrop = sensorCrop,
         )
         active = capture
         return try {
@@ -199,6 +202,7 @@ internal class RawRecordCaptureCoordinator(
                 sensorAspect,
                 capture.zoom,
                 screenToSensorTransform,
+                capture.sensorCrop,
             ) ?: throw IllegalStateException(localized("RAW 数据无效", "RAW data is invalid"))
             FileOutputStream(capture.outputFile).use { stream ->
                 DngCreator(characteristics, pair.result).use { creator ->
