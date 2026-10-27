@@ -98,7 +98,7 @@ internal class ParameterRecordToolView(
         drawOption(canvas, geometry.timeRow, geometry.timeToggle, localized("记录时间", "Record time"),
             localized("保存拍摄时间", "Keep capture time"), options.recordTime, true)
         drawOption(canvas, geometry.rawRow, geometry.rawToggle, localized("记录 RAW 数据", "Record RAW data"),
-            localized("保留原始测光数据", "Keep original metering data"), options.recordRaw, state.cameraInfo.rawAvailable)
+            localized("各种测光方式均可在回看时补点", "Add review points with any metering mode"), options.recordRaw, state.cameraInfo.rawAvailable)
         drawHelp(canvas)
         drawFinishAction(canvas, repository.activeCategoryId != null)
         drawStartStopAction(canvas)
@@ -436,8 +436,8 @@ internal class ParameterRecordToolView(
         AlertDialog.Builder(context)
             .setTitle(localized("记录 RAW 数据", "Record RAW data"))
             .setMessage(localized(
-                "记录 RAW 数据，后续可以随意标点测光，但是会占用大量存储空间。",
-                "RAW recording allows later point metering, but uses substantial storage space.",
+                "记录 RAW 后，无论拍摄时使用全局、点测还是其他测光方式，都可在保存前或历史回看中新增测点。回看时点击 RAW 补点，再点按画面；取景灰框外也可以标点。点按已有测点可删除，并可撤销。RAW 会占用较多存储空间。",
+                "RAW recordings support new points before saving or in history, with any capture metering mode. Enable RAW points in history, then tap the image, including outside its gray frame. Tap an existing point to remove it; Undo restores the last edit. RAW uses additional storage.",
             ))
             .setNegativeButton(localized("取消", "Cancel"), null)
             .setPositiveButton(localized("确定", "Confirm")) { _, _ ->

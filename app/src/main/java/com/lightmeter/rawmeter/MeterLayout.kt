@@ -164,7 +164,7 @@ class MeterLayout @JvmOverloads constructor(
     }
     private val parameterRecordToolView = ParameterRecordToolView(context, state, parameterRecordRepository)
     private val parameterRecordEditorView = ParameterRecordEditorView(context, state)
-    private val parameterHistoryView = ParameterHistoryView(context, state, parameterRecordRepository)
+    private val parameterHistoryView = ParameterHistoryView(context, state, parameterRecordRepository, parameterIoDispatcher)
     private val colorTemperatureView = ColorTemperatureView(context, state)
     private val grayCardGuideView = GrayCardGuideView(context, state)
     private val angleMeteringDialView = AngleMeteringDialView(context, state)
@@ -1102,8 +1102,8 @@ class MeterLayout @JvmOverloads constructor(
             MeasureSpec.makeMeasureSpec(toolsRect.height().roundToInt().coerceAtLeast(0), MeasureSpec.EXACTLY),
         )
         parameterRecordEditorView.measure(
-            MeasureSpec.makeMeasureSpec(toolsRect.width().roundToInt().coerceAtLeast(0), MeasureSpec.EXACTLY),
-            MeasureSpec.makeMeasureSpec(toolsRect.height().roundToInt().coerceAtLeast(0), MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
         )
         val geometry = LayoutGeometry.calculate(
             width,
@@ -1238,12 +1238,8 @@ class MeterLayout @JvmOverloads constructor(
         angleMeteringDialView.layout(0, 0, width, height)
         flashDistanceDialView.layout(0, 0, width, height)
         recordCaptureSliderView.layout(0, 0, width, height)
-        val parameterPanel = toolsPanelRect(width, height)
         parameterRecordEditorView.layout(
-            parameterPanel.left.toInt(),
-            parameterPanel.top.toInt(),
-            parameterPanel.right.toInt(),
-            parameterPanel.bottom.toInt(),
+            0, 0, width, height,
         )
         filmSelectorView.layout(0, 0, width, height)
         parameterHistoryView.layout(0, 0, width, height)
@@ -1852,14 +1848,28 @@ class MeterLayout @JvmOverloads constructor(
         // Freeze every value the record must keep even if the user changes settings while the
         // preview is being encoded off the main thread.
         val options = parameterRecordRepository.options
-        val snapshot = currentParameterSnapshot()
-        // Freeze the crop and zoom at capture start so an asynchronous RAW request cannot pick up
-        // a later viewfinder change.
-        val previewAspect = state.frameAspect()
-        val zoom = state.zoomControlValue
+        val viewport = evaluativeMeteringViewport()
+        // Framed records retain the unzoomed window, including the surroundings of the gray
+        // frame. None records retain exactly the visible crop. Freeze both image and RAW domains.
+        val imageCrop = if (state.isUnframed) state.originalFramingCrop(width > height) else state.sourcePreviewCrop(width > height)
+        val sensorCrop = checkNotNull(if (state.isUnframed) viewport.sensorCrop else viewport.previewSensorViewport)
+        val rawSnapshot = currentParameterSnapshot()
+        val snapshot = rawSnapshot.copy(
+            viewfinder = RecordedViewfinder(state.frameFormat.id, state.frameLandscape, state.equivalentFrameFocalMm(),
+                if (state.isUnframed) 1f else state.zoom, state.previewZoom, if (state.isUnframed) null else state.framingCrop(width > height),
+                state.meteringMode, state.angleMeteringDegrees.takeIf { state.meteringMode == MeteringMode.ANGLE },
+                if (isZoneMode) rawSnapshot.zonePoints.map { it.source }.distinct().singleOrNull() else state.lastReading?.source,
+                CameraPreviewTransform.relativeRotationDegrees(state.cameraInfo.sensorOrientationDegrees, viewport.displayRotation, state.cameraInfo.lensFacing),
+                CameraPreviewTransform.shouldMirrorPreview(state.cameraInfo.lensFacing)),
+            zonePoints = rawSnapshot.zonePoints.mapNotNull { point ->
+                val x = if (state.isUnframed) point.normalizedX else .5f + (point.normalizedX - .5f) / state.previewZoom
+                val y = if (state.isUnframed) point.normalizedY else .5f + (point.normalizedY - .5f) / state.previewZoom
+                point.copy(normalizedX = x, normalizedY = y).takeIf { x in 0f..1f && y in 0f..1f }
+            },
+        )
+        val previewAspect = viewport.screenFrameAspect
+        val zoom = 1f // The frozen sensor crop already contains the saved image's entire mapping.
         val previewFile = parameterRecordRepository.createPendingPreviewFile(id)
-        val framing = state.originalFramingCrop(width > height)
-        val sensorCrop = checkNotNull(evaluativeMeteringViewport().sensorCrop)
         val token = activeCaptureToken
         val receive: (Bitmap?) -> Unit = receive@ { source ->
             if (!parameterCaptureGuard.isCurrent(token, id)) { source?.recycle(); return@receive }
@@ -1879,10 +1889,10 @@ class MeterLayout @JvmOverloads constructor(
             }
             // Crop geometry depends on live view layout, so it is resolved on the main thread before
             // the bitmap is handed to the I/O dispatcher, which owns and recycles it.
-            val crop = PixelCrop((framing.left * source.width).roundToInt().coerceIn(0, source.width - 1),
-                (framing.top * source.height).roundToInt().coerceIn(0, source.height - 1),
-                (framing.right * source.width).roundToInt().coerceIn(1, source.width),
-                (framing.bottom * source.height).roundToInt().coerceIn(1, source.height))
+            val crop = PixelCrop((imageCrop.left * source.width).roundToInt().coerceIn(0, source.width - 1),
+                (imageCrop.top * source.height).roundToInt().coerceIn(0, source.height - 1),
+                (imageCrop.right * source.width).roundToInt().coerceIn(1, source.width),
+                (imageCrop.bottom * source.height).roundToInt().coerceIn(1, source.height))
             parameterIoDispatcher.submit(
                 background = { writeParameterPreview(source, crop, previewFile) },
                 onMain = { path ->
@@ -1977,14 +1987,13 @@ class MeterLayout @JvmOverloads constructor(
         parameterRecordEditorView.animate().cancel()
         parameterRecordEditorView.visibility = View.VISIBLE
         parameterRecordEditorView.bringToFront()
-        val rect = toolsPanelRect(width, height)
         val landscape = width > height
         parameterRecordEditorView.translationX = if (landscape) {
-            if (state.isLeftHanded) -rect.width() else rect.width()
+            if (state.isLeftHanded) -width.toFloat() else width.toFloat()
         } else {
             0f
         }
-        parameterRecordEditorView.translationY = if (landscape) 0f else rect.height()
+        parameterRecordEditorView.translationY = if (landscape) 0f else height.toFloat()
         parameterRecordEditorView.animate()
             .translationX(0f)
             .translationY(0f)
@@ -1997,14 +2006,13 @@ class MeterLayout @JvmOverloads constructor(
         if (!isParameterEditorOpen) return false
         if (isFilmSelectorOpen) closeFilmSelector(animate = false)
         isParameterEditorOpen = false
-        val rect = toolsPanelRect(width, height)
         val landscape = width > height
         parameterRecordEditorView.animate().cancel()
         parameterRecordEditorView.animate()
             .translationX(if (landscape) {
-                if (state.isLeftHanded) -rect.width() else rect.width()
+                if (state.isLeftHanded) -width.toFloat() else width.toFloat()
             } else 0f)
-            .translationY(if (landscape) 0f else rect.height())
+            .translationY(if (landscape) 0f else height.toFloat())
             .setDuration(260L)
             .setInterpolator(DecelerateInterpolator())
             .withEndAction {

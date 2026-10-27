@@ -14,6 +14,7 @@ internal data class ParameterHistoryGeometry(
     val meteringDrawer: RectF,
     val meteringHandle: RectF,
     val landscape: Boolean,
+    val imageActions: RectF = RectF(),
 ) {
     companion object {
         val EMPTY = ParameterHistoryGeometry(RectF(), RectF(), RectF(), RectF(), RectF(), RectF(), RectF(), RectF(), false)
@@ -58,6 +59,8 @@ internal object ParameterHistoryGeometryCalculator {
         // Translate the full panel below the handle; clipping hides its content when collapsed.
         // A stable content height keeps the scales from stretching during a drag or animation.
         val metering = RectF(data.left, handle.bottom, data.right, handle.bottom + meteringHeight)
-        return ParameterHistoryGeometry(back, delete, content, image, data, metering, drawer, handle, landscape)
+        val actions = RectF(image.left, image.bottom - 40f * density, image.right, image.bottom)
+        image.bottom = actions.top - 6f * density
+        return ParameterHistoryGeometry(back, delete, content, image, data, metering, drawer, handle, landscape, actions)
     }
 }

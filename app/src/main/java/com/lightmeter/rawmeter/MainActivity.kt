@@ -2273,7 +2273,9 @@ class MainActivity : Activity(), CameraControllerCallback {
             return
         }
         val rawFile = meterLayout.createParameterRawFile(draftId)
-        cameraController.captureRawRecord(rawFile, previewAspect, zoom, sensorCrop) { result ->
+        cameraController.captureRawRecord(rawFile, previewAspect, zoom, sensorCrop, snapshot.viewfinder?.let {
+            ScreenToSensorCoordinateTransform(it.screenToSensorRotationDegrees, it.screenToSensorMirrored)
+        }) { result ->
             val completed = result.fold(
                 onSuccess = { artifact ->
                     draft.copy(

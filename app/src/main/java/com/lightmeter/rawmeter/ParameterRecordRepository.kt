@@ -14,7 +14,9 @@ internal class ParameterRecordRepository(context: Context) {
     private val index = AtomicFile(File(root, "index.json"))
     private val transactions = ParameterRecordTransaction(root)
     private val preferences = context.getSharedPreferences("parameter_record_settings", Context.MODE_PRIVATE)
-    private var categories = loadCategories().toMutableList()
+    // Readers keep an immutable snapshot while the I/O owner serializes the next index.
+    @Volatile
+    private var categories: List<ParameterRecordCategory> = loadCategories()
     @Volatile
     var activeCategoryId: String? = preferences.getString(KEY_ACTIVE_CATEGORY, null)
         private set
@@ -68,7 +70,6 @@ internal class ParameterRecordRepository(context: Context) {
         }
     }
 
-    @Synchronized
     fun categories(): List<ParameterRecordCategory> = categories
         .asSequence()
         .filter { it.records.isNotEmpty() }
@@ -76,14 +77,12 @@ internal class ParameterRecordRepository(context: Context) {
         .toList()
 
     /** Append order also works when the user disables capture timestamps. */
-    @Synchronized
     fun latestRecordedDistance(): RecordedDistanceSnapshot? = categories.asReversed()
         .asSequence()
         .flatMap { it.records.asReversed().asSequence() }
         .mapNotNull { it.distance?.takeIf(RecordedDistanceSnapshot::hasDistance) }
         .firstOrNull()
 
-    @Synchronized
     fun category(id: String?): ParameterRecordCategory? = categories.firstOrNull { it.id == id }
 
     fun record(categoryId: String, recordId: String): ParameterRecordEntry? =
@@ -110,7 +109,7 @@ internal class ParameterRecordRepository(context: Context) {
         val id = activeCategoryId ?: return null
         val current = category(id) ?: return null
         if (current.records.isEmpty()) {
-            synchronized(this) { categories.removeAll { it.id == id } }
+            categories = categories.filterNot { it.id == id }
             activeCategoryId = null
             preferences.edit().remove(KEY_ACTIVE_CATEGORY).apply()
             saveIndex()
@@ -149,7 +148,7 @@ internal class ParameterRecordRepository(context: Context) {
         val expectedPreview = requireNotNull(ParameterRecordPathPolicy.pendingFile(pending, draft.id, "jpg"))
         require(File(draft.previewTempPath).canonicalFile == expectedPreview) { "Preview is outside the pending record directory" }
         val marker = transactions.begin(category.id, draft.id)
-        val previousCategories = categories.toMutableList()
+        val previousCategories = categories
         val movedFiles = mutableListOf<ParameterRecordTransaction.MovedFile>()
         try {
             val previewTarget = File(directory, "${draft.id}.jpg")
@@ -186,6 +185,7 @@ internal class ParameterRecordRepository(context: Context) {
                 rawGrid = draft.rawGrid,
                 flash = draft.snapshot.flash,
                 distance = draft.snapshot.distance,
+                viewfinder = draft.snapshot.viewfinder,
             )
             val latestCategory = category(category.id) ?: category
             replaceCategory(latestCategory.copy(records = latestCategory.records + entry))
@@ -214,7 +214,7 @@ internal class ParameterRecordRepository(context: Context) {
     ): ParameterRecordEntry? {
         val category = category(categoryId) ?: return null
         val existing = category.records.firstOrNull { it.id == recordId } ?: return null
-        if (existing.rawPath == null || existing.rawGrid == null) return null
+        if (!RecordedHistoryCapability.canRecalculateZone(existing)) return null
         val validated = points
             .take(MAX_RAW_POINTS)
             .takeIf { values ->
@@ -229,7 +229,7 @@ internal class ParameterRecordRepository(context: Context) {
         replaceCategory(
             category.copy(records = category.records.map { if (it.id == recordId) updated else it }),
         )
-        saveIndex()
+        try { saveIndex() } catch (error: Exception) { replaceCategory(category); throw error }
         return updated
     }
 
@@ -247,14 +247,14 @@ internal class ParameterRecordRepository(context: Context) {
         val previousCategories = categories.toList()
         val previousActive = activeCategoryId
         return try {
-            categories.removeAll { it.id == id }
+            categories = categories.filterNot { it.id == id }
             if (previousActive == id) activeCategoryId = null
             persistActiveCategory()
             saveIndex()
             deleteQuarantine(quarantine)
             true
         } catch (_: Exception) {
-            categories = previousCategories.toMutableList()
+            categories = previousCategories
             activeCategoryId = previousActive
             persistActiveCategory()
             if (quarantine.exists() && !directory.exists()) quarantine.renameTo(directory)
@@ -313,7 +313,7 @@ internal class ParameterRecordRepository(context: Context) {
     @Synchronized
     private fun replaceCategory(value: ParameterRecordCategory) {
         val index = categories.indexOfFirst { it.id == value.id }
-        if (index >= 0) categories[index] = value else categories += value
+        categories = if (index >= 0) categories.mapIndexed { i, category -> if (i == index) value else category } else categories + value
     }
 
     private fun loadCategories(): List<ParameterRecordCategory> = try {
@@ -333,7 +333,7 @@ internal class ParameterRecordRepository(context: Context) {
             val writer = output.bufferedWriter()
             val array = JSONArray()
             categories.forEach { array.put(it.toJson()) }
-            writer.write(JSONObject().put("version", 3).put("categories", array).toString())
+            writer.write(JSONObject().put("version", 4).put("categories", array).toString())
             writer.flush()
             index.finishWrite(output)
         } catch (error: Exception) {
@@ -369,6 +369,15 @@ internal class ParameterRecordRepository(context: Context) {
         .put("rawGrid", rawGrid?.toJson())
         .put("flash", flash?.toJson())
         .put("distance", distance?.toJson())
+        .put("viewfinder", viewfinder?.toJson())
+
+    private fun RecordedViewfinder.toJson(): JSONObject = JSONObject()
+        .put("formatId", formatId).put("frameLandscape", frameLandscape)
+        .put("focalLengthMm", focalLengthMm).put("framingZoom", framingZoom.toDouble())
+        .put("inspectionZoom", inspectionZoom.toDouble()).put("meteringMode", meteringMode.name)
+        .put("meteringAngleDegrees", meteringAngleDegrees).put("meteringSource", meteringSource?.name)
+        .put("screenToSensorRotation", screenToSensorRotationDegrees).put("screenToSensorMirrored", screenToSensorMirrored)
+        .put("frameCrop", frameCrop?.let { JSONArray(listOf(it.left.toDouble(), it.top.toDouble(), it.right.toDouble(), it.bottom.toDouble())) })
 
     private fun RecordedFlashSnapshot.toJson(): JSONObject = JSONObject()
         .put("guideNumberIso100", guideNumberIso100)
@@ -418,6 +427,7 @@ internal class ParameterRecordRepository(context: Context) {
         .put("width", width)
         .put("height", height)
         .put("reference", referenceLuma.toDouble())
+        .put("referenceEv100", referenceEv100)
         .put("screenToSensorRotation", screenToSensorRotationDegrees)
         .put("screenToSensorMirrored", screenToSensorMirrored)
         .put("cropLeft", cropLeft.toDouble())
@@ -466,7 +476,26 @@ internal class ParameterRecordRepository(context: Context) {
             rawGrid = optJSONObject("rawGrid")?.toRawGrid(),
             flash = optJSONObject("flash")?.toFlashSnapshot(),
             distance = optJSONObject("distance")?.toDistanceSnapshot(),
+            viewfinder = optJSONObject("viewfinder")?.toViewfinder(),
         )
+    }
+
+    private fun JSONObject.toViewfinder(): RecordedViewfinder? {
+        val formatId = nullableString("formatId") ?: return null
+        val mode = enumOrNull<MeteringMode>("meteringMode") ?: return null
+        val cropValues = optJSONArray("frameCrop")
+        val crop = if (cropValues == null) null else {
+            if (cropValues.length() != 4) return null
+            val v = FloatArray(4) { cropValues.optDouble(it).toFloat() }
+            if (v.any { !it.isFinite() || it !in 0f..1f } || v[2] <= v[0] || v[3] <= v[1]) return null
+            NormalizedSensorViewport(v[0], v[1], v[2], v[3])
+        }
+        return RecordedViewfinder(formatId, optBoolean("frameLandscape", true), nullableInt("focalLengthMm"),
+            optDouble("framingZoom", 1.0).toFloat().takeIf { it.isFinite() && it >= 1f } ?: 1f,
+            optDouble("inspectionZoom", 1.0).toFloat().takeIf { it.isFinite() && it >= 1f } ?: 1f,
+            crop, mode, nullableInt("meteringAngleDegrees"), enumOrNull<MeteringSource>("meteringSource"),
+            optInt("screenToSensorRotation", 0).takeIf { it in listOf(0, 90, 180, 270) } ?: 0,
+            optBoolean("screenToSensorMirrored", false))
     }
 
     private fun JSONObject.toFlashSnapshot(): RecordedFlashSnapshot? {
@@ -542,18 +571,22 @@ internal class ParameterRecordRepository(context: Context) {
         val width = optInt("width")
         val height = optInt("height")
         val values = optJSONArray("values") ?: return null
-        if (width <= 0 || height <= 0 || values.length() != width * height) return null
+        if (width !in 1..512 || height !in 1..512 || values.length() != width * height) return null
+        val samples = FloatArray(values.length()) { values.optDouble(it).toFloat() }
+        val reference = optDouble("reference").toFloat()
+        if (!reference.isFinite() || reference <= 0f || samples.any { !it.isFinite() || it < 0f }) return null
         return RecordedRawGrid(
             width,
             height,
-            FloatArray(values.length()) { values.optDouble(it).toFloat() },
-            optDouble("reference").toFloat(),
+            samples,
+            reference,
             screenToSensorRotationDegrees = optInt("screenToSensorRotation", 0),
             screenToSensorMirrored = optBoolean("screenToSensorMirrored", false),
             optDouble("cropLeft", 0.0).toFloat(),
             optDouble("cropTop", 0.0).toFloat(),
             optDouble("cropRight", 1.0).toFloat(),
             optDouble("cropBottom", 1.0).toFloat(),
+            referenceEv100 = nullableDouble("referenceEv100"),
         )
     }
 

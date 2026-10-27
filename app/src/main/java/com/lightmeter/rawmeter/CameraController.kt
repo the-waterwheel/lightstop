@@ -316,6 +316,7 @@ class CameraController(
         cameraCharacteristics = { characteristics },
         cameraInfo = { cameraInfo },
         displayRotation = { lastDisplayRotation },
+        rawCorrectionEv = { calibrationStore.totalCorrection(it, MeteringSource.RAW) },
         listener = object : RawRecordCaptureListener {
             override fun onRawRecordCaptureResult(result: CaptureResult) {
                 latestResult = result
@@ -1819,11 +1820,12 @@ class CameraController(
     }
 
     /** Captures one full-resolution DNG and a compact RAW sample map for history point metering. */
-    fun captureRawRecord(
+    internal fun captureRawRecord(
         outputFile: File,
         screenAspect: Float,
         zoom: Float,
         sensorCrop: NormalizedSensorViewport? = null,
+        screenToSensorTransform: ScreenToSensorCoordinateTransform? = null,
         completion: (Result<RawRecordArtifact>) -> Unit,
     ) {
         val handler = cameraHandler
@@ -1863,6 +1865,7 @@ class CameraController(
                 beforeCapture = ::pausePreviewForRawCapture,
                 completion = completion,
                 sensorCrop = sensorCrop,
+                screenToSensorTransform = screenToSensorTransform,
             )
             if (!accepted) {
                 meteringOperationActive = false

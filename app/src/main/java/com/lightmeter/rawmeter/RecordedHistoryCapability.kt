@@ -5,5 +5,8 @@ package com.lightmeter.rawmeter
  * recalculate a Zone point at a new position.
  */
 internal object RecordedHistoryCapability {
-    fun canRecalculateZone(record: ParameterRecordEntry): Boolean = record.rawGrid != null
+    fun canRecalculateZone(record: ParameterRecordEntry): Boolean = record.rawGrid?.let {
+        it.width > 0 && it.height > 0 && it.values.size.toLong() == it.width.toLong() * it.height &&
+            it.referenceLuma.isFinite() && it.referenceLuma > 0f && it.values.any { value -> value.isFinite() && value > 0f }
+    } == true
 }

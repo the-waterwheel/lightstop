@@ -33,6 +33,7 @@ internal class RawRecordCaptureCoordinator(
     private val cameraCharacteristics: () -> CameraCharacteristics?,
     private val cameraInfo: () -> CameraUiInfo,
     private val displayRotation: () -> Int,
+    private val rawCorrectionEv: (String) -> Double = { 0.0 },
     private val listener: RawRecordCaptureListener,
 ) {
     private data class ActiveCapture(
@@ -43,6 +44,8 @@ internal class RawRecordCaptureCoordinator(
         val zoom: Float,
         val callback: (Result<RawRecordArtifact>) -> Unit,
         val sensorCrop: NormalizedSensorViewport?,
+        val screenToSensorTransform: ScreenToSensorCoordinateTransform,
+        val rawCorrectionEv: Double,
         val framePairer: TimestampedResultPairer<Image, CaptureResult> =
             TimestampedResultPairer(releaseImage = Image::close),
     )
@@ -65,6 +68,7 @@ internal class RawRecordCaptureCoordinator(
         beforeCapture: () -> Unit,
         completion: (Result<RawRecordArtifact>) -> Unit,
         sensorCrop: NormalizedSensorViewport? = null,
+        screenToSensorTransform: ScreenToSensorCoordinateTransform? = null,
     ): Boolean {
         if (active != null) return false
         val capture = ActiveCapture(
@@ -75,6 +79,10 @@ internal class RawRecordCaptureCoordinator(
             zoom = zoom,
             callback = completion,
             sensorCrop = sensorCrop,
+            screenToSensorTransform = screenToSensorTransform ?: cameraInfo().let { info -> ScreenToSensorCoordinateTransform(
+                CameraPreviewTransform.relativeRotationDegrees(info.sensorOrientationDegrees, displayRotation(), info.lensFacing),
+                CameraPreviewTransform.shouldMirrorPreview(info.lensFacing), info.previewSensorViewport) },
+            rawCorrectionEv = rawCorrectionEv(cameraInfo().calibrationCameraId),
         )
         active = capture
         return try {
@@ -176,33 +184,17 @@ internal class RawRecordCaptureCoordinator(
                 )
                 return
             }
-            val info = cameraInfo()
-            val sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION)
-                ?: info.sensorOrientationDegrees
-            val currentDisplayRotation = displayRotation()
-            val screenToSensorTransform = ScreenToSensorCoordinateTransform(
-                rotationDegrees = CameraPreviewTransform.relativeRotationDegrees(
-                    sensorOrientation,
-                    currentDisplayRotation,
-                    info.lensFacing,
-                ),
-                mirrored = CameraPreviewTransform.shouldMirrorPreview(info.lensFacing),
-                sensorViewport = info.previewSensorViewport,
-            )
-            val sensorAspect = CameraPreviewTransform.screenAspectInSensorCoordinates(
-                capture.screenAspect,
-                sensorOrientation,
-                currentDisplayRotation,
-                info.lensFacing,
-            )
+            val sensorAspect = if (capture.screenToSensorTransform.rotationDegrees % 180 == 90)
+                1f / capture.screenAspect else capture.screenAspect
             val grid = RecordedRawGridSampler.sample(
                 pair.image,
                 pair.result,
                 characteristics,
                 sensorAspect,
                 capture.zoom,
-                screenToSensorTransform,
+                capture.screenToSensorTransform,
                 capture.sensorCrop,
+                capture.rawCorrectionEv,
             ) ?: throw IllegalStateException(localized("RAW 数据无效", "RAW data is invalid"))
             FileOutputStream(capture.outputFile).use { stream ->
                 DngCreator(characteristics, pair.result).use { creator ->

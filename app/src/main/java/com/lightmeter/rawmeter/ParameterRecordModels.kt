@@ -78,6 +78,8 @@ data class RecordedRawGrid(
     val cropTop: Float = 0f,
     val cropRight: Float = 1f,
     val cropBottom: Float = 1f,
+    /** Absolute RAW exposure anchor; absent in legacy grids that used the saved scene EV. */
+    val referenceEv100: Double? = null,
 ) {
     fun relativeEvAt(x: Float, y: Float): Double? {
         if (width <= 0 || height <= 0 || values.size != width * height || referenceLuma <= 0f) return null
@@ -86,6 +88,7 @@ data class RecordedRawGrid(
     }
 
     fun rebasedForKnownPoints(baseEv100: Double?, points: List<RecordedZonePoint>): RecordedRawGrid {
+        if (referenceEv100 != null) return this
         val base = baseEv100 ?: return this
         val impliedLogReferences = points.mapNotNull { point ->
             val ev = point.ev100 ?: return@mapNotNull null
@@ -99,6 +102,7 @@ data class RecordedRawGrid(
 
     private fun sampledValueAt(x: Float, y: Float): Float? {
         if (width <= 0 || height <= 0 || values.size != width * height) return null
+        if (!x.isFinite() || !y.isFinite() || x !in 0f..1f || y !in 0f..1f) return null
         val (sensorX, sensorY) = ScreenToSensorCoordinateTransform(
             screenToSensorRotationDegrees,
             screenToSensorMirrored,
@@ -121,6 +125,7 @@ data class ParameterMeterSnapshot(
     val zonePoints: List<RecordedZonePoint>,
     val flash: RecordedFlashSnapshot? = null,
     val distance: RecordedDistanceSnapshot? = null,
+    val viewfinder: RecordedViewfinder? = null,
 )
 
 data class ParameterRecordOptions(
@@ -167,6 +172,7 @@ data class ParameterRecordEntry(
     val rawGrid: RecordedRawGrid?,
     val flash: RecordedFlashSnapshot? = null,
     val distance: RecordedDistanceSnapshot? = null,
+    val viewfinder: RecordedViewfinder? = null,
 ) {
     fun selectedExposureEv100(): Double =
         apertureCoordinate - shutterCoordinate - ExposureMath.log2(ei / 100.0)
@@ -174,7 +180,7 @@ data class ParameterRecordEntry(
     /** Resolves old Normal RAW records that did not store an independent scene EV. */
     fun rawEv100At(normalizedX: Float, normalizedY: Float): Double? {
         val relative = rawGrid?.relativeEvAt(normalizedX, normalizedY) ?: return null
-        return (ev100 ?: selectedExposureEv100()) + relative
+        return (rawGrid?.referenceEv100 ?: ev100 ?: selectedExposureEv100()) + relative
     }
 
     fun resolvedZonePointEv100(point: RecordedZonePoint): Double? =
