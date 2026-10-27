@@ -26,13 +26,16 @@ class DeviceMeteringInstrumentation : Instrumentation() {
     private lateinit var layout: MeterLayout
     private lateinit var camera: CameraController
     private var suite = "baseline"
+    private var compareOldExposurePreview = false
     private val results = JSONArray()
     private var failures = 0
     private val measureTimes = IdentityHashMap<MeterReading, Double>()
+    private val exposurePixels = IntArray(48 * 48)
 
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
         suite = arguments?.getString("suite") ?: "baseline"
+        compareOldExposurePreview = arguments?.getString("compareOld") == "true"
         start()
     }
 
@@ -55,6 +58,7 @@ class DeviceMeteringInstrumentation : Instrumentation() {
                 "stress" -> stressChecks()
                 "recovery" -> recoveryChecks()
                 "capability" -> capabilityChecks()
+                "exposure-transition" -> exposureTransitionChecks()
                 else -> baselineChecks()
             }
         } catch (error: Throwable) {
@@ -65,6 +69,98 @@ class DeviceMeteringInstrumentation : Instrumentation() {
             File(targetContext.filesDir, "device-validation-$suite.json").writeText(report.toString(2))
             finish(if (failures == 0) Activity.RESULT_OK else Activity.RESULT_CANCELED,
                 Bundle().apply { putString("stream", report.toString(2)); putInt("failures", failures) })
+        }
+    }
+
+    /** Also runs against the preserved pre-change APK, with stricter fade gates on the new APK. */
+    private fun exposureTransitionChecks() {
+        pipeline(MeteringPipelineMode.ISOLATED)
+        main { state.exposurePreviewMode = ExposurePreviewMode.OFF; camera.updateExposurePreview(null) }
+        val reference = measure(MeteringMode.SPOT)
+        for ((name, offset) in listOf("darken" to 2.0, "brighten" to -2.0)) {
+            test("live_exposure_$name") {
+                main { state.exposurePreviewMode = ExposurePreviewMode.OFF; camera.updateExposurePreview(null) }
+                SystemClock.sleep(800)
+                val initial = exposureFrame()
+                val initialEv = initial.getDouble("actualEv100")
+                val beforeSequence = initial.getLong("sequence")
+                val desired = initialEv + offset
+                val start = SystemClock.elapsedRealtimeNanos()
+                main {
+                    state.exposurePreviewMode = ExposurePreviewMode.ON
+                    state.sceneEv100 = desired + state.previewCameraCorrectionEv() - state.exposurePreviewExecutionCorrectionEv()
+                    invoke(activity, "updateExposurePreviewFromMeter")
+                }
+                val frames = JSONArray()
+                repeat(60) {
+                    main { repeat(10) { invoke(activity, "updateExposurePreviewFromMeter") } }
+                    frames.put(exposureFrame().put("elapsedMs", (SystemClock.elapsedRealtimeNanos() - start) / 1e6))
+                    SystemClock.sleep(20)
+                }
+                val samples = (0 until frames.length()).map { frames.getJSONObject(it) }
+                val requested = samples.mapNotNull { sample -> sample.optDouble("requestedEv100").takeIf(Double::isFinite) }.distinct()
+                val actual = samples.map { it.getDouble("actualEv100") }
+                val sequences = samples.last().getLong("sequence") - beforeSequence
+                val manual = main { state.cameraInfo.manualSensorAvailable }
+                check(sequences < 45) { "Repeated UI updates flooded requests: $sequences" }
+                if (manual) {
+                    check(abs(actual.last() - desired) < .25) { "Exposure did not reach $desired: ${actual.last()}" }
+                    if (!compareOldExposurePreview) {
+                        check(requested.size >= 5) { "Expected intermediate exposures, got $requested" }
+                        check(requested.zipWithNext().all { (a, b) -> abs(b - a) < .55 }) { "Exposure jumped: $requested" }
+                    }
+                }
+                val initialLuma = initial.getDouble("displayLuma")
+                val finalLuma = samples.last().getDouble("displayLuma")
+                check(if (offset > 0) finalLuma < initialLuma - .01 else finalLuma > initialLuma + .01) {
+                    "Displayed brightness did not follow the selected exposure: $initialLuma -> $finalLuma"
+                }
+                val timestamps = samples.map { it.getLong("frameTimestampNs") }.distinct().filter { it > 0L }
+                val gaps = timestamps.zipWithNext().map { (a, b) -> (b - a) / 1e6 }
+                JSONObject().put("manual", manual).put("initialEv100", initialEv).put("targetEv100", desired)
+                    .put("initialLuma", initialLuma).put("finalLuma", finalLuma)
+                    .put("distinctRequestedExposures", requested.size).put("requestCount", sequences)
+                    .put("maximumObservedFrameGapMs", gaps.maxOrNull()).put("frames", frames)
+            }
+        }
+        test("metering_during_preview_fade_keeps_neutral_baseline") {
+            main { state.sceneEv100 = checkNotNull(state.sceneEv100) + 2.0; invoke(activity, "updateExposurePreviewFromMeter") }
+            SystemClock.sleep(90)
+            val baseline: MeteringPreviewBaselineCoordinator = field(camera, "previewBaseline")
+            val previousGeneration: Long = field(baseline, "generation")
+            val reading = measure(MeteringMode.SPOT)
+            check(field<Long>(baseline, "generation") > previousGeneration)
+            check(abs(reading.sceneEv100 - reference.sceneEv100) < .5) {
+                "Fade biased the neutral reading on a stationary scene: ${reference.sceneEv100} -> ${reading.sceneEv100}"
+            }
+            JSONObject().put("reading", observation("spot", reading)).put("reference", observation("spot", reference))
+        }
+    }
+
+    private fun exposureFrame(): JSONObject {
+        val completed = CountDownLatch(1)
+        var snapshot: JSONObject? = null
+        val handler: Handler = field(camera, "cameraHandler")
+        handler.post {
+            val result: CaptureResult? = field(camera, "latestResult")
+            val exposure: ExposurePreviewStateCoordinator = field(camera, "exposurePreviewState")
+            val requests: CameraPreviewRequestCoordinator = field(camera, "previewRequests")
+            val info: CameraUiInfo = field(camera, "cameraInfo")
+            val time = result?.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: 0L
+            val iso = result?.get(CaptureResult.SENSOR_SENSITIVITY) ?: 0
+            snapshot = JSONObject().put("actualEv100", ExposurePreviewMath.cameraEv100(info.aperture.toDouble(), time, iso))
+                .put("requestedEv100", exposure.manualExposure?.appliedCameraEv100)
+                .put("compensationSteps", exposure.compensationSteps).put("sequence", requests.requestSequence)
+                .put("sensorTimeNs", time).put("iso", iso)
+            completed.countDown()
+        }
+        check(completed.await(5, TimeUnit.SECONDS))
+        return main {
+            val bitmap = checkNotNull(layout.textureView.getBitmap(48, 48))
+            bitmap.getPixels(exposurePixels, 0, 48, 0, 0, 48, 48)
+            val luma = exposurePixels.sumOf { pixel -> ((pixel shr 16 and 255) * .2126 + (pixel shr 8 and 255) * .7152 + (pixel and 255) * .0722) / 255.0 } / exposurePixels.size
+            bitmap.recycle()
+            checkNotNull(snapshot).put("frameTimestampNs", layout.textureView.surfaceTexture?.timestamp ?: 0L).put("displayLuma", luma)
         }
     }
 
@@ -379,8 +475,10 @@ class DeviceMeteringInstrumentation : Instrumentation() {
     }
     private fun dismissCalibrationNotice() {
         SystemClock.sleep(500)
-        uiAutomation.rootInActiveWindow?.findAccessibilityNodeInfosByText("下次再说")?.firstOrNull()
-            ?.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK)
+        listOf("下次再说", "Next time", "Later").forEach { label ->
+            uiAutomation.rootInActiveWindow?.findAccessibilityNodeInfosByText(label)?.firstOrNull()
+                ?.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK)
+        }
     }
     private fun dismissInfoNotice() {
         uiAutomation.rootInActiveWindow?.findAccessibilityNodeInfosByText("确定")?.firstOrNull()

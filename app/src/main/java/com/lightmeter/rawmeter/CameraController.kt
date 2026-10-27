@@ -27,6 +27,7 @@ import android.util.Size
 import android.view.Surface
 import android.view.TextureView
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.abs
 import kotlin.math.max
@@ -506,6 +507,7 @@ class CameraController(
         onRequestChanged = ::updatePreviewRepeatingRequest,
         onUnavailable = { mainHandler.post(callback::onExposurePreviewUnavailable) },
     )
+    private val exposurePreviewUpdateQueued = AtomicBoolean(false)
     private val previewBaseline = MeteringPreviewBaselineCoordinator { cameraHandler }
     private val previewRequests: CameraPreviewRequestCoordinator = CameraPreviewRequestCoordinator(
         cameraHandler = { cameraHandler },
@@ -531,6 +533,7 @@ class CameraController(
         filmPreviewLocked = { filmPreview.isLocked },
         filmPreviewPreparingCapture = { filmPreview.isPreparingCapture },
         requestCharacteristics = { logicalCharacteristics ?: characteristics },
+        exposureTransitionActive = { exposurePreviewState.isTransitioning },
     )
     @Volatile
     private var meteringOperationActive = false
@@ -1055,14 +1058,17 @@ class CameraController(
 
     /** Applies the calibrated exposure represented by the currently displayed parameter rows. */
     fun updateExposurePreview(selection: ExposurePreviewSelection?) {
-        exposurePreviewState.updateSelection(selection)
+        if (!exposurePreviewState.updateSelection(selection)) return
         // Closing the camera publishes a distance-state callback on the main thread.
         // Preserve its selection, but do not enqueue work on the retiring camera thread.
         if (!started || stopInProgress) return
         val handler = cameraHandler ?: return
-        handler.post {
+        if (!exposurePreviewUpdateQueued.compareAndSet(false, true)) return
+        val accepted = handler.post {
+            exposurePreviewUpdateQueued.set(false)
             if (started && cameraHandler === handler) applyRequestedExposurePreview()
         }
+        if (!accepted) exposurePreviewUpdateQueued.set(false)
     }
 
     /**
@@ -2962,6 +2968,8 @@ class CameraController(
     ): Boolean {
         try {
             previewHealth.armConfirmation(generation)
+            // A rebuilt stream starts from live AE evidence, never the RAW frame's exposure.
+            exposurePreviewState.reset(preserveSelection = true)
             previewRequests.submit(device, session, preview)
             previewSurfaceCoordinator.onPreviewStarted()
             previewStreamGeneration += 1L
@@ -3051,8 +3059,9 @@ class CameraController(
     }
 
     private fun applyRequestedExposurePreview() {
-        if (previewBaseline.isActive || exposurePreviewCalibration.isActive) return
-        exposurePreviewState.apply(characteristics, cameraInfo, latestResult)
+        if (!started || stopInProgress || meteringOperationActive || filmPreview.isEnabled ||
+            activeSessionProfile?.usesPreview != true || previewBaseline.isActive || exposurePreviewCalibration.isActive) return
+        exposurePreviewState.apply(characteristics, cameraInfo)
     }
 
     /** Restores neutral AE and waits for synchronized result frames before sampling the scene. */
@@ -3257,6 +3266,11 @@ class CameraController(
                 outputAspectOverride = previewOutputAspectOverride,
             )?.let(::postRuntimeInfo)
             updateDynamicLensInfo(effectiveResult)
+            if (session === captureSession && (request.tag as? PreviewRequestTag)?.cameraGeneration == cameraGeneration) {
+                exposurePreviewState.onPreviewFrame(effectiveResult, SystemClock.elapsedRealtimeNanos(),
+                    advance = !meteringOperationActive && !previewBaseline.isActive && !exposurePreviewCalibration.isActive && !filmPreview.isEnabled)
+                applyRequestedExposurePreview()
+            }
             distanceCapture.onCaptureResult(effectiveResult, timestamp)
             previewBaseline.onCaptureResult(request, effectiveResult)
             exposurePreviewCalibration.onCaptureResult(request, effectiveResult)
@@ -3357,11 +3371,12 @@ class CameraController(
         cameraFailureStage = CameraFailureStage.OPENING
         previewBaseline.cancel()
         exposurePreviewCalibration.cancelForCameraClose()
+        exposurePreviewUpdateQueued.set(false)
+        exposurePreviewState.reset(preserveSelection = preserveExposurePreview)
         if (!preserveExposurePreview) {
             pendingCalibrationMeteringPlan = null
             calibrationSessionProfile = null
             calibrationStorageCameraId = null
-            exposurePreviewState.reset()
         }
         colorTemperatureEstimator.cancel(cameraHandler)?.let { completion ->
             mainHandler.post {
