@@ -7,55 +7,71 @@ import android.graphics.RectF
 import android.graphics.Typeface
 import android.os.SystemClock
 import kotlin.math.abs
-import kotlin.math.floor
 import kotlin.math.min
 
-/** A clipped three-value reel: adjacent values always differ by the configured EV interval. */
+/** Three-value reel. Keep the previous labels until they actually scroll out of the window. */
 internal class RollingParameterWindow {
-    private val paint=Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign=Paint.Align.CENTER;typeface=Typeface.DEFAULT_BOLD }
+    private val paint=Paint(Paint.ANTI_ALIAS_FLAG).apply {textAlign=Paint.Align.CENTER;typeface=Typeface.DEFAULT_BOLD}
     private var target=Double.NaN
-    private var from=Double.NaN
-    private var startedAt=0L
     private var interval=0.0
-    private val durationMs=180L
+    private data class Glyph(val label:String,val position:Float,val opacity:Float)
+    private var fromGlyphs=emptyList<Glyph>()
+    private var toLabels=emptyList<String>()
+    private var startedAt=0L
+    private var direction=1f
+    private val durationMs=220L
 
-    fun draw(canvas: Canvas,rect: RectF,value: Double?,step: Double,density: Float,color: Int,
-        format: (Double)->String,invalidate: ()->Unit) {
+    fun draw(canvas:Canvas,rect:RectF,value:Double?,step:Double,density:Float,color:Int,
+        format:(Double)->String,invalidate:()->Unit) {
         if(value==null || !value.isFinite()) {
-            target=Double.NaN
-            paint.color=color;paint.textSize=21*density
+            target=Double.NaN;fromGlyphs=emptyList();toLabels=emptyList()
+            paint.color=color;paint.alpha=255;paint.textSize=21*density
             canvas.drawText("—",rect.centerX(),rect.centerY()-(paint.ascent()+paint.descent())/2,paint)
             return
         }
         val now=SystemClock.uptimeMillis()
-        if(target!=value || interval!=step) {
-            from=if(!target.isFinite() || interval!=step || !ValueAnimator.areAnimatorsEnabled()) value else position(now)
-            target=value;interval=step;startedAt=now
+        if(value!=target || interval!=step) {
+            val labels=listOf(format(value-step),format(value),format(value+step))
+            if(labels!=toLabels || interval!=step) {
+                val initialized=target.isFinite()
+                // Capture the currently visible glyph positions, including a partially finished
+                // transition. A rapid second detent therefore starts at exactly the last frame.
+                fromGlyphs=if(!initialized || interval!=step || !ValueAnimator.areAnimatorsEnabled()) emptyList()
+                    else visibleGlyphs(progress(now))
+                direction=if(!initialized || value>=target) 1f else -1f
+                toLabels=labels;startedAt=now
+            }
+            target=value;interval=step
         }
-        val current=position(now)
+        val progress=if(fromGlyphs.isEmpty()) 1f else progress(now)
         val pitch=rect.height()/3f
-        val centerIndex=floor((current-target)/step).toInt()
         canvas.save();canvas.clipRect(rect)
-        for(index in centerIndex-2..centerIndex+2) {
-            val candidate=target+index*step
-            val offset=((candidate-current)/step).toFloat()
-            if(abs(offset)>1.7f) continue
-            val prominence=1f-min(1f,abs(offset))
-            val label=format(candidate)
-            paint.textSize=(10f+11f*prominence)*density
-            val measured=paint.measureText(label)
+        fun label(value:String,position:Float,opacity:Float) {
+            if(opacity<=0f) return
+            val prominence=1f-min(1f,abs(position))
+            paint.textSize=(10+11*prominence)*density
+            val measured=paint.measureText(value)
             if(measured>rect.width()-8*density) paint.textSize*=(rect.width()-8*density).coerceAtLeast(1f)/measured
-            paint.color=color;paint.alpha=((.28f+.72f*prominence)*255).toInt()
-            val y=rect.centerY()-offset*pitch
-            canvas.drawText(label,rect.centerX(),y-(paint.ascent()+paint.descent())/2,paint)
+            paint.color=color;paint.alpha=((.28f+.72f*prominence)*opacity*255).toInt()
+            val y=rect.centerY()+position*pitch
+            canvas.drawText(value,rect.centerX(),y-(paint.ascent()+paint.descent())/2,paint)
+        }
+        if(progress>=1f) toLabels.forEachIndexed {index,value->label(value,(1-index).toFloat(),1f)} else {
+            fromGlyphs.forEach {label(it.label,it.position-direction*progress,it.opacity*(1-progress))}
+            toLabels.forEachIndexed {index,value->label(value,1-index+direction*(1-progress),progress)}
+            invalidate()
         }
         canvas.restore();paint.alpha=255
-        if(now-startedAt<durationMs && from!=target) invalidate()
     }
-
-    private fun position(now: Long): Double {
-        val progress=((now-startedAt).toDouble()/durationMs).coerceIn(0.0,1.0)
-        val eased=progress*progress*(3-2*progress)
-        return from+(target-from)*eased
+    private fun visibleGlyphs(progress:Float):List<Glyph> =
+        if(fromGlyphs.isEmpty() || progress>=1f) toLabels.mapIndexed {index,value->Glyph(value,(1-index).toFloat(),1f)}
+        else (fromGlyphs.map {it.copy(position=it.position-direction*progress,opacity=it.opacity*(1-progress))}+
+            toLabels.mapIndexed {index,value->Glyph(value,1-index+direction*(1-progress),progress)})
+            // Continuous 5 Hz updates can retarget before 220 ms. Drop fully transparent
+            // remnants so an always-on meter never accumulates a history of invisible labels.
+            .filter {it.opacity>=1f/255}
+    private fun progress(now:Long):Float {
+        val p=((now-startedAt).toFloat()/durationMs).coerceIn(0f,1f)
+        return p*p*(3-2*p)
     }
 }

@@ -547,10 +547,11 @@ class CameraController(
         onReading = callback::onContinuousMeterReading, onError = callback::onContinuousMeteringError,
     )
 
-    internal fun setContinuousMeteringEnabled(enabled: Boolean) {
+    internal fun setContinuousMeteringEnabled(enabled: Boolean, intervalMs: Long = 350L) {
         val handler = cameraHandler
-        if (handler == null) { continuousMeter.setEnabled(enabled); return }
+        if (handler == null) { continuousMeter.intervalMs=intervalMs; continuousMeter.setEnabled(enabled); return }
         handler.post {
+            continuousMeter.intervalMs=intervalMs
             continuousMeter.setEnabled(enabled)
             if (started && activeSessionProfile?.usesPreview == true && !meteringOperationActive)
                 updatePreviewRepeatingRequest()
@@ -2274,6 +2275,22 @@ class CameraController(
         } else if (needsYuvRequest) {
             previewRequests.beginCompatibleYuvRequest()
         }
+    }
+
+    /** A single Clear preview reading uses the existing stream and matching exposure metadata.
+     * It deliberately avoids a RAW session switch and the ordinary neutral-AE capture baseline. */
+    internal fun measureLiveGlobalPreview(): Boolean {
+        if (!started || stopInProgress || meteringOperationActive || filmPreview.isEnabled ||
+            combinationWorkflowProbe.isActive) return false
+        val handler=cameraHandler ?: return false
+        meteringOperationActive=true
+        handler.post {
+            if (!started || cameraDevice==null || captureSession==null || activeSessionProfile?.usesPreview!=true) {
+                meteringOperationActive=false
+                postMeterError(localized("相机预览尚未就绪", "Camera preview is not ready"))
+            } else measureCompatiblePreview(MeteringMode.AVERAGE,null,viewport=meteringViewport())
+        }
+        return true
     }
 
     private fun compatibleMeteringContext() = CompatibleMeteringContext(

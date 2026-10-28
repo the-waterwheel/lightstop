@@ -23,6 +23,18 @@ import java.time.Duration
 @Config(sdk=[34])
 @LooperMode(LooperMode.Mode.PAUSED)
 class ContinuousPreviewMeterTest {
+    @Test fun chosenCadenceAndDisableControlTheActualSamplingLoop() {
+        val f=Fixture();f.meter.intervalMs=1000;f.meter.setEnabled(true);drain()
+        assertEquals(1,f.readings.size)
+        advance(999);assertEquals(1,f.readings.size)
+        advance(1);assertEquals(2,f.readings.size)
+        f.meter.intervalMs=200;f.meter.setEnabled(true);drain()
+        val count=f.readings.size
+        advance(199);assertEquals(count,f.readings.size)
+        advance(1);assertEquals(count+1,f.readings.size)
+        f.meter.setEnabled(false);advance(2000)
+        assertEquals(count+1,f.readings.size)
+    }
     @Test fun repeatedGlobalSamplesUseTheirOwnExposureWithoutRestoringNeutralAe() {
         val f=Fixture();f.meter.setEnabled(true);drain()
         assertEquals(1,f.readings.size)

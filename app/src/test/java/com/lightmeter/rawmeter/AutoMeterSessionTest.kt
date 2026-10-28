@@ -62,4 +62,38 @@ class AutoMeterSessionTest {
         assertTrue(s.accept(reading(10.01,MeteringSource.ISP_PREVIEW)))
         assertEquals(MeteringSource.ISP_PREVIEW,s.reading!!.source)
     }
+    @Test fun manualSourceFollowsHardwareAndTheClearSmoothSetting() {
+        val s=AutoMeterSession()
+        assertTrue(s.shouldUseRaw(true));assertFalse(s.shouldUseRaw(false))
+        s.smoothMetering=true
+        assertFalse(s.shouldUseRaw(true));assertFalse(s.shouldUseRaw(false))
+    }
+    @Test fun processedManualReadingHoldsUntilContinuousMeteringIsExplicitlyResumed() {
+        val s=AutoMeterSession();s.accept(reading(10.0))
+        assertTrue(s.beginManual(false));assertFalse(s.manualUsesRaw)
+        assertFalse(s.continuousMetering)
+        assertFalse(s.finishManual(reading(11.0,MeteringSource.RAW)))
+        assertTrue(s.finishManual(reading(9.0,MeteringSource.ISP_PREVIEW)))
+        assertTrue(s.locked);assertFalse(s.continuousMetering)
+        assertFalse(s.accept(reading(12.0)));assertEquals(9.0,s.reading!!.sceneEv100,0.0)
+        s.unlock();assertTrue(s.accept(reading(12.0)))
+    }
+    @Test fun manualFailureRestoresBothAutoAndPreviouslyHeldState() {
+        val s=AutoMeterSession();s.accept(reading(10.0))
+        s.beginManual(false);s.fail("busy");assertTrue(s.continuousMetering);assertFalse(s.locked)
+        s.beginRaw();s.finishRaw(reading(8.0,MeteringSource.RAW))
+        s.beginManual(false);s.fail("busy")
+        assertFalse(s.continuousMetering);assertTrue(s.locked)
+        assertEquals(8.0,s.reading!!.sceneEv100,0.0)
+    }
+    @Test fun autoOffRejectsLateFramesAndStopsSignalRecoveryWithoutChangingTheReading() {
+        val s=AutoMeterSession();s.accept(reading(10.0))
+        s.accept(reading(0.0).copy(rawLuma=.00001))
+        assertNotNull(s.recoveryCameraEv100)
+        s.continuousMetering=false
+        assertNull(s.recoveryCameraEv100);assertFalse(s.signalLimited)
+        assertFalse(s.accept(reading(12.0)))
+        s.unlock(clear=true,resumeContinuous=false)
+        assertFalse(s.continuousMetering);assertFalse(s.accept(reading(12.0)))
+    }
 }

@@ -210,18 +210,20 @@ class MainActivity : Activity(), CameraControllerCallback {
                 updateExposurePreviewFromMeter()
             }
 
+            override fun onClearOptionsChanged() {
+                updateAutoMetering()
+                updateExposurePreviewFromMeter()
+                meterLayout.autoView.invalidate()
+            }
+
             override fun onAutoRawRequested() {
                 if (!activityResumed || !meterLayout.isAutoMode) return
                 val session = meterLayout.autoSession
-                if (!state.cameraInfo.rawHardwareAvailable) {
-                    session.fail(localized("当前镜头不支持 RAW", "RAW unavailable for this camera"))
-                    meterLayout.refresh()
-                    return
-                }
-                if (!session.beginRaw()) return
+                val useRaw=session.shouldUseRaw(state.cameraInfo.rawHardwareAvailable)
+                if (!session.beginManual(useRaw)) return
                 updateAutoMetering()
-                val accepted = cameraController.measure(state.frameFormat,state.frameLandscape,state.previewZoom,
-                    MeteringMode.AVERAGE, requestedSource = MeteringSource.RAW)
+                val accepted = if(useRaw) cameraController.measure(state.frameFormat,state.frameLandscape,state.previewZoom,
+                    MeteringMode.AVERAGE, requestedSource = MeteringSource.RAW) else cameraController.measureLiveGlobalPreview()
                 if (!accepted) {
                     session.fail(localized("相机忙，请稍后重试", "Camera busy; try again"))
                     updateAutoMetering()
@@ -1432,9 +1434,11 @@ class MainActivity : Activity(), CameraControllerCallback {
         if (!activityResumed) return
         if (meterLayout.isAutoMode && meterLayout.autoSession.rawPending) {
             state.measuring = false
-            if (!meterLayout.autoSession.finishRaw(reading))
-                meterLayout.autoSession.fail(localized("未获得 RAW 读数，请重试", "No RAW reading; retry"))
-            cameraController.finishCalibrationSession()
+            val restoreRaw=meterLayout.autoSession.manualUsesRaw
+            if (!meterLayout.autoSession.finishManual(reading))
+                meterLayout.autoSession.fail(localized("未获得有效的手动读数，请重试", "No valid manual reading; retry"))
+            if(restoreRaw) cameraController.finishCalibrationSession()
+            meterLayout.persistClearOptions()
             updateAutoMetering()
             meterLayout.refresh()
             updateExposurePreviewFromMeter()
@@ -1510,8 +1514,10 @@ class MainActivity : Activity(), CameraControllerCallback {
         if (!activityResumed) return
         if (meterLayout.isAutoMode && meterLayout.autoSession.rawPending) {
             state.measuring = false
+            val restoreRaw=meterLayout.autoSession.manualUsesRaw
             meterLayout.autoSession.fail(message)
-            cameraController.finishCalibrationSession()
+            if(restoreRaw) cameraController.finishCalibrationSession()
+            meterLayout.persistClearOptions()
             updateAutoMetering()
             meterLayout.refresh()
             updateExposurePreviewFromMeter()
@@ -1576,7 +1582,7 @@ class MainActivity : Activity(), CameraControllerCallback {
     private fun updateExposurePreviewFromMeter() {
         val previewEnabled = if(meterLayout.isAutoMode) meterLayout.autoSession.simulation else state.exposurePreviewMode == ExposurePreviewMode.ON
         val selection = if (previewEnabled &&
-            !meterLayout.isFilmNegativeOpen && !state.measuring &&
+            !meterLayout.isFilmNegativeOpen && (meterLayout.isAutoMode || !state.measuring) &&
             !calibrationCoordinator.isActive && !vignettingCalibrationPending
         ) {
             meterLayout.currentExposurePreviewSelection()
@@ -1588,7 +1594,8 @@ class MainActivity : Activity(), CameraControllerCallback {
 
     private fun updateAutoMetering() {
         val session = meterLayout.autoSession
-        cameraController.setContinuousMeteringEnabled(activityResumed && meterLayout.isAutoMode && !session.locked && !session.rawPending)
+        cameraController.setContinuousMeteringEnabled(activityResumed && meterLayout.isAutoMode && session.continuousMetering && !session.locked && !session.rawPending,
+            session.sampleIntervalMs)
     }
 
     override fun onContinuousMeterReading(reading: MeterReading) {
@@ -1600,7 +1607,8 @@ class MainActivity : Activity(), CameraControllerCallback {
     }
 
     override fun onContinuousMeteringError(message: String) {
-        if (!activityResumed || !meterLayout.isAutoMode || meterLayout.autoSession.locked || meterLayout.autoSession.rawPending) return
+        if (!activityResumed || !meterLayout.isAutoMode || !meterLayout.autoSession.continuousMetering ||
+            meterLayout.autoSession.locked || meterLayout.autoSession.rawPending) return
         meterLayout.autoSession.fail(message)
         meterLayout.autoView.invalidate()
     }

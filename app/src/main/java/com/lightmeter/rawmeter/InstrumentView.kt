@@ -58,6 +58,7 @@ class InstrumentView(
     private val middleGray = Color.rgb(130, 130, 126)
 
     private val zoomRenderer = ZoomControlRenderer()
+    private val modeArrow = ModeGuideArrow()
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
@@ -316,10 +317,10 @@ class InstrumentView(
     private fun drawZoneEntryHandle(canvas: Canvas, g: LayoutGeometry) {
         val rect = RectF(g.zoneEntryHandle)
         if (g.landscape) {
-            val direction = ModeTransitionDirection.zoneEntrySign(state.isLeftHanded)
+            val direction = if(autoEntryDrag) 1f else ModeTransitionDirection.zoneEntrySign(state.isLeftHanded)
             rect.offset(direction * zoneTransitionFraction * width * 0.14f, 0f)
         } else {
-            rect.offset(0f, -zoneTransitionFraction * height * 0.16f)
+            rect.offset(0f, (if(autoEntryDrag) 1f else -1f) * zoneTransitionFraction * height * 0.16f)
         }
         paint.style = Paint.Style.FILL
         paint.color = surfaceColor
@@ -335,36 +336,25 @@ class InstrumentView(
         if (g.landscape) {
             canvas.save()
             canvas.rotate(-90f, rect.centerX(), rect.centerY())
-            drawCenteredText(canvas, localized("模式", "Modes"), rect.centerX(), rect.centerY(), paint)
+            drawCenteredText(canvas, "mode", rect.centerX(), rect.centerY(), paint)
             canvas.restore()
         } else {
-            drawCenteredText(canvas, localized("模式", "Modes"), rect.centerX(), rect.centerY(), paint)
+            drawCenteredText(canvas, "mode", rect.centerX(), rect.centerY(), paint)
         }
 
         if (touchTarget == TouchTarget.ZONE_ENTRY || zoneTransitionFraction > 0f) {
-            val arrow = Path()
-            val size = min(rect.width(), rect.height()) * 0.42f
             if (g.landscape) {
-                val direction = ModeTransitionDirection.zoneEntrySign(state.isLeftHanded)
-                val x = if (direction < 0f) {
-                    rect.left - 5f * density - zoneTransitionFraction * 18f * density
-                } else {
-                    rect.right + 5f * density + zoneTransitionFraction * 18f * density
-                }
-                arrow.moveTo(x, rect.centerY() - size)
-                arrow.lineTo(x + direction * size, rect.centerY())
-                arrow.lineTo(x, rect.centerY() + size)
+                val zoneSign=ModeTransitionDirection.zoneEntrySign(state.isLeftHanded)
+                if (autoEntryDrag || zoneTransitionFraction==0f)
+                    modeArrow.draw(canvas,rect.right+20f*density,rect.centerY(),density,90f)
+                if (!autoEntryDrag && (zoneTransitionFraction>0f || zoneSign<0f))
+                    modeArrow.draw(canvas,rect.centerX()+zoneSign*(rect.width()/2+20f*density),rect.centerY(),density,zoneSign*90f)
             } else {
-                val y = rect.top - 4f * density - zoneTransitionFraction * 18f * density
-                arrow.moveTo(rect.centerX() - size, y)
-                arrow.lineTo(rect.centerX(), y - size)
-                arrow.lineTo(rect.centerX() + size, y)
+                if (!autoEntryDrag) modeArrow.draw(canvas,rect.centerX(),rect.top-20f*density,density)
+                if (autoEntryDrag || zoneTransitionFraction==0f) modeArrow.draw(canvas,rect.centerX(),rect.bottom+20f*density,density,180f)
             }
-            arrow.close()
-            canvas.drawPath(arrow, paint)
         }
     }
-
     private fun drawFormatMenu(canvas: Canvas, g: LayoutGeometry) {
         InstrumentPresentation.formatOptionRects(g, density).forEachIndexed { index, rect ->
             val orientation = index == FrameFormat.ALL.size
@@ -1133,7 +1123,7 @@ class InstrumentView(
 
     private fun accessibilityNodes(g: LayoutGeometry): List<CanvasAccessibilityHelper.VirtualNode> =
         listOf(
-            CanvasAccessibilityHelper.VirtualNode(7,g.zoneEntryHandle,localized("模式：Normal、Zone、自动", "Modes: Normal, Zone, Auto")),
+            CanvasAccessibilityHelper.VirtualNode(7,g.zoneEntryHandle,localized("模式：normal、zone、clear", "Modes: normal, zone, clear")),
             CanvasAccessibilityHelper.VirtualNode(
                 ACCESSIBILITY_ISO,
                 g.isoModeButton,

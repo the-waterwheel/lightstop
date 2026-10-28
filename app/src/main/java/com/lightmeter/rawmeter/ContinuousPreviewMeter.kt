@@ -18,6 +18,8 @@ internal class ContinuousPreviewMeter(
     @Volatile var enabled = false
         private set
     private var scheduled: Runnable? = null
+    var intervalMs=350L
+        set(value) {field=value.coerceIn(100L,5000L)}
     private val meter = CompatibleLightMeter(mainHandler, calibrationStore, localized,
         object : CompatibleLightMeterListener {
             override fun onCompatibleMeteringStarted(source: MeteringSource, frameCount: Int) = Unit
@@ -49,7 +51,7 @@ internal class ContinuousPreviewMeter(
         if (enabled) meter.onCaptureResult(result, fallbackTimestamp)
     }
 
-    private fun schedule(delay: Long = 350L) {
+    private fun schedule(delay: Long = intervalMs) {
         val handler = cameraHandler() ?: return
         handler.post {
             if (!enabled) return@post

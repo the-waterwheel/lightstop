@@ -14,6 +14,19 @@ internal class AutoMeterSession {
     var error: String? = null
         private set
     var simulation = true
+    var continuousMetering = true
+        set(value) {
+            field=value
+            if(!value) { recoveryCameraEv100=null;signalLimited=false }
+        }
+    var sampleIntervalMs = 350L
+    var showInterfaceText = true
+    var smoothMetering = false
+    private var manualExpectsRaw = true
+    private var resumeOnFailure = true
+    private var restoreLockOnFailure = false
+    val manualUsesRaw: Boolean get() = rawPending && manualExpectsRaw
+    fun shouldUseRaw(rawSupported: Boolean): Boolean = rawSupported && !smoothMetering
     var signalLimited = false
         private set
     var recoveryCameraEv100: Double? = null
@@ -21,7 +34,7 @@ internal class AutoMeterSession {
     private var filteredEv: Double? = null
 
     fun accept(reading: MeterReading): Boolean {
-        if (locked || rawPending || !reading.sceneEv100.isFinite()) return false
+        if (!continuousMetering || locked || rawPending || !reading.sceneEv100.isFinite()) return false
         if (reading.clippedFraction > .7 || reading.rawLuma < .001) {
             val cameraEv = ExposurePreviewMath.cameraEv100(reading.aperture.toDouble(),reading.exposureTimeNs,reading.captureIso) ?: return false
             val previousReading = this.reading
@@ -59,8 +72,15 @@ internal class AutoMeterSession {
         return true
     }
 
-    fun beginRaw(): Boolean {
+    fun beginRaw(): Boolean = beginManual(true)
+
+    fun beginManual(useRaw: Boolean): Boolean {
         if (rawPending) return false
+        manualExpectsRaw=useRaw
+        resumeOnFailure=continuousMetering
+        restoreLockOnFailure=locked
+        continuousMetering=false
+        locked=false
         rawPending = true
         recoveryCameraEv100 = null
         signalLimited = false
@@ -68,8 +88,10 @@ internal class AutoMeterSession {
         return true
     }
 
-    fun finishRaw(reading: MeterReading): Boolean {
-        if (!rawPending || reading.source != MeteringSource.RAW || !reading.sceneEv100.isFinite()) return false
+    fun finishRaw(reading: MeterReading): Boolean = reading.source == MeteringSource.RAW && finishManual(reading)
+
+    fun finishManual(reading: MeterReading): Boolean {
+        if (!rawPending || (reading.source == MeteringSource.RAW) != manualExpectsRaw || !reading.sceneEv100.isFinite()) return false
         rawPending = false
         locked = true
         filteredEv = reading.sceneEv100
@@ -78,9 +100,13 @@ internal class AutoMeterSession {
         return true
     }
 
-    fun fail(message: String) { rawPending = false; error = message }
-    fun unlock(clear: Boolean = false) {
+    fun fail(message: String) {
+        if(rawPending) { continuousMetering=resumeOnFailure;locked=restoreLockOnFailure }
+        rawPending = false; error = message
+    }
+    fun unlock(clear: Boolean = false, resumeContinuous: Boolean = true) {
         locked = false
+        continuousMetering=resumeContinuous
         signalLimited = false
         recoveryCameraEv100 = null
         error = null

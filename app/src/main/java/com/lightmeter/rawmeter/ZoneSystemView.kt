@@ -98,6 +98,7 @@ class ZoneSystemView(
         get() = if (state.isDarkMode) Color.rgb(196, 116, 120) else Color.rgb(231, 151, 155)
     private val chrome = ToolChromeRenderer()
     private val zoomRenderer = ZoomControlRenderer()
+    private val modeArrow = ModeGuideArrow()
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
@@ -499,39 +500,20 @@ class ZoneSystemView(
         if (g.landscape) {
             canvas.save()
             canvas.rotate(-90f, g.normalHandle.centerX(), g.normalHandle.centerY())
-            drawCenteredText(canvas, localized("模式", "Modes"), g.normalHandle.centerX(), g.normalHandle.centerY(), boldPaint)
+            drawCenteredText(canvas, "normal", g.normalHandle.centerX(), g.normalHandle.centerY(), boldPaint)
             canvas.restore()
         } else {
-            drawCenteredText(canvas, localized("模式", "Modes"), g.normalHandle.centerX(), g.normalHandle.centerY(), boldPaint)
+            drawCenteredText(canvas, "normal", g.normalHandle.centerX(), g.normalHandle.centerY(), boldPaint)
         }
 
         if (exitProgress > 0f || touchTarget == TouchTarget.EXIT) {
-            paint.style = Paint.Style.FILL
-            paint.color = foreground
-            val path = Path()
             if (g.landscape) {
-                val size = min(g.normalHandle.width(), g.normalHandle.height()) * 0.42f
-                val direction = ModeTransitionDirection.normalEntrySign(state.isLeftHanded)
-                val x = if (direction > 0f) {
-                    g.normalHandle.right + 5f * density + exitProgress * 18f * density
-                } else {
-                    g.normalHandle.left - 5f * density - exitProgress * 18f * density
-                }
-                path.moveTo(x, g.normalHandle.centerY() - size)
-                path.lineTo(x + direction * size, g.normalHandle.centerY())
-                path.lineTo(x, g.normalHandle.centerY() + size)
-            } else {
-                val size = min(g.normalHandle.width(), g.normalHandle.height()) * 0.42f
-                val y = g.normalHandle.bottom + 4f * density + exitProgress * 18f * density
-                path.moveTo(g.normalHandle.centerX() - size, y)
-                path.lineTo(g.normalHandle.centerX(), y + size)
-                path.lineTo(g.normalHandle.centerX() + size, y)
-            }
-            path.close()
-            canvas.drawPath(path, paint)
+                val direction=ModeTransitionDirection.normalEntrySign(state.isLeftHanded)
+                modeArrow.draw(canvas,g.normalHandle.centerX()+direction*(g.normalHandle.width()/2+20f*density+exitProgress*18f*density),
+                    g.normalHandle.centerY(),density,direction*90f)
+            } else modeArrow.draw(canvas,g.normalHandle.centerX(),g.normalHandle.bottom+20f*density+exitProgress*18f*density,density,180f)
         }
     }
-
     private fun drawPreviewMarkers(canvas: Canvas, frame: RectF) {
         val now = SystemClock.uptimeMillis()
         val markerIds = session.markers.mapTo(mutableSetOf()) { it.id }

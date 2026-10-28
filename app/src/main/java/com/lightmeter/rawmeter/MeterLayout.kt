@@ -72,6 +72,7 @@ class MeterLayout @JvmOverloads constructor(
         fun onAutoModeChanged(active: Boolean) = Unit
         fun onAutoRawRequested() = Unit
         fun onAutoResumeRequested() = Unit
+        fun onClearOptionsChanged() = Unit
         fun onOriginalPreviewRequested(completion: (Bitmap?) -> Unit) { completion(null) }
         fun onAutomaticDistanceRequested()
         fun onAutomaticDistanceStopped()
@@ -127,8 +128,10 @@ class MeterLayout @JvmOverloads constructor(
         isOpaque = true
     }
     val instrumentView = InstrumentView(context, state)
-    internal val autoSession = AutoMeterSession()
-    internal val autoView = AutoMeterView(context, state, autoSession)
+    private val clearPreferences=ClearModePreferences(context)
+    internal val autoSession = AutoMeterSession().apply {clearPreferences.restore(this)}
+    internal val autoView = AutoMeterView(context, state, autoSession, clearPreferences)
+    internal fun persistClearOptions() {clearPreferences.save(autoSession)}
     var isAutoMode = false
         private set
     val settingsView = SettingsView(context, state)
@@ -277,12 +280,13 @@ class MeterLayout @JvmOverloads constructor(
             autoView.onControls = { changed -> if(changed) requestLayout(); value?.onControlsChanged(changed) }
             autoView.onOrientation = ::handleOrientationToggle
             autoView.onRaw = { value?.onAutoRawRequested() }
-            autoView.onResumeMetering = { autoSession.unlock(); value?.onAutoResumeRequested() }
+            autoView.onResumeMetering = { autoSession.unlock(resumeContinuous=autoSession.continuousMetering); value?.onAutoResumeRequested() }
+            autoView.onOptionsChanged = {persistClearOptions();value?.onClearOptionsChanged()}
             instrumentView.listener = object : InstrumentView.Listener {
                 override fun onAutoEntryRequested() { enterAutoMode() }
                 override fun onModeMenuRequested() {
                     AlertDialog.Builder(context).setTitle(localized("模式", "Modes"))
-                        .setItems(arrayOf("Normal", "Zone", localized("自动 · 持续全局测光", "Auto · Continuous global metering"))) { _, index ->
+                        .setItems(arrayOf("normal", "zone", "clear")) { _, index ->
                             if (index==1) animateZoneTransition(1f)
                             if (index==2) enterAutoMode()
                         }.show()
@@ -2622,7 +2626,7 @@ class MeterLayout @JvmOverloads constructor(
         if (isAutoMode || isZoneMode || state.measuring || state.meteringInteractionBusy ||
             isToolsOpen || isSettingsOpen || zoneAnimator != null) return
         if (zoneTransitionPrepared) finishZoneTransition(0f)
-        autoSession.unlock(clear = true)
+        autoSession.unlock(clear = true,resumeContinuous=autoSession.continuousMetering)
         isAutoMode = true
         instrumentView.visibility = View.GONE
         zoneView.visibility = View.GONE
@@ -2637,6 +2641,7 @@ class MeterLayout @JvmOverloads constructor(
         if (!isAutoMode) return false
         if (autoSession.rawPending || state.meteringInteractionBusy) return true
         isAutoMode = false
+        autoView.closeTransientUi()
         autoView.visibility = View.GONE
         instrumentView.visibility = View.VISIBLE
         instrumentView.alpha = 1f
