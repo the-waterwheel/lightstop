@@ -39,6 +39,8 @@ class InstrumentView(
         fun onMoreRequested()
         fun onToolsRequested()
         fun onZoneEntryDrag(progress: Float, released: Boolean)
+        fun onAutoEntryRequested() = Unit
+        fun onModeMenuRequested() = Unit
         fun onControlsChanged(frameChanged: Boolean)
     }
 
@@ -99,6 +101,7 @@ class InstrumentView(
     private var parameterDialInteractionEnabled = true
     private var zoneDragStartX = 0f
     private var zoneDragStartY = 0f
+    private var autoEntryDrag = false
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
 
     private enum class TouchTarget {
@@ -332,10 +335,10 @@ class InstrumentView(
         if (g.landscape) {
             canvas.save()
             canvas.rotate(-90f, rect.centerX(), rect.centerY())
-            drawCenteredText(canvas, "zone", rect.centerX(), rect.centerY(), paint)
+            drawCenteredText(canvas, localized("模式", "Modes"), rect.centerX(), rect.centerY(), paint)
             canvas.restore()
         } else {
-            drawCenteredText(canvas, "zone", rect.centerX(), rect.centerY(), paint)
+            drawCenteredText(canvas, localized("模式", "Modes"), rect.centerX(), rect.centerY(), paint)
         }
 
         if (touchTarget == TouchTarget.ZONE_ENTRY || zoneTransitionFraction > 0f) {
@@ -951,6 +954,7 @@ class InstrumentView(
                         touchTarget = TouchTarget.ZONE_ENTRY
                         zoneDragStartX = event.x
                         zoneDragStartY = event.y
+                        autoEntryDrag = false
                         return true
                     }
                     g.moreButton.containsAccessibleTarget(event.x, event.y, density) -> {
@@ -1049,6 +1053,15 @@ class InstrumentView(
                     TouchTarget.LOCK -> updateExposureLockDrag(event.y, g.exposureLockTrack)
                     TouchTarget.DIAL -> updateDial(event.x, event.y, g.dial)
                     TouchTarget.ZONE_ENTRY -> {
+                        val autoDistance = if (g.landscape) event.x-zoneDragStartX else event.y-zoneDragStartY
+                        val crossDistance = if (g.landscape) event.y-zoneDragStartY else event.x-zoneDragStartX
+                        // Down in portrait / right in landscape is reserved for the simple meter.
+                        if (autoDistance > touchSlop && autoDistance > abs(crossDistance)*1.2f) autoEntryDrag = true
+                        if (autoEntryDrag) {
+                            zoneTransitionFraction = (autoDistance / (if(g.landscape) width*.18f else height*.18f)).coerceIn(0f,1f)
+                            invalidate()
+                            return true
+                        }
                         zoneTransitionFraction = if (g.landscape) {
                             (ModeTransitionDirection.zoneEntryDistance(
                                 zoneDragStartX,
@@ -1077,7 +1090,14 @@ class InstrumentView(
                         cancelled = event.actionMasked == MotionEvent.ACTION_CANCEL,
                     )
                 } else if (touchTarget == TouchTarget.ZONE_ENTRY) {
-                    listener?.onZoneEntryDrag(
+                    if (event.actionMasked == MotionEvent.ACTION_UP && abs(event.x-zoneDragStartX)<touchSlop && abs(event.y-zoneDragStartY)<touchSlop) {
+                        listener?.onModeMenuRequested()
+                    } else if (autoEntryDrag) {
+                        if (event.actionMasked != MotionEvent.ACTION_CANCEL && zoneTransitionFraction >= .45f)
+                            listener?.onAutoEntryRequested()
+                        else listener?.onZoneEntryDrag(0f,true)
+                        setZoneTransitionFraction(0f)
+                    } else listener?.onZoneEntryDrag(
                         if (event.actionMasked == MotionEvent.ACTION_CANCEL) 0f else zoneTransitionFraction,
                         true,
                     )
@@ -1113,6 +1133,7 @@ class InstrumentView(
 
     private fun accessibilityNodes(g: LayoutGeometry): List<CanvasAccessibilityHelper.VirtualNode> =
         listOf(
+            CanvasAccessibilityHelper.VirtualNode(7,g.zoneEntryHandle,localized("模式：Normal、Zone、自动", "Modes: Normal, Zone, Auto")),
             CanvasAccessibilityHelper.VirtualNode(
                 ACCESSIBILITY_ISO,
                 g.isoModeButton,
@@ -1149,6 +1170,7 @@ class InstrumentView(
     private fun handleAccessibilityClick(virtualViewId: Int): Boolean {
         if (state.measuring && virtualViewId != ACCESSIBILITY_METER) return false
         return when (virtualViewId) {
+            7 -> { listener?.onModeMenuRequested(); true }
             ACCESSIBILITY_ISO -> {
                 state.isoAdjustMode = !state.isoAdjustMode
                 listener?.onControlsChanged(false)

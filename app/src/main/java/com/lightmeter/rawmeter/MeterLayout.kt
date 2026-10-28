@@ -69,6 +69,9 @@ class MeterLayout @JvmOverloads constructor(
         fun onOrientationToggle()
         fun onPreviewGeometryChanged(width: Int, height: Int)
         fun onControlsChanged(frameChanged: Boolean)
+        fun onAutoModeChanged(active: Boolean) = Unit
+        fun onAutoRawRequested() = Unit
+        fun onAutoResumeRequested() = Unit
         fun onOriginalPreviewRequested(completion: (Bitmap?) -> Unit) { completion(null) }
         fun onAutomaticDistanceRequested()
         fun onAutomaticDistanceStopped()
@@ -124,6 +127,10 @@ class MeterLayout @JvmOverloads constructor(
         isOpaque = true
     }
     val instrumentView = InstrumentView(context, state)
+    internal val autoSession = AutoMeterSession()
+    internal val autoView = AutoMeterView(context, state, autoSession)
+    var isAutoMode = false
+        private set
     val settingsView = SettingsView(context, state)
     val informationView = InformationView(context, state)
     val cameraManagementView = CameraManagementView(context, state)
@@ -266,7 +273,20 @@ class MeterLayout @JvmOverloads constructor(
     internal var listener: Listener? = null
         set(value) {
             field = value
+            autoView.onExit = { closeAutoMode() }
+            autoView.onControls = { changed -> if(changed) requestLayout(); value?.onControlsChanged(changed) }
+            autoView.onOrientation = ::handleOrientationToggle
+            autoView.onRaw = { value?.onAutoRawRequested() }
+            autoView.onResumeMetering = { autoSession.unlock(); value?.onAutoResumeRequested() }
             instrumentView.listener = object : InstrumentView.Listener {
+                override fun onAutoEntryRequested() { enterAutoMode() }
+                override fun onModeMenuRequested() {
+                    AlertDialog.Builder(context).setTitle(localized("模式", "Modes"))
+                        .setItems(arrayOf("Normal", "Zone", localized("自动 · 持续全局测光", "Auto · Continuous global metering"))) { _, index ->
+                            if (index==1) animateZoneTransition(1f)
+                            if (index==2) enterAutoMode()
+                        }.show()
+                }
                 override fun onMeasureRequested() {
                     value?.onMeasureRequested()
                 }
@@ -612,6 +632,8 @@ class MeterLayout @JvmOverloads constructor(
         updateBackground()
         addView(textureView)
         addView(instrumentView)
+        autoView.visibility = View.GONE
+        addView(autoView)
         settingsView.visibility = View.GONE
         addView(settingsView)
         informationView.visibility = View.GONE
@@ -1036,6 +1058,8 @@ class MeterLayout @JvmOverloads constructor(
             MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
             MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
         )
+        autoView.measure(MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY))
         settingsView.measure(
             MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
             MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
@@ -1119,6 +1143,8 @@ class MeterLayout @JvmOverloads constructor(
             exposurePreviewCalibrationView.calculatePreviewFrame(width, height)
         } else if (isCalibrationOpen) {
             calibrationView.calculatePreviewFrame(width, height)
+        } else if (isAutoMode) {
+            autoView.previewFrame(width, height)
         } else if (zoneTransitionFraction > 0f || isZoneMode) {
             lerpRect(
                 geometry.cameraFrame,
@@ -1176,6 +1202,8 @@ class MeterLayout @JvmOverloads constructor(
             exposurePreviewCalibrationView.calculatePreviewFrame(width, height)
         } else if (isCalibrationOpen) {
             calibrationView.calculatePreviewFrame(width, height)
+        } else if (isAutoMode) {
+            autoView.previewFrame(width, height)
         } else if (zoneTransitionFraction > 0f || isZoneMode) {
             lerpRect(
                 geometry.cameraFrame,
@@ -1221,6 +1249,7 @@ class MeterLayout @JvmOverloads constructor(
             displayRotation = textureView.display?.rotation ?: android.view.Surface.ROTATION_0,
         )
         instrumentView.layout(0, 0, width, height)
+        autoView.layout(0, 0, width, height)
         settingsView.layout(0, 0, width, height)
         informationView.layout(0, 0, width, height)
         cameraManagementView.layout(0, 0, width, height)
@@ -1296,6 +1325,7 @@ class MeterLayout @JvmOverloads constructor(
     }
 
     fun refresh(frameChanged: Boolean = false) {
+        autoView.invalidate()
         if (frameChanged) {
             zoneView.refreshGeometry()
             requestLayout()
@@ -2108,7 +2138,7 @@ class MeterLayout @JvmOverloads constructor(
             return
         }
         val transitionSettled = zoneTransitionFraction <= 0f || zoneTransitionFraction >= 1f
-        val unobstructed = transitionSettled &&
+        val unobstructed = !isAutoMode && transitionSettled &&
             !isCalibrationOpen && !isExposurePreviewCalibrationOpen &&
             !isVignettingCalibrationOpen &&
             !isCameraManagementOpen && !isCombinationSelectionOpen && !isInformationOpen &&
@@ -2573,6 +2603,34 @@ class MeterLayout @JvmOverloads constructor(
         return true
     }
 
+    internal fun enterAutoMode() {
+        if (isAutoMode || isZoneMode || state.measuring || state.meteringInteractionBusy ||
+            isToolsOpen || isSettingsOpen || zoneAnimator != null) return
+        if (zoneTransitionPrepared) finishZoneTransition(0f)
+        autoSession.unlock(clear = true)
+        isAutoMode = true
+        instrumentView.visibility = View.GONE
+        zoneView.visibility = View.GONE
+        autoView.visibility = View.VISIBLE
+        autoView.bringToFront()
+        updateAngleMeteringControl()
+        listener?.onAutoModeChanged(true)
+        requestLayout()
+    }
+
+    internal fun closeAutoMode(): Boolean {
+        if (!isAutoMode) return false
+        if (autoSession.rawPending || state.meteringInteractionBusy) return true
+        isAutoMode = false
+        autoView.visibility = View.GONE
+        instrumentView.visibility = View.VISIBLE
+        instrumentView.alpha = 1f
+        listener?.onAutoModeChanged(false)
+        updateAngleMeteringControl()
+        requestLayout()
+        return true
+    }
+
     fun pauseZoneTracking() {
         zoneMarkerTracker.stop()
     }
@@ -2657,7 +2715,16 @@ class MeterLayout @JvmOverloads constructor(
     fun currentExposurePreviewSelection(): ExposurePreviewSelection? {
         val sceneEv100: Double
         val selectedExposureEv100: Double
-        if (isZoneMode) {
+        if (isAutoMode) {
+            autoSession.recoveryCameraEv100?.let { cameraEv ->
+                val correction = state.previewCameraCorrectionEv()
+                val execution = state.exposurePreviewExecutionCorrectionEv()
+                return ExposurePreviewSelection(cameraEv+correction,cameraEv+correction-execution,correction,execution)
+            }
+            val reading = autoSession.reading ?: return null
+            sceneEv100 = state.previewCalibratedSceneEv100(reading.sceneEv100, reading.source)
+            selectedExposureEv100 = reading.sceneEv100 + (reading.evaluative?.exposureReductionEv ?: 0.0) - state.exposureCompEv
+        } else if (isZoneMode) {
             sceneEv100 = zoneView.currentPreviewCalibratedMeanEv100() ?: return null
             selectedExposureEv100 = ExposurePreviewMath.exposureEv100(
                 apertureCoordinate = zoneView.session.apertureCoordinate,

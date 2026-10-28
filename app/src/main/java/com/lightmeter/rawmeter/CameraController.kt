@@ -516,7 +516,7 @@ class CameraController(
         previewSurface = { sessionCoordinator.previewSurface },
         trackingSurface = { trackingReader?.surface },
         trackingFramesEnabled = {
-            trackingFramesEnabled || (activeSessionProfile?.usesTracking == true && distanceCapture.wantsFrames)
+            trackingFramesEnabled || continuousMeter.enabled || (activeSessionProfile?.usesTracking == true && distanceCapture.wantsFrames)
         },
         combinationProbeActive = { combinationWorkflowProbe.isActive },
         cameraGeneration = { cameraGeneration },
@@ -537,6 +537,25 @@ class CameraController(
     )
     @Volatile
     private var meteringOperationActive = false
+    private val continuousMeter = ContinuousPreviewMeter(
+        mainHandler, { cameraHandler }, ::compatibleMeteringContext,
+        canSample = { started && !stopInProgress && activeSessionProfile?.usesPreview == true &&
+            !meteringOperationActive && !previewBaseline.isActive && !filmPreview.isEnabled &&
+            !exposurePreviewCalibration.isActive && !combinationWorkflowProbe.isActive &&
+            !compatibleMeter.isMeasuring },
+        calibrationStore = calibrationStore, localized = ::localized,
+        onReading = callback::onContinuousMeterReading, onError = callback::onContinuousMeteringError,
+    )
+
+    internal fun setContinuousMeteringEnabled(enabled: Boolean) {
+        val handler = cameraHandler
+        if (handler == null) { continuousMeter.setEnabled(enabled); return }
+        handler.post {
+            continuousMeter.setEnabled(enabled)
+            if (started && activeSessionProfile?.usesPreview == true && !meteringOperationActive)
+                updatePreviewRepeatingRequest()
+        }
+    }
     private val zoneCameraFrames = ZoneCameraFramePipeline(
         reserveTracker = callback::tryReserveZoneTrackingFrame,
         cancelTrackerReservation = callback::cancelZoneTrackingFrameReservation,
@@ -2971,6 +2990,7 @@ class CameraController(
             // A rebuilt stream starts from live AE evidence, never the RAW frame's exposure.
             exposurePreviewState.reset(preserveSelection = true)
             previewRequests.submit(device, session, preview)
+            continuousMeter.resume()
             previewSurfaceCoordinator.onPreviewStarted()
             previewStreamGeneration += 1L
             val readyInfo = cameraInfo.copy(
@@ -3281,6 +3301,8 @@ class CameraController(
                 effectiveResult,
                 result.get(CaptureResult.SENSOR_TIMESTAMP),
             )
+            if (session === captureSession && (request.tag as? PreviewRequestTag)?.cameraGeneration == cameraGeneration)
+                continuousMeter.onResult(effectiveResult, result.get(CaptureResult.SENSOR_TIMESTAMP))
         }
     }
 
@@ -3335,6 +3357,7 @@ class CameraController(
 
     private fun onTrackingImageAvailable(reader: ImageReader) {
         if (compatibleMeter.onImageAvailable(reader)) return
+        if (continuousMeter.onImage(reader)) return
         zoneCameraFrames.onImageAvailable(
             reader,
             cameraInfo.sensorOrientationDegrees,
@@ -3390,6 +3413,7 @@ class CameraController(
         }
         rawMeter.cancel(cameraHandler)
         compatibleMeter.cancel(cameraHandler, resetYuvAvailability = true)
+        continuousMeter.suspend(resetSource = true)
         zoneRaw.reset()
         pendingResidentSessionProfile = null
         meteringOperationActive = false

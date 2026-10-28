@@ -499,10 +499,10 @@ class ZoneSystemView(
         if (g.landscape) {
             canvas.save()
             canvas.rotate(-90f, g.normalHandle.centerX(), g.normalHandle.centerY())
-            drawCenteredText(canvas, "normal", g.normalHandle.centerX(), g.normalHandle.centerY(), boldPaint)
+            drawCenteredText(canvas, localized("模式", "Modes"), g.normalHandle.centerX(), g.normalHandle.centerY(), boldPaint)
             canvas.restore()
         } else {
-            drawCenteredText(canvas, "normal", g.normalHandle.centerX(), g.normalHandle.centerY(), boldPaint)
+            drawCenteredText(canvas, localized("模式", "Modes"), g.normalHandle.centerX(), g.normalHandle.centerY(), boldPaint)
         }
 
         if (exitProgress > 0f || touchTarget == TouchTarget.EXIT) {

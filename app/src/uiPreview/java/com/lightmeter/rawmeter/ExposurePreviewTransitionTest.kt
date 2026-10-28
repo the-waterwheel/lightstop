@@ -69,6 +69,20 @@ class ExposurePreviewTransitionTest {
         assertEquals(f.sourceEv - 2, f.state.manualExposure!!.appliedCameraEv100, .0001)
     }
 
+    @Test fun continuousGlobalUpdatesCanRetargetAnActiveFadeWithoutAnExposureJump() {
+        val f=Fixture();val live=AutoMeterSession();f.frame()
+        for (target in listOf(f.sourceEv+2,f.sourceEv+3,f.sourceEv-2,f.sourceEv-3)) {
+            live.accept(MeterReading(target,.18,0.0,1,100,10_000_000,2f,MeteringSource.YUV_PREVIEW))
+            f.select(live.reading!!.sceneEv100)
+            repeat(10) { f.frame() }
+        }
+        repeat(90) { f.frame() }
+        val values=f.requests.mapNotNull { it.first?.appliedCameraEv100 }
+        assertTrue(values.zipWithNext().all { (a,b) -> kotlin.math.abs(b-a)<.23 })
+        assertFalse(f.state.isTransitioning)
+        assertEquals(live.reading!!.sceneEv100,f.state.manualExposure!!.appliedCameraEv100,.0001)
+    }
+
     @Test fun aeOnlyCamerasWalkThroughCompensationStepsWithoutChangingMeteringMath() {
         val f = Fixture(manual = false)
         f.frame()
