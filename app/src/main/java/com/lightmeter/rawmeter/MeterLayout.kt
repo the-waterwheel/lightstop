@@ -2013,6 +2013,7 @@ class MeterLayout @JvmOverloads constructor(
     private fun showParameterEditor(draft: ParameterCaptureDraft) {
         if (isParameterEditorOpen) return
         isParameterEditorOpen = true
+        bringRecordSliderToFrontIfDialsCollapsed()
         parameterRecordEditorView.open(parameterRecordRepository.applyActiveCategoryDefaults(draft))
         parameterRecordEditorView.animate().cancel()
         parameterRecordEditorView.visibility = View.VISIBLE
@@ -2081,6 +2082,7 @@ class MeterLayout @JvmOverloads constructor(
     private fun showParameterHistory() {
         if (isParameterHistoryOpen) return
         isParameterHistoryOpen = true
+        bringRecordSliderToFrontIfDialsCollapsed()
         parameterHistoryView.open()
         parameterHistoryView.animate().cancel()
         parameterHistoryView.visibility = View.VISIBLE
@@ -2103,7 +2105,10 @@ class MeterLayout @JvmOverloads constructor(
             .setDuration(260L)
             .setInterpolator(DecelerateInterpolator())
             .withEndAction {
-                if (!isParameterHistoryOpen) parameterHistoryView.visibility = View.GONE
+                if (!isParameterHistoryOpen) {
+                    parameterHistoryView.visibility = View.GONE
+                    bringRecordSliderToFrontIfDialsCollapsed()
+                }
             }
             .start()
         return true
@@ -2116,12 +2121,9 @@ class MeterLayout @JvmOverloads constructor(
     }
 
     private fun setRecordSliderVisible(visible: Boolean) {
-        recordCaptureSliderView.visibility = if (visible) View.VISIBLE else View.GONE
+        if (!visible) recordCaptureSliderView.visibility = View.GONE
         recordCaptureSliderView.setCapturePending(false)
-        if (visible) {
-            updateRecordSliderAnchor()
-            bringRecordSliderToFrontIfDialsCollapsed()
-        }
+        bringRecordSliderToFrontIfDialsCollapsed()
     }
 
     private fun updateRecordSliderAnchor() {
@@ -2132,6 +2134,7 @@ class MeterLayout @JvmOverloads constructor(
     }
 
     private fun updateAngleMeteringControl(fadeIn: Boolean = false) {
+        bringRecordSliderToFrontIfDialsCollapsed()
         if (angleControlSuppressedForModeTransition) {
             flashDistanceDialView.visibility = View.GONE
             flashDistanceDialView.collapse()
@@ -2160,6 +2163,7 @@ class MeterLayout @JvmOverloads constructor(
             angleMeteringDialView.alpha = 1f
             angleMeteringDialView.visibility = View.GONE
             angleMeteringDialView.collapse()
+            bringRecordSliderToFrontIfDialsCollapsed()
             return
         }
         angleMeteringDialView.setAnchor(anchor, angleOffset)
@@ -2201,11 +2205,22 @@ class MeterLayout @JvmOverloads constructor(
     }
 
     private fun bringRecordSliderToFrontIfDialsCollapsed() {
-        if (recordCaptureSliderView.visibility == View.VISIBLE &&
+        val unobstructed = !isAutoMode && !angleControlSuppressedForModeTransition &&
+            (zoneTransitionFraction <= 0f || zoneTransitionFraction >= 1f) &&
+            !isSettingsOpen && !isInformationOpen && !isCalibrationOpen &&
+            !isExposurePreviewCalibrationOpen && !isVignettingCalibrationOpen &&
+            !isCameraManagementOpen && !isCombinationSelectionOpen && !isToolsOpen &&
+            !isFilmSelectorOpen && !isParameterEditorOpen && !isParameterHistoryOpen &&
+            listOf(settingsView, informationView, calibrationView, exposurePreviewCalibrationView,
+                vignettingCalibrationView, cameraManagementView, combinationSelectionView, toolsHost,
+                filmSelectorView, parameterRecordEditorView, parameterHistoryView).none { it.visibility == View.VISIBLE }
+        val visible = parameterRecordToolView.recording && unobstructed &&
             !angleMeteringDialView.isExpanded() &&
             !flashDistanceDialView.isExpanded()
-        ) {
-            recordCaptureSliderView.bringToFront()
+        recordCaptureSliderView.visibility = if (visible) View.VISIBLE else View.GONE
+        if (visible) {
+            updateRecordSliderAnchor()
+            if (indexOfChild(recordCaptureSliderView) != childCount - 1) recordCaptureSliderView.bringToFront()
         }
     }
 

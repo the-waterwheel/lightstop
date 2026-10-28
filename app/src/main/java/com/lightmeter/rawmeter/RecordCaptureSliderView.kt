@@ -160,7 +160,12 @@ internal class RecordCaptureSliderView(
     }
 
     override fun onDetachedFromWindow() {
-        removeCallbacks(longPress)
+        cancelPress()
         super.onDetachedFromWindow()
+    }
+
+    override fun onVisibilityChanged(changedView: View, visibility: Int) {
+        super.onVisibilityChanged(changedView, visibility)
+        if (visibility != VISIBLE) cancelPress()
     }
 }

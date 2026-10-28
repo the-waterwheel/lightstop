@@ -41,10 +41,15 @@ class ParameterHistoryDrawerTest {
         RecordPreviewFixtures.seed(repository)
         val view = RecordPreviewFixtures.history(context, MeterState(context), repository, 720, 1440, "history-detail")
         val closed = geometry(0f)
+        val before = summary(view)
         val event = MotionEvent.obtain(0, 0, MotionEvent.ACTION_DOWN,
             closed.metering.centerX(), closed.metering.centerY(), 0)
-        assertFalse(view.onTouchEvent(event))
+        assertTrue("Blank history areas consume touches instead of exposing the live meter",view.onTouchEvent(event))
         event.recycle()
+        MotionEvent.obtain(0,10,MotionEvent.ACTION_UP,closed.metering.centerX(),closed.metering.centerY(),0).also {
+            assertTrue(view.onTouchEvent(it));it.recycle()
+        }
+        assertEquals(before,summary(view))
         assertTrue(view.performAccessibilityAction(AccessibilityNodeInfo.ACTION_EXPAND, null))
         RecordPreviewFixtures.settle()
         assertDrawerAction(view, AccessibilityNodeInfo.ACTION_COLLAPSE)

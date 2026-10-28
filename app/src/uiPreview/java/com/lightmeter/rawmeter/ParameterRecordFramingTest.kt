@@ -271,8 +271,52 @@ class ParameterRecordFramingTest {
         assertTrue(kotlin.math.abs(image.width.toFloat() / image.height - 1.5f) > .1f)
         assertTrue(expectedSensor!!.isCloseTo(args!![6] as NormalizedSensorViewport))
         assertEquals(840, field<View>(view, "parameterRecordEditorView").measuredWidth)
+        val repo=field<ParameterRecordRepository>(view,"parameterRecordRepository")
+        val saved=repo.save(ParameterCaptureDraft(args!![0] as String,snapshot,args!![3] as String))
+        settleIndex()
+        val reloaded=ParameterRecordRepository(context).record(saved.categoryId,saved.id)!!
+        assertEquals(snapshot.viewfinder,reloaded.viewfinder)
+        val replay=Bitmap.createBitmap(800,800,Bitmap.Config.ARGB_8888)
+        val rect=RecordedPreviewRenderer.draw(Canvas(replay),RectF(0f,0f,800f,800f),image,
+            reloaded.viewfinder,emptyList(),2f)
+        val center=replay.getPixel(rect.centerX().toInt(),rect.centerY().toInt())
+        val outside=replay.getPixel((rect.left+rect.width()*.1f).toInt(),rect.centerY().toInt())
+        if(unframed) assertEquals(center,outside)
+        else assertNotEquals("Saved gray framing is visible after repository reload",center,outside)
+        replay.recycle()
         image.recycle()
         field<ParameterRecordIoDispatcher>(view, "parameterIoDispatcher").shutdown()
+        }
+    }
+
+    @Test fun listAndCoverReplayTheSavedGrayFrameInsteadOfTodaysLiveFormat() {
+        val repo=ParameterRecordRepository(context)
+        val saved=repo.save(draft(repo).copy(capturedAtEpochMs=null))
+        settleIndex()
+        val live=MeterState(context).apply { selectFrame(FrameFormat.ALL.lastIndex);zoom=5f;previewZoom=8f }
+        val output=File(System.getProperty("uiPreview.output"),"record-history-fix").apply {mkdirs()}
+        val framed=mutableListOf<Bitmap>()
+        for(page in listOf("history","history-category","history-detail-expanded")) {
+            val history=RecordPreviewFixtures.history(context,live,ParameterRecordRepository(context),840,1800,page)
+            val image=render(history)
+            File(output,"$page-framed.png").outputStream().use {image.compress(Bitmap.CompressFormat.PNG,100,it)}
+            framed+=image
+        }
+        // A real legacy record has no frozen framing. Use the same JPEG/exposure to isolate the
+        // overlay pixels from changes to photo data, captions or the current live frame setting.
+        val index=File(context.filesDir,"parameter_records/index.json")
+        val json=JSONObject(index.readText())
+        json.getJSONArray("categories").getJSONObject(0).getJSONArray("records").getJSONObject(0).remove("viewfinder")
+        index.writeText(json.toString())
+        val legacyRepo=ParameterRecordRepository(context)
+        assertNull(legacyRepo.record(saved.categoryId,saved.id)!!.viewfinder)
+        for((position,page) in listOf("history","history-category","history-detail-expanded").withIndex()) {
+            val view=RecordPreviewFixtures.history(context,live,legacyRepo,840,1800,page)
+            val plain=render(view)
+            // Covers and list cards do not have viewfinder captions: their image pixels must
+            // actually change when the saved frame is present, independently of today's None.
+            assertFalse("$page must replay recorded framing",framed[position].sameAs(plain))
+            framed[position].recycle();plain.recycle()
         }
     }
 

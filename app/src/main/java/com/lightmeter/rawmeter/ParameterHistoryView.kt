@@ -78,6 +78,7 @@ internal class ParameterHistoryView(
     private var touchStartX = 0f
     private var touchStartY = 0f
     private var target = Target.NONE
+    private var suppressTouchUntilUp = false
     private var touchedCategoryId: String? = null
     private var touchedRecordIndex: Int? = null
     private var moved = false
@@ -246,7 +247,7 @@ internal class ParameterHistoryView(
         drawPanel(canvas, rect)
         val image = RectF(rect.left + 5f * density, rect.top + 5f * density,
             rect.right - 5f * density, rect.top + rect.height() * 0.64f)
-        drawImage(canvas, image, category.coverPath)
+        drawImage(canvas, image, category.coverPath, viewfinder = category.records.lastOrNull()?.viewfinder)
         paint.style = Paint.Style.FILL
         paint.typeface = Typeface.DEFAULT
         paint.color = muted
@@ -284,7 +285,7 @@ internal class ParameterHistoryView(
                 geometry.content.top + row * (cellHeight + gap) - scroll + cellHeight,
             )
             if (!RectF.intersects(rect, geometry.content)) return@forEachIndexed
-            drawImage(canvas, rect, record.previewPath)
+            drawImage(canvas, rect, record.previewPath, viewfinder = record.viewfinder)
             record.capturedAtEpochMs?.let { timestamp ->
                 paint.style = Paint.Style.FILL
                 paint.color = Color.argb(155, 0, 0, 0)
@@ -638,6 +639,7 @@ internal class ParameterHistoryView(
         target: RectF,
         path: String?,
         updateInteractionBounds: Boolean = false,
+        viewfinder: RecordedViewfinder? = null,
     ): RectF? {
         paint.style = Paint.Style.FILL
         paint.color = panel
@@ -651,16 +653,7 @@ internal class ParameterHistoryView(
             canvas.restore()
             return null
         }
-        val scale = min(target.width() / bitmap.width, target.height() / bitmap.height)
-        val width = bitmap.width * scale
-        val height = bitmap.height * scale
-        val destination = RectF(
-            target.centerX() - width / 2f,
-            target.centerY() - height / 2f,
-            target.centerX() + width / 2f,
-            target.centerY() + height / 2f,
-        )
-        canvas.drawBitmap(bitmap, null, destination, paint)
+        val destination = RecordedPreviewRenderer.draw(canvas, target, bitmap, viewfinder, emptyList(), density)
         canvas.restore()
         if (updateInteractionBounds) imageDrawRect.set(destination)
         return destination
@@ -698,10 +691,18 @@ internal class ParameterHistoryView(
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            suppressTouchUntilUp = page == Page.DETAIL && imageSlideAnimator?.isRunning == true
+            if (suppressTouchUntilUp) { cancelPendingLongPress(); target = Target.NONE }
+        }
+        if (suppressTouchUntilUp) {
+            if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL)
+                suppressTouchUntilUp = false
+            return true
+        }
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 pageAnimator?.end()
-                if (page == Page.DETAIL && imageSlideAnimator?.isRunning == true) return false
                 touchStartX = event.x
                 touchStartY = event.y
                 scrollStart = scroll
@@ -719,7 +720,9 @@ internal class ParameterHistoryView(
                     detailStartPlayback = detailPlayback
                 }
                 if (page == Page.CATEGORIES && target == Target.GRID && touchedCategoryId != null) scheduleLongPress()
-                return target != Target.NONE
+                // History is a full-screen overlay. Empty/disabled areas must not dispatch the
+                // gesture to the live meter and its hold-to-record control underneath.
+                return true
             }
             MotionEvent.ACTION_MOVE -> {
                 val dx = event.x - touchStartX
