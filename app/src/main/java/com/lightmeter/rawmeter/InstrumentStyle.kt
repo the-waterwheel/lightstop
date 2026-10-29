@@ -22,6 +22,10 @@ internal object InstrumentStyle {
     fun control(dark: Boolean) = if (dark) Color.rgb(22, 22, 21) else Color.rgb(249, 249, 247)
     fun border(dark: Boolean) = if (dark) Color.rgb(73, 73, 69) else Color.rgb(210, 210, 205)
     fun secondary(dark: Boolean) = if (dark) Color.rgb(160, 160, 154) else Color.rgb(112, 112, 106)
+    // Quiet surfaces for Clear and the record workspace; photographic overlays stay separate.
+    fun accent(dark: Boolean) = if (dark) Color.rgb(240, 132, 137) else red
+    fun accentSurface(dark: Boolean) = if (dark) Color.rgb(49, 30, 32) else Color.rgb(248, 235, 234)
+    fun hairline(dark: Boolean) = if (dark) Color.rgb(48, 48, 45) else Color.rgb(229, 229, 224)
     // Authored black-and-white tool artwork needs a middle-gray backing in either theme.
     fun iconTile(dark: Boolean) = if (dark) Color.rgb(64, 64, 60) else Color.rgb(230, 230, 225)
 

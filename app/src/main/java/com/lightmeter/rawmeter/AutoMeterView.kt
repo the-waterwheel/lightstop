@@ -61,6 +61,7 @@ internal class AutoMeterView(context:Context,private val state:MeterState,val se
     var onOrientation:(()->Unit)?=null
     var onOptionsChanged:(()->Unit)?=null
     private val paint=Paint(Paint.ANTI_ALIAS_FLAG)
+    private val chrome=PanelChrome()
     private val zoomRenderer=ZoomControlRenderer()
     private val viewfinderControls=ViewfinderControls(state)
     internal var formatMenuOpen=false
@@ -126,17 +127,18 @@ internal class AutoMeterView(context:Context,private val state:MeterState,val se
         return InstrumentPresentation.formatOptionRects(bounds,d,34*d)
     }
     override fun onSizeChanged(w:Int,h:Int,oldw:Int,oldh:Int){super.onSizeChanged(w,h,oldw,oldh);cachedGeometry=null}
-    private fun text(canvas:Canvas,label:String,rect:RectF,size:Float,color:Int=ink,bold:Boolean=false) {
-        paint.style=Paint.Style.FILL;paint.color=color;paint.textAlign=Paint.Align.CENTER
-        paint.typeface=if(bold)Typeface.DEFAULT_BOLD else Typeface.DEFAULT;paint.textSize=size*d
+    private fun text(canvas:Canvas,label:String,rect:RectF,size:Float,color:Int=ink,bold:Boolean=false,align:Paint.Align=Paint.Align.CENTER) {
+        paint.style=Paint.Style.FILL;paint.color=color;paint.textAlign=align
+        paint.typeface=if(bold)InstrumentStyle.labelTypeface else Typeface.DEFAULT;paint.textSize=size*d
         val measured=paint.measureText(label)
         if(measured>rect.width()-8*d)paint.textSize*=(rect.width()-8*d).coerceAtLeast(1f)/measured
-        canvas.drawText(label,rect.centerX(),rect.centerY()-(paint.ascent()+paint.descent())/2,paint)
+        val x=when(align){Paint.Align.LEFT->rect.left+4*d;Paint.Align.RIGHT->rect.right-4*d;else->rect.centerX()}
+        canvas.drawText(label,x,rect.centerY()-(paint.ascent()+paint.descent())/2,paint)
     }
     private fun button(canvas:Canvas,label:String,rect:RectF,active:Boolean=false) {
-        paint.style=Paint.Style.FILL;paint.color=if(active)ink else InstrumentStyle.panel(state.isDarkMode)
-        canvas.drawRoundRect(rect,9*d,9*d,paint)
-        text(canvas,label,rect,12f,if(active)surface else ink,true)
+        paint.style=Paint.Style.FILL;paint.color=if(active)ink else InstrumentStyle.control(state.isDarkMode)
+        canvas.drawRoundRect(rect,14*d,14*d,paint)
+        text(canvas,label,rect,13f,if(active)surface else ink,true)
     }
     override fun onDraw(canvas:Canvas) {
         val g=geometry();val motion=clearMotion;val frame=motion?.preview?:g.preview
@@ -146,43 +148,61 @@ internal class AutoMeterView(context:Context,private val state:MeterState,val se
             if(!state.isUnframed)ViewfinderOverlay.framing(canvas,g.preview,state.displayedFramingCrop(width>height),d)
         }
         val layer=motion?.begin(canvas,width,height)?:canvas.save()
-        if(session.showInterfaceText)text(canvas,"clear",g.mode,16f,bold=true)
+        if(session.showInterfaceText) {
+            scratch.set(g.mode.left+4*d,g.mode.top,g.mode.right,g.mode.bottom)
+            text(canvas,"clear",scratch,20f,bold=true,align=Paint.Align.LEFT)
+        }
         viewfinderControls.format(canvas,g.format,d,formatMenuOpen,label=if(session.showInterfaceText)InstrumentPresentation.formatShortLabel(state.frameFormat,state.menuLanguage) else state.frameFormat.id)
         viewfinderControls.orientation(canvas,g.orientation,d,width>height)
         if(session.showInterfaceText) {
             val status=when {
                 session.rawPending->l("手动测光中…","Measuring…")
-                session.locked->l("测光锁定 · 全局","LOCKED · GLOBAL")
-                session.recoveryCameraEv100!=null->l("正在恢复测光信号","Recovering signal")
-                session.signalLimited->l("预览信号受限","Limited preview signal")
-                !session.continuousMetering->l("手动 · 全局","MANUAL · GLOBAL")
-                else->"clear · "+l("持续全局测光","LIVE GLOBAL")
+                session.locked->l("已锁定 · 全局","Locked · Global")
+                session.recoveryCameraEv100!=null->l("正在恢复信号","Recovering signal")
+                session.signalLimited->l("预览信号受限","Limited signal")
+                !session.continuousMetering->l("手动 · 全局","Manual · Global")
+                else->l("持续测光 · 全局","Live · Global")
             }
             val source=session.reading?.source?.let {if(it==MeteringSource.YUV_PREVIEW)"YUV" else if(it==MeteringSource.RAW)"RAW" else "ISP"}?:"…"
             val ev=session.reading?.sceneEv100?.let{"EV100 ${String.format(Locale.US,"%.1f",it)}"}?:"EV100 —"
-            text(canvas,session.error?:"$status · $source · $ev",g.status,10f,InstrumentStyle.secondary(state.isDarkMode))
+            val stacked=width>height
+            val statusColor=if(session.locked||session.error!=null)InstrumentStyle.accent(state.isDarkMode) else ink
+            paint.style=Paint.Style.FILL;paint.color=statusColor
+            canvas.drawCircle(g.status.left+5*d,if(stacked)g.status.top+7*d else g.status.centerY(),2.2f*d,paint)
+            scratch.set(g.status.left+12*d,g.status.top,if(stacked||session.error!=null)g.status.right else g.status.centerX(),if(stacked)g.status.centerY() else g.status.bottom)
+            text(canvas,session.error?:status,scratch,10.5f,statusColor,align=Paint.Align.LEFT)
+            scratch.set(if(stacked)g.status.left+12*d else g.status.centerX(),if(stacked)g.status.centerY() else g.status.top,g.status.right,g.status.bottom)
+            if(stacked||session.error==null)text(canvas,"$source · $ev",scratch,10f,InstrumentStyle.secondary(state.isDarkMode),align=if(stacked)Paint.Align.LEFT else Paint.Align.RIGHT)
         }
         val values=AutoMeterControls.coordinates(state,session)
         val captions=if(session.showInterfaceText)listOf(l("EV 曝光补偿","EV COMP"),l("光圈","APERTURE"),l("快门","SHUTTER")) else listOf("EV","f","s")
         for(index in 0..2) {
-            val rect=parameterRect(index);paint.style=Paint.Style.FILL;paint.color=InstrumentStyle.panel(state.isDarkMode)
-            canvas.drawRoundRect(rect,10*d,10*d,paint)
-            scratch.set(rect.left,rect.top+4*d,rect.right,rect.top+15*d)
-            text(canvas,captions[index],scratch,8f,InstrumentStyle.secondary(state.isDarkMode))
+            val rect=parameterRect(index)
+            val fixed=index==1&&state.exposureLockMode==ExposureLockMode.APERTURE || index==2&&state.exposureLockMode==ExposureLockMode.SHUTTER
+            chrome.card(canvas,rect,d,state.isDarkMode)
+            scratch.set(rect.left+5*d,rect.top+4*d,rect.right-5*d,rect.top+17*d)
+            text(canvas,captions[index],scratch,8.5f,if(fixed)InstrumentStyle.accent(state.isDarkMode) else InstrumentStyle.secondary(state.isDarkMode))
             scratch.set(rect.left+2*d,rect.top+18*d,rect.right-2*d,rect.bottom-8*d)
+            paint.style=Paint.Style.FILL;paint.color=if(fixed)InstrumentStyle.accentSurface(state.isDarkMode) else InstrumentStyle.panel(state.isDarkMode)
+            canvas.drawRoundRect(rect.left+5*d,scratch.centerY()-13*d,rect.right-5*d,scratch.centerY()+13*d,7*d,7*d,paint)
             // A shutter reel has discrete labelled positions. Keep the live EV precise, but
             // anchor all three labels to the same nominal stops used by Normal and Zone.
             val displayValue=values[index]?.let {if(index==2)-ExposureMath.nearestShutterLogSeconds(-it,state.shutterStep) else it}
             reels[index].draw(canvas,scratch,displayValue,AutoMeterControls.interval(state,index),d,ink,reelFormats[index],animationInvalidation)
-            if(index==1&&state.exposureLockMode==ExposureLockMode.APERTURE || index==2&&state.exposureLockMode==ExposureLockMode.SHUTTER) {
-                paint.color=InstrumentStyle.red;canvas.drawCircle(rect.centerX(),rect.bottom-4*d,1.6f*d,paint)
+            if(fixed) {
+                paint.style=Paint.Style.FILL;paint.color=InstrumentStyle.accent(state.isDarkMode)
+                canvas.drawRoundRect(rect.centerX()-6*d,rect.bottom-4*d,rect.centerX()+6*d,rect.bottom-2*d,d,d,paint)
             }
         }
-        button(canvas,if(session.showInterfaceText)l("参数调节","Adjustments") else "☷",g.settingsBar)
-        scratch.set(g.settingsBar.right-30*d,g.settingsBar.top,g.settingsBar.right-6*d,g.settingsBar.bottom)
-        text(canvas,if(settingsExpanded)"⌃" else "⌄",scratch,14f)
+        chrome.card(canvas,g.settingsBar,d,state.isDarkMode,settingsExpanded)
+        chrome.adjustments(canvas,g.settingsBar.left+18*d,g.settingsBar.centerY(),d,ink)
+        if(session.showInterfaceText) {
+            scratch.set(g.settingsBar.left+32*d,g.settingsBar.top,g.settingsBar.right-26*d,g.settingsBar.bottom)
+            text(canvas,l("参数调节","Adjustments"),scratch,11f,bold=true,align=Paint.Align.LEFT)
+        }
+        chrome.chevron(canvas,g.settingsBar.right-16*d,g.settingsBar.centerY(),d,ink,settingsExpanded)
         button(canvas,if(session.showInterfaceText)manualLabel() else "",g.raw,true)
-        if(session.locked){paint.style=Paint.Style.STROKE;paint.color=InstrumentStyle.red;paint.strokeWidth=2*d;canvas.drawRoundRect(g.raw,9*d,9*d,paint)}
+        if(session.locked){paint.style=Paint.Style.STROKE;paint.color=InstrumentStyle.accent(state.isDarkMode);paint.strokeWidth=2*d;canvas.drawRoundRect(g.raw,14*d,14*d,paint)}
         val fraction=((state.zoomControlValue-1)/(state.zoomControlMaximum-1)).coerceIn(0f,1f)
         val landscape=width>height
         val start=if(landscape)g.zoom.top+24*d else g.zoom.left+12*d
@@ -212,24 +232,25 @@ internal class AutoMeterView(context:Context,private val state:MeterState,val se
     private fun drawSettings(canvas:Canvas) {
         val panel=settingsPanel()
         canvas.save();canvas.clipRect(panel.left,panel.bottom-panel.height()*settingsFraction,panel.right,panel.bottom)
-        paint.style=Paint.Style.FILL;paint.color=InstrumentStyle.control(state.isDarkMode)
-        canvas.drawRoundRect(panel,10*d,10*d,paint)
-        paint.style=Paint.Style.STROKE;paint.strokeWidth=d;paint.color=InstrumentStyle.border(state.isDarkMode)
-        canvas.drawRoundRect(panel,10*d,10*d,paint)
+        chrome.card(canvas,panel,d,state.isDarkMode)
         val labels=listOf(l("曝光模拟","Exposure simulation"),l("自动持续测光","Continuous metering"),l("自动测光频率","Metering frequency"),
             l("界面文字显示","Interface text"),l("平滑测光","Smooth metering"))
         for(index in 0..4) {
             val row=settingRow(index)
             val enabled=!session.rawPending&&(index!=2||session.continuousMetering)
             val color=if(enabled)ink else InstrumentStyle.secondary(state.isDarkMode)
-            val labelWidth=if(index==2)row.width()*.58f else row.width()*.7f
-            scratch.set(row.left+6*d,row.top,row.left+labelWidth,row.bottom)
-            text(canvas,labels[index],scratch,10.5f,color)
-            scratch.set(row.left+labelWidth,row.top,row.right-6*d,row.bottom)
+            val labelWidth=if(index==2)row.width()*.56f else row.width()-54*d
+            if(index>0) {
+                paint.style=Paint.Style.STROKE;paint.strokeWidth=.6f*d;paint.color=InstrumentStyle.hairline(state.isDarkMode)
+                canvas.drawLine(row.left+14*d,row.top,row.right-14*d,row.top,paint)
+            }
+            scratch.set(row.left+10*d,row.top,row.left+labelWidth,row.bottom)
+            text(canvas,labels[index],scratch,11f,color,align=Paint.Align.LEFT)
+            scratch.set(row.left+labelWidth,row.top,row.right-10*d,row.bottom)
             if(index==2)text(canvas,"−  ${frequencyLabel()}  +",scratch,10f,color,true)
             else {
                 val active=when(index){0->session.simulation;1->session.continuousMetering;3->session.showInterfaceText;else->session.smoothMetering}
-                text(canvas,if(active)l("开启","ON") else l("关闭","OFF"),scratch,10f,if(enabled&&active)InstrumentStyle.red else color,true)
+                chrome.toggle(canvas,row.right-30*d,row.centerY(),d,state.isDarkMode,active,enabled)
             }
         }
         canvas.restore()

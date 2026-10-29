@@ -52,7 +52,7 @@ internal class RollingParameterWindow {
             paint.textSize=(10+11*prominence)*density
             val measured=paint.measureText(value)
             if(measured>rect.width()-8*density) paint.textSize*=(rect.width()-8*density).coerceAtLeast(1f)/measured
-            paint.color=color;paint.alpha=((.28f+.72f*prominence)*opacity*255).toInt()
+            paint.color=color;paint.alpha=((.48f+.52f*prominence)*opacity*255).toInt()
             val y=rect.centerY()+position*pitch
             canvas.drawText(value,rect.centerX(),y-(paint.ascent()+paint.descent())/2,paint)
         }

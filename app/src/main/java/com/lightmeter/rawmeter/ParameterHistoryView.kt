@@ -18,6 +18,7 @@ import android.os.Looper
 import android.os.Bundle
 import android.text.TextUtils
 import android.text.TextPaint
+import android.text.StaticLayout
 import android.util.LruCache
 import android.util.TypedValue
 import android.view.MotionEvent
@@ -56,11 +57,12 @@ internal class ParameterHistoryView(
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans", Typeface.NORMAL) }
     private val bold = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = InstrumentStyle.labelTypeface }
     private val clipPath = Path()
+    private val chrome = PanelChrome()
     private val background: Int get() = InstrumentStyle.background(state.isDarkMode)
     private val foreground: Int get() = InstrumentStyle.foreground(state.isDarkMode)
     private val muted: Int get() = InstrumentStyle.secondary(state.isDarkMode)
     private val panel: Int get() = InstrumentStyle.panel(state.isDarkMode)
-    private val red = InstrumentStyle.red
+    private val red get() = InstrumentStyle.accent(state.isDarkMode)
     private val handler = Handler(Looper.getMainLooper())
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
     private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
@@ -178,6 +180,7 @@ internal class ParameterHistoryView(
     private fun drawHeader(canvas: Canvas) {
         val x = geometry.back.centerX()
         val y = geometry.back.centerY()
+        chrome.card(canvas, RectF(x-18*density,y-18*density,x+18*density,y+18*density), density, state.isDarkMode)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1.6f * density
         paint.color = foreground
@@ -202,6 +205,8 @@ internal class ParameterHistoryView(
             val total = repository.category(categoryId)?.records?.size ?: 0
             if (total > 0) {
                 paint.style = Paint.Style.FILL
+                chrome.card(canvas, RectF(geometry.delete.centerX()-24*density,y-13*density,
+                    geometry.delete.centerX()+24*density,y+13*density),density,state.isDarkMode)
                 paint.color = muted
                 paint.textAlign = Paint.Align.CENTER
                 paint.typeface = Typeface.create("sans-serif", Typeface.NORMAL)
@@ -211,7 +216,7 @@ internal class ParameterHistoryView(
         }
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 0.8f * density
-        paint.color = InstrumentStyle.border(state.isDarkMode)
+        paint.color = InstrumentStyle.hairline(state.isDarkMode)
         canvas.drawLine(geometry.content.left, geometry.back.bottom,
             geometry.content.right, geometry.back.bottom, paint)
     }
@@ -244,9 +249,14 @@ internal class ParameterHistoryView(
 
     private fun drawCategoryTile(canvas: Canvas, rect: RectF, category: ParameterRecordCategory) {
         drawPanel(canvas, rect)
-        val image = RectF(rect.left + 5f * density, rect.top + 5f * density,
-            rect.right - 5f * density, rect.top + rect.height() * 0.64f)
+        val image = RectF(rect.left + 6f * density, rect.top + 6f * density,
+            rect.right - 6f * density, rect.top + rect.height() * 0.62f)
         drawImage(canvas, image, category.coverPath, viewfinder = category.records.lastOrNull()?.viewfinder)
+        val badge = RectF(image.right-33*density,image.top+6*density,image.right-6*density,image.top+24*density)
+        paint.style=Paint.Style.FILL;paint.color=Color.argb(190,20,20,20)
+        canvas.drawRoundRect(badge,9*density,9*density,paint)
+        bold.textSize=9*scaledDensity;bold.textAlign=Paint.Align.CENTER;bold.color=Color.WHITE
+        centered(canvas,category.records.size.toString(),badge.centerX(),badge.centerY(),bold)
         paint.style = Paint.Style.FILL
         paint.typeface = Typeface.DEFAULT
         paint.color = muted
@@ -254,13 +264,13 @@ internal class ParameterHistoryView(
         paint.textSize = 9f * scaledDensity
         val date = TextUtils.ellipsize(dateFormat.format(Date(category.startedAtEpochMs)),
             TextPaint(paint), rect.width() - 18f * density, TextUtils.TruncateAt.END)
-        canvas.drawText(date.toString(), rect.left + 9f * density, image.bottom + 15f * density, paint)
+        canvas.drawText(date.toString(), rect.left + 10f * density, rect.bottom - 10f * density, paint)
         paint.typeface = InstrumentStyle.labelTypeface
-        paint.textSize = 10.5f * scaledDensity
+        paint.textSize = 11.5f * scaledDensity
         paint.color = foreground
         val label = category.filmSummary ?: localized("${category.records.size} 张记录", "${category.records.size} records")
         val fitted = TextUtils.ellipsize(label, TextPaint(paint), rect.width() - 18f * density, TextUtils.TruncateAt.END)
-        canvas.drawText(fitted.toString(), rect.left + 9f * density, rect.bottom - 10f * density, paint)
+        canvas.drawText(fitted.toString(), rect.left + 10f * density, image.bottom + 17f * density, paint)
     }
 
     private fun drawCategory(canvas: Canvas) {
@@ -268,7 +278,7 @@ internal class ParameterHistoryView(
         val gap = 6f * density
         val columns = recordColumns()
         val cellWidth = (geometry.content.width() - gap * (columns - 1)) / columns
-        val cellHeight = cellWidth * 0.76f
+        val cellHeight = recordCellHeight(cellWidth)
         val rows = (category.records.size + columns - 1) / columns
         val maxScroll = (rows * (cellHeight + gap) - geometry.content.height()).coerceAtLeast(0f)
         scroll = scroll.coerceIn(0f, maxScroll)
@@ -284,16 +294,17 @@ internal class ParameterHistoryView(
                 geometry.content.top + row * (cellHeight + gap) - scroll + cellHeight,
             )
             if (!RectF.intersects(rect, geometry.content)) return@forEachIndexed
-            drawImage(canvas, rect, record.previewPath, viewfinder = record.viewfinder)
-            record.capturedAtEpochMs?.let { timestamp ->
-                paint.style = Paint.Style.FILL
-                paint.color = Color.argb(155, 0, 0, 0)
-                canvas.drawRect(rect.left, rect.bottom - 20f * density, rect.right, rect.bottom, paint)
-                paint.color = Color.WHITE
-                paint.textSize = 8f * scaledDensity
-                paint.textAlign = Paint.Align.CENTER
-                centered(canvas, timeFormat.format(Date(timestamp)), rect.centerX(), rect.bottom - 10f * density, paint)
-            }
+            drawPanel(canvas,rect)
+            val image=RectF(rect.left+5*density,rect.top+5*density,rect.right-5*density,rect.bottom-40*density)
+            drawImage(canvas, image, record.previewPath, viewfinder = record.viewfinder)
+            bold.color=foreground;bold.textSize=11f*scaledDensity;bold.textAlign=Paint.Align.LEFT
+            val exposure="${ExposureMath.formatAperture(ExposureMath.apertureValueForCoordinate(record.apertureCoordinate,state.apertureStep))}  ${ExposureMath.formatShutter(ExposureMath.shutterValueForCoordinate(record.shutterCoordinate,state.shutterStep))}"
+            centered(canvas,TextUtils.ellipsize(exposure,bold,rect.width()-20*density,TextUtils.TruncateAt.END).toString(),rect.left+10*density,rect.bottom-26*density,bold)
+            paint.style=Paint.Style.FILL;paint.color=muted;paint.typeface=Typeface.DEFAULT;paint.textSize=8.5f*scaledDensity
+            paint.textAlign=Paint.Align.LEFT
+            centered(canvas,record.capturedAtEpochMs?.let{timeFormat.format(Date(it))}?:"#${index+1}",rect.left+10*density,rect.bottom-11*density,paint)
+            paint.textAlign=Paint.Align.RIGHT
+            centered(canvas,"EI ${record.ei}",rect.right-10*density,rect.bottom-11*density,paint)
         }
         if (category.records.isEmpty()) drawEmpty(canvas)
         canvas.restore()
@@ -323,10 +334,11 @@ internal class ParameterHistoryView(
             if (savingPoints) localized("保存中…", "Saving…") else if (pointEditing) localized("补点中", "Adding points") else localized("RAW 补点", "RAW points"), localized("撤销补点", "Undo point"))
         for (index in 0..2) {
             val rect = imageActionRect(index)
-            drawPanel(canvas, rect)
             val enabled = when (index) { 0 -> frame != null; 1 -> RecordedHistoryCapability.canRecalculateZone(record) && !savingPoints; else -> pointUndo.isNotEmpty() && !savingPoints }
+            val selected=enabled&&(index==0&&showFraming||index==1&&pointEditing)
+            chrome.card(canvas,rect,density,state.isDarkMode,selected)
             bold.textAlign = Paint.Align.CENTER; bold.textSize = 10f * scaledDensity
-            bold.color = if (!enabled) muted else if (index == 1 && pointEditing) red else foreground
+            bold.color = if (!enabled) muted else if(selected)InstrumentStyle.accent(state.isDarkMode) else foreground
             centered(canvas, labels[index], rect.centerX(), rect.centerY(), bold)
         }
     }
@@ -335,7 +347,8 @@ internal class ParameterHistoryView(
         val drawer = geometry.meteringDrawer
         drawPanel(canvas, drawer)
         canvas.save()
-        canvas.clipRect(drawer)
+        clipPath.reset();clipPath.addRoundRect(drawer,14*density,14*density,Path.Direction.CW)
+        canvas.clipPath(clipPath)
         val handle = geometry.meteringHandle
         paint.style = Paint.Style.STROKE
         paint.strokeCap = Paint.Cap.ROUND
@@ -346,7 +359,7 @@ internal class ParameterHistoryView(
         bold.textAlign = Paint.Align.LEFT
         bold.textSize = 11f * scaledDensity
         bold.color = foreground
-        centered(canvas, localized("曝光参数", "Exposure"), handle.left + 12f * density,
+        centered(canvas, localized("曝光参数", "Exposure"), handle.left + 16f * density,
             handle.centerY() + 3f * density, bold)
         val summary = exposureSummary(playback)
         paint.style = Paint.Style.FILL
@@ -460,109 +473,103 @@ internal class ParameterHistoryView(
     }
 
     private fun drawDetailText(canvas: Canvas, rect: RectF, record: ParameterRecordEntry) {
-        val viewportBottom = (geometry.meteringDrawer.top - 8f * density).coerceAtLeast(rect.top)
-        val viewportHeight = (viewportBottom - rect.top).coerceAtLeast(0f)
-        val lineHeight = 22f * density
-        val noteRowHeight = 30f * density
-        val parameterLines = buildList {
-            add(record.viewfinder?.summary(state.menuLanguage) ?: localized("旧记录 · 原裁切画面", "Legacy · Original saved crop"))
-            record.viewfinder?.let { add(localized("测光  ", "Metering  ") + it.meteringLabel(state.menuLanguage) +
-                " · " + when (it.meteringSource) { MeteringSource.RAW -> "RAW"; MeteringSource.YUV_PREVIEW -> "YUV"; MeteringSource.ISP_PREVIEW -> "ISP"; null -> "—" })
-                if (it.frameCrop != null) add(localized("构图裁切", "Framing crop") + " ${"%.1f".format(it.framingZoom)}× · " +
-                    localized("观察", "Inspection") + " ${"%.1f".format(it.inspectionZoom)}×") }
-            add(if (RecordedHistoryCapability.canRecalculateZone(record))
-                localized("RAW 可补点 · 开启补点后点按画面", "RAW points · Enable, then tap the image")
-                else localized("仅保留原记录，无法新增 RAW 测点", "Saved evidence · RAW point editing unavailable"))
-            record.capturedAtEpochMs?.let { add(dateFormat.format(Date(it))) }
-            add(
-                localized("拍摄参数  ", "Captured  ") +
-                    "${ExposureMath.formatAperture(ExposureMath.apertureValueForCoordinate(record.apertureCoordinate, state.apertureStep))}  " +
-                    "${ExposureMath.formatShutter(ExposureMath.shutterValueForCoordinate(record.shutterCoordinate, state.shutterStep))}  " +
-                    "EI ${record.ei}",
-            )
-            record.ev100?.let { add("EV100 ${"%.2f".format(it)}") }
-            record.filmName?.let { add(localized("胶片  $it", "Film  $it")) }
-            record.location?.let { add(formatLocation(it)) }
-            record.flash?.let { flash ->
-                val mode = if (flash.distanceMode == RecordedFlashDistanceMode.AUTO) "Auto" else localized("手动", "Manual")
-                add(
-                    localized("闪光", "Flash") + "  ${"%.1f".format(flash.configuredGuideNumber)} " +
-                        "(GN${flash.guideNumberReferenceIso}) · ISO ${flash.configuredIso} · " +
-                        "${FlashPowerScale.label(flash.powerDenominator)} · " +
-                        localized("损失", "loss") + " ${"%.2f".format(flash.lossStops)} · $mode",
-                )
-                add(formatRecordedFlashAdjustment(flash))
+        val viewportBottom = (geometry.meteringDrawer.top - 8f*density).coerceAtLeast(rect.top)
+        val viewportHeight = (viewportBottom-rect.top).coerceAtLeast(0f)
+        val left=rect.left+14*density
+        val right=rect.right-14*density
+        val valueLeft=left+62*density
+        val rows=buildList<Pair<String,String>> {
+            record.ev100?.let{add("EV100" to String.format(Locale.US,"%.2f",it))}
+            add(localized("取景范围","Framing") to (record.viewfinder?.summary(state.menuLanguage)
+                ?:localized("旧记录 · 原裁切画面","Legacy · Original saved crop")))
+            record.viewfinder?.let { frame ->
+                val source=when(frame.meteringSource){MeteringSource.RAW->"RAW";MeteringSource.YUV_PREVIEW->"YUV";MeteringSource.ISP_PREVIEW->"ISP";null->"—"}
+                add(localized("测光方式","Metering") to (frame.meteringLabel(state.menuLanguage)+" · "+source))
+                if(frame.frameCrop!=null)add(localized("变焦","Zoom") to
+                    (localized("构图 ","Frame ")+String.format(Locale.US,"%.1f×",frame.framingZoom)+" · "+
+                        localized("观察 ","Inspection ")+String.format(Locale.US,"%.1f×",frame.inspectionZoom)))
             }
-            record.distance?.let { distance -> add(formatRecordedDistance(distance)) }
+            add("RAW" to if(RecordedHistoryCapability.canRecalculateZone(record))
+                localized("可补点 · 已记录 ${record.zonePoints.size} 点","Editable · ${record.zonePoints.size} points")
+                else localized("无法新增测点","Point editing unavailable"))
+            record.filmName?.let{add(localized("胶片","Film") to it)}
+            record.location?.let{add(localized("位置","Location") to formatLocation(it))}
+            record.distance?.let{add(localized("距离","Distance") to formatRecordedDistance(it).substringAfter("  "))}
+            record.flash?.let { flash ->
+                val mode=if(flash.distanceMode==RecordedFlashDistanceMode.AUTO)localized("自动","Auto") else localized("手动","Manual")
+                add(localized("闪光","Flash") to ("GN${String.format(Locale.US,"%.1f",flash.configuredGuideNumber)} (ISO ${flash.guideNumberReferenceIso}) · ISO ${flash.configuredIso} · "+
+                    "${FlashPowerScale.label(flash.powerDenominator)} · "+localized("损失 ","Loss ")+String.format(Locale.US,"%.2f",flash.lossStops)+" · $mode"))
+                add(localized("补偿","Adjustment") to formatRecordedFlashAdjustment(flash))
+            }
         }
-        var contentHeight = 8f * density + parameterLines.size * lineHeight
-        if (record.notes.isNotEmpty()) {
-            contentHeight += lineHeight + lineHeight + record.notes.size * noteRowHeight
+        val bodyPaint=TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+            color=foreground;textSize=11.5f*scaledDensity;typeface=Typeface.DEFAULT
         }
-        detailMaxScroll = (contentHeight - viewportHeight).coerceAtLeast(0f)
-        detailScroll = detailScroll.coerceIn(0f, detailMaxScroll)
-
+        fun wrap(value:String,width:Float)=StaticLayout.Builder.obtain(value,0,value.length,bodyPaint,width.toInt().coerceAtLeast(1))
+            .setIncludePad(false).setLineSpacing(3*density,1f).build()
+        val values=rows.map{wrap(it.second,right-valueLeft)}
+        val notes=record.notes.map{wrap(it,right-left-12*density)}
+        val rowHeights=values.map{maxOf(29*density,it.height+14*density)}
+        val contentHeight=100*density+rowHeights.sum()+if(notes.isEmpty())8*density else 34*density+notes.sumOf{it.height.toDouble()}.toFloat()+notes.size*20*density
+        detailMaxScroll=(contentHeight-viewportHeight).coerceAtLeast(0f)
+        detailScroll=detailScroll.coerceIn(0f,detailMaxScroll)
+        val viewport=RectF(rect.left,rect.top,rect.right,viewportBottom)
+        drawPanel(canvas,viewport)
         canvas.save()
-        canvas.clipRect(rect.left, rect.top, rect.right, viewportBottom)
-        drawPanel(canvas, RectF(rect.left, rect.top, rect.right, viewportBottom))
-        paint.style = Paint.Style.FILL
-        paint.color = foreground
-        paint.textAlign = Paint.Align.LEFT
-        paint.textSize = 11.5f * scaledDensity
-        var y = rect.top + 16f * density - detailScroll
-        val textLeft = rect.left + 12f * density
-        val textRight = rect.right - 12f * density
-        fun line(
-            text: String,
-            color: Int = foreground,
-            textSize: Float = 11.5f,
-            typeface: Typeface = Typeface.create("sans-serif", Typeface.NORMAL),
-        ) {
-            paint.style = Paint.Style.FILL
-            paint.color = color
-            paint.textSize = textSize * scaledDensity
-            paint.typeface = typeface
-            val fitted = TextUtils.ellipsize(text, TextPaint(paint), textRight - textLeft, TextUtils.TruncateAt.END)
-            canvas.drawText(fitted.toString(), textLeft, y, paint)
-            y += lineHeight
+        clipPath.reset();clipPath.addRoundRect(viewport,14*density,14*density,Path.Direction.CW)
+        canvas.clipPath(clipPath)
+        val top=rect.top-detailScroll
+        fun label(value:String,x:Float,y:Float,size:Float,color:Int=foreground,medium:Boolean=false,width:Float=right-x,fit:Boolean=false) {
+            paint.style=Paint.Style.FILL;paint.textAlign=Paint.Align.LEFT;paint.color=color
+            paint.textSize=size*scaledDensity;paint.typeface=if(medium)InstrumentStyle.labelTypeface else Typeface.DEFAULT
+            if(fit&&paint.measureText(value)>width)paint.textSize*=width.coerceAtLeast(1f)/paint.measureText(value)
+            centered(canvas,TextUtils.ellipsize(value,TextPaint(paint),width.coerceAtLeast(1f),TextUtils.TruncateAt.END).toString(),x,y,paint)
         }
-        parameterLines.forEachIndexed { index, text ->
-            val emphasized = text.startsWith("EV100") ||
-                text.startsWith("胶片") || text.startsWith("Film") ||
-                text.startsWith("拍摄参数") || text.startsWith("Captured")
-            line(
-                text = text,
-                color = if (index == 0 && record.capturedAtEpochMs != null) muted else foreground,
-                textSize = if (emphasized) 13f else 11.5f,
-                typeface = if (emphasized) Typeface.create("sans-serif-medium", Typeface.NORMAL) else Typeface.create("sans-serif", Typeface.NORMAL),
-            )
+        label(localized("拍摄参数","Captured"),left,top+18*density,10f,muted,true,width=(right-left)*.35f)
+        record.capturedAtEpochMs?.let {
+            paint.style=Paint.Style.FILL;paint.textAlign=Paint.Align.RIGHT;paint.textSize=9f*scaledDensity;paint.color=muted;paint.typeface=Typeface.DEFAULT
+            centered(canvas,dateFormat.format(Date(it)),right,top+18*density,paint)
         }
-        if (record.notes.isNotEmpty()) {
-            y += lineHeight
-            line(
-                localized("备注", "Notes"),
-                textSize = 12f,
-                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL),
-            )
-            paint.style = Paint.Style.STROKE
-            paint.strokeWidth = 1f * density
-            paint.color = InstrumentStyle.border(state.isDarkMode)
-            canvas.drawLine(textLeft, y - lineHeight * 0.48f, textRight, y - lineHeight * 0.48f, paint)
-            record.notes.forEach { note ->
-                paint.style = Paint.Style.FILL
-                paint.color = foreground
-                paint.textSize = 13f * scaledDensity
-                paint.typeface = Typeface.create("sans-serif", Typeface.NORMAL)
-                val fitted = TextUtils.ellipsize(note, TextPaint(paint), textRight - textLeft, TextUtils.TruncateAt.END)
-                centered(canvas, fitted.toString(), textLeft, y - lineHeight * 0.48f + noteRowHeight / 2f, paint)
-                y += noteRowHeight
-                paint.style = Paint.Style.STROKE
-                paint.strokeWidth = 1f * density
-                paint.color = InstrumentStyle.border(state.isDarkMode)
-                canvas.drawLine(textLeft, y - lineHeight * 0.48f, textRight, y - lineHeight * 0.48f, paint)
+        val exposure=listOf(ExposureMath.formatAperture(ExposureMath.apertureValueForCoordinate(record.apertureCoordinate,state.apertureStep)),
+            ExposureMath.formatShutter(ExposureMath.shutterValueForCoordinate(record.shutterCoordinate,state.shutterStep)),record.ei.toString())
+        val captions=listOf(localized("光圈","Aperture"),localized("快门","Shutter"),"EI")
+        val column=(right-left)/3
+        for(i in 0..2) {
+            val x=left+i*column
+            label(captions[i],x,top+41*density,9f,muted,width=column-8*density)
+            label(exposure[i],x,top+65*density,21f,foreground,true,width=column-8*density,fit=true)
+            if(i>0) {
+                paint.style=Paint.Style.STROKE;paint.strokeWidth=.6f*density;paint.color=InstrumentStyle.hairline(state.isDarkMode)
+                canvas.drawLine(x-8*density,top+39*density,x-8*density,top+77*density,paint)
+            }
+        }
+        paint.style=Paint.Style.STROKE;paint.strokeWidth=.7f*density;paint.color=InstrumentStyle.hairline(state.isDarkMode)
+        canvas.drawLine(left,top+90*density,right,top+90*density,paint)
+        var y=top+100*density
+        rows.forEachIndexed { index,row ->
+            label(row.first,left,y+7*density+bodyPaint.textSize/2,9.5f,muted,width=valueLeft-left-8*density)
+            canvas.save();canvas.translate(valueLeft,y+7*density);values[index].draw(canvas);canvas.restore()
+            y+=rowHeights[index]
+        }
+        if(notes.isNotEmpty()) {
+            y+=10*density
+            label(localized("备注","Notes"),left,y+7*density,10f,muted,true)
+            y+=24*density
+            notes.forEach { note ->
+                paint.style=Paint.Style.FILL;paint.color=InstrumentStyle.accent(state.isDarkMode)
+                canvas.drawCircle(left+2*density,y+7*density,1.8f*density,paint)
+                canvas.save();canvas.translate(left+12*density,y);note.draw(canvas);canvas.restore()
+                y+=note.height+20*density
             }
         }
         canvas.restore()
+        if(detailMaxScroll>0&&viewportHeight>24*density) {
+            val trackHeight=viewportHeight-20*density
+            val thumbHeight=(trackHeight*viewportHeight/contentHeight).coerceIn(12*density,trackHeight)
+            val thumbTop=viewport.top+10*density+(trackHeight-thumbHeight)*detailScroll/detailMaxScroll
+            paint.style=Paint.Style.FILL;paint.color=InstrumentStyle.border(state.isDarkMode)
+            canvas.drawRoundRect(RectF(viewport.right-5*density,thumbTop,viewport.right-3*density,thumbTop+thumbHeight),density,density,paint)
+        }
     }
 
     private fun formatLocation(location: RecordedLocation): String {
@@ -672,13 +679,7 @@ internal class ParameterHistoryView(
     }
 
     private fun drawPanel(canvas: Canvas, rect: RectF) {
-        paint.style = Paint.Style.FILL
-        paint.color = InstrumentStyle.control(state.isDarkMode)
-        canvas.drawRoundRect(rect, 10f * density, 10f * density, paint)
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 0.8f * density
-        paint.color = InstrumentStyle.border(state.isDarkMode)
-        canvas.drawRoundRect(rect, 10f * density, 10f * density, paint)
+        chrome.card(canvas,rect,density,state.isDarkMode)
     }
 
     private fun drawEmpty(canvas: Canvas) {
@@ -1018,10 +1019,12 @@ internal class ParameterHistoryView(
     }
 
     private fun categoryColumns() = AdaptiveLayout.columns(geometry.content.width(), 0f,
-        10f * density, 120f * resources.displayMetrics.density, 2)
+        10f * density, 120f * resources.displayMetrics.density, if(geometry.landscape)3 else 2)
 
     private fun recordColumns() = AdaptiveLayout.columns(geometry.content.width(), 0f,
-        6f * density, 72f * resources.displayMetrics.density, 3)
+        6f * density, 140f * resources.displayMetrics.density, if(geometry.landscape)4 else 2)
+
+    private fun recordCellHeight(width:Float)=width*.67f+40f*density
 
     private fun categoryAt(x: Float, y: Float): String? {
         val categories = repository.categories()
@@ -1046,7 +1049,7 @@ internal class ParameterHistoryView(
         val gap = 6f * density
         val columns = recordColumns()
         val width = (geometry.content.width() - gap * (columns - 1)) / columns
-        val height = width * 0.76f
+        val height = recordCellHeight(width)
         val column = ((x - geometry.content.left) / (width + gap)).toInt()
         val row = ((y - geometry.content.top + scroll) / (height + gap)).toInt()
         if (column !in 0 until columns || row < 0) return null

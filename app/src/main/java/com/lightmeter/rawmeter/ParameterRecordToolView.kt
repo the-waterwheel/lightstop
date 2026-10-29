@@ -3,7 +3,6 @@ package com.lightmeter.rawmeter
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Canvas
-import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
@@ -43,12 +42,10 @@ internal class ParameterRecordToolView(
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans-serif", Typeface.NORMAL) }
     private val boldPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = InstrumentStyle.labelTypeface }
     private val path = Path()
+    private val chrome = PanelChrome()
     private val background: Int get() = InstrumentStyle.background(state.isDarkMode)
     private val foreground: Int get() = InstrumentStyle.foreground(state.isDarkMode)
     private val muted: Int get() = InstrumentStyle.secondary(state.isDarkMode)
-    private val panel: Int get() = InstrumentStyle.panel(state.isDarkMode)
-    private val actionSurface: Int get() = InstrumentStyle.control(state.isDarkMode)
-    private val red = InstrumentStyle.red
     private var geometry = ParameterRecordToolGeometry.EMPTY
     private var target = Target.NONE
     private var locationState = ParameterLocationDisplayState.DISABLED
@@ -99,6 +96,7 @@ internal class ParameterRecordToolView(
         drawOption(canvas, geometry.rawRow, geometry.rawToggle, localized("记录 RAW 数据", "Record RAW data"),
             localized("各种测光方式均可在回看时补点", "Add review points with any metering mode"), options.recordRaw, state.cameraInfo.rawAvailable)
         drawHelp(canvas)
+        drawCaptureHint(canvas)
         drawFinishAction(canvas, repository.activeCategoryId != null)
         drawStartStopAction(canvas)
     }
@@ -183,22 +181,7 @@ internal class ParameterRecordToolView(
                 TextUtils.TruncateAt.END).toString(), row.left + 12f * density,
                 row.centerY() + 13f * density, paint)
         }
-        val track = RectF(
-            toggle.centerX() - 20f * density,
-            toggle.centerY() - 9f * density,
-            toggle.centerX() + 20f * density,
-            toggle.centerY() + 9f * density,
-        )
-        paint.style = Paint.Style.FILL
-        paint.color = when {
-            !available -> InstrumentStyle.border(state.isDarkMode)
-            enabled -> red
-            else -> InstrumentStyle.border(state.isDarkMode)
-        }
-        canvas.drawRoundRect(track, track.height() / 2f, track.height() / 2f, paint)
-        paint.color = if (enabled && available) Color.WHITE else actionSurface
-        val x = if (enabled && available) track.right - 9f * density else track.left + 9f * density
-        canvas.drawCircle(x, track.centerY(), 7f * density, paint)
+        chrome.toggle(canvas,toggle.centerX(),toggle.centerY(),density,state.isDarkMode,enabled,available)
     }
 
     private fun locationDescription(): String = when (locationState) {
@@ -221,75 +204,38 @@ internal class ParameterRecordToolView(
         centered(canvas, "?", geometry.rawHelp.centerX(), geometry.rawHelp.centerY(), boldPaint)
     }
 
+    private fun drawCaptureHint(canvas:Canvas) {
+        val top=geometry.rawRow.bottom+22*density
+        if(geometry.startStop.top-top<60*density)return
+        boldPaint.textAlign=Paint.Align.LEFT;boldPaint.textSize=12f*scaledDensity;boldPaint.color=foreground
+        centered(canvas,localized("留住画面，也留住参数","Keep the view and the exposure"),geometry.rawRow.left+12*density,top+10*density,boldPaint)
+        val hint=localized("开启后，长按参数记录按钮，保存当前画面与曝光信息。", "Start, then hold the record button to save the view and exposure.")
+        val textPaint=TextPaint(Paint.ANTI_ALIAS_FLAG).apply{color=muted;textSize=11f*scaledDensity}
+        val layout=android.text.StaticLayout.Builder.obtain(hint,0,hint.length,textPaint,(geometry.rawRow.width()-24*density).toInt().coerceAtLeast(1))
+            .setIncludePad(false).setLineSpacing(4*density,1f).build()
+        canvas.save();canvas.clipRect(geometry.rawRow.left,top,geometry.rawRow.right,geometry.startStop.top-8*density)
+        canvas.translate(geometry.rawRow.left+12*density,top+26*density);layout.draw(canvas);canvas.restore()
+    }
+
     private fun drawFinishAction(canvas: Canvas, enabled: Boolean) {
-        val rect = geometry.finishCategory
-        paint.style = Paint.Style.FILL
-        paint.color = actionSurface
-        canvas.drawRoundRect(rect, 6f * density, 6f * density, paint)
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = density
-        paint.color = InstrumentStyle.border(state.isDarkMode)
-        canvas.drawRoundRect(rect, 6f * density, 6f * density, paint)
-        val iconSize = minOf(rect.width(), rect.height()) * 0.30f
-        paint.style = Paint.Style.FILL
-        paint.color = if (enabled) red else muted
-        canvas.drawRect(
-            rect.centerX() - iconSize / 2f,
-            rect.centerY() - iconSize / 2f,
-            rect.centerX() + iconSize / 2f,
-            rect.centerY() + iconSize / 2f,
-            paint,
-        )
-        boldPaint.textAlign = Paint.Align.CENTER
-        boldPaint.textSize = 12f * scaledDensity
-        boldPaint.color = if (enabled) foreground else muted
-        canvas.drawText(
-            localized("结束该类记录", "Finish category"),
-            rect.centerX(),
-            rect.bottom + 17f * density,
-            boldPaint,
-        )
+        val rect=geometry.finishCategory
+        chrome.card(canvas,rect,density,state.isDarkMode)
+        boldPaint.textAlign=Paint.Align.CENTER;boldPaint.textSize=12f*scaledDensity
+        boldPaint.color=if(enabled)foreground else muted
+        centered(canvas,localized("结束该类记录","Finish category"),rect.centerX(),rect.centerY(),boldPaint)
     }
 
     private fun drawStartStopAction(canvas: Canvas) {
-        val rect = geometry.startStop
-        val radius = minOf(rect.width(), rect.height()) / 2f
-        paint.style = Paint.Style.FILL
-        paint.color = if (recording) panel else actionSurface
-        canvas.drawCircle(rect.centerX(), rect.centerY(), radius, paint)
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = density
-        paint.color = InstrumentStyle.border(state.isDarkMode)
-        canvas.drawCircle(rect.centerX(), rect.centerY(), radius - density, paint)
-        paint.strokeWidth = 1.6f * density
-        paint.color = red
-        canvas.drawCircle(rect.centerX(), rect.centerY(), radius * 0.62f, paint)
-        paint.style = Paint.Style.FILL
-        paint.color = red
-        val iconSize = radius * 0.26f
-        if (!recording) {
-            canvas.drawCircle(rect.centerX(), rect.centerY(), iconSize, paint)
-        } else canvas.drawRoundRect(RectF(rect.centerX() - iconSize, rect.centerY() - iconSize,
-            rect.centerX() + iconSize, rect.centerY() + iconSize), 2f * density, 2f * density, paint)
-        boldPaint.textAlign = Paint.Align.CENTER
-        boldPaint.textSize = 12.5f * scaledDensity
-        boldPaint.color = foreground
-        canvas.drawText(
-            if (recording) localized("停止记录", "Stop recording") else localized("开始记录", "Start recording"),
-            rect.centerX(),
-            rect.bottom + 18f * density,
-            boldPaint,
-        )
+        val rect=geometry.startStop
+        paint.style=Paint.Style.FILL;paint.color=if(recording)InstrumentStyle.accentSurface(state.isDarkMode) else foreground
+        canvas.drawRoundRect(rect,14*density,14*density,paint)
+        boldPaint.textAlign=Paint.Align.CENTER;boldPaint.textSize=13f*scaledDensity
+        boldPaint.color=if(recording)InstrumentStyle.accent(state.isDarkMode) else background
+        centered(canvas,if(recording)localized("停止记录","Stop recording") else localized("开始记录","Start recording"),rect.centerX(),rect.centerY(),boldPaint)
     }
 
     private fun drawPanel(canvas: Canvas, rect: RectF) {
-        paint.style = Paint.Style.FILL
-        paint.color = actionSurface
-        canvas.drawRoundRect(rect, 9f * density, 9f * density, paint)
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 0.8f * density
-        paint.color = InstrumentStyle.border(state.isDarkMode)
-        canvas.drawRoundRect(rect, 9f * density, 9f * density, paint)
+        chrome.card(canvas,rect,density,state.isDarkMode)
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -299,10 +245,10 @@ internal class ParameterRecordToolView(
                     geometry.back.contains(event.x, event.y) -> Target.BACK
                     geometry.close.contains(event.x, event.y) -> Target.CLOSE
                     geometry.history.contains(event.x, event.y) -> Target.HISTORY
-                    geometry.gpsToggle.contains(event.x, event.y) -> Target.GPS
-                    geometry.timeToggle.contains(event.x, event.y) -> Target.TIME
+                    geometry.gpsRow.contains(event.x, event.y) -> Target.GPS
+                    geometry.timeRow.contains(event.x, event.y) -> Target.TIME
                     geometry.rawHelp.contains(event.x, event.y) -> Target.RAW_HELP
-                    geometry.rawToggle.contains(event.x, event.y) -> Target.RAW
+                    geometry.rawRow.contains(event.x, event.y) -> Target.RAW
                     geometry.finishCategory.contains(event.x, event.y) -> Target.FINISH
                     geometry.startStop.contains(event.x, event.y) -> Target.START_STOP
                     else -> Target.NONE
@@ -346,19 +292,19 @@ internal class ParameterRecordToolView(
         ),
         CanvasAccessibilityHelper.VirtualNode(
             A11Y_GPS,
-            geometry.gpsToggle,
+            geometry.gpsRow,
             localized("记录 GPS 定位", "Record GPS location"),
             selected = repository.options.recordGps,
         ),
         CanvasAccessibilityHelper.VirtualNode(
             A11Y_TIME,
-            geometry.timeToggle,
+            geometry.timeRow,
             localized("记录时间", "Record time"),
             selected = repository.options.recordTime,
         ),
         CanvasAccessibilityHelper.VirtualNode(
             A11Y_RAW,
-            geometry.rawToggle,
+            RectF(geometry.rawRow.left,geometry.rawRow.top,geometry.rawHelp.left,geometry.rawRow.bottom),
             localized("记录 RAW 数据", "Record RAW data"),
             selected = repository.options.recordRaw,
         ),

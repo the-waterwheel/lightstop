@@ -36,7 +36,7 @@ internal class RecordedMeteringRenderer(
     private val surface: Int get() = InstrumentStyle.control(state.isDarkMode)
     private val panel: Int get() = InstrumentStyle.control(state.isDarkMode)
     private val muted: Int get() = InstrumentStyle.secondary(state.isDarkMode)
-    private val red = InstrumentStyle.red
+    private val red get() = InstrumentStyle.accent(state.isDarkMode)
 
     fun draw(
         canvas: Canvas,
@@ -120,18 +120,11 @@ internal class RecordedMeteringRenderer(
             state.isDarkMode -> Color.rgb(55, 55, 53)
             else -> Color.rgb(218, 218, 215)
         }
-        canvas.drawRoundRect(rect, 3f * density, 3f * density, paint)
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 1f * density
-        paint.color = when {
-            selected -> red
-            enabled -> InstrumentStyle.border(state.isDarkMode)
-            else -> muted
-        }
-        canvas.drawRoundRect(rect, 3f * density, 3f * density, paint)
+        canvas.drawRoundRect(rect, 8f * density, 8f * density, paint)
         bold.color = if (selected) InstrumentStyle.background(state.isDarkMode) else if (enabled) foreground else muted
         bold.textAlign = Paint.Align.CENTER
-        bold.textSize = 12f * density
+        bold.textSize = 10.5f * density
+        bold.typeface = InstrumentStyle.labelTypeface
         centered(canvas, label, rect.centerX(), rect.centerY(), bold)
     }
 
@@ -139,13 +132,9 @@ internal class RecordedMeteringRenderer(
         val area = RectF(top.left, top.top, bottom.right, bottom.bottom)
         paint.style = Paint.Style.FILL
         paint.color = surface
-        canvas.drawRoundRect(area, 3f * density, 3f * density, paint)
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 1f * density
-        paint.color = muted
-        canvas.drawRoundRect(area, 3f * density, 3f * density, paint)
+        canvas.drawRoundRect(area, 8f * density, 8f * density, paint)
         bold.textAlign = Paint.Align.CENTER
-        bold.color = foreground
+        bold.color = muted
         bold.textSize = 10f * density
         centered(
             canvas,
@@ -230,15 +219,11 @@ internal class RecordedMeteringRenderer(
     }
 
     private fun drawExposureScale(canvas: Canvas, rect: RectF, centerCoordinate: Double, aperture: Boolean) {
-        val rowForeground = if (state.isDarkMode || !aperture) foreground else Color.WHITE
-        val rowBackground = if (state.isDarkMode || aperture) Color.BLACK else Color.WHITE
+        val rowForeground = foreground
+        val rowBackground = InstrumentStyle.panel(state.isDarkMode)
         paint.style = Paint.Style.FILL
         paint.color = rowBackground
-        canvas.drawRect(rect, paint)
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 1f * density
-        paint.color = foreground
-        canvas.drawRect(rect, paint)
+        canvas.drawRoundRect(rect, 8f*density, 8f*density, paint)
 
         val titleWidth = (70f * density).coerceAtMost(rect.width() * 0.28f)
         val title = RectF(rect.left, rect.top, rect.left + titleWidth, rect.bottom)

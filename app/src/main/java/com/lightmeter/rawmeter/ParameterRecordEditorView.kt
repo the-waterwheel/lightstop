@@ -79,11 +79,12 @@ internal class ParameterRecordEditorView(
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans-serif", Typeface.NORMAL) }
     private val boldPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = InstrumentStyle.labelTypeface }
     private val notePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans-serif", Typeface.NORMAL) }
+    private val chrome = PanelChrome()
     private val background: Int get() = InstrumentStyle.background(state.isDarkMode)
     private val foreground: Int get() = InstrumentStyle.foreground(state.isDarkMode)
     private val muted: Int get() = InstrumentStyle.secondary(state.isDarkMode)
     private val panel: Int get() = InstrumentStyle.panel(state.isDarkMode)
-    private val red = InstrumentStyle.red
+    private val red get() = InstrumentStyle.accent(state.isDarkMode)
     private var geometry = ParameterRecordEditorGeometry.EMPTY
     private var draft: ParameterCaptureDraft? = null
     private var previewBitmap: Bitmap? = null
@@ -236,13 +237,7 @@ internal class ParameterRecordEditorView(
     }
 
     private fun drawFilm(canvas: Canvas, value: ParameterCaptureDraft) {
-        paint.style = Paint.Style.FILL
-        paint.color = panel
-        canvas.drawRoundRect(geometry.film, 6f * density, 6f * density, paint)
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 0.8f * density
-        paint.color = InstrumentStyle.border(state.isDarkMode)
-        canvas.drawRoundRect(geometry.film, 6f * density, 6f * density, paint)
+        chrome.card(canvas,geometry.film,density,state.isDarkMode)
         boldPaint.textAlign = Paint.Align.LEFT
         boldPaint.color = foreground
         boldPaint.textSize = 13f * scaledDensity
@@ -250,7 +245,7 @@ internal class ParameterRecordEditorView(
         val fitted = TextUtils.ellipsize(label, boldPaint, geometry.film.width() - geometry.filmEdit.width() - 20f * density, TextUtils.TruncateAt.END)
         centered(canvas, fitted.toString(), geometry.film.left + 10f * density, geometry.film.centerY(), boldPaint)
         boldPaint.textAlign = Paint.Align.CENTER
-        boldPaint.color = red
+        boldPaint.color = InstrumentStyle.accent(state.isDarkMode)
         centered(canvas, localized("修改", "Edit"), geometry.filmEdit.centerX(), geometry.filmEdit.centerY(), boldPaint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1f * density
@@ -304,22 +299,16 @@ internal class ParameterRecordEditorView(
 
     private fun drawSave(canvas: Canvas) {
         paint.style = Paint.Style.FILL
-        paint.color = InstrumentStyle.foreground(false)
-        canvas.drawRoundRect(geometry.save, 7f * density, 7f * density, paint)
+        paint.color = foreground
+        canvas.drawRoundRect(geometry.save, 14f * density, 14f * density, paint)
         boldPaint.textAlign = Paint.Align.CENTER
-        boldPaint.color = Color.WHITE
+        boldPaint.color = background
         boldPaint.textSize = 13f * scaledDensity
         centered(canvas, if (saving) localized("保存中…", "Saving…") else localized("保存记录", "Save record"), geometry.save.centerX(), geometry.save.centerY(), boldPaint)
     }
 
     private fun drawPanel(canvas: Canvas, rect: RectF) {
-        paint.style = Paint.Style.FILL
-        paint.color = panel
-        canvas.drawRoundRect(rect, 5f * density, 5f * density, paint)
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 0.8f * density
-        paint.color = InstrumentStyle.border(state.isDarkMode)
-        canvas.drawRoundRect(rect, 5f * density, 5f * density, paint)
+        chrome.card(canvas,rect,density,state.isDarkMode)
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
