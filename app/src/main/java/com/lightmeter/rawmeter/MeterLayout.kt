@@ -16,6 +16,7 @@ import android.view.TextureView
 import android.view.Surface
 import android.view.View
 import android.view.ViewGroup
+import android.view.MotionEvent
 import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
 import android.widget.Toast
@@ -69,6 +70,7 @@ class MeterLayout @JvmOverloads constructor(
         fun onPreviewGeometryChanged(width: Int, height: Int)
         fun onControlsChanged(frameChanged: Boolean)
         fun onAutoModeChanged(active: Boolean) = Unit
+        fun onAutoTransitionChanged(active:Boolean) = Unit
         fun onAutoRawRequested() = Unit
         fun onAutoResumeRequested() = Unit
         fun onClearOptionsChanged() = Unit
@@ -218,6 +220,14 @@ class MeterLayout @JvmOverloads constructor(
     private var zoneTransitionFraction = 0f
     private var zoneAnimator: ValueAnimator? = null
     private var zoneTransitionPrepared = false
+    internal var clearTransitionFraction=0f
+        private set
+    private var clearAnimator:ValueAnimator?=null
+    private var clearTransitionPrepared=false
+    val isClearTransitionInProgress:Boolean get()=clearTransitionPrepared
+    private var clearTransitionLandscape=false
+    private var clearTransitionLeftHanded=false
+    private var clearAnimationTouchBlocked=false
     private var angleControlSuppressedForModeTransition = false
     private var angleControlFadeInAnimating = false
     private var angleControlFadeInRunnable: Runnable? = null
@@ -276,6 +286,7 @@ class MeterLayout @JvmOverloads constructor(
         set(value) {
             field = value
             autoView.onExit = { closeAutoMode() }
+            autoView.onExitDrag = {progress,released->handleClearDrag(progress,released,entering=false)}
             autoView.onControls = { changed -> if(changed) requestLayout(); value?.onControlsChanged(changed) }
             autoView.onOrientation = ::handleOrientationToggle
             autoView.onRaw = { value?.onAutoRawRequested() }
@@ -283,6 +294,7 @@ class MeterLayout @JvmOverloads constructor(
             autoView.onOptionsChanged = {persistClearOptions();value?.onClearOptionsChanged()}
             instrumentView.listener = object : InstrumentView.Listener {
                 override fun onAutoEntryRequested() { enterAutoMode() }
+                override fun onAutoEntryDrag(progress:Float,released:Boolean) {handleClearDrag(progress,released,entering=true)}
                 override fun onMeasureRequested() {
                     value?.onMeasureRequested()
                 }
@@ -1139,6 +1151,8 @@ class MeterLayout @JvmOverloads constructor(
             exposurePreviewCalibrationView.calculatePreviewFrame(width, height)
         } else if (isCalibrationOpen) {
             calibrationView.calculatePreviewFrame(width, height)
+        } else if (clearTransitionPrepared) {
+            lerpRect(geometry.cameraFrame,autoView.previewFrame(width,height),clearTransitionFraction)
         } else if (isAutoMode) {
             autoView.previewFrame(width, height)
         } else if (zoneTransitionFraction > 0f || isZoneMode) {
@@ -1171,6 +1185,7 @@ class MeterLayout @JvmOverloads constructor(
         val width = right - left
         val height = bottom - top
         val layoutLandscape = width > height
+        if(clearTransitionPrepared&&(clearTransitionLandscape!=layoutLandscape||clearTransitionLeftHanded!=state.isLeftHanded))cancelClearModeTransition()
         val previousLayoutLandscape = lastLayoutLandscape
         val displayOrientationChanged = previousLayoutLandscape?.let {
             it != layoutLandscape
@@ -1198,6 +1213,8 @@ class MeterLayout @JvmOverloads constructor(
             exposurePreviewCalibrationView.calculatePreviewFrame(width, height)
         } else if (isCalibrationOpen) {
             calibrationView.calculatePreviewFrame(width, height)
+        } else if (clearTransitionPrepared) {
+            lerpRect(geometry.cameraFrame,autoView.previewFrame(width,height),clearTransitionFraction)
         } else if (isAutoMode) {
             autoView.previewFrame(width, height)
         } else if (zoneTransitionFraction > 0f || isZoneMode) {
@@ -2137,7 +2154,7 @@ class MeterLayout @JvmOverloads constructor(
             return
         }
         val transitionSettled = zoneTransitionFraction <= 0f || zoneTransitionFraction >= 1f
-        val unobstructed = !isAutoMode && transitionSettled &&
+        val unobstructed = !isAutoMode && !clearTransitionPrepared && transitionSettled &&
             !isCalibrationOpen && !isExposurePreviewCalibrationOpen &&
             !isVignettingCalibrationOpen &&
             !isCameraManagementOpen && !isCombinationSelectionOpen && !isInformationOpen &&
@@ -2201,7 +2218,7 @@ class MeterLayout @JvmOverloads constructor(
     }
 
     private fun bringRecordSliderToFrontIfDialsCollapsed() {
-        val unobstructed = !isAutoMode && !angleControlSuppressedForModeTransition &&
+        val unobstructed = !isAutoMode && !clearTransitionPrepared && !angleControlSuppressedForModeTransition &&
             (zoneTransitionFraction <= 0f || zoneTransitionFraction >= 1f) &&
             !isSettingsOpen && !isInformationOpen && !isCalibrationOpen &&
             !isExposurePreviewCalibrationOpen && !isVignettingCalibrationOpen &&
@@ -2614,12 +2631,118 @@ class MeterLayout @JvmOverloads constructor(
         return true
     }
 
+    private fun prepareClearTransition():Boolean {
+        if(clearTransitionPrepared)return true
+        if(isZoneMode||state.measuring||state.meteringInteractionBusy||autoSession.rawPending||isToolsOpen||isSettingsOpen||zoneAnimator!=null)return false
+        if(zoneTransitionPrepared)finishZoneTransition(0f)
+        clearTransitionPrepared=true
+        clearTransitionLandscape=width>height;clearTransitionLeftHanded=state.isLeftHanded
+        clearTransitionFraction=if(isAutoMode)1f else 0f
+        if(!isAutoMode) {
+            autoSession.unlock(clear=true,resumeContinuous=autoSession.continuousMetering)
+            autoView.closeTransientUi()
+        }
+        instrumentView.visibility=View.VISIBLE;instrumentView.alpha=1f
+        autoView.visibility=View.VISIBLE;autoView.alpha=1f;autoView.bringToFront()
+        zoneView.visibility=View.GONE
+        suppressAngleControlForModeTransition()
+        listener?.onAutoTransitionChanged(true)
+        return true
+    }
+
+    private fun handleClearDrag(progress:Float,released:Boolean,entering:Boolean) {
+        if(clearAnimator!=null)return
+        if(released) {
+            if(clearTransitionPrepared)animateClearTransition(if(entering) {if(progress>=.45f)1f else 0f} else {if(progress>=.55f)0f else 1f})
+        } else if((progress>0f||clearTransitionPrepared)&&prepareClearTransition()) {
+            applyClearTransition(if(entering)progress else 1f-progress)
+        }
+    }
+
+    private fun applyClearTransition(fraction:Float) {
+        clearTransitionFraction=fraction.coerceIn(0f,1f)
+        val normal=LayoutGeometry.calculate(width,height,resources.displayMetrics.density,state.isLeftHanded)
+        val frame=lerpRect(normal.cameraFrame,autoView.previewFrame(width,height),clearTransitionFraction)
+        val normalDensity=AdaptiveLayout.density(width,height,resources.displayMetrics.density,LayoutProfile.METER)
+        val clearDensity=min(resources.displayMetrics.density,min(width,height).coerceAtLeast(1)/380f)
+        val density=normalDensity+(clearDensity-normalDensity)*clearTransitionFraction
+        val travel=if(width>height)width*.16f else height*.16f
+        val x=if(width>height)ModeTransitionDirection.normalEntrySign(state.isLeftHanded)*travel else 0f
+        val y=if(width>height)0f else travel
+        val f=clearTransitionFraction
+        instrumentView.setClearMotion(ModePanelMotion(frame,f,1-f,x*f,y*f,density))
+        autoView.setClearMotion(ModePanelMotion(frame,f,f,x*(f-1),y*(f-1),density))
+        requestLayout();invalidate()
+    }
+
+    private fun animateClearTransition(target:Float) {
+        val start=clearTransitionFraction
+        if(!ValueAnimator.areAnimatorsEnabled()||kotlin.math.abs(start-target)<.001f) {finishClearTransition(target);return}
+        clearAnimator=ValueAnimator.ofFloat(start,target).apply {
+            duration=(260+160*kotlin.math.abs(target-start)).toLong()
+            interpolator=DecelerateInterpolator()
+            addUpdateListener{applyClearTransition(it.animatedValue as Float)}
+            addListener(object:AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation:Animator) {
+                    if(clearAnimator===this@apply){clearAnimator=null;finishClearTransition(target)}
+                }
+            })
+            start()
+        }
+    }
+
+    private fun finishClearTransition(target:Float) {
+        val wasPrepared=clearTransitionPrepared
+        val wasAuto=isAutoMode
+        clearTransitionFraction=target.coerceIn(0f,1f)
+        clearTransitionPrepared=false
+        instrumentView.setClearMotion(null);autoView.setClearMotion(null)
+        instrumentView.cancelModeGesture();autoView.closeTransientUi()
+        isAutoMode=target>=1f
+        instrumentView.visibility=if(isAutoMode)View.GONE else View.VISIBLE
+        autoView.visibility=if(isAutoMode)View.VISIBLE else View.GONE
+        instrumentView.alpha=1f;autoView.alpha=1f
+        if(isAutoMode)autoView.bringToFront()
+        if(wasAuto!=isAutoMode)listener?.onAutoModeChanged(isAutoMode)
+        if(wasPrepared)listener?.onAutoTransitionChanged(false)
+        scheduleAngleControlAfterModeTransition()
+        requestLayout();invalidate()
+    }
+
+    internal fun cancelClearModeTransition() {
+        val animator=clearAnimator;clearAnimator=null;animator?.cancel()
+        if(clearTransitionPrepared)finishClearTransition(if(isAutoMode)1f else 0f)
+    }
+
+    override fun onSizeChanged(w:Int,h:Int,oldw:Int,oldh:Int) {
+        super.onSizeChanged(w,h,oldw,oldh)
+        if(clearTransitionPrepared&&(w!=oldw||h!=oldh))cancelClearModeTransition()
+    }
+
+    override fun onInterceptTouchEvent(event:MotionEvent):Boolean {
+        if(event.actionMasked==MotionEvent.ACTION_DOWN)clearAnimationTouchBlocked=clearAnimator!=null
+        return clearAnimationTouchBlocked||super.onInterceptTouchEvent(event)
+    }
+
+    override fun onTouchEvent(event:MotionEvent):Boolean {
+        if(clearAnimationTouchBlocked) {
+            if(event.actionMasked==MotionEvent.ACTION_UP||event.actionMasked==MotionEvent.ACTION_CANCEL)clearAnimationTouchBlocked=false
+            if(event.actionMasked==MotionEvent.ACTION_UP)performClick()
+            return true
+        }
+        return super.onTouchEvent(event)
+    }
+
+    override fun performClick():Boolean {super.performClick();return true}
+
     internal fun enterAutoMode() {
         if (isAutoMode || isZoneMode || state.measuring || state.meteringInteractionBusy ||
             isToolsOpen || isSettingsOpen || zoneAnimator != null) return
+        cancelClearModeTransition()
         if (zoneTransitionPrepared) finishZoneTransition(0f)
         autoSession.unlock(clear = true,resumeContinuous=autoSession.continuousMetering)
         isAutoMode = true
+        clearTransitionFraction=1f
         instrumentView.visibility = View.GONE
         zoneView.visibility = View.GONE
         autoView.visibility = View.VISIBLE
@@ -2630,9 +2753,12 @@ class MeterLayout @JvmOverloads constructor(
     }
 
     internal fun closeAutoMode(): Boolean {
+        if(!isAutoMode&&clearTransitionPrepared){cancelClearModeTransition();return true}
         if (!isAutoMode) return false
         if (autoSession.rawPending || state.meteringInteractionBusy) return true
+        cancelClearModeTransition()
         isAutoMode = false
+        clearTransitionFraction=0f
         autoView.closeTransientUi()
         autoView.visibility = View.GONE
         instrumentView.visibility = View.VISIBLE
@@ -2942,6 +3068,8 @@ class MeterLayout @JvmOverloads constructor(
         if (state.menuLanguage == MenuLanguage.ENGLISH) english else chinese
 
     override fun onDetachedFromWindow() {
+        cancelClearModeTransition()
+        clearAnimationTouchBlocked=false
         zoneAnimator?.cancel()
         stopPreviewHistogramSampling()
         angleControlFadeInRunnable?.let(::removeCallbacks)

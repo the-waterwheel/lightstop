@@ -40,6 +40,9 @@ class InstrumentView(
         fun onToolsRequested()
         fun onZoneEntryDrag(progress: Float, released: Boolean)
         fun onAutoEntryRequested() = Unit
+        fun onAutoEntryDrag(progress:Float,released:Boolean) {
+            if(released&&progress>=.45f)onAutoEntryRequested()
+        }
         fun onControlsChanged(frameChanged: Boolean)
     }
 
@@ -104,6 +107,12 @@ class InstrumentView(
     private var zoneDragStartX = 0f
     private var zoneDragStartY = 0f
     private var autoEntryDrag = false
+    private var clearMotion:ModePanelMotion?=null
+    internal fun setClearMotion(motion:ModePanelMotion?) {clearMotion=motion;invalidate()}
+    internal fun cancelModeGesture() {
+        if(touchTarget==TouchTarget.ZONE_ENTRY)touchTarget=TouchTarget.NONE
+        zoneTransitionFraction=0f;autoEntryDrag=false;modeGuide.clear();invalidate()
+    }
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
 
     private enum class TouchTarget {
@@ -136,11 +145,24 @@ class InstrumentView(
             state.isLeftHanded,
         )
         geometry = g
-        state.viewfinderAspect = g.cameraFrame.width() / g.cameraFrame.height().coerceAtLeast(1f)
+        val motion=clearMotion
+        val frame=motion?.preview?:g.cameraFrame
+        state.viewfinderAspect = frame.width() / frame.height().coerceAtLeast(1f)
         accessibilityHelper.update(accessibilityNodes(g))
-        drawSurfaceOutsidePreview(canvas, g.cameraFrame)
-        drawPanels(canvas, g)
+        if(motion==null)drawSurfaceOutsidePreview(canvas,frame) else {
+            ViewfinderOverlay.outside(canvas,frame,width,height,surfaceColor,motion.density)
+        }
+        drawPanels(canvas,g)
+        if(motion!=null&&!state.isUnframed)ViewfinderOverlay.framing(canvas,frame,state.displayedFramingCrop(g.landscape),motion.density)
+        val chrome=if(motion!=null&&motion.alpha<1f)canvas.saveLayerAlpha(0f,0f,width.toFloat(),height.toFloat(),(motion.alpha*255).toInt()) else canvas.save()
         drawCameraOverlay(canvas, g)
+        canvas.restoreToCount(chrome)
+        val panel=motion?.begin(canvas,width,height)?:canvas.save()
+        drawParameters(canvas,g)
+        canvas.restoreToCount(panel)
+    }
+
+    private fun drawParameters(canvas:Canvas,g:LayoutGeometry) {
         drawExposureRows(canvas, g)
         drawDial(canvas, g)
         ev100BadgeRenderer.draw(canvas, g.ev100Badge, Ev100Readouts.normal(state), state.isDarkMode, red)
@@ -163,6 +185,7 @@ class InstrumentView(
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 0.8f * density
         paint.color = InstrumentStyle.border(state.isDarkMode)
+        paint.alpha=(255*(clearMotion?.alpha?:1f)).toInt()
         canvas.drawRect(g.previewPanel, paint)
         canvas.drawRoundRect(g.cameraFrame, 12f * density, 12f * density, paint)
         if (g.landscape) {
@@ -176,10 +199,11 @@ class InstrumentView(
             val dividerY = (g.previewPanel.bottom + g.apertureRow.top) / 2f
             canvas.drawLine(0f, dividerY, width.toFloat(), dividerY, paint)
         }
+        paint.alpha=255
     }
 
     private fun drawCameraOverlay(canvas: Canvas, g: LayoutGeometry) {
-        if (!state.isUnframed) ViewfinderOverlay.framing(canvas, g.cameraFrame, state.displayedFramingCrop(g.landscape), density)
+        if (clearMotion==null&&!state.isUnframed) ViewfinderOverlay.framing(canvas, g.cameraFrame, state.displayedFramingCrop(g.landscape), density)
         val roiFraction = if (state.meteringMode == MeteringMode.ANGLE) {
             state.angleMeteringIndicatorFraction() ?: DEFAULT_SPOT_DIAMETER_FRACTION
         } else {
@@ -311,11 +335,13 @@ class InstrumentView(
 
     private fun drawZoneEntryHandle(canvas: Canvas, g: LayoutGeometry) {
         val rect = RectF(g.zoneEntryHandle)
+        val fraction=clearMotion?.progress?:zoneTransitionFraction
+        val enteringClear=clearMotion!=null||autoEntryDrag
         if (g.landscape) {
-            val direction = if(autoEntryDrag) ModeTransitionDirection.normalEntrySign(state.isLeftHanded) else ModeTransitionDirection.zoneEntrySign(state.isLeftHanded)
-            rect.offset(direction * zoneTransitionFraction * width * 0.14f, 0f)
+            val direction = if(enteringClear) ModeTransitionDirection.normalEntrySign(state.isLeftHanded) else ModeTransitionDirection.zoneEntrySign(state.isLeftHanded)
+            rect.offset(direction * fraction * width * 0.14f, 0f)
         } else {
-            rect.offset(0f, (if(autoEntryDrag) 1f else -1f) * zoneTransitionFraction * height * 0.16f)
+            rect.offset(0f, (if(enteringClear) 1f else -1f) * fraction * height * 0.16f)
         }
         paint.style = Paint.Style.FILL
         paint.color = surfaceColor
@@ -338,7 +364,7 @@ class InstrumentView(
         }
 
         val guide=modeGuide.frame(SystemClock.uptimeMillis())
-        if (guide!=null || touchTarget == TouchTarget.ZONE_ENTRY || zoneTransitionFraction > 0f) {
+        if (clearMotion==null&&(guide!=null || touchTarget == TouchTarget.ZONE_ENTRY || zoneTransitionFraction > 0f)) {
             val travel=(guide?.travel?:0f)*24f*density
             val opacity=guide?.opacity?:1f
             if (g.landscape) {
@@ -836,8 +862,13 @@ class InstrumentView(
     override fun onTouchEvent(event: MotionEvent): Boolean {
         val g = geometry ?: return false
         if (previewPinch.consume(event, g.cameraFrame, !state.measuring && !state.meteringInteractionBusy)) {
+            if(touchTarget==TouchTarget.ZONE_ENTRY&&autoEntryDrag)listener?.onAutoEntryDrag(0f,true)
             touchTarget = TouchTarget.NONE
             return true
+        }
+        if(event.pointerCount>1&&touchTarget==TouchTarget.ZONE_ENTRY) {
+            if(autoEntryDrag)listener?.onAutoEntryDrag(0f,true) else listener?.onZoneEntryDrag(0f,true)
+            cancelModeGesture();return true
         }
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
@@ -969,6 +1000,7 @@ class InstrumentView(
                         if(abs(autoDistance)>touchSlop)modeGuide.clear()
                         if (autoEntryDrag) {
                             zoneTransitionFraction = (autoDistance / (if(g.landscape) width*.18f else height*.18f)).coerceIn(0f,1f)
+                            listener?.onAutoEntryDrag(zoneTransitionFraction,false)
                             invalidate()
                             return true
                         }
@@ -1003,9 +1035,7 @@ class InstrumentView(
                     if (event.actionMasked == MotionEvent.ACTION_UP && abs(event.x-zoneDragStartX)<touchSlop && abs(event.y-zoneDragStartY)<touchSlop) {
                         modeGuide.show(SystemClock.uptimeMillis());invalidate()
                     } else if (autoEntryDrag) {
-                        if (event.actionMasked != MotionEvent.ACTION_CANCEL && zoneTransitionFraction >= .45f)
-                            listener?.onAutoEntryRequested()
-                        else listener?.onZoneEntryDrag(0f,true)
+                        listener?.onAutoEntryDrag(if(event.actionMasked==MotionEvent.ACTION_CANCEL)0f else zoneTransitionFraction,true)
                         setZoneTransitionFraction(0f)
                     } else listener?.onZoneEntryDrag(
                         if (event.actionMasked == MotionEvent.ACTION_CANCEL) 0f else zoneTransitionFraction,
@@ -1080,6 +1110,7 @@ class InstrumentView(
         )
 
     private fun handleAccessibilityClick(virtualViewId: Int): Boolean {
+        if(clearMotion!=null)return false
         if (state.measuring && virtualViewId != ACCESSIBILITY_METER) return false
         if(virtualViewId in 200..200+FrameFormat.ALL.size) {
             viewfinderControls.select(virtualViewId-200);formatMenuOpen=false

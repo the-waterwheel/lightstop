@@ -208,6 +208,10 @@ class MainActivity : Activity(), CameraControllerCallback {
                 updateAutoMetering()
                 updateExposurePreviewFromMeter()
             }
+            override fun onAutoTransitionChanged(active:Boolean) {
+                updateAutoMetering()
+                if(activityResumed)updateExposurePreviewFromMeter()
+            }
 
             override fun onClearOptionsChanged() {
                 updateAutoMetering()
@@ -216,7 +220,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             }
 
             override fun onAutoRawRequested() {
-                if (!activityResumed || !meterLayout.isAutoMode) return
+                if (!activityResumed || !meterLayout.isAutoMode || meterLayout.isClearTransitionInProgress) return
                 val session = meterLayout.autoSession
                 if(session.releaseManualLock()) {
                     updateAutoMetering();updateExposurePreviewFromMeter();meterLayout.refresh()
@@ -784,6 +788,7 @@ class MainActivity : Activity(), CameraControllerCallback {
 
     override fun onPause() {
         activityResumed = false
+        meterLayout.cancelClearModeTransition()
         cameraController.setContinuousMeteringEnabled(false)
         if (meterLayout.autoSession.rawPending) meterLayout.autoSession.fail(localized("测光已中止，请重试", "Measurement interrupted; retry"))
         meterLayout.cancelAutomaticDistanceNotice()
@@ -1597,12 +1602,12 @@ class MainActivity : Activity(), CameraControllerCallback {
 
     private fun updateAutoMetering() {
         val session = meterLayout.autoSession
-        cameraController.setContinuousMeteringEnabled(activityResumed && meterLayout.isAutoMode && session.continuousMetering && !session.locked && !session.rawPending,
+        cameraController.setContinuousMeteringEnabled(activityResumed && meterLayout.isAutoMode && !meterLayout.isClearTransitionInProgress && session.continuousMetering && !session.locked && !session.rawPending,
             session.sampleIntervalMs)
     }
 
     override fun onContinuousMeterReading(reading: MeterReading) {
-        if (!activityResumed || !meterLayout.isAutoMode) return
+        if (!activityResumed || !meterLayout.isAutoMode || meterLayout.isClearTransitionInProgress) return
         if (meterLayout.autoSession.accept(reading)) {
             meterLayout.autoView.invalidate()
             updateExposurePreviewFromMeter()
@@ -1610,7 +1615,7 @@ class MainActivity : Activity(), CameraControllerCallback {
     }
 
     override fun onContinuousMeteringError(message: String) {
-        if (!activityResumed || !meterLayout.isAutoMode || !meterLayout.autoSession.continuousMetering ||
+        if (!activityResumed || !meterLayout.isAutoMode || meterLayout.isClearTransitionInProgress || !meterLayout.autoSession.continuousMetering ||
             meterLayout.autoSession.locked || meterLayout.autoSession.rawPending) return
         meterLayout.autoSession.fail(message)
         meterLayout.autoView.invalidate()

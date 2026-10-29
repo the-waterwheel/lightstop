@@ -98,7 +98,7 @@ class ClearNavigationUiTest {
             swipe(ModeTransitionDirection.zoneEntrySign(left));shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(500))
             assertTrue(layout.isZoneMode);assertFalse(layout.isAutoMode)
             layout.closeZoneMode();shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(500));size(layout,1800,840);render(layout).recycle()
-            swipe(ModeTransitionDirection.normalEntrySign(left));assertTrue(layout.isAutoMode)
+            swipe(ModeTransitionDirection.normalEntrySign(left));shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(600));assertTrue(layout.isAutoMode)
             layout.autoSession.beginManual(false);layout.autoSession.finishManual(reading())
             assertTrue(layout.autoSession.locked)
             assertTrue(layout.closeAutoMode());assertFalse("A completed manual lock must not trap the mode",layout.isAutoMode)

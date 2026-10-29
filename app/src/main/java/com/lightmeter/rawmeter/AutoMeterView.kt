@@ -54,6 +54,7 @@ internal data class AutoMeterGeometry(
 internal class AutoMeterView(context:Context,private val state:MeterState,val session:AutoMeterSession,
     private val preferences:ClearModePreferences=ClearModePreferences(context)):View(context) {
     var onExit:(()->Unit)?=null
+    var onExitDrag:((Float,Boolean)->Unit)?=null
     var onControls:((Boolean)->Unit)?=null
     var onRaw:(()->Unit)?=null
     var onResumeMetering:(()->Unit)?=null
@@ -71,6 +72,8 @@ internal class AutoMeterView(context:Context,private val state:MeterState,val se
     private val scratch=RectF()
     private var cachedGeometry:AutoMeterGeometry?=null
     private var cachedLeftHanded=false
+    private var clearMotion:ModePanelMotion?=null
+    internal fun setClearMotion(motion:ModePanelMotion?) {clearMotion=motion;invalidate()}
     private val d get()=min(resources.displayMetrics.density,min(width,height).coerceAtLeast(1)/380f)
     private val ink get()=InstrumentStyle.foreground(state.isDarkMode)
     private val surface get()=InstrumentStyle.background(state.isDarkMode)
@@ -136,9 +139,13 @@ internal class AutoMeterView(context:Context,private val state:MeterState,val se
         text(canvas,label,rect,12f,if(active)surface else ink,true)
     }
     override fun onDraw(canvas:Canvas) {
-        val g=geometry();state.viewfinderAspect=g.preview.width()/g.preview.height().coerceAtLeast(1f)
-        ViewfinderOverlay.outside(canvas,g.preview,width,height,surface,d)
-        if(!state.isUnframed)ViewfinderOverlay.framing(canvas,g.preview,state.displayedFramingCrop(width>height),d)
+        val g=geometry();val motion=clearMotion;val frame=motion?.preview?:g.preview
+        state.viewfinderAspect=frame.width()/frame.height().coerceAtLeast(1f)
+        if(motion==null) {
+            ViewfinderOverlay.outside(canvas,g.preview,width,height,surface,d)
+            if(!state.isUnframed)ViewfinderOverlay.framing(canvas,g.preview,state.displayedFramingCrop(width>height),d)
+        }
+        val layer=motion?.begin(canvas,width,height)?:canvas.save()
         if(session.showInterfaceText)text(canvas,"clear",g.mode,16f,bold=true)
         viewfinderControls.format(canvas,g.format,d,formatMenuOpen,label=if(session.showInterfaceText)InstrumentPresentation.formatShortLabel(state.frameFormat,state.menuLanguage) else state.frameFormat.id)
         viewfinderControls.orientation(canvas,g.orientation,d,width>height)
@@ -186,7 +193,7 @@ internal class AutoMeterView(context:Context,private val state:MeterState,val se
         else scratch.set(g.zoom.right+6*d,g.zoom.top,width-12*d,g.zoom.bottom)
         text(canvas,if(state.isUnframed)"${"%.1f".format(state.previewZoom)}×" else state.equivalentFrameFocalMm()?.let{"${it}mm"}?:"—",scratch,10f)
         val handle=normalHandle().apply{
-            val travel=normalDistance.coerceIn(0f,70*d)
+            val travel=if(motion==null)normalDistance.coerceIn(0f,70*d) else 0f
             if(landscape)offset(ModeTransitionDirection.zoneEntrySign(state.isLeftHanded)*travel,0f) else offset(0f,-travel)
         }
         paint.style=Paint.Style.FILL;paint.color=surface;canvas.drawRoundRect(handle,4*d,4*d,paint)
@@ -200,6 +207,7 @@ internal class AutoMeterView(context:Context,private val state:MeterState,val se
         if(settingsFraction>0f)drawSettings(canvas)
         if(formatMenuOpen)viewfinderControls.options(canvas,formatOptionRects(),d)
         accessibility.update(accessibilityNodes())
+        canvas.restoreToCount(layer)
     }
     private fun drawSettings(canvas:Canvas) {
         val panel=settingsPanel()
@@ -272,8 +280,8 @@ internal class AutoMeterView(context:Context,private val state:MeterState,val se
         if(event.actionMasked==MotionEvent.ACTION_DOWN&&settingsExpanded&&g.preview.contains(event.x,event.y)) {
             setSettingsExpanded(false);dismissGesture=true;return true
         }
-        if(pinch.consume(event,g.preview,!session.rawPending)){normalHeld=false;normalDistance=0f;zooming=false;down=-1;return true}
-        if(event.pointerCount>1){normalHeld=false;normalDistance=0f;down=-1;zooming=false;return true}
+        if(pinch.consume(event,g.preview,!session.rawPending)){if(normalHeld)onExitDrag?.invoke(0f,true);normalHeld=false;normalDistance=0f;zooming=false;down=-1;return true}
+        if(event.pointerCount>1){if(normalHeld)onExitDrag?.invoke(0f,true);normalHeld=false;normalDistance=0f;down=-1;zooming=false;return true}
         when(event.actionMasked) {
             MotionEvent.ACTION_DOWN->{
                 down=targets().indexOfFirst{it.contains(event.x,event.y)};zooming=g.zoom.contains(event.x,event.y)
@@ -285,8 +293,10 @@ internal class AutoMeterView(context:Context,private val state:MeterState,val se
                 if(normalHeld){
                     val along=if(width>height)(event.x-downX)*ModeTransitionDirection.zoneEntrySign(state.isLeftHanded) else downY-event.y
                     val cross=if(width>height)event.y-downY else event.x-downX
-                    if(abs(cross)>touchSlop&&abs(cross)>abs(along)*1.2f){normalHeld=false;down=-1}
-                    normalDistance=along.coerceAtLeast(0f);invalidate();return true
+                    if(abs(cross)>touchSlop&&abs(cross)>abs(along)*1.2f){normalHeld=false;down=-1;onExitDrag?.invoke(0f,true)}
+                    normalDistance=along.coerceAtLeast(0f)
+                    if(normalHeld&&normalDistance>touchSlop)onExitDrag?.invoke(exitProgress(),false)
+                    invalidate();return true
                 }
                 if(zooming)zoom(event.x,event.y)
                 if(down in 3..5&&!session.rawPending) {
@@ -301,7 +311,8 @@ internal class AutoMeterView(context:Context,private val state:MeterState,val se
             }
             MotionEvent.ACTION_UP,MotionEvent.ACTION_CANCEL->{
                 if(normalHeld) {
-                    if(event.actionMasked==MotionEvent.ACTION_UP&&normalDistance>=48*d)onExit?.invoke()
+                    if(onExitDrag!=null&&(normalDistance>touchSlop||clearMotion!=null))onExitDrag?.invoke(if(event.actionMasked==MotionEvent.ACTION_CANCEL)0f else exitProgress(),true)
+                    else if(event.actionMasked==MotionEvent.ACTION_UP&&normalDistance>=48*d)onExit?.invoke()
                     else if(event.actionMasked==MotionEvent.ACTION_UP){arrowUntil=SystemClock.uptimeMillis()+900;postInvalidateDelayed(900)}
                 } else if(event.actionMasked==MotionEvent.ACTION_UP&&!zooming&&!moved&&down>=0)activate(down)
                 normalHeld=false;normalDistance=0f;zooming=false;down=-1;invalidate();performClick();return true
@@ -310,6 +321,7 @@ internal class AutoMeterView(context:Context,private val state:MeterState,val se
         return true
     }
     override fun performClick():Boolean {super.performClick();return true}
+    private fun exitProgress()=(normalDistance/(if(width>height)width*.18f else height*.18f)).coerceIn(0f,1f)
     override fun getAccessibilityNodeProvider():AccessibilityNodeProvider=accessibility.provider
     internal fun setSettingsExpanded(expanded:Boolean) {
         if(expanded)formatMenuOpen=false
@@ -320,6 +332,7 @@ internal class AutoMeterView(context:Context,private val state:MeterState,val se
         }
     }
     private fun activate(action:Int) {
+        if(clearMotion!=null)return
         if(action in 40..40+FrameFormat.ALL.size){if(!session.rawPending)selectFormat(action-40);return}
         if(action in 20..24){activateSetting(action-20,settingRow(action-20).right);return}
         if(action==6){setSettingsExpanded(!settingsExpanded);return}
