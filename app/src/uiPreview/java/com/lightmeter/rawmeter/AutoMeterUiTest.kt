@@ -151,6 +151,51 @@ class AutoMeterUiTest {
             listOf(before,start,middle,end).forEach(Bitmap::recycle)
         } finally { ReflectionHelpers.setStaticField(ValueAnimator::class.java,"sDurationScale",oldScale) }
     }
+    @Test fun allThreeReelsSelectTheVisibleLowerNeighborWhenSwipedUpAndUpperWhenSwipedDown() {
+        data class Label(val text:String,val x:Float,val centerY:Float)
+        class RecordingCanvas(bitmap:Bitmap):Canvas(bitmap) {
+            val labels=mutableListOf<Label>()
+            override fun drawText(text:String,x:Float,y:Float,paint:Paint) {
+                labels+=Label(text,x,y+(paint.ascent()+paint.descent())/2)
+                super.drawText(text,x,y,paint)
+            }
+        }
+        val oldScale=ReflectionHelpers.getStaticField<Float>(ValueAnimator::class.java,"sDurationScale")
+        ReflectionHelpers.setStaticField(ValueAnimator::class.java,"sDurationScale",0f)
+        try {
+            for(column in 0..2) {
+                val settings=if(column==0) ExposureCompensationStep.entries.map{it.name}
+                    else ExposureStep.entries.map{it.name}
+                for(setting in settings) {
+                    val state=MeterState(context).apply {
+                        isoIndex=isoValues.indexOf(100);exposureCompSteps=0
+                        updateSetting(when(column){0->SettingKey.EXPOSURE_COMPENSATION_STEP;1->SettingKey.APERTURE_STEP;else->SettingKey.SHUTTER_STEP},setting)
+                        setExposureLockModeFromCoordinates(if(column==2)ExposureLockMode.SHUTTER else ExposureLockMode.APERTURE,5.0,-7.0)
+                    }
+                    val view=AutoMeterView(context,state,AutoMeterSession().apply{accept(reading())});size(view,840,1800)
+                    val row=view.geometry().parameters
+                    val x=row.left+row.width()*(column+.5f)/3;val y=row.centerY()
+                    fun labels():List<Label> {
+                        val bitmap=Bitmap.createBitmap(840,1800,Bitmap.Config.ARGB_8888)
+                        val canvas=RecordingCanvas(bitmap);view.draw(canvas);bitmap.recycle()
+                        return canvas.labels.filter{ kotlin.math.abs(it.x-x)<2 && it.centerY>row.top+34 && it.centerY<row.bottom-14 }.sortedBy{it.centerY}
+                    }
+                    fun swipe(distance:Float) {
+                        touch(view,MotionEvent.ACTION_DOWN,x,y);touch(view,MotionEvent.ACTION_MOVE,x,y+distance)
+                        touch(view,MotionEvent.ACTION_UP,x,y+distance)
+                    }
+                    val before=labels();assertEquals("column=$column step=$setting",3,before.size)
+                    swipe(-48f);val up=labels()
+                    assertEquals("Upward swipe must bring the visible lower value to centre: column=$column step=$setting",before[2].text,up[1].text)
+                    assertEquals(before[1].text,up[0].text)
+                    swipe(48f);val down=labels()
+                    assertEquals("Downward swipe must bring the visible upper value to centre",up[0].text,down[1].text)
+                    assertEquals(before[1].text,down[1].text)
+                    assertEquals(100,state.iso)
+                }
+            }
+        } finally {ReflectionHelpers.setStaticField(ValueAnimator::class.java,"sDurationScale",oldScale)}
+    }
     @Test fun layoutControlsFitAndRenderProductionViewsInPortraitLandscapeAndCompact() {
         val output=File(requireNotNull(System.getProperty("uiPreview.output")),"auto").apply { mkdirs() }
         for((name,dimensions) in listOf("portrait" to (840 to 1800),"landscape" to (1800 to 840),"compact" to (720 to 1440))) for(dark in listOf(false,true)) {

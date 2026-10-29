@@ -56,17 +56,18 @@ internal class RollingParameterWindow {
             val y=rect.centerY()+position*pitch
             canvas.drawText(value,rect.centerX(),y-(paint.ascent()+paint.descent())/2,paint)
         }
-        if(progress>=1f) toLabels.forEachIndexed {index,value->label(value,(1-index).toFloat(),1f)} else {
+        // Values increase down the reel: swiping up brings the lower neighbour into the centre.
+        if(progress>=1f) toLabels.forEachIndexed {index,value->label(value,(index-1).toFloat(),1f)} else {
             fromGlyphs.forEach {label(it.label,it.position-direction*progress,it.opacity*(1-progress))}
-            toLabels.forEachIndexed {index,value->label(value,1-index+direction*(1-progress),progress)}
+            toLabels.forEachIndexed {index,value->label(value,index-1+direction*(1-progress),progress)}
             invalidate()
         }
         canvas.restore();paint.alpha=255
     }
     private fun visibleGlyphs(progress:Float):List<Glyph> =
-        if(fromGlyphs.isEmpty() || progress>=1f) toLabels.mapIndexed {index,value->Glyph(value,(1-index).toFloat(),1f)}
+        if(fromGlyphs.isEmpty() || progress>=1f) toLabels.mapIndexed {index,value->Glyph(value,(index-1).toFloat(),1f)}
         else (fromGlyphs.map {it.copy(position=it.position-direction*progress,opacity=it.opacity*(1-progress))}+
-            toLabels.mapIndexed {index,value->Glyph(value,1-index+direction*(1-progress),progress)})
+            toLabels.mapIndexed {index,value->Glyph(value,index-1+direction*(1-progress),progress)})
             // Continuous 5 Hz updates can retarget before 220 ms. Drop fully transparent
             // remnants so an always-on meter never accumulates a history of invisible labels.
             .filter {it.opacity>=1f/255}
