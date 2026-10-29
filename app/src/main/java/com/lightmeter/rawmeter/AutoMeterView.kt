@@ -157,7 +157,10 @@ internal class AutoMeterView(context:Context,private val state:MeterState,val se
             scratch.set(rect.left,rect.top+4*d,rect.right,rect.top+15*d)
             text(canvas,captions[index],scratch,8f,InstrumentStyle.secondary(state.isDarkMode))
             scratch.set(rect.left+2*d,rect.top+18*d,rect.right-2*d,rect.bottom-8*d)
-            reels[index].draw(canvas,scratch,values[index],AutoMeterControls.interval(state,index),d,ink,reelFormats[index],animationInvalidation)
+            // A shutter reel has discrete labelled positions. Keep the live EV precise, but
+            // anchor all three labels to the same nominal stops used by Normal and Zone.
+            val displayValue=values[index]?.let {if(index==2)-ExposureMath.nearestShutterLogSeconds(-it,state.shutterStep) else it}
+            reels[index].draw(canvas,scratch,displayValue,AutoMeterControls.interval(state,index),d,ink,reelFormats[index],animationInvalidation)
             if(index==1&&state.exposureLockMode==ExposureLockMode.APERTURE || index==2&&state.exposureLockMode==ExposureLockMode.SHUTTER) {
                 paint.color=InstrumentStyle.red;canvas.drawCircle(rect.centerX(),rect.bottom-4*d,1.6f*d,paint)
             }
@@ -355,7 +358,8 @@ internal class AutoMeterView(context:Context,private val state:MeterState,val se
     private fun formatParameter(column:Int,value:Double):String=when(column) {
         0->if(abs(value)>5.00001)"—" else String.format(Locale.US,if(state.exposureCompensationStep.sixthStops<=2)"%+.2f" else "%+.1f",if(abs(value)<.00001)0.0 else value)
         1->ExposureMath.formatAperture(ExposureMath.apertureValueForCoordinate(value,state.apertureStep))
-        else->ExposureMath.formatShutter(ExposureMath.shutterValueForCoordinate(-value,state.shutterStep))
+        else->if(-value<ExposureMath.minShutterLogSeconds-.00001 || -value>ExposureMath.maxShutterLogSeconds+.00001)"—"
+            else ExposureMath.formatShutter(ExposureMath.shutterValueForCoordinate(-value,state.shutterStep))
     }
     private fun zoom(x:Float,y:Float) {
         if(session.rawPending)return
