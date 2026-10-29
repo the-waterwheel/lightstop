@@ -4,7 +4,6 @@ import android.annotation.SuppressLint
 import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
-import android.app.AlertDialog
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -1080,7 +1079,7 @@ internal class ParameterHistoryView(
     private fun confirmDelete(id: String?) {
         val target = id ?: return
         if (deletingCategoryId != null) return
-        AlertDialog.Builder(context)
+        AppDialogs.builder(context,state)
             .setTitle(localized("删除该类记录？", "Delete this category?"))
             .setMessage(localized("图片、RAW 和记录数据将被彻底删除，无法恢复。", "Images, RAW files, and record data will be permanently deleted."))
             .setNegativeButton(localized("取消", "Cancel"), null)
@@ -1098,7 +1097,7 @@ internal class ParameterHistoryView(
                             listener?.onRepositoryChanged()
                             invalidate()
                         } else {
-                            AlertDialog.Builder(context)
+                            AppDialogs.builder(context,state)
                                 .setTitle(localized("未删除记录", "Record not deleted"))
                                 .setMessage(
                                     localized(

@@ -11,7 +11,6 @@ import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.Bitmap
-import android.graphics.drawable.ColorDrawable
 import android.hardware.display.DisplayManager
 import android.net.Uri
 import android.os.Build
@@ -983,7 +982,7 @@ class MainActivity : Activity(), CameraControllerCallback {
         fun current() = activityResumed && generation == manualCombinationGeneration &&
             state.selectedCameraId == selection && meterLayout.isCombinationSelectionOpen
         manualVerificationDialog?.dismiss()
-        manualVerificationDialog = AlertDialog.Builder(this)
+        manualVerificationDialog = AppDialogs.builder(this,state)
             .setTitle(localized("组合暂不可用", "Workflow temporarily unavailable"))
             .setMessage(if (manualApprovalSaved) localized(
                 "选择已保存，但预览恢复失败。可重新验证同一组合，或暂时关闭；不会自动降低测光精度。",
@@ -1306,7 +1305,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             return
         }
         manualVerificationDialog?.dismiss()
-        manualVerificationDialog = AlertDialog.Builder(this)
+        manualVerificationDialog = AppDialogs.builder(this,state)
             .setTitle(localized("需要重新验证相机组合", "Camera workflow needs revalidation"))
             .setMessage(localized(
                 "已保留你的镜头和手动选择。开始后会测试完整 RAW/Zone 流程；在完成前不能测光。",
@@ -1847,7 +1846,7 @@ class MainActivity : Activity(), CameraControllerCallback {
         ) return
         cameraPermissionDialogVisible = true
         val canRequestAgain = shouldShowRequestPermissionRationale(Manifest.permission.CAMERA)
-        AlertDialog.Builder(this)
+        AppDialogs.builder(this,state)
             .setTitle(localized("需要相机权限", "Camera permission required"))
             .setMessage(
                 localized(
@@ -1894,7 +1893,7 @@ class MainActivity : Activity(), CameraControllerCallback {
         ) return
         pendingCalibrationEnvironmentChange = null
         calibrationEnvironmentStore.markPrompted(change)
-        AlertDialog.Builder(this)
+        AppDialogs.builder(this,state)
             .setTitle(localized("建议重新校准", "Recalibration recommended"))
             .setMessage(
                 localized(
@@ -1953,7 +1952,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             message.length,
             Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
         )
-        dialog = AlertDialog.Builder(this)
+        dialog = AppDialogs.builder(this,state)
             .setTitle(localized("建议进行测光校准", "Metering calibration recommended"))
             .setMessage(message)
             .setNegativeButton(localized("下次再说", "Next time"), null)
@@ -2005,7 +2004,7 @@ class MainActivity : Activity(), CameraControllerCallback {
         val camera = state.availableCameras.firstOrNull { it.cameraId == cameraId }
         val cameraName = camera?.let(state::cameraName)
             ?: localized("当前摄像头", "Current camera")
-        AlertDialog.Builder(this)
+        AppDialogs.builder(this,state)
             .setTitle(localized("已切换到预览测光", "Preview metering enabled"))
             .setMessage(
                 localized(
@@ -2037,7 +2036,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             compatibilityModeDialogVisible || isFinishing
         ) return
         compatibilityModeDialogVisible = true
-        AlertDialog.Builder(this)
+        AppDialogs.builder(this,state)
             .setTitle(localized("兼容模式提示", "Compatibility mode"))
             .setMessage(
                 localized(
@@ -2067,7 +2066,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             angleCompatibilityDialogVisible || isFinishing
         ) return
         angleCompatibilityDialogVisible = true
-        AlertDialog.Builder(this)
+        AppDialogs.builder(this,state)
             .setTitle(localized("按角度测光不可用", "Angle metering unavailable"))
             .setMessage(
                 localized(
@@ -2093,7 +2092,7 @@ class MainActivity : Activity(), CameraControllerCallback {
         val english = state.menuLanguage == MenuLanguage.ENGLISH
         val cameraName = state.currentCamera()?.let(state::cameraName)
             ?: if (english) "current camera" else "当前摄像头"
-        AlertDialog.Builder(this)
+        AppDialogs.builder(this,state)
             .setTitle(if (english) "Reset calibration" else "重置测光校准")
             .setMessage(
                 if (english) {
@@ -2122,7 +2121,7 @@ class MainActivity : Activity(), CameraControllerCallback {
         vignettingResetDialogVisible = true
         val cameraName = state.currentCamera()?.let(state::cameraName)
             ?: localized("当前镜头", "current lens")
-        AlertDialog.Builder(this)
+        AppDialogs.builder(this,state)
             .setTitle(localized("重置暗角矫正", "Reset vignetting correction"))
             .setMessage(
                 localized(
@@ -2166,7 +2165,7 @@ class MainActivity : Activity(), CameraControllerCallback {
         val preferences = getSharedPreferences("raw_light_meter_state", MODE_PRIVATE)
         if (preferences.getBoolean("suppress_vignetting_guide", false)) return
         vignettingDialogVisible = true
-        AlertDialog.Builder(this)
+        AppDialogs.builder(this,state)
             .setTitle(localized("暗角矫正提示", "Vignetting correction guide"))
             .setMessage(
                 localized(
@@ -2211,7 +2210,7 @@ class MainActivity : Activity(), CameraControllerCallback {
                 ),
             )
         }
-        AlertDialog.Builder(this)
+        AppDialogs.builder(this,state)
             .setTitle(localized("摄像头备注", "Camera note"))
             .setMessage(camera.technicalSummary())
             .setView(container)
@@ -2255,7 +2254,7 @@ class MainActivity : Activity(), CameraControllerCallback {
                 ),
             )
         }
-        val dialog = AlertDialog.Builder(this)
+        val dialog = AppDialogs.builder(this,state)
             .setTitle(localized("传感器输出画面比例", "Sensor output aspect"))
             .setMessage(
                 localized(
@@ -2275,7 +2274,6 @@ class MainActivity : Activity(), CameraControllerCallback {
             .setPositiveButton(localized("保存", "Save"), null)
             .create()
         dialog.setOnShowListener {
-            applyInterfaceDialogColors(dialog, editor)
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 val text = editor.text.toString()
                 val aspect = if (text.isBlank()) null else PreviewOutputGeometry.parseAspect(text)
@@ -2290,24 +2288,6 @@ class MainActivity : Activity(), CameraControllerCallback {
             }
         }
         dialog.show()
-    }
-
-    private fun applyInterfaceDialogColors(dialog: AlertDialog, editor: EditText) {
-        val background = if (state.isDarkMode) Color.BLACK else Color.WHITE
-        val foreground = if (state.isDarkMode) Color.rgb(210, 210, 206) else Color.rgb(20, 20, 20)
-        val muted = if (state.isDarkMode) Color.rgb(145, 145, 142) else Color.rgb(108, 108, 104)
-        dialog.window?.setBackgroundDrawable(ColorDrawable(background))
-        dialog.findViewById<TextView>(android.R.id.message)?.setTextColor(foreground)
-        val titleId = resources.getIdentifier("alertTitle", "id", "android")
-        if (titleId != 0) dialog.findViewById<TextView>(titleId)?.setTextColor(foreground)
-        editor.setTextColor(foreground)
-        editor.setHintTextColor(muted)
-        editor.backgroundTintList = ColorStateList.valueOf(foreground)
-        listOf(
-            AlertDialog.BUTTON_NEGATIVE,
-            AlertDialog.BUTTON_NEUTRAL,
-            AlertDialog.BUTTON_POSITIVE,
-        ).forEach { button -> dialog.getButton(button)?.setTextColor(foreground) }
     }
 
     private fun enableParameterGps() {

@@ -1,6 +1,5 @@
 package com.lightmeter.rawmeter
 
-import android.app.AlertDialog
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
@@ -914,7 +913,7 @@ class CalibrationView(
                 "Evenly illuminate a reliable 18% diffuse gray card. Measure illuminance at the card with a trusted lux meter and enter the Lux value. Aim this app at the center of the gray card, then tap “Measure and calibrate”.",
             )
         }
-        AlertDialog.Builder(context)
+        AppDialogs.builder(context,state)
             .setTitle(modeLabel(mode))
             .setMessage(message)
             .setPositiveButton(localized("知道了", "Got it"), null)

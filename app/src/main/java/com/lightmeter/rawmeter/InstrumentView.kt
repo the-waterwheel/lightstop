@@ -57,6 +57,7 @@ class InstrumentView(
     private val middleGray = Color.rgb(130, 130, 126)
 
     private val zoomRenderer = ZoomControlRenderer()
+    private val viewfinderControls = ViewfinderControls(state)
     private val modeArrow = ModeGuideArrow()
     private val modeGuide = ModeGuidePulse()
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -209,13 +210,7 @@ class InstrumentView(
         }
         canvas.restore()
 
-        drawOutlinedButton(
-            canvas,
-            g.formatButton,
-            InstrumentPresentation.formatShortLabel(state.frameFormat, state.menuLanguage),
-            formatMenuOpen,
-            overlayAlpha(g.formatButton, g.cameraFrame),
-        )
+        viewfinderControls.format(canvas,g.formatButton,density,formatMenuOpen,overlayAlpha(g.formatButton,g.cameraFrame))
         if (formatMenuOpen) drawFormatMenu(canvas, g)
         drawOrientationButton(
             canvas,
@@ -358,70 +353,12 @@ class InstrumentView(
         }
     }
     private fun drawFormatMenu(canvas: Canvas, g: LayoutGeometry) {
-        InstrumentPresentation.formatOptionRects(g, density).forEachIndexed { index, rect ->
-            val orientation = index == FrameFormat.ALL.size
-            val selected = if (orientation) !state.frameLandscape else index == state.frameIndex
-            paint.style = Paint.Style.FILL
-            paint.color = if (selected) black else surfaceColor
-            canvas.drawRoundRect(rect, 3f * density, 3f * density, paint)
-            paint.style = Paint.Style.STROKE
-            paint.strokeWidth = if (selected) 1.6f * density else 1f * density
-            paint.color = if (selected) red else black
-            canvas.drawRoundRect(rect, 3f * density, 3f * density, paint)
-            paint.style = Paint.Style.FILL
-            paint.color = if (selected) surfaceColor else black
-            paint.textSize = 7.5f * density
-            paint.typeface = Typeface.DEFAULT_BOLD
-            drawCenteredText(
-                canvas,
-                if (orientation) localized(if (state.frameLandscape) "竖拍" else "横拍", if (state.frameLandscape) "Portrait" else "Landscape") else InstrumentPresentation.formatShortLabel(
-                    FrameFormat.ALL[index],
-                    state.menuLanguage,
-                ),
-                rect.centerX(),
-                rect.centerY(),
-                paint,
-            )
-        }
+        viewfinderControls.options(canvas,InstrumentPresentation.formatOptionRects(g,density),density)
     }
 
-    private fun drawOrientationButton(
-        canvas: Canvas,
-        rect: RectF,
-        landscape: Boolean,
-        alpha: Int = 255,
-    ) {
-        paint.style = Paint.Style.FILL
-        paint.withAlpha(InstrumentStyle.control(state.isDarkMode), alpha)
-        canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 1.3f * density
-        paint.withAlpha(InstrumentStyle.border(state.isDarkMode), alpha)
-        canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
-        paint.withAlpha(black, alpha)
-        val iconW = if (landscape) rect.width() * 0.52f else rect.width() * 0.36f
-        val iconH = if (landscape) rect.height() * 0.36f else rect.height() * 0.52f
-        canvas.drawRoundRect(
-            RectF(
-                rect.centerX() - iconW / 2f,
-                rect.centerY() - iconH / 2f,
-                rect.centerX() + iconW / 2f,
-                rect.centerY() + iconH / 2f,
-            ),
-            2f * density,
-            2f * density,
-            paint,
-        )
-        val arc = RectF(
-            rect.left + 5f * density,
-            rect.top + 5f * density,
-            rect.right - 5f * density,
-            rect.bottom - 5f * density,
-        )
-        paint.withAlpha(red, alpha)
-        canvas.drawArc(arc, 205f, 86f, false, paint)
+    private fun drawOrientationButton(canvas:Canvas,rect:RectF,landscape:Boolean,alpha:Int=255) {
+        viewfinderControls.orientation(canvas,rect,density,landscape,alpha)
     }
-
     private fun drawSettingsButton(canvas: Canvas, rect: RectF, alpha: Int = 255) {
         paint.style = Paint.Style.FILL
         paint.withAlpha(InstrumentStyle.control(state.isDarkMode), alpha)
@@ -876,27 +813,6 @@ class InstrumentView(
         drawCenteredText(canvas, message, x, y, paint)
     }
 
-    private fun drawOutlinedButton(
-        canvas: Canvas,
-        rect: RectF,
-        text: String,
-        accented: Boolean,
-        alpha: Int = 255,
-    ) {
-        paint.style = Paint.Style.FILL
-        paint.withAlpha(InstrumentStyle.control(state.isDarkMode), alpha)
-        canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 1.2f * density
-        paint.withAlpha(if (accented) red else InstrumentStyle.border(state.isDarkMode), alpha)
-        canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
-        paint.style = Paint.Style.FILL
-        paint.withAlpha(if (accented) red else black, alpha)
-        paint.textSize = 9f * density
-        paint.typeface = Typeface.DEFAULT_BOLD
-        drawCenteredText(canvas, text, rect.centerX(), rect.centerY(), paint)
-    }
-
     /** Buttons overlapping the fitted viewfinder image become semi-transparent. */
     private fun overlayAlpha(rect: RectF, cameraFrame: RectF): Int =
         if (RectF.intersects(rect, cameraFrame)) OVERLAY_ALPHA else 255
@@ -929,8 +845,7 @@ class InstrumentView(
                     val selectedFormat = InstrumentPresentation.formatOptionRects(g, density)
                         .indexOfFirst { it.contains(event.x, event.y) }
                     if (selectedFormat >= 0) {
-                        if (selectedFormat == FrameFormat.ALL.size) state.toggleFrameOrientation()
-                        else state.selectFrame(selectedFormat)
+                        viewfinderControls.select(selectedFormat)
                         formatMenuOpen = false
                         haptic()
                         listener?.onControlsChanged(true)
@@ -1127,7 +1042,9 @@ class InstrumentView(
     }
 
     private fun accessibilityNodes(g: LayoutGeometry): List<CanvasAccessibilityHelper.VirtualNode> =
-        listOf(
+        (if(formatMenuOpen)InstrumentPresentation.formatOptionRects(g,density).mapIndexed {index,rect->
+            CanvasAccessibilityHelper.VirtualNode(200+index,rect,viewfinderControls.label(index))
+        } else emptyList())+listOf(
             CanvasAccessibilityHelper.VirtualNode(7,g.zoneEntryHandle,localized("模式：normal、zone、clear", "Modes: normal, zone, clear")),
             CanvasAccessibilityHelper.VirtualNode(
                 ACCESSIBILITY_ISO,
@@ -1158,12 +1075,16 @@ class InstrumentView(
             CanvasAccessibilityHelper.VirtualNode(
                 ACCESSIBILITY_ORIENTATION,
                 g.orientationButton,
-                localized("左右手布局", "Handedness"),
+                localized("切换横竖屏", "Rotate interface"),
             ),
         )
 
     private fun handleAccessibilityClick(virtualViewId: Int): Boolean {
         if (state.measuring && virtualViewId != ACCESSIBILITY_METER) return false
+        if(virtualViewId in 200..200+FrameFormat.ALL.size) {
+            viewfinderControls.select(virtualViewId-200);formatMenuOpen=false
+            haptic();listener?.onControlsChanged(true);invalidate();return true
+        }
         return when (virtualViewId) {
             7 -> { modeGuide.show(SystemClock.uptimeMillis());invalidate();true }
             ACCESSIBILITY_ISO -> {

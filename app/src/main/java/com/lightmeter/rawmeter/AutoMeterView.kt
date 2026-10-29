@@ -2,7 +2,6 @@ package com.lightmeter.rawmeter
 
 import android.animation.ValueAnimator
 import android.annotation.SuppressLint
-import android.app.AlertDialog
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
@@ -62,6 +61,9 @@ internal class AutoMeterView(context:Context,private val state:MeterState,val se
     var onOptionsChanged:(()->Unit)?=null
     private val paint=Paint(Paint.ANTI_ALIAS_FLAG)
     private val zoomRenderer=ZoomControlRenderer()
+    private val viewfinderControls=ViewfinderControls(state)
+    internal var formatMenuOpen=false
+        private set
     private val arrow=ModeGuideArrow()
     private val reels=List(3){RollingParameterWindow()}
     private val reelFormats=List<(Double)->String>(3){index->{value->formatParameter(index,value)}}
@@ -116,6 +118,10 @@ internal class AutoMeterView(context:Context,private val state:MeterState,val se
         val panel=settingsPanel();val row=panel.height()/5
         return RectF(panel.left,panel.top+index*row,panel.right,panel.top+(index+1)*row)
     }
+    internal fun formatOptionRects():List<RectF> {
+        val bounds=RectF(geometry().preview).apply{inset(8*d,8*d)}
+        return InstrumentPresentation.formatOptionRects(bounds,d,34*d)
+    }
     override fun onSizeChanged(w:Int,h:Int,oldw:Int,oldh:Int){super.onSizeChanged(w,h,oldw,oldh);cachedGeometry=null}
     private fun text(canvas:Canvas,label:String,rect:RectF,size:Float,color:Int=ink,bold:Boolean=false) {
         paint.style=Paint.Style.FILL;paint.color=color;paint.textAlign=Paint.Align.CENTER
@@ -134,8 +140,8 @@ internal class AutoMeterView(context:Context,private val state:MeterState,val se
         ViewfinderOverlay.outside(canvas,g.preview,width,height,surface,d)
         if(!state.isUnframed)ViewfinderOverlay.framing(canvas,g.preview,state.displayedFramingCrop(width>height),d)
         if(session.showInterfaceText)text(canvas,"clear",g.mode,16f,bold=true)
-        button(canvas,if(session.showInterfaceText)state.frameFormat.displayLabel(state.menuLanguage) else state.frameFormat.id,g.format)
-        button(canvas,"↻",g.orientation)
+        viewfinderControls.format(canvas,g.format,d,formatMenuOpen,label=if(session.showInterfaceText)InstrumentPresentation.formatShortLabel(state.frameFormat,state.menuLanguage) else state.frameFormat.id)
+        viewfinderControls.orientation(canvas,g.orientation,d,width>height)
         if(session.showInterfaceText) {
             val status=when {
                 session.rawPending->l("手动测光中…","Measuring…")
@@ -192,6 +198,7 @@ internal class AutoMeterView(context:Context,private val state:MeterState,val se
             else arrow.draw(canvas,handle.centerX(),handle.top-20*d,d)
         }
         if(settingsFraction>0f)drawSettings(canvas)
+        if(formatMenuOpen)viewfinderControls.options(canvas,formatOptionRects(),d)
         accessibility.update(accessibilityNodes())
     }
     private fun drawSettings(canvas:Canvas) {
@@ -228,7 +235,8 @@ internal class AutoMeterView(context:Context,private val state:MeterState,val se
             if(panel!=null&&RectF.intersects(panel,rect)) null
             else CanvasAccessibilityHelper.VirtualNode(index,rect,labels[index],enabled=!session.rawPending||index==6||index==7&&session.locked)
         }
-        return (if(settingsExpanded)(0..4).map {index->CanvasAccessibilityHelper.VirtualNode(20+index,settingRow(index),
+        val formats=if(formatMenuOpen)formatOptionRects().mapIndexed{index,rect->CanvasAccessibilityHelper.VirtualNode(40+index,rect,viewfinderControls.label(index),enabled=!session.rawPending)} else emptyList()
+        return formats+(if(settingsExpanded)(0..4).map {index->CanvasAccessibilityHelper.VirtualNode(20+index,settingRow(index),
                 listOf(l("曝光模拟","Exposure simulation"),l("自动持续测光","Continuous metering"),l("测光频率","Frequency"),l("界面文字","Interface text"),l("平滑测光","Smooth metering"))[index],
                 enabled=!session.rawPending&&(index!=2||session.continuousMetering))} else emptyList())+controls
     }
@@ -241,6 +249,13 @@ internal class AutoMeterView(context:Context,private val state:MeterState,val se
     }
     override fun onTouchEvent(event:MotionEvent):Boolean {
         if(dismissGesture) {if(event.actionMasked==MotionEvent.ACTION_UP||event.actionMasked==MotionEvent.ACTION_CANCEL)dismissGesture=false;return true}
+        if(event.actionMasked==MotionEvent.ACTION_DOWN&&formatMenuOpen) {
+            val selected=formatOptionRects().indexOfFirst{it.contains(event.x,event.y)}
+            if(selected>=0&&!session.rawPending){selectFormat(selected);dismissGesture=true;return true}
+            if(!geometry().format.contains(event.x,event.y)&&!geometry().orientation.contains(event.x,event.y)) {
+                formatMenuOpen=false;dismissGesture=true;invalidate();return true
+            }
+        }
         if(event.actionMasked==MotionEvent.ACTION_DOWN && settingsFraction>0f && settingsPanel().contains(event.x,event.y)) {
             settingsTouch=true;settingTarget=if(settingsExpanded&&settingsFraction>.95f)(0..4).firstOrNull{settingRow(it).contains(event.x,event.y)}?:-1 else -1
             downX=event.x;downY=event.y;return true
@@ -297,6 +312,7 @@ internal class AutoMeterView(context:Context,private val state:MeterState,val se
     override fun performClick():Boolean {super.performClick();return true}
     override fun getAccessibilityNodeProvider():AccessibilityNodeProvider=accessibility.provider
     internal fun setSettingsExpanded(expanded:Boolean) {
+        if(expanded)formatMenuOpen=false
         settingsExpanded=expanded;settingsAnimator?.cancel()
         if(!ValueAnimator.areAnimatorsEnabled()){settingsFraction=if(expanded)1f else 0f;invalidate();return}
         settingsAnimator=ValueAnimator.ofFloat(settingsFraction,if(expanded)1f else 0f).apply {
@@ -304,18 +320,15 @@ internal class AutoMeterView(context:Context,private val state:MeterState,val se
         }
     }
     private fun activate(action:Int) {
+        if(action in 40..40+FrameFormat.ALL.size){if(!session.rawPending)selectFormat(action-40);return}
         if(action in 20..24){activateSetting(action-20,settingRow(action-20).right);return}
         if(action==6){setSettingsExpanded(!settingsExpanded);return}
         if(action==7){if(!session.rawPending||session.locked)onRaw?.invoke();return}
         if(session.rawPending)return
         when(action) {
             0->{arrowUntil=SystemClock.uptimeMillis()+900;postInvalidateDelayed(900);invalidate()}
-            1->{
-                val labels=FrameFormat.ALL.map{it.displayLabel(state.menuLanguage)}+
-                    l(if(state.frameLandscape)"竖拍构图" else "横拍构图",if(state.frameLandscape)"Portrait frame" else "Landscape frame")
-                choose(l("画幅","Format"),labels,state.frameIndex){if(it==FrameFormat.ALL.size)state.toggleFrameOrientation() else state.selectFrame(it);changed(true,true)}
-            }
-            2->onOrientation?.invoke()
+            1->{setSettingsExpanded(false);formatMenuOpen=!formatMenuOpen;invalidate()}
+            2->{formatMenuOpen=false;onOrientation?.invoke()}
             3->{val values=(-30..30 step state.exposureCompensationStep.sixthStops).toList()
                 choose(l("曝光补偿","Exposure compensation"),values.map{formatParameter(0,it/6.0)+" EV"},values.indexOf(state.exposureCompSteps)){state.exposureCompSteps=values[it];changed(false)}}
             4->{val stops=ExposureMath.apertureStops(state.apertureStep)
@@ -323,6 +336,10 @@ internal class AutoMeterView(context:Context,private val state:MeterState,val se
             5->{val stops=ExposureMath.shutterStops(state.shutterStep)
                 choose(l("固定快门","Fixed shutter"),stops.map{formatParameter(2,-it)},-1){state.setExposureLockModeFromCoordinates(ExposureLockMode.SHUTTER,state.lockedApertureStop,stops[it]);changed(false)}}
         }
+    }
+    private fun selectFormat(index:Int) {
+        viewfinderControls.select(index);formatMenuOpen=false
+        performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);changed(true,true)
     }
     private fun activateSetting(index:Int,x:Float) {
         if(session.rawPending||index==2&&!session.continuousMetering)return
@@ -341,7 +358,7 @@ internal class AutoMeterView(context:Context,private val state:MeterState,val se
     }
     private fun showSmoothNotice() {
         val checkbox=CheckBox(context).apply{text=l("不再提示","Don't show again");setPadding((20*d).toInt(),(8*d).toInt(),(20*d).toInt(),(8*d).toInt())}
-        AlertDialog.Builder(context).setTitle(l("平滑测光","Smooth metering"))
+        AppDialogs.builder(context,state).setTitle(l("平滑测光","Smooth metering"))
             .setMessage(l("开启后，clear 模式会禁用 RAW 测光，手动测光也改用 YUV/ISP 预览流，以减少部分设备的 RAW 测光卡顿。",
                 "Clear will disable RAW, including manual metering, and use YUV/ISP preview frames to reduce RAW capture pauses on some devices."))
             .setView(checkbox).setPositiveButton(l("确定","OK")){_,_->if(checkbox.isChecked)preferences.suppressSmoothNotice=true}.show()
@@ -373,11 +390,12 @@ internal class AutoMeterView(context:Context,private val state:MeterState,val se
         onControls?.invoke(frame);invalidate()
     }
     private fun choose(title:String,items:List<String>,selected:Int,accept:(Int)->Unit) {
-        AlertDialog.Builder(context).setTitle(title).setSingleChoiceItems(items.toTypedArray(),selected){dialog,index->
+        AppDialogs.builder(context,state).setTitle(title).setSingleChoiceItems(items.toTypedArray(),selected){dialog,index->
             dialog.dismiss();if(!session.rawPending&&visibility==VISIBLE)accept(index)
         }.setNegativeButton(l("取消","Cancel"),null).show()
     }
     internal fun closeTransientUi() {
+        formatMenuOpen=false
         settingsAnimator?.cancel();settingsAnimator=null;settingsExpanded=false;settingsFraction=0f
         normalHeld=false;normalDistance=0f;arrowUntil=0L;zooming=false;down=-1
         settingsTouch=false;settingTarget=-1;dismissGesture=false

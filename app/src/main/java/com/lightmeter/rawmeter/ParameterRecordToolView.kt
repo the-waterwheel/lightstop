@@ -1,7 +1,6 @@
 package com.lightmeter.rawmeter
 
 import android.annotation.SuppressLint
-import android.app.AlertDialog
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
@@ -433,7 +432,7 @@ internal class ParameterRecordToolView(
             repository.options = repository.options.copy(recordRaw = true)
             return
         }
-        AlertDialog.Builder(context)
+        AppDialogs.builder(context,state)
             .setTitle(localized("记录 RAW 数据", "Record RAW data"))
             .setMessage(localized(
                 "记录 RAW 后，无论拍摄时使用全局、点测还是其他测光方式，都可在保存前或历史回看中新增测点。回看时点击 RAW 补点，再点按画面；取景灰框外也可以标点。点按已有测点可删除，并可撤销。RAW 会占用较多存储空间。",
@@ -464,7 +463,7 @@ internal class ParameterRecordToolView(
                 "This device or camera does not support RAW recording. Choose another camera or a supported device.",
             )
         }
-        AlertDialog.Builder(context)
+        AppDialogs.builder(context,state)
             .setTitle(localized("RAW 数据", "RAW data"))
             .setMessage(message)
             .setPositiveButton(localized("确定", "OK"), null)

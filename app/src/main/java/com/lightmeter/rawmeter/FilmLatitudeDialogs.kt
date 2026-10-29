@@ -43,7 +43,7 @@ internal class FilmLatitudeDialogs(
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
         )
 
-        val dialog = AlertDialog.Builder(context)
+        val dialog = AppDialogs.builder(context,state)
             .setTitle(localized("手动录入胶片", "Add film manually"))
             .setView(container)
             .setNegativeButton(localized("取消", "Cancel"), null)

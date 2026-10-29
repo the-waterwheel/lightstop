@@ -11,4 +11,20 @@
         <item name="android:windowLightStatusBar">true</item>
         <item name="android:windowDisablePreview">true</item>
     </style>
+    <style name="Theme.Lightstop.Dialog.Light" parent="android:style/Theme.Material.Light.Dialog.Alert">
+        <item name="android:fontFamily">sans-serif</item>
+        <item name="android:colorAccent">#A61B24</item>
+        <item name="android:textColorPrimary">#141414</item>
+        <item name="android:textColorSecondary">#70706A</item>
+        <item name="android:colorBackground">#F9F9F7</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+    <style name="Theme.Lightstop.Dialog.Dark" parent="android:style/Theme.Material.Dialog.Alert">
+        <item name="android:fontFamily">sans-serif</item>
+        <item name="android:colorAccent">#DD7782</item>
+        <item name="android:textColorPrimary">#D2D2CE</item>
+        <item name="android:textColorSecondary">#A0A09A</item>
+        <item name="android:colorBackground">#161615</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
 </resources>

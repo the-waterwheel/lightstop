@@ -3,7 +3,6 @@ package com.lightmeter.rawmeter
 import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
-import android.app.AlertDialog
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Color
@@ -1833,7 +1832,7 @@ class MeterLayout @JvmOverloads constructor(
     }
 
     private fun showParameterCapturePrivacyNotice() {
-        AlertDialog.Builder(context)
+        AppDialogs.builder(context,state)
             .setTitle(localized("参数记录与系统备份", "Parameter records and system backup"))
             .setMessage(
                 localized(
@@ -1857,7 +1856,7 @@ class MeterLayout @JvmOverloads constructor(
     }
 
     private fun showParameterCapturePrivacyDetails() {
-        AlertDialog.Builder(context)
+        AppDialogs.builder(context,state)
             .setTitle(localized("隐私说明", "Privacy notice"))
             .setMessage(
                 localized(

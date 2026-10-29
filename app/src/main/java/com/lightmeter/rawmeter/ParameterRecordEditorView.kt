@@ -2,7 +2,6 @@ package com.lightmeter.rawmeter
 
 import android.animation.ValueAnimator
 import android.annotation.SuppressLint
-import android.app.AlertDialog
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Bitmap
@@ -530,7 +529,7 @@ internal class ParameterRecordEditorView(
             maxLines = 5
             setText(index?.let { draft?.notes?.getOrNull(it) }.orEmpty())
         }
-        AlertDialog.Builder(context)
+        AppDialogs.builder(context,state)
             .setTitle(if (index == null) localized("新增备注", "Add note") else localized("修改备注", "Edit note"))
             .setView(field)
             .setNegativeButton(localized("取消", "Cancel"), null)
