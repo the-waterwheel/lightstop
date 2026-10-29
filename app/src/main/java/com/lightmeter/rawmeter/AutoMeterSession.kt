@@ -17,13 +17,12 @@ internal class AutoMeterSession {
     var continuousMetering = true
         set(value) {
             field=value
-            if(!value) { recoveryCameraEv100=null;signalLimited=false }
+            if(!value) { locked=false;recoveryCameraEv100=null;signalLimited=false }
         }
     var sampleIntervalMs = 350L
     var showInterfaceText = true
     var smoothMetering = false
     private var manualExpectsRaw = true
-    private var resumeOnFailure = true
     private var restoreLockOnFailure = false
     val manualUsesRaw: Boolean get() = rawPending && manualExpectsRaw
     fun shouldUseRaw(rawSupported: Boolean): Boolean = rawSupported && !smoothMetering
@@ -77,10 +76,8 @@ internal class AutoMeterSession {
     fun beginManual(useRaw: Boolean): Boolean {
         if (rawPending) return false
         manualExpectsRaw=useRaw
-        resumeOnFailure=continuousMetering
         restoreLockOnFailure=locked
-        continuousMetering=false
-        locked=false
+        locked=continuousMetering
         rawPending = true
         recoveryCameraEv100 = null
         signalLimited = false
@@ -93,7 +90,6 @@ internal class AutoMeterSession {
     fun finishManual(reading: MeterReading): Boolean {
         if (!rawPending || (reading.source == MeteringSource.RAW) != manualExpectsRaw || !reading.sceneEv100.isFinite()) return false
         rawPending = false
-        locked = true
         filteredEv = reading.sceneEv100
         this.reading = reading
         error = null
@@ -101,8 +97,13 @@ internal class AutoMeterSession {
     }
 
     fun fail(message: String) {
-        if(rawPending) { continuousMetering=resumeOnFailure;locked=restoreLockOnFailure }
+        if(rawPending) locked=restoreLockOnFailure
         rawPending = false; error = message
+    }
+    fun releaseManualLock():Boolean {
+        if(!continuousMetering||!locked)return false
+        locked=false;restoreLockOnFailure=false;error=null
+        return true
     }
     fun unlock(clear: Boolean = false, resumeContinuous: Boolean = true) {
         locked = false

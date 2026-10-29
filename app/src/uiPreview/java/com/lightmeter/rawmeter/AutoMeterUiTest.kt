@@ -31,7 +31,7 @@ class AutoMeterUiTest {
     private fun touch(view: View,action: Int,x: Float,y: Float) {
         MotionEvent.obtain(0,20,action,x,y,0).also { view.onTouchEvent(it);it.recycle() }
     }
-    @Test fun normalHandleEntersAutoByDraggingDownOrRightForEitherHand() {
+    @Test fun normalHandleEntersClearWithTheMirroredHandedGesture() {
         for(landscape in listOf(false,true)) for(left in listOf(false,true)) {
             val state=MeterState(context).apply { handedness=if(left) Handedness.LEFT else Handedness.RIGHT }
             val view=InstrumentView(context,state)
@@ -51,7 +51,7 @@ class AutoMeterUiTest {
             val rect=LayoutGeometry.calculate(w,h,view.layoutDensity(LayoutProfile.METER),left).zoneEntryHandle
             val x=rect.centerX();val y=rect.centerY()
             touch(view,MotionEvent.ACTION_DOWN,x,y)
-            val endX=if(landscape)x+w*.1f else x;val endY=if(landscape)y else y+h*.1f
+            val endX=if(landscape)x+w*.1f*ModeTransitionDirection.normalEntrySign(left) else x;val endY=if(landscape)y else y+h*.1f
             touch(view,MotionEvent.ACTION_MOVE,endX,endY);touch(view,MotionEvent.ACTION_UP,endX,endY)
             assertEquals("landscape=$landscape left=$left",1,entered)
             touch(view,MotionEvent.ACTION_DOWN,x,y)

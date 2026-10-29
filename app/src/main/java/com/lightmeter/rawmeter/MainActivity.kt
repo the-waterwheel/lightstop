@@ -219,6 +219,10 @@ class MainActivity : Activity(), CameraControllerCallback {
             override fun onAutoRawRequested() {
                 if (!activityResumed || !meterLayout.isAutoMode) return
                 val session = meterLayout.autoSession
+                if(session.releaseManualLock()) {
+                    updateAutoMetering();updateExposurePreviewFromMeter();meterLayout.refresh()
+                    return
+                }
                 val useRaw=session.shouldUseRaw(state.cameraInfo.rawHardwareAvailable)
                 if (!session.beginManual(useRaw)) return
                 updateAutoMetering()

@@ -284,13 +284,6 @@ class MeterLayout @JvmOverloads constructor(
             autoView.onOptionsChanged = {persistClearOptions();value?.onClearOptionsChanged()}
             instrumentView.listener = object : InstrumentView.Listener {
                 override fun onAutoEntryRequested() { enterAutoMode() }
-                override fun onModeMenuRequested() {
-                    AlertDialog.Builder(context).setTitle(localized("模式", "Modes"))
-                        .setItems(arrayOf("normal", "zone", "clear")) { _, index ->
-                            if (index==1) animateZoneTransition(1f)
-                            if (index==2) enterAutoMode()
-                        }.show()
-                }
                 override fun onMeasureRequested() {
                     value?.onMeasureRequested()
                 }

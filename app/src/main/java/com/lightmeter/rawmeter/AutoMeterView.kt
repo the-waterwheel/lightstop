@@ -18,6 +18,7 @@ import android.widget.CheckBox
 import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.roundToInt
+import java.util.Locale
 
 internal data class AutoMeterGeometry(
     val preview:RectF,val mode:RectF,val format:RectF,val orientation:RectF,
@@ -25,22 +26,26 @@ internal data class AutoMeterGeometry(
 ) {
     val settingsBar:RectF get()=simulation
     companion object {
-        fun calculate(w:Int,h:Int,d:Float):AutoMeterGeometry {
+        fun calculate(w:Int,h:Int,d:Float,leftHanded:Boolean=false):AutoMeterGeometry {
             val width=w.toFloat();val height=h.toFloat()
             fun r(l:Float,t:Float,right:Float,b:Float)=RectF(l,t,right,b)
             if(w>h) {
                 val x=width-226*d
-                return AutoMeterGeometry(r(12*d,12*d,x-56*d,height-12*d),
+                val geometry=AutoMeterGeometry(r(12*d,12*d,x-56*d,height-12*d),
                     r(x,12*d,width-12*d,46*d),r(x,58*d,width-60*d,94*d),
                     r(width-52*d,58*d,width-12*d,94*d),r(x,108*d,width-12*d,136*d),
                     r(x,150*d,width-12*d,252*d),r(x,height-102*d,width-12*d,height-68*d),
                     r(x,height-52*d,width-12*d,height-12*d),r(x-48*d,40*d,x-10*d,height-40*d))
+                if(!leftHanded)return geometry
+                fun mirror(rect:RectF)=r(width-rect.right,rect.top,width-rect.left,rect.bottom)
+                return AutoMeterGeometry(mirror(geometry.preview),mirror(geometry.mode),mirror(geometry.format),mirror(geometry.orientation),
+                    mirror(geometry.status),mirror(geometry.parameters),mirror(geometry.simulation),mirror(geometry.raw),mirror(geometry.zoom))
             }
-            return AutoMeterGeometry(r(12*d,56*d,width-56*d,height-226*d),
+            return AutoMeterGeometry(r(12*d,56*d,width-12*d,height-254*d),
                 r(12*d,12*d,112*d,46*d),r(width-162*d,12*d,width-56*d,46*d),
                 r(width-48*d,12*d,width-12*d,46*d),r(16*d,height-218*d,width-16*d,height-198*d),
                 r(12*d,height-156*d,width-12*d,height-60*d),r(12*d,height-192*d,width-12*d,height-162*d),
-                r(12*d,height-50*d,width-12*d,height-10*d),r(width-48*d,80*d,width-8*d,height-250*d))
+                r(12*d,height-50*d,width-12*d,height-10*d),r(24*d,height-248*d,width-96*d,height-222*d))
         }
     }
 }
@@ -63,6 +68,7 @@ internal class AutoMeterView(context:Context,private val state:MeterState,val se
     private val animationInvalidation:()->Unit={postInvalidateOnAnimation()}
     private val scratch=RectF()
     private var cachedGeometry:AutoMeterGeometry?=null
+    private var cachedLeftHanded=false
     private val d get()=min(resources.displayMetrics.density,min(width,height).coerceAtLeast(1)/380f)
     private val ink get()=InstrumentStyle.foreground(state.isDarkMode)
     private val surface get()=InstrumentStyle.background(state.isDarkMode)
@@ -88,10 +94,17 @@ internal class AutoMeterView(context:Context,private val state:MeterState,val se
     private val pinch=ViewfinderPinch(context){factor->
         state.previewZoom*=factor;changed(false,framing=state.isUnframed)
     }
-    internal fun geometry():AutoMeterGeometry=cachedGeometry?:AutoMeterGeometry.calculate(width,height,d).also{cachedGeometry=it}
-    fun previewFrame(w:Int,h:Int)=AutoMeterGeometry.calculate(w,h,min(resources.displayMetrics.density,min(w,h).coerceAtLeast(1)/380f)).preview
+    internal fun geometry():AutoMeterGeometry {
+        if(cachedLeftHanded!=state.isLeftHanded){cachedGeometry=null;cachedLeftHanded=state.isLeftHanded}
+        return cachedGeometry?:AutoMeterGeometry.calculate(width,height,d,state.isLeftHanded).also{cachedGeometry=it}
+    }
+    fun previewFrame(w:Int,h:Int)=AutoMeterGeometry.calculate(w,h,min(resources.displayMetrics.density,min(w,h).coerceAtLeast(1)/380f),state.isLeftHanded).preview
     internal fun normalHandle():RectF {
         val frame=geometry().preview
+        if(width>height) {
+            val left=if(state.isLeftHanded)frame.left+4*d else frame.right-26*d
+            return RectF(left,height/2f-38*d,left+22*d,height/2f+38*d)
+        }
         return RectF(frame.centerX()-34*d,frame.bottom-26*d,frame.centerX()+34*d,frame.bottom-4*d)
     }
     internal fun settingsPanel():RectF {
@@ -126,13 +139,14 @@ internal class AutoMeterView(context:Context,private val state:MeterState,val se
         if(session.showInterfaceText) {
             val status=when {
                 session.rawPending->l("手动测光中…","Measuring…")
+                session.locked->l("测光锁定 · 全局","LOCKED · GLOBAL")
                 session.recoveryCameraEv100!=null->l("正在恢复测光信号","Recovering signal")
                 session.signalLimited->l("预览信号受限","Limited preview signal")
                 !session.continuousMetering->l("手动 · 全局","MANUAL · GLOBAL")
                 else->"clear · "+l("持续全局测光","LIVE GLOBAL")
             }
             val source=session.reading?.source?.let {if(it==MeteringSource.YUV_PREVIEW)"YUV" else if(it==MeteringSource.RAW)"RAW" else "ISP"}?:"…"
-            val ev=session.reading?.sceneEv100?.let{"EV100 ${"%.1f".format(it)}"}?:"EV100 —"
+            val ev=session.reading?.sceneEv100?.let{"EV100 ${String.format(Locale.US,"%.1f",it)}"}?:"EV100 —"
             text(canvas,session.error?:"$status · $source · $ev",g.status,10f,InstrumentStyle.secondary(state.isDarkMode))
         }
         val values=AutoMeterControls.coordinates(state,session)
@@ -151,23 +165,29 @@ internal class AutoMeterView(context:Context,private val state:MeterState,val se
         button(canvas,if(session.showInterfaceText)l("参数调节","Adjustments") else "☷",g.settingsBar)
         scratch.set(g.settingsBar.right-30*d,g.settingsBar.top,g.settingsBar.right-6*d,g.settingsBar.bottom)
         text(canvas,if(settingsExpanded)"⌃" else "⌄",scratch,14f)
-        button(canvas,if(session.showInterfaceText)if(session.rawPending)l("测光中…","Measuring…") else l("手动测光","Measure") else "",g.raw,true)
-        if(!session.showInterfaceText) {
-            paint.style=Paint.Style.STROKE;paint.color=surface;paint.strokeWidth=1.5f*d
-            canvas.drawCircle(g.raw.centerX(),g.raw.centerY(),8*d,paint)
-            canvas.drawLine(g.raw.centerX()-12*d,g.raw.centerY(),g.raw.centerX()+12*d,g.raw.centerY(),paint)
-            canvas.drawLine(g.raw.centerX(),g.raw.centerY()-12*d,g.raw.centerX(),g.raw.centerY()+12*d,paint)
-        }
+        button(canvas,if(session.showInterfaceText)manualLabel() else "",g.raw,true)
+        if(session.locked){paint.style=Paint.Style.STROKE;paint.color=InstrumentStyle.red;paint.strokeWidth=2*d;canvas.drawRoundRect(g.raw,9*d,9*d,paint)}
         val fraction=((state.zoomControlValue-1)/(state.zoomControlMaximum-1)).coerceIn(0f,1f)
-        zoomRenderer.draw(canvas,true,g.zoom.centerX(),g.zoom.top+24*d,g.zoom.bottom-24*d,
-            g.zoom.bottom-24*d-fraction*(g.zoom.height()-48*d),d,state.isDarkMode)
-        scratch.set(g.zoom.left,g.zoom.top-24*d,g.zoom.right+4*d,g.zoom.top)
+        val landscape=width>height
+        val start=if(landscape)g.zoom.top+24*d else g.zoom.left+12*d
+        val end=if(landscape)g.zoom.bottom-24*d else g.zoom.right-12*d
+        zoomRenderer.draw(canvas,landscape,if(landscape)g.zoom.centerX() else g.zoom.centerY(),start,end,
+            if(landscape)end-fraction*(end-start) else start+fraction*(end-start),d,state.isDarkMode)
+        if(landscape)scratch.set(g.zoom.left,g.zoom.top-24*d,g.zoom.right+4*d,g.zoom.top)
+        else scratch.set(g.zoom.right+6*d,g.zoom.top,width-12*d,g.zoom.bottom)
         text(canvas,if(state.isUnframed)"${"%.1f".format(state.previewZoom)}×" else state.equivalentFrameFocalMm()?.let{"${it}mm"}?:"—",scratch,10f)
-        val handle=normalHandle().apply{offset(0f,-normalDistance.coerceIn(0f,70*d))}
+        val handle=normalHandle().apply{
+            val travel=normalDistance.coerceIn(0f,70*d)
+            if(landscape)offset(ModeTransitionDirection.zoneEntrySign(state.isLeftHanded)*travel,0f) else offset(0f,-travel)
+        }
         paint.style=Paint.Style.FILL;paint.color=surface;canvas.drawRoundRect(handle,4*d,4*d,paint)
         paint.style=Paint.Style.STROKE;paint.strokeWidth=1.2f*d;paint.color=ink;canvas.drawRoundRect(handle,4*d,4*d,paint)
-        text(canvas,"normal",handle,8.5f,bold=true)
-        if(normalHeld || SystemClock.uptimeMillis()<arrowUntil)arrow.draw(canvas,handle.centerX(),handle.top-20*d,d)
+        if(landscape){canvas.save();canvas.rotate(-90f,handle.centerX(),handle.centerY());scratch.set(handle.centerX()-handle.height()/2,handle.centerY()-handle.width()/2,handle.centerX()+handle.height()/2,handle.centerY()+handle.width()/2);text(canvas,"normal",scratch,8.5f,bold=true);canvas.restore()}
+        else text(canvas,"normal",handle,8.5f,bold=true)
+        if(normalHeld || SystemClock.uptimeMillis()<arrowUntil) {
+            if(landscape){val sign=ModeTransitionDirection.zoneEntrySign(state.isLeftHanded);arrow.draw(canvas,handle.centerX()+sign*(handle.width()/2+20*d),handle.centerY(),d,sign*90f)}
+            else arrow.draw(canvas,handle.centerX(),handle.top-20*d,d)
+        }
         if(settingsFraction>0f)drawSettings(canvas)
         accessibility.update(accessibilityNodes())
     }
@@ -191,18 +211,19 @@ internal class AutoMeterView(context:Context,private val state:MeterState,val se
             if(index==2)text(canvas,"−  ${frequencyLabel()}  +",scratch,10f,color,true)
             else {
                 val active=when(index){0->session.simulation;1->session.continuousMetering;3->session.showInterfaceText;else->session.smoothMetering}
-                text(canvas,if(active)"ON" else "OFF",scratch,10f,if(enabled&&active)InstrumentStyle.red else color,true)
+                text(canvas,if(active)l("开启","ON") else l("关闭","OFF"),scratch,10f,if(enabled&&active)InstrumentStyle.red else color,true)
             }
         }
         canvas.restore()
     }
     private fun accessibilityNodes():List<CanvasAccessibilityHelper.VirtualNode> {
-        val labels=listOf(l("返回 normal，向上滑动","Return to normal; swipe up"),l("画幅","Format"),l("横竖屏","Orientation"),
-            l("曝光补偿","Exposure compensation"),l("光圈","Aperture"),l("快门","Shutter"),l("参数调节","Adjustments"),l("手动测光","Measure"))
+        val exitLabel=if(width<=height)l("返回 normal，向上滑动","Return to normal; swipe up") else if(state.isLeftHanded)l("返回 normal，向右滑动","Return to normal; swipe right") else l("返回 normal，向左滑动","Return to normal; swipe left")
+        val labels=listOf(exitLabel,l("画幅","Format"),l("横竖屏","Orientation"),
+            l("曝光补偿","Exposure compensation"),l("光圈","Aperture"),l("快门","Shutter"),l("参数调节","Adjustments"),manualLabel())
         val panel=if(settingsExpanded)settingsPanel() else null
         val controls=targets().mapIndexedNotNull {index,rect->
             if(panel!=null&&RectF.intersects(panel,rect)) null
-            else CanvasAccessibilityHelper.VirtualNode(index,rect,labels[index],enabled=!session.rawPending||index==6)
+            else CanvasAccessibilityHelper.VirtualNode(index,rect,labels[index],enabled=!session.rawPending||index==6||index==7&&session.locked)
         }
         return (if(settingsExpanded)(0..4).map {index->CanvasAccessibilityHelper.VirtualNode(20+index,settingRow(index),
                 listOf(l("曝光模拟","Exposure simulation"),l("自动持续测光","Continuous metering"),l("测光频率","Frequency"),l("界面文字","Interface text"),l("平滑测光","Smooth metering"))[index],
@@ -240,11 +261,16 @@ internal class AutoMeterView(context:Context,private val state:MeterState,val se
                 down=targets().indexOfFirst{it.contains(event.x,event.y)};zooming=g.zoom.contains(event.x,event.y)
                 downX=event.x;downY=event.y;lastY=event.y;remainder=0f;moved=false
                 normalHeld=down==0&&!session.rawPending;normalDistance=0f
-                if(zooming)zoom(event.y);invalidate();return true
+                if(zooming)zoom(event.x,event.y);invalidate();return true
             }
             MotionEvent.ACTION_MOVE->{
-                if(normalHeld){normalDistance=(downY-event.y).coerceAtLeast(0f);invalidate();return true}
-                if(zooming)zoom(event.y)
+                if(normalHeld){
+                    val along=if(width>height)(event.x-downX)*ModeTransitionDirection.zoneEntrySign(state.isLeftHanded) else downY-event.y
+                    val cross=if(width>height)event.y-downY else event.x-downX
+                    if(abs(cross)>touchSlop&&abs(cross)>abs(along)*1.2f){normalHeld=false;down=-1}
+                    normalDistance=along.coerceAtLeast(0f);invalidate();return true
+                }
+                if(zooming)zoom(event.x,event.y)
                 if(down in 3..5&&!session.rawPending) {
                     if(!moved&&abs(event.x-downX)>touchSlop&&abs(event.x-downX)>abs(event.y-downY)){down=-1;return true}
                     if(moved||abs(event.y-downY)>touchSlop) {
@@ -277,6 +303,7 @@ internal class AutoMeterView(context:Context,private val state:MeterState,val se
     private fun activate(action:Int) {
         if(action in 20..24){activateSetting(action-20,settingRow(action-20).right);return}
         if(action==6){setSettingsExpanded(!settingsExpanded);return}
+        if(action==7){if(!session.rawPending||session.locked)onRaw?.invoke();return}
         if(session.rawPending)return
         when(action) {
             0->{arrowUntil=SystemClock.uptimeMillis()+900;postInvalidateDelayed(900);invalidate()}
@@ -292,7 +319,6 @@ internal class AutoMeterView(context:Context,private val state:MeterState,val se
                 choose(l("固定光圈","Fixed aperture"),stops.map{formatParameter(1,it)},-1){state.setExposureLockModeFromCoordinates(ExposureLockMode.APERTURE,stops[it],state.lockedShutterLogSeconds);changed(false)}}
             5->{val stops=ExposureMath.shutterStops(state.shutterStep)
                 choose(l("固定快门","Fixed shutter"),stops.map{formatParameter(2,-it)},-1){state.setExposureLockModeFromCoordinates(ExposureLockMode.SHUTTER,state.lockedApertureStop,stops[it]);changed(false)}}
-            7->onRaw?.invoke()
         }
     }
     private fun activateSetting(index:Int,x:Float) {
@@ -317,15 +343,25 @@ internal class AutoMeterView(context:Context,private val state:MeterState,val se
                 "Clear will disable RAW, including manual metering, and use YUV/ISP preview frames to reduce RAW capture pauses on some devices."))
             .setView(checkbox).setPositiveButton(l("确定","OK")){_,_->if(checkbox.isChecked)preferences.suppressSmoothNotice=true}.show()
     }
-    private fun frequencyLabel():String=when(session.sampleIntervalMs){2000L->"0.5/s";1000L->"1/s";500L->"2/s";200L->"5/s";else->"≈3/s"}
+    private fun manualLabel():String=when {
+        session.locked->l("测光锁定","Metering locked")
+        session.rawPending->l("测光中…","Measuring…")
+        else->l("手动测光","Manual meter")
+    }
+    private fun frequencyLabel():String {
+        val count=when(session.sampleIntervalMs){2000L->"0.5";1000L->"1";500L->"2";200L->"5";else->"≈3"}
+        return count+l("次/秒","/s")
+    }
     private fun formatParameter(column:Int,value:Double):String=when(column) {
-        0->if(abs(value)>5.00001)"—" else (if(state.exposureCompensationStep.sixthStops<=2)"%+.2f" else "%+.1f").format(if(abs(value)<.00001)0.0 else value)
+        0->if(abs(value)>5.00001)"—" else String.format(Locale.US,if(state.exposureCompensationStep.sixthStops<=2)"%+.2f" else "%+.1f",if(abs(value)<.00001)0.0 else value)
         1->ExposureMath.formatAperture(ExposureMath.apertureValueForCoordinate(value,state.apertureStep))
         else->ExposureMath.formatShutter(ExposureMath.shutterValueForCoordinate(-value,state.shutterStep))
     }
-    private fun zoom(y:Float) {
+    private fun zoom(x:Float,y:Float) {
         if(session.rawPending)return
-        val g=geometry();val f=((g.zoom.bottom-24*d-y)/(g.zoom.height()-48*d)).coerceIn(0f,1f)
+        val g=geometry()
+        val f=(if(width>height)(g.zoom.bottom-24*d-y)/(g.zoom.height()-48*d)
+            else (x-g.zoom.left-12*d)/(g.zoom.width()-24*d)).coerceIn(0f,1f)
         state.setZoomControl(((1+f*(state.zoomControlMaximum-1))*10).roundToInt()/10f);changed(false,true)
     }
     private fun changed(frame:Boolean,framing:Boolean=false) {

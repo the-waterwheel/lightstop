@@ -128,17 +128,20 @@ class ClearModeUiTest {
         assertNotNull(view.accessibilityNodeProvider.createAccessibilityNodeInfo(3))
         listOf(before,after,old,hidden).forEach(Bitmap::recycle)
     }
-    @Test fun previewBottomHandleRequiresAnUpwardSwipeInBothOrientations() {
-        for((w,h) in listOf(840 to 1800,1800 to 840)) {
-            val view=fixture();size(view,w,h);var exits=0;view.onExit={exits++}
+    @Test fun previewHandleReturnsUpInPortraitAndInwardInLandscapeForBothHands() {
+        for((w,h) in listOf(840 to 1800,1800 to 840)) for(left in listOf(false,true)) {
+            val state=MeterState(context).apply{handedness=if(left)Handedness.LEFT else Handedness.RIGHT}
+            val view=AutoMeterView(context,state,AutoMeterSession());size(view,w,h);var exits=0;view.onExit={exits++}
             tap(view,view.geometry().mode);assertEquals(0,exits)
             val handle=view.normalHandle();val before=render(view)
             tap(view,handle);val guided=render(view);assertFalse(before.sameAs(guided))
             assertEquals(0,exits)
             fun swipe(action:Int) {
+                val endX=handle.centerX()+if(w>h)150*ModeTransitionDirection.zoneEntrySign(left) else 0f
+                val endY=handle.centerY()-if(w<h)150f else 0f
                 touch(view,MotionEvent.ACTION_DOWN,handle.centerX(),handle.centerY())
-                touch(view,MotionEvent.ACTION_MOVE,handle.centerX(),handle.centerY()-150)
-                touch(view,action,handle.centerX(),handle.centerY()-150)
+                touch(view,MotionEvent.ACTION_MOVE,endX,endY)
+                touch(view,action,endX,endY)
             }
             swipe(MotionEvent.ACTION_CANCEL);assertEquals(0,exits)
             swipe(MotionEvent.ACTION_UP);assertEquals(1,exits)

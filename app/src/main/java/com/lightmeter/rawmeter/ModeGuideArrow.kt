@@ -11,7 +11,7 @@ internal class ModeGuideArrow {
     private val paint=Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style=Paint.Style.STROKE;strokeCap=Paint.Cap.ROUND;strokeJoin=Paint.Join.ROUND
     }
-    fun draw(canvas:Canvas,x:Float,y:Float,density:Float,rotation:Float=0f) {
+    fun draw(canvas:Canvas,x:Float,y:Float,density:Float,rotation:Float=0f,opacity:Float=1f) {
         canvas.save();canvas.rotate(rotation,x,y)
         path.reset()
         for(index in 0..2) {
@@ -20,8 +20,8 @@ internal class ModeGuideArrow {
             path.lineTo(x,cy-4*density)
             path.lineTo(x+11*density,cy+4*density)
         }
-        paint.color=Color.BLACK;paint.strokeWidth=4f*density;canvas.drawPath(path,paint)
-        paint.color=Color.WHITE;paint.strokeWidth=2f*density;canvas.drawPath(path,paint)
+        paint.color=Color.BLACK;paint.alpha=(255*opacity).toInt().coerceIn(0,255);paint.strokeWidth=4f*density;canvas.drawPath(path,paint)
+        paint.color=Color.WHITE;paint.alpha=(255*opacity).toInt().coerceIn(0,255);paint.strokeWidth=2f*density;canvas.drawPath(path,paint)
         canvas.restore()
     }
 }

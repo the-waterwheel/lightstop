@@ -68,22 +68,22 @@ class AutoMeterSessionTest {
         s.smoothMetering=true
         assertFalse(s.shouldUseRaw(true));assertFalse(s.shouldUseRaw(false))
     }
-    @Test fun processedManualReadingHoldsUntilContinuousMeteringIsExplicitlyResumed() {
+    @Test fun processedManualReadingHoldsUntilTheManualLockIsReleased() {
         val s=AutoMeterSession();s.accept(reading(10.0))
         assertTrue(s.beginManual(false));assertFalse(s.manualUsesRaw)
-        assertFalse(s.continuousMetering)
+        assertTrue(s.continuousMetering);assertTrue(s.locked)
         assertFalse(s.finishManual(reading(11.0,MeteringSource.RAW)))
         assertTrue(s.finishManual(reading(9.0,MeteringSource.ISP_PREVIEW)))
-        assertTrue(s.locked);assertFalse(s.continuousMetering)
+        assertTrue(s.locked);assertTrue(s.continuousMetering)
         assertFalse(s.accept(reading(12.0)));assertEquals(9.0,s.reading!!.sceneEv100,0.0)
-        s.unlock();assertTrue(s.accept(reading(12.0)))
+        assertTrue(s.releaseManualLock());assertTrue(s.accept(reading(12.0)))
     }
     @Test fun manualFailureRestoresBothAutoAndPreviouslyHeldState() {
         val s=AutoMeterSession();s.accept(reading(10.0))
         s.beginManual(false);s.fail("busy");assertTrue(s.continuousMetering);assertFalse(s.locked)
         s.beginRaw();s.finishRaw(reading(8.0,MeteringSource.RAW))
         s.beginManual(false);s.fail("busy")
-        assertFalse(s.continuousMetering);assertTrue(s.locked)
+        assertTrue(s.continuousMetering);assertTrue(s.locked)
         assertEquals(8.0,s.reading!!.sceneEv100,0.0)
     }
     @Test fun autoOffRejectsLateFramesAndStopsSignalRecoveryWithoutChangingTheReading() {
@@ -95,5 +95,21 @@ class AutoMeterSessionTest {
         assertFalse(s.accept(reading(12.0)))
         s.unlock(clear=true,resumeContinuous=false)
         assertFalse(s.continuousMetering);assertFalse(s.accept(reading(12.0)))
+    }
+    @Test fun autoOffManualMeteringNeverCreatesAToggleLock() {
+        val s=AutoMeterSession().apply {continuousMetering=false}
+        repeat(2) {
+            assertTrue(s.beginManual(false));assertFalse(s.locked)
+            assertTrue(s.finishManual(reading(9.0)))
+            assertFalse(s.locked);assertFalse(s.continuousMetering);assertFalse(s.releaseManualLock())
+        }
+    }
+    @Test fun tappingAgainDuringCaptureReleasesTheLockAndLateCompletionCannotRelock() {
+        val s=AutoMeterSession();s.accept(reading(10.0));s.beginManual(true)
+        assertTrue(s.locked);assertTrue(s.releaseManualLock());assertFalse(s.releaseManualLock())
+        assertTrue(s.rawPending);assertFalse(s.accept(reading(12.0)))
+        assertTrue(s.finishManual(reading(11.0,MeteringSource.RAW)))
+        assertFalse(s.rawPending);assertFalse(s.locked);assertTrue(s.continuousMetering)
+        assertTrue(s.accept(reading(13.0)))
     }
 }

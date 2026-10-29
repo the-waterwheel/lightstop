@@ -119,9 +119,9 @@ internal object ZoneLayoutCalculator {
                 previewPanel.bottom - gap,
             )
             normalHandle = RectF(
-                cameraFrame.centerX() - 38f * density,
+                w/2f - 38f * density,
                 previewPanel.bottom - 27f * density,
-                cameraFrame.centerX() + 38f * density,
+                w/2f + 38f * density,
                 previewPanel.bottom - 7f * density,
             )
 
@@ -268,9 +268,9 @@ internal object ZoneLayoutCalculator {
             }
             normalHandle = RectF(
                 normalLeft,
-                zoomTrack.centerY() - normalHeight / 2f,
+                h/2f - normalHeight / 2f,
                 normalLeft + normalWidth,
-                zoomTrack.centerY() + normalHeight / 2f,
+                h/2f + normalHeight / 2f,
             )
 
             val scaleWidth = w * 0.045f

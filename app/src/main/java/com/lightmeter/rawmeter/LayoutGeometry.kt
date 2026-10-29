@@ -144,9 +144,9 @@ data class LayoutGeometry(
                 }
                 RectF(
                     left,
-                    zoomTrack.centerY() - zoneHandleHeight / 2f,
+                    h/2f - zoneHandleHeight / 2f,
                     left + zoneHandleShortSide,
-                    zoomTrack.centerY() + zoneHandleHeight / 2f,
+                    h/2f + zoneHandleHeight / 2f,
                 )
             } else {
                 RectF(
