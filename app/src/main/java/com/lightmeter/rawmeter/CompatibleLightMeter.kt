@@ -20,6 +20,7 @@ internal data class CompatibleMeteringContext(
     val cameraId: () -> String,
     val evaluativeViewport: EvaluativeMeteringViewport? = null,
     val previewGeometry: PreviewStreamGeometry? = null,
+    val captureFullPreview: (((Bitmap?, Long) -> Unit) -> Unit)? = null,
 )
 
 internal interface CompatibleLightMeterListener {
@@ -297,9 +298,27 @@ internal class CompatibleLightMeter(
             finishWithError(id, localized("无法读取当前预览画面", "Unable to read the current preview"))
             return
         }
+        if (meteringMode == MeteringMode.AVERAGE && context.evaluativeViewport?.sensorCrop != null && context.captureFullPreview != null) {
+            val viewport = context.evaluativeViewport
+            context.captureFullPreview.invoke { bitmap, timestamp ->
+                if (!isCurrent(id)) { bitmap?.recycle(); return@invoke }
+                if (bitmap == null || timestamp <= 0) {
+                    bitmap?.recycle()
+                    retryProcessedPreviewCapture(id, meteringMode, target, meteringRoiFraction, context, attempt)
+                } else {
+                    val unzoomed = viewport.copy(displayCrop = viewport.originalDisplayCrop
+                        ?: ViewfinderGeometry.project(viewport.displayCrop, 1f / viewport.previewZoom), previewZoom = 1f)
+                    acceptDisplayBitmap(id, timestamp, bitmap, meteringMode, target, meteringRoiFraction,
+                        context.copy(evaluativeViewport = unzoomed), attempt)
+                }
+            }
+            return
+        }
         val startTimestamp = texture.surfaceTexture?.timestamp ?: 0L
         val bitmap = try {
-            texture.getBitmap(FALLBACK_BITMAP_SIZE, FALLBACK_BITMAP_SIZE)
+            val scale = 320f / maxOf(texture.width, texture.height).coerceAtLeast(1)
+            texture.getBitmap((texture.width * scale).toInt().coerceAtLeast(2),
+                (texture.height * scale).toInt().coerceAtLeast(2))
         } catch (_: Exception) {
             null
         }
@@ -313,15 +332,21 @@ internal class CompatibleLightMeter(
             retryProcessedPreviewCapture(id, meteringMode, target, meteringRoiFraction, context, attempt)
             return
         }
+        acceptDisplayBitmap(id, endTimestamp, bitmap, meteringMode, target, meteringRoiFraction, context, attempt)
+    }
+
+    private fun acceptDisplayBitmap(id: Int, timestamp: Long, bitmap: Bitmap, meteringMode: MeteringMode,
+        target: ZoneMeteringTarget?, meteringRoiFraction: Float?, context: CompatibleMeteringContext, attempt: Int) {
+        val handler = context.cameraHandler ?: run { bitmap.recycle(); return }
         val accepted = handler.post {
             if (!isCurrent(id)) {
                 bitmap.recycle()
                 return@post
             }
             val capture = DisplayCapture(
-                id, endTimestamp, bitmap, meteringMode, target, meteringRoiFraction, context, attempt,
+                id, timestamp, bitmap, meteringMode, target, meteringRoiFraction, context, attempt,
             )
-            val result = context.takeResultForTimestamp(endTimestamp)
+            val result = context.takeResultForTimestamp(timestamp)
             if (result == null) {
                 awaitDisplayMetadata(capture, handler)
                 return@post
@@ -486,6 +511,5 @@ internal class CompatibleLightMeter(
 
     private companion object {
         private const val TAG = "CompatibleLightMeter"
-        private const val FALLBACK_BITMAP_SIZE = 96
     }
 }

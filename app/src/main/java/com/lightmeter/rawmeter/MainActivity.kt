@@ -10,7 +10,7 @@ import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.graphics.Color
-import android.graphics.drawable.ColorDrawable
+import android.graphics.Bitmap
 import android.hardware.display.DisplayManager
 import android.net.Uri
 import android.os.Build
@@ -184,7 +184,7 @@ class MainActivity : Activity(), CameraControllerCallback {
                 )
             },
             onReady = { geometry ->
-                val zoom = if (meterLayout.isVignettingCalibrationOpen) 1f else state.zoom
+                val zoom = if (meterLayout.isVignettingCalibrationOpen) 1f else state.previewZoom
                 cameraController.prepareForForegroundPreview(
                     geometry.width,
                     geometry.height,
@@ -195,11 +195,57 @@ class MainActivity : Activity(), CameraControllerCallback {
             },
         )
         meterLayout.listener = object : MeterLayout.Listener {
+            override fun onAutoModeChanged(active: Boolean) {
+                cameraController.setContinuousMeteringEnabled(false)
+                appliedPipelineMode = if(active) MeteringPipelineMode.ISOLATED else state.meteringPipelineMode
+                cameraController.setCombinationSelectionMode(if(active) MeteringCombinationSelectionMode.SYSTEM else state.meteringCombinationSelectionMode)
+                cameraController.setMeteringPipelineMode(if(active) MeteringPipelineMode.ISOLATED else state.meteringPipelineMode)
+                updateAutoMetering()
+                updateExposurePreviewFromMeter()
+            }
+
+            override fun onAutoResumeRequested() {
+                updateAutoMetering()
+                updateExposurePreviewFromMeter()
+            }
+            override fun onAutoTransitionChanged(active:Boolean) {
+                updateAutoMetering()
+                if(activityResumed)updateExposurePreviewFromMeter()
+            }
+
+            override fun onClearOptionsChanged() {
+                updateAutoMetering()
+                updateExposurePreviewFromMeter()
+                meterLayout.autoView.invalidate()
+            }
+
+            override fun onAutoRawRequested() {
+                if (!activityResumed || !meterLayout.isAutoMode || meterLayout.isClearTransitionInProgress) return
+                val session = meterLayout.autoSession
+                if(session.releaseManualLock()) {
+                    updateAutoMetering();updateExposurePreviewFromMeter();meterLayout.refresh()
+                    return
+                }
+                val useRaw=session.shouldUseRaw(state.cameraInfo.rawHardwareAvailable)
+                if (!session.beginManual(useRaw)) return
+                updateAutoMetering()
+                val accepted = if(useRaw) cameraController.measure(state.frameFormat,state.frameLandscape,state.previewZoom,
+                    MeteringMode.AVERAGE, requestedSource = MeteringSource.RAW) else cameraController.measureLiveGlobalPreview()
+                if (!accepted) {
+                    session.fail(localized("相机忙，请稍后重试", "Camera busy; try again"))
+                    updateAutoMetering()
+                }
+                meterLayout.refresh()
+            }
+
+            override fun onOriginalPreviewRequested(completion: (Bitmap?) -> Unit) {
+                cameraController.captureRecordPreview(completion)
+            }
             override fun onMeasureRequested() {
                 cameraController.measure(
                     state.frameFormat,
                     state.frameLandscape,
-                    state.zoom,
+                    state.previewZoom,
                     state.meteringMode,
                     meteringAngleDegrees = state.angleMeteringDegrees,
                 )
@@ -230,7 +276,7 @@ class MainActivity : Activity(), CameraControllerCallback {
 
             override fun onControlsChanged(frameChanged: Boolean) {
                 val previousMode = appliedPipelineMode
-                val currentMode = state.meteringPipelineMode
+                val currentMode = if(meterLayout.isAutoMode) MeteringPipelineMode.ISOLATED else state.meteringPipelineMode
                 appliedPipelineMode = currentMode
                 cameraController.setMeteringPipelineMode(currentMode)
                 cameraController.setPreviewHealthDetectionEnabled(
@@ -468,7 +514,7 @@ class MainActivity : Activity(), CameraControllerCallback {
                 val accepted = cameraController.measure(
                     state.frameFormat,
                     state.frameLandscape,
-                    state.zoom,
+                    state.previewZoom,
                     MeteringAreaPolicy.zoneMode(state.meteringMode),
                     target,
                     meteringAngleDegrees = state.angleMeteringDegrees,
@@ -532,7 +578,7 @@ class MainActivity : Activity(), CameraControllerCallback {
                 val accepted = cameraController.measureZoneBatch(
                     state.frameFormat,
                     state.frameLandscape,
-                    state.zoom,
+                    state.previewZoom,
                     MeteringAreaPolicy.zoneMode(state.meteringMode),
                     requests,
                     meteringAngleDegrees = state.angleMeteringDegrees,
@@ -581,7 +627,7 @@ class MainActivity : Activity(), CameraControllerCallback {
                 }
                 cameraController.estimateColorTemperature(
                     screenAspect = screenAspect,
-                    zoom = state.zoom,
+                    zoom = state.previewZoom,
                 ) { result ->
                     result.onSuccess(meterLayout::showColorTemperatureReading)
                         .onFailure { error ->
@@ -693,8 +739,9 @@ class MainActivity : Activity(), CameraControllerCallback {
                 previewPath: String,
                 previewAspect: Float,
                 zoom: Float,
+                sensorCrop: NormalizedSensorViewport,
             ) {
-                captureParameterRecord(draftId, snapshot, options, previewPath, previewAspect, zoom)
+                captureParameterRecord(draftId, snapshot, options, previewPath, previewAspect, zoom, sensorCrop)
             }
         }
         setContentView(SafeAreaHost(this).apply { addView(meterLayout,
@@ -715,6 +762,7 @@ class MainActivity : Activity(), CameraControllerCallback {
         if (meterLayout.isFilmNegativeOpen) meterLayout.filmNegativeToolView.setCameraLocked(false)
         meterLayout.resumeZoneTracking()
         cameraController.setTrackingFramesEnabled(meterLayout.isZoneMode && !meterLayout.isFilmNegativeOpen)
+        updateAutoMetering()
         if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
             refreshCameraCatalog()?.let { meterCameraId ->
                 if (meterLayout.isFilmNegativeOpen) {
@@ -740,6 +788,9 @@ class MainActivity : Activity(), CameraControllerCallback {
 
     override fun onPause() {
         activityResumed = false
+        meterLayout.cancelClearModeTransition()
+        cameraController.setContinuousMeteringEnabled(false)
+        if (meterLayout.autoSession.rawPending) meterLayout.autoSession.fail(localized("测光已中止，请重试", "Measurement interrupted; retry"))
         meterLayout.cancelAutomaticDistanceNotice()
         manualVerificationDialog?.dismiss()
         manualVerificationDialog = null
@@ -936,7 +987,7 @@ class MainActivity : Activity(), CameraControllerCallback {
         fun current() = activityResumed && generation == manualCombinationGeneration &&
             state.selectedCameraId == selection && meterLayout.isCombinationSelectionOpen
         manualVerificationDialog?.dismiss()
-        manualVerificationDialog = AlertDialog.Builder(this)
+        manualVerificationDialog = AppDialogs.builder(this,state)
             .setTitle(localized("组合暂不可用", "Workflow temporarily unavailable"))
             .setMessage(if (manualApprovalSaved) localized(
                 "选择已保存，但预览恢复失败。可重新验证同一组合，或暂时关闭；不会自动降低测光精度。",
@@ -1064,7 +1115,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             meterLayout.closeParameterEditorFromBack() ||
             meterLayout.closeSettings() ||
             meterLayout.closeTools() ||
-            meterLayout.closeZoneMode()
+            meterLayout.closeAutoMode() || meterLayout.closeZoneMode()
         if (handled) lastOverlayBackHandledAtMs = SystemClock.uptimeMillis()
         return handled
     }
@@ -1220,6 +1271,7 @@ class MainActivity : Activity(), CameraControllerCallback {
     }
 
     override fun onCombinationSelectionFallbackToSystem() {
+        if (meterLayout.isAutoMode) return // The temporary automatic-mode workflow is not a saved preference.
         if (state.meteringCombinationSelectionMode ==
             MeteringCombinationSelectionMode.SYSTEM
         ) {
@@ -1258,7 +1310,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             return
         }
         manualVerificationDialog?.dismiss()
-        manualVerificationDialog = AlertDialog.Builder(this)
+        manualVerificationDialog = AppDialogs.builder(this,state)
             .setTitle(localized("需要重新验证相机组合", "Camera workflow needs revalidation"))
             .setMessage(localized(
                 "已保留你的镜头和手动选择。开始后会测试完整 RAW/Zone 流程；在完成前不能测光。",
@@ -1289,7 +1341,7 @@ class MainActivity : Activity(), CameraControllerCallback {
     }
 
     override fun onRawUnavailable() {
-        if (!activityResumed) return
+        if (!activityResumed || meterLayout.isAutoMode) return
         showRawUnavailableDialog(force = false)
     }
 
@@ -1306,6 +1358,11 @@ class MainActivity : Activity(), CameraControllerCallback {
 
     override fun onMeteringStarted(source: MeteringSource, frameCount: Int) {
         if (!activityResumed) return
+        if (meterLayout.isAutoMode) {
+            state.measuring = true
+            meterLayout.autoView.invalidate()
+            return
+        }
         if (calibrationCoordinator.isActive) {
             val step = calibrationCoordinator.currentStep()
             meterLayout.calibrationView.setMeasuring(
@@ -1339,6 +1396,11 @@ class MainActivity : Activity(), CameraControllerCallback {
 
     override fun onMeteringBaselineRestoring() {
         if (!activityResumed) return
+        if (meterLayout.isAutoMode) {
+            state.measuring = true
+            meterLayout.autoView.invalidate()
+            return
+        }
         if (calibrationCoordinator.isActive) {
             meterLayout.calibrationView.setRestoringAutoExposure()
         } else {
@@ -1378,6 +1440,18 @@ class MainActivity : Activity(), CameraControllerCallback {
 
     override fun onMeterReading(reading: MeterReading) {
         if (!activityResumed) return
+        if (meterLayout.isAutoMode && meterLayout.autoSession.rawPending) {
+            state.measuring = false
+            val restoreRaw=meterLayout.autoSession.manualUsesRaw
+            if (!meterLayout.autoSession.finishManual(reading))
+                meterLayout.autoSession.fail(localized("未获得有效的手动读数，请重试", "No valid manual reading; retry"))
+            if(restoreRaw) cameraController.finishCalibrationSession()
+            meterLayout.persistClearOptions()
+            updateAutoMetering()
+            meterLayout.refresh()
+            updateExposurePreviewFromMeter()
+            return
+        }
         if (calibrationCoordinator.isActive) {
             handleCalibrationReading(reading)
             return
@@ -1446,6 +1520,23 @@ class MainActivity : Activity(), CameraControllerCallback {
 
     override fun onMeteringError(message: String) {
         if (!activityResumed) return
+        if (meterLayout.isAutoMode && meterLayout.autoSession.rawPending) {
+            state.measuring = false
+            val restoreRaw=meterLayout.autoSession.manualUsesRaw
+            meterLayout.autoSession.fail(message)
+            if(restoreRaw) cameraController.finishCalibrationSession()
+            meterLayout.persistClearOptions()
+            updateAutoMetering()
+            meterLayout.refresh()
+            updateExposurePreviewFromMeter()
+            return
+        }
+        if (meterLayout.isAutoMode) {
+            state.measuring = false
+            meterLayout.autoSession.fail(message)
+            meterLayout.autoView.invalidate()
+            return
+        }
         if (calibrationCoordinator.isActive) {
             continueCalibrationAfterError(message)
             return
@@ -1484,7 +1575,7 @@ class MainActivity : Activity(), CameraControllerCallback {
     }
 
     override fun onExposurePreviewUnavailable() {
-        if (!activityResumed || state.exposurePreviewMode != ExposurePreviewMode.ON) return
+        if (!activityResumed || !(if(meterLayout.isAutoMode) meterLayout.autoSession.simulation else state.exposurePreviewMode == ExposurePreviewMode.ON)) return
         Toast.makeText(
             this,
             localized(
@@ -1497,8 +1588,9 @@ class MainActivity : Activity(), CameraControllerCallback {
     }
 
     private fun updateExposurePreviewFromMeter() {
-        val selection = if (state.exposurePreviewMode == ExposurePreviewMode.ON &&
-            !meterLayout.isFilmNegativeOpen && !state.measuring &&
+        val previewEnabled = if(meterLayout.isAutoMode) meterLayout.autoSession.simulation else state.exposurePreviewMode == ExposurePreviewMode.ON
+        val selection = if (previewEnabled &&
+            !meterLayout.isFilmNegativeOpen && (meterLayout.isAutoMode || !state.measuring) &&
             !calibrationCoordinator.isActive && !vignettingCalibrationPending
         ) {
             meterLayout.currentExposurePreviewSelection()
@@ -1506,6 +1598,27 @@ class MainActivity : Activity(), CameraControllerCallback {
             null
         }
         cameraController.updateExposurePreview(selection)
+    }
+
+    private fun updateAutoMetering() {
+        val session = meterLayout.autoSession
+        cameraController.setContinuousMeteringEnabled(activityResumed && meterLayout.isAutoMode && !meterLayout.isClearTransitionInProgress && session.continuousMetering && !session.locked && !session.rawPending,
+            session.sampleIntervalMs)
+    }
+
+    override fun onContinuousMeterReading(reading: MeterReading) {
+        if (!activityResumed || !meterLayout.isAutoMode || meterLayout.isClearTransitionInProgress) return
+        if (meterLayout.autoSession.accept(reading)) {
+            meterLayout.autoView.invalidate()
+            updateExposurePreviewFromMeter()
+        }
+    }
+
+    override fun onContinuousMeteringError(message: String) {
+        if (!activityResumed || !meterLayout.isAutoMode || meterLayout.isClearTransitionInProgress || !meterLayout.autoSession.continuousMetering ||
+            meterLayout.autoSession.locked || meterLayout.autoSession.rawPending) return
+        meterLayout.autoSession.fail(message)
+        meterLayout.autoView.invalidate()
     }
 
     override fun onVignettingCalibrationStarted() {
@@ -1558,7 +1671,7 @@ class MainActivity : Activity(), CameraControllerCallback {
         val accepted = cameraController.measure(
             state.frameFormat,
             state.frameLandscape,
-            state.zoom,
+            state.previewZoom,
             MeteringAreaPolicy.localMode(state.meteringMode),
             meteringAngleDegrees = state.angleMeteringDegrees,
             requestedSource = step.source,
@@ -1738,7 +1851,7 @@ class MainActivity : Activity(), CameraControllerCallback {
         ) return
         cameraPermissionDialogVisible = true
         val canRequestAgain = shouldShowRequestPermissionRationale(Manifest.permission.CAMERA)
-        AlertDialog.Builder(this)
+        AppDialogs.builder(this,state)
             .setTitle(localized("需要相机权限", "Camera permission required"))
             .setMessage(
                 localized(
@@ -1785,7 +1898,7 @@ class MainActivity : Activity(), CameraControllerCallback {
         ) return
         pendingCalibrationEnvironmentChange = null
         calibrationEnvironmentStore.markPrompted(change)
-        AlertDialog.Builder(this)
+        AppDialogs.builder(this,state)
             .setTitle(localized("建议重新校准", "Recalibration recommended"))
             .setMessage(
                 localized(
@@ -1844,7 +1957,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             message.length,
             Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
         )
-        dialog = AlertDialog.Builder(this)
+        dialog = AppDialogs.builder(this,state)
             .setTitle(localized("建议进行测光校准", "Metering calibration recommended"))
             .setMessage(message)
             .setNegativeButton(localized("下次再说", "Next time"), null)
@@ -1896,7 +2009,7 @@ class MainActivity : Activity(), CameraControllerCallback {
         val camera = state.availableCameras.firstOrNull { it.cameraId == cameraId }
         val cameraName = camera?.let(state::cameraName)
             ?: localized("当前摄像头", "Current camera")
-        AlertDialog.Builder(this)
+        AppDialogs.builder(this,state)
             .setTitle(localized("已切换到预览测光", "Preview metering enabled"))
             .setMessage(
                 localized(
@@ -1928,7 +2041,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             compatibilityModeDialogVisible || isFinishing
         ) return
         compatibilityModeDialogVisible = true
-        AlertDialog.Builder(this)
+        AppDialogs.builder(this,state)
             .setTitle(localized("兼容模式提示", "Compatibility mode"))
             .setMessage(
                 localized(
@@ -1958,7 +2071,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             angleCompatibilityDialogVisible || isFinishing
         ) return
         angleCompatibilityDialogVisible = true
-        AlertDialog.Builder(this)
+        AppDialogs.builder(this,state)
             .setTitle(localized("按角度测光不可用", "Angle metering unavailable"))
             .setMessage(
                 localized(
@@ -1984,7 +2097,7 @@ class MainActivity : Activity(), CameraControllerCallback {
         val english = state.menuLanguage == MenuLanguage.ENGLISH
         val cameraName = state.currentCamera()?.let(state::cameraName)
             ?: if (english) "current camera" else "当前摄像头"
-        AlertDialog.Builder(this)
+        AppDialogs.builder(this,state)
             .setTitle(if (english) "Reset calibration" else "重置测光校准")
             .setMessage(
                 if (english) {
@@ -2013,7 +2126,7 @@ class MainActivity : Activity(), CameraControllerCallback {
         vignettingResetDialogVisible = true
         val cameraName = state.currentCamera()?.let(state::cameraName)
             ?: localized("当前镜头", "current lens")
-        AlertDialog.Builder(this)
+        AppDialogs.builder(this,state)
             .setTitle(localized("重置暗角矫正", "Reset vignetting correction"))
             .setMessage(
                 localized(
@@ -2057,7 +2170,7 @@ class MainActivity : Activity(), CameraControllerCallback {
         val preferences = getSharedPreferences("raw_light_meter_state", MODE_PRIVATE)
         if (preferences.getBoolean("suppress_vignetting_guide", false)) return
         vignettingDialogVisible = true
-        AlertDialog.Builder(this)
+        AppDialogs.builder(this,state)
             .setTitle(localized("暗角矫正提示", "Vignetting correction guide"))
             .setMessage(
                 localized(
@@ -2102,7 +2215,7 @@ class MainActivity : Activity(), CameraControllerCallback {
                 ),
             )
         }
-        AlertDialog.Builder(this)
+        AppDialogs.builder(this,state)
             .setTitle(localized("摄像头备注", "Camera note"))
             .setMessage(camera.technicalSummary())
             .setView(container)
@@ -2146,7 +2259,7 @@ class MainActivity : Activity(), CameraControllerCallback {
                 ),
             )
         }
-        val dialog = AlertDialog.Builder(this)
+        val dialog = AppDialogs.builder(this,state)
             .setTitle(localized("传感器输出画面比例", "Sensor output aspect"))
             .setMessage(
                 localized(
@@ -2166,7 +2279,6 @@ class MainActivity : Activity(), CameraControllerCallback {
             .setPositiveButton(localized("保存", "Save"), null)
             .create()
         dialog.setOnShowListener {
-            applyInterfaceDialogColors(dialog, editor)
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 val text = editor.text.toString()
                 val aspect = if (text.isBlank()) null else PreviewOutputGeometry.parseAspect(text)
@@ -2181,24 +2293,6 @@ class MainActivity : Activity(), CameraControllerCallback {
             }
         }
         dialog.show()
-    }
-
-    private fun applyInterfaceDialogColors(dialog: AlertDialog, editor: EditText) {
-        val background = if (state.isDarkMode) Color.BLACK else Color.WHITE
-        val foreground = if (state.isDarkMode) Color.rgb(210, 210, 206) else Color.rgb(20, 20, 20)
-        val muted = if (state.isDarkMode) Color.rgb(145, 145, 142) else Color.rgb(108, 108, 104)
-        dialog.window?.setBackgroundDrawable(ColorDrawable(background))
-        dialog.findViewById<TextView>(android.R.id.message)?.setTextColor(foreground)
-        val titleId = resources.getIdentifier("alertTitle", "id", "android")
-        if (titleId != 0) dialog.findViewById<TextView>(titleId)?.setTextColor(foreground)
-        editor.setTextColor(foreground)
-        editor.setHintTextColor(muted)
-        editor.backgroundTintList = ColorStateList.valueOf(foreground)
-        listOf(
-            AlertDialog.BUTTON_NEGATIVE,
-            AlertDialog.BUTTON_NEUTRAL,
-            AlertDialog.BUTTON_POSITIVE,
-        ).forEach { button -> dialog.getButton(button)?.setTextColor(foreground) }
     }
 
     private fun enableParameterGps() {
@@ -2237,6 +2331,7 @@ class MainActivity : Activity(), CameraControllerCallback {
         previewPath: String,
         previewAspect: Float,
         zoom: Float,
+        sensorCrop: NormalizedSensorViewport,
     ) {
         val locationFix = if (options.recordGps) parameterLocationCoordinator.snapshot() else null
         if (options.recordGps && locationFix == null) {
@@ -2267,7 +2362,9 @@ class MainActivity : Activity(), CameraControllerCallback {
             return
         }
         val rawFile = meterLayout.createParameterRawFile(draftId)
-        cameraController.captureRawRecord(rawFile, previewAspect, zoom) { result ->
+        cameraController.captureRawRecord(rawFile, previewAspect, zoom, sensorCrop, snapshot.viewfinder?.let {
+            ScreenToSensorCoordinateTransform(it.screenToSensorRotationDegrees, it.screenToSensorMirrored)
+        }) { result ->
             val completed = result.fold(
                 onSuccess = { artifact ->
                     draft.copy(
@@ -2300,7 +2397,7 @@ class MainActivity : Activity(), CameraControllerCallback {
         if (width <= 0 || height <= 0) return
         @Suppress("DEPRECATION")
         val rotation = meterLayout.textureView.display?.rotation ?: Surface.ROTATION_0
-        val zoom = if (meterLayout.isVignettingCalibrationOpen) 1f else state.zoom
+        val zoom = if (meterLayout.isVignettingCalibrationOpen) 1f else state.previewZoom
         cameraController.updatePreviewTransform(width, height, rotation, zoom)
     }
 

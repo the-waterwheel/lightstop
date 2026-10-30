@@ -26,8 +26,6 @@ data class LayoutGeometry(
             width: Int,
             height: Int,
             density: Float,
-            format: FrameFormat,
-            frameLandscape: Boolean,
             leftHanded: Boolean,
         ): LayoutGeometry {
             if (width <= 0 || height <= 0) return LayoutGeometry(false,
@@ -77,12 +75,7 @@ data class LayoutGeometry(
                     previewPanel.bottom - gap,
                 )
             }
-            val screenAspect = if (frameLandscape) {
-                format.landscapeAspect
-            } else {
-                1f / format.landscapeAspect
-            }
-            val cameraFrame = fitAspect(frameArea, screenAspect)
+            val cameraFrame = RectF(frameArea)
             val zoomTrack = if (leftHanded) {
                 RectF(
                     previewPanel.left + gap,
@@ -151,9 +144,9 @@ data class LayoutGeometry(
                 }
                 RectF(
                     left,
-                    zoomTrack.centerY() - zoneHandleHeight / 2f,
+                    h/2f - zoneHandleHeight / 2f,
                     left + zoneHandleShortSide,
-                    zoomTrack.centerY() + zoneHandleHeight / 2f,
+                    h/2f + zoneHandleHeight / 2f,
                 )
             } else {
                 RectF(
@@ -355,25 +348,5 @@ data class LayoutGeometry(
             )
         }
 
-        private fun fitAspect(bounds: RectF, aspect: Float): RectF {
-            val boundsAspect = bounds.width() / bounds.height()
-            return if (boundsAspect > aspect) {
-                val width = bounds.height() * aspect
-                RectF(
-                    bounds.centerX() - width / 2f,
-                    bounds.top,
-                    bounds.centerX() + width / 2f,
-                    bounds.bottom,
-                )
-            } else {
-                val height = bounds.width() / aspect
-                RectF(
-                    bounds.left,
-                    bounds.centerY() - height / 2f,
-                    bounds.right,
-                    bounds.centerY() + height / 2f,
-                )
-            }
-        }
     }
 }

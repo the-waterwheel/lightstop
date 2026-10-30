@@ -2,9 +2,9 @@ package com.lightmeter.rawmeter
 
 import android.animation.ValueAnimator
 import android.annotation.SuppressLint
-import android.app.AlertDialog
 import android.content.Context
 import android.graphics.Canvas
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
@@ -56,6 +56,9 @@ internal class ParameterRecordEditorView(
 
     /** Clears the current draft and transient edit state when the editor is closed for good. */
     fun clearDraft() {
+        previewBitmap?.recycle()
+        previewBitmap = null
+        pointUndo.clear()
         draft = null
         target = Target.NONE
         touchedNoteIndex = null
@@ -68,7 +71,7 @@ internal class ParameterRecordEditorView(
         invalidate()
     }
 
-    private enum class Target { CLOSE, FILM, ADD_NOTE, NOTE, APERTURE, SHUTTER, EI, SAVE, NONE }
+    private enum class Target { CLOSE, FILM, ADD_NOTE, NOTE, APERTURE, SHUTTER, EI, SAVE, PREVIEW, UNDO, NONE }
 
     private val density get() = layoutDensity(LayoutProfile.EDITOR)
     private val scaledDensity get() = layoutTextDensity(LayoutProfile.EDITOR)
@@ -76,13 +79,19 @@ internal class ParameterRecordEditorView(
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans-serif", Typeface.NORMAL) }
     private val boldPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = InstrumentStyle.labelTypeface }
     private val notePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans-serif", Typeface.NORMAL) }
+    private val chrome = PanelChrome()
     private val background: Int get() = InstrumentStyle.background(state.isDarkMode)
     private val foreground: Int get() = InstrumentStyle.foreground(state.isDarkMode)
     private val muted: Int get() = InstrumentStyle.secondary(state.isDarkMode)
     private val panel: Int get() = InstrumentStyle.panel(state.isDarkMode)
-    private val red = InstrumentStyle.red
+    private val red get() = InstrumentStyle.accent(state.isDarkMode)
     private var geometry = ParameterRecordEditorGeometry.EMPTY
     private var draft: ParameterCaptureDraft? = null
+    private var previewBitmap: Bitmap? = null
+    private var previewImageRect = RectF()
+    private var tapX = 0f
+    private var tapY = 0f
+    private val pointUndo = ArrayDeque<List<RecordedZonePoint>>()
     private var target = Target.NONE
     private val accessibilityHelper = CanvasAccessibilityHelper(this, ::handleAccessibilityClick)
     private val accessibilityManager: android.view.accessibility.AccessibilityManager?
@@ -101,6 +110,10 @@ internal class ParameterRecordEditorView(
     private var touchedNoteIndex: Int? = null
 
     fun open(value: ParameterCaptureDraft) {
+        previewImageRect.setEmpty()
+        previewBitmap?.recycle()
+        previewBitmap = RecordedPreviewRenderer.load(value.previewTempPath)
+        pointUndo.clear()
         draft = value
         syncSelectorPositions(value)
         noteScroll = 0f
@@ -131,6 +144,7 @@ internal class ParameterRecordEditorView(
         canvas.drawColor(background)
         val value = draft ?: return
         drawClose(canvas)
+        drawPreview(canvas, value)
         drawFilm(canvas, value)
         drawNotes(canvas, value)
         drawSelector(canvas, geometry.aperture, localized("光圈", "Aperture"), apertureLabels(), aperturePosition)
@@ -138,6 +152,35 @@ internal class ParameterRecordEditorView(
         drawSelector(canvas, geometry.ei, "EI", eiValues(value).map(Int::toString), eiPosition)
         drawSave(canvas)
         accessibilityHelper.update(accessibilityNodes())
+    }
+
+    private fun drawPreview(canvas: Canvas, value: ParameterCaptureDraft) {
+        drawPanel(canvas, geometry.preview)
+        previewBitmap?.let {
+            previewImageRect = RecordedPreviewRenderer.draw(canvas, geometry.preview, it, value.snapshot.viewfinder,
+                value.snapshot.zonePoints, density)
+        }
+        boldPaint.textAlign = Paint.Align.LEFT
+        boldPaint.textSize = 10f * scaledDensity
+        boldPaint.color = muted
+        val text = if (value.rawGrid != null) localized("RAW · 点按补点 / 删除", "RAW · Tap to add / remove")
+            else localized("仅照片 · 无 RAW 补点", "Photo only · No RAW points")
+        val available = (geometry.undo.left - geometry.status.left - 8f * density).coerceAtLeast(0f)
+        centered(canvas, TextUtils.ellipsize(text, boldPaint, available, TextUtils.TruncateAt.END).toString(),
+            geometry.status.left, geometry.status.centerY(), boldPaint)
+        boldPaint.textAlign = Paint.Align.CENTER
+        boldPaint.color = if (pointUndo.isEmpty()) muted else red
+        centered(canvas, localized("撤销", "Undo"), geometry.undo.centerX(), geometry.undo.centerY(), boldPaint)
+        value.snapshot.viewfinder?.let { viewfinder ->
+            // The capture state is evidence; it does not follow later live camera controls.
+            paint.style = Paint.Style.FILL; paint.color = Color.argb(190, 20, 20, 20)
+            val label = RectF(geometry.preview.left + 6f * density, geometry.preview.top + 6f * density,
+                geometry.preview.right - 6f * density, geometry.preview.top + 29f * density)
+            canvas.drawRoundRect(label, 4f * density, 4f * density, paint)
+            boldPaint.color = Color.WHITE; boldPaint.textAlign = Paint.Align.LEFT; boldPaint.textSize = 9f * scaledDensity
+            centered(canvas, TextUtils.ellipsize(viewfinder.summary(state.menuLanguage) + " · " + viewfinder.meteringLabel(state.menuLanguage),
+                boldPaint, label.width() - 12f * density, TextUtils.TruncateAt.END).toString(), label.left + 6f * density, label.centerY(), boldPaint)
+        }
     }
 
     override fun getAccessibilityNodeProvider(): android.view.accessibility.AccessibilityNodeProvider =
@@ -161,6 +204,7 @@ internal class ParameterRecordEditorView(
         CanvasAccessibilityHelper.VirtualNode(A11Y_FILM, geometry.film, localized("选择胶片类型", "Select film"), enabled = !saving),
         CanvasAccessibilityHelper.VirtualNode(A11Y_ADD_NOTE, geometry.addNote, localized("添加备注", "Add note"), enabled = !saving),
         CanvasAccessibilityHelper.VirtualNode(A11Y_SAVE, geometry.save, localized("保存", "Save"), enabled = !saving),
+        CanvasAccessibilityHelper.VirtualNode(A11Y_UNDO, geometry.undo, localized("撤销补点", "Undo point"), enabled = !saving && pointUndo.isNotEmpty()),
     )
 
     private fun handleAccessibilityClick(virtualViewId: Int): Boolean {
@@ -170,6 +214,7 @@ internal class ParameterRecordEditorView(
             A11Y_FILM -> Target.FILM
             A11Y_ADD_NOTE -> Target.ADD_NOTE
             A11Y_SAVE -> Target.SAVE
+            A11Y_UNDO -> Target.UNDO
             else -> return false
         }
         handleTap(value)
@@ -192,13 +237,7 @@ internal class ParameterRecordEditorView(
     }
 
     private fun drawFilm(canvas: Canvas, value: ParameterCaptureDraft) {
-        paint.style = Paint.Style.FILL
-        paint.color = panel
-        canvas.drawRoundRect(geometry.film, 6f * density, 6f * density, paint)
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 0.8f * density
-        paint.color = InstrumentStyle.border(state.isDarkMode)
-        canvas.drawRoundRect(geometry.film, 6f * density, 6f * density, paint)
+        chrome.card(canvas,geometry.film,density,state.isDarkMode)
         boldPaint.textAlign = Paint.Align.LEFT
         boldPaint.color = foreground
         boldPaint.textSize = 13f * scaledDensity
@@ -206,7 +245,7 @@ internal class ParameterRecordEditorView(
         val fitted = TextUtils.ellipsize(label, boldPaint, geometry.film.width() - geometry.filmEdit.width() - 20f * density, TextUtils.TruncateAt.END)
         centered(canvas, fitted.toString(), geometry.film.left + 10f * density, geometry.film.centerY(), boldPaint)
         boldPaint.textAlign = Paint.Align.CENTER
-        boldPaint.color = red
+        boldPaint.color = InstrumentStyle.accent(state.isDarkMode)
         centered(canvas, localized("修改", "Edit"), geometry.filmEdit.centerX(), geometry.filmEdit.centerY(), boldPaint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1f * density
@@ -217,9 +256,9 @@ internal class ParameterRecordEditorView(
     private fun drawNotes(canvas: Canvas, value: ParameterCaptureDraft) {
         drawPanel(canvas, geometry.addNote)
         boldPaint.textAlign = Paint.Align.CENTER
-        boldPaint.textSize = 22f * scaledDensity
+        boldPaint.textSize = 11f * scaledDensity
         boldPaint.color = foreground
-        centered(canvas, "+", geometry.addNote.centerX(), geometry.addNote.centerY(), boldPaint)
+        centered(canvas, localized("+ 添加备注", "+ Add note") + " (${value.notes.size}/$MAX_NOTES)", geometry.addNote.centerX(), geometry.addNote.centerY(), boldPaint)
         canvas.save()
         canvas.clipRect(geometry.notes)
         val rowHeight = 38f * density
@@ -260,22 +299,16 @@ internal class ParameterRecordEditorView(
 
     private fun drawSave(canvas: Canvas) {
         paint.style = Paint.Style.FILL
-        paint.color = InstrumentStyle.foreground(false)
-        canvas.drawRoundRect(geometry.save, 7f * density, 7f * density, paint)
+        paint.color = foreground
+        canvas.drawRoundRect(geometry.save, 14f * density, 14f * density, paint)
         boldPaint.textAlign = Paint.Align.CENTER
-        boldPaint.color = Color.WHITE
+        boldPaint.color = background
         boldPaint.textSize = 13f * scaledDensity
-        centered(canvas, localized("保存", "Save"), geometry.save.centerX(), geometry.save.centerY(), boldPaint)
+        centered(canvas, if (saving) localized("保存中…", "Saving…") else localized("保存记录", "Save record"), geometry.save.centerX(), geometry.save.centerY(), boldPaint)
     }
 
     private fun drawPanel(canvas: Canvas, rect: RectF) {
-        paint.style = Paint.Style.FILL
-        paint.color = panel
-        canvas.drawRoundRect(rect, 5f * density, 5f * density, paint)
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 0.8f * density
-        paint.color = InstrumentStyle.border(state.isDarkMode)
-        canvas.drawRoundRect(rect, 5f * density, 5f * density, paint)
+        chrome.card(canvas,rect,density,state.isDarkMode)
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -283,6 +316,7 @@ internal class ParameterRecordEditorView(
         if (saving) return true
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                tapX = event.x; tapY = event.y
                 touchStartY = event.y
                 moved = false
                 noteScrollStart = noteScroll
@@ -295,7 +329,7 @@ internal class ParameterRecordEditorView(
                 }
                 if (target == Target.NOTE) touchedNoteIndex = noteIndexAt(event.y, value)
                 parent?.requestDisallowInterceptTouchEvent(target in listOf(Target.APERTURE, Target.SHUTTER, Target.EI, Target.NOTE))
-                return target != Target.NONE
+                return true // This full-screen confirmation owns background taps as well.
             }
             MotionEvent.ACTION_MOVE -> {
                 val dy = event.y - touchStartY
@@ -337,6 +371,8 @@ internal class ParameterRecordEditorView(
 
     private fun targetAt(x: Float, y: Float): Target = when {
         geometry.close.contains(x, y) -> Target.CLOSE
+        geometry.undo.contains(x, y) -> Target.UNDO
+        previewImageRect.contains(x, y) -> Target.PREVIEW
         geometry.film.contains(x, y) -> Target.FILM
         geometry.addNote.contains(x, y) -> Target.ADD_NOTE
         geometry.notes.contains(x, y) -> Target.NOTE
@@ -355,6 +391,23 @@ internal class ParameterRecordEditorView(
             Target.ADD_NOTE -> if (value.notes.size < MAX_NOTES) showNoteDialog(null)
             Target.NOTE -> touchedNoteIndex?.let { showNoteDialog(it) }
             Target.SAVE -> listener?.onSaveRequested(value)
+            Target.UNDO -> if (pointUndo.isNotEmpty()) {
+                draft = value.copy(snapshot = value.snapshot.copy(zonePoints = pointUndo.removeLast()))
+                invalidate()
+            }
+            Target.PREVIEW -> if (value.rawGrid != null && previewImageRect.contains(tapX, tapY)) {
+                val x = (tapX - previewImageRect.left) / previewImageRect.width()
+                val y = (tapY - previewImageRect.top) / previewImageRect.height()
+                val base = value.rawGrid.referenceEv100 ?: value.snapshot.ev100 ?: (value.snapshot.apertureCoordinate -
+                    value.snapshot.shutterCoordinate - ExposureMath.log2(value.snapshot.ei / 100.0))
+                RecordedPointEditing.toggle(value.snapshot.zonePoints, x, y, 18f * density / previewImageRect.width(),
+                    18f * density / previewImageRect.height()) { px, py -> value.rawGrid.relativeEvAt(px, py)?.plus(base) }?.let { points ->
+                    if (pointUndo.size >= 30) pointUndo.removeFirst()
+                    pointUndo.addLast(value.snapshot.zonePoints)
+                    draft = value.copy(snapshot = value.snapshot.copy(zonePoints = points))
+                    invalidate()
+                }
+            }
             else -> Unit
         }
     }
@@ -465,7 +518,7 @@ internal class ParameterRecordEditorView(
             maxLines = 5
             setText(index?.let { draft?.notes?.getOrNull(it) }.orEmpty())
         }
-        AlertDialog.Builder(context)
+        AppDialogs.builder(context,state)
             .setTitle(if (index == null) localized("新增备注", "Add note") else localized("修改备注", "Edit note"))
             .setView(field)
             .setNegativeButton(localized("取消", "Cancel"), null)
@@ -513,5 +566,6 @@ internal class ParameterRecordEditorView(
         private const val A11Y_FILM = 2
         private const val A11Y_ADD_NOTE = 3
         private const val A11Y_SAVE = 4
+        private const val A11Y_UNDO = 5
     }
 }

@@ -156,7 +156,7 @@ internal class ZoneGyroscopeMotion(
         }
     }
 
-    fun consume(width: Int, height: Int, displayOriented: Boolean): MotionPrediction {
+    fun consume(width: Int, height: Int, displayOriented: Boolean, displayZoomOverride: Float? = null): MotionPrediction {
         val rotations = synchronized(accumulationLock) {
             Triple(accumulatedScreenX, accumulatedScreenY, accumulatedScreenZ).also {
                 accumulatedScreenX = 0f
@@ -172,7 +172,7 @@ internal class ZoneGyroscopeMotion(
         val screenAspect = width.toDouble() / height.coerceAtLeast(1).toDouble()
         var horizontalFov = Math.toRadians(64.0)
         var verticalFov = 2.0 * atan(tan(horizontalFov / 2.0) / screenAspect)
-        val visibleSensor = meterState.previewVisibleSensorSizeMm()
+        val visibleSensor = meterState.previewVisibleSensorSizeMm(includeWindowCrop = !displayOriented || displayZoomOverride != null)
         if (info.focalLengthMm > 0f && visibleSensor != null) {
             val relativeRotation = (info.sensorOrientationDegrees - displayDegrees + 360) % 360
             val frameAspectInSensor = if (relativeRotation == 90 || relativeRotation == 270) {
@@ -190,7 +190,7 @@ internal class ZoneGyroscopeMotion(
                 cropWidth = visibleSensor.width
                 cropHeight = cropWidth / frameAspectInSensor
             }
-            val displayZoom = meterState.zoom.toDouble().coerceAtLeast(1.0)
+            val displayZoom = displayZoomOverride?.toDouble() ?: if (displayOriented) 1.0 else meterState.previewZoom.toDouble()
             val physicalWidth = (
                 if (relativeRotation == 90 || relativeRotation == 270) cropHeight else cropWidth
                 ) / displayZoom

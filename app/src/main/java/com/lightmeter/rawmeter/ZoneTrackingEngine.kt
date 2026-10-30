@@ -209,7 +209,7 @@ class OpenCvZoneMarkerTracker(
         // rotation must not be treated as a live frame-to-frame coordinate transition.
         processedFrameCoordinateSpace = null
         frameCoordinatesAreDisplayOriented = false
-        trackedDisplayZoom = meterState.zoom.coerceAtLeast(1f)
+        trackedDisplayZoom = meterState.previewZoom
         val viewport = visibleViewport
         synchronized(lock) {
             val previous = tracks.values.toList()
@@ -367,7 +367,7 @@ class OpenCvZoneMarkerTracker(
 
     override fun reanchor(markers: List<ZoneMarker>) {
         mappingRevision.incrementAndGet()
-        trackedDisplayZoom = meterState.zoom.coerceAtLeast(1f)
+        trackedDisplayZoom = meterState.previewZoom
         val viewport = visibleViewport
         synchronized(lock) {
             val previous = tracks.toMap()
@@ -398,6 +398,12 @@ class OpenCvZoneMarkerTracker(
     }
 
     override fun setDisplayZoom(zoom: Float) {
+        if (!frameCoordinatesAreDisplayOriented && trackedDisplayZoom != zoom) {
+            mappingRevision.incrementAndGet()
+            resetRequested.set(true)
+            redetectRequested.set(true)
+            synchronized(lock) { tracks.values.forEach { it.releaseReference() } }
+        }
         trackedDisplayZoom = zoom.coerceAtLeast(1f)
         publishCurrentPositions()
     }
@@ -546,6 +552,7 @@ class OpenCvZoneMarkerTracker(
             return
         }
         if (running) {
+            mappingRevision.incrementAndGet()
             synchronized(lock) {
                 tracks.values.forEach { track ->
                     val textureX = previous.left + track.baseX * previous.width
@@ -556,6 +563,7 @@ class OpenCvZoneMarkerTracker(
                         .coerceIn(MIN_VIRTUAL_COORDINATE, MAX_VIRTUAL_COORDINATE)
                     track.offscreenFrames = 0
                     track.offscreenRay = null
+                    if (!frameCoordinatesAreDisplayOriented) track.releaseReference()
                 }
             }
         }
@@ -642,7 +650,7 @@ class OpenCvZoneMarkerTracker(
         val width = textureView.width
         val height = textureView.height
         if (width <= 0 || height <= 0) return
-        val prediction = gyroscopeMotion.consume(width, height, displayOriented = true)
+        val prediction = gyroscopeMotion.consume(width, height, displayOriented = true, displayZoomOverride = trackedDisplayZoom)
         val hasMotion = abs(prediction.dx) >= MIN_GYRO_HOLDOVER_PIXELS ||
             abs(prediction.dy) >= MIN_GYRO_HOLDOVER_PIXELS ||
             abs(prediction.rollRadians) >= MIN_GYRO_HOLDOVER_ROLL_RADIANS
@@ -653,26 +661,22 @@ class OpenCvZoneMarkerTracker(
             height,
             trustedTranslationOnly = false,
         )
-        val viewport = visibleViewport
         val zoom = trackedDisplayZoom.toDouble().coerceAtLeast(1.0)
         synchronized(lock) {
             tracks.values.forEach { track ->
-                // Work in the full displayed TextureView coordinate system. Zone marker
-                // coordinates are relative to the visible film viewport, which may be cropped,
-                // so multiplying their UI-normalized value by the full view size would drift.
-                val baseDisplayX = viewport.left + track.baseX * viewport.width
-                val baseDisplayY = viewport.top + track.baseY * viewport.height
+                // Base coordinates belong to the unzoomed window. The source-stream crop
+                // is already included in its FOV and must not be applied a second time.
                 val displayedPoint = Point(
-                    (0.5 + (baseDisplayX - 0.5) * zoom) * width,
-                    (0.5 + (baseDisplayY - 0.5) * zoom) * height,
+                    (0.5 + (track.baseX - 0.5) * zoom) * width,
+                    (0.5 + (track.baseY - 0.5) * zoom) * height,
                 )
                 val mapped = motion.map(displayedPoint)
                 val mappedBaseDisplayX = 0.5 + (mapped.x / width - 0.5) / zoom
                 val mappedBaseDisplayY = 0.5 + (mapped.y / height - 0.5) / zoom
-                track.baseX = ((mappedBaseDisplayX - viewport.left) / viewport.width)
+                track.baseX = mappedBaseDisplayX
                     .toFloat()
                     .coerceIn(MIN_VIRTUAL_COORDINATE, MAX_VIRTUAL_COORDINATE)
-                track.baseY = ((mappedBaseDisplayY - viewport.top) / viewport.height)
+                track.baseY = mappedBaseDisplayY
                     .toFloat()
                     .coerceIn(MIN_VIRTUAL_COORDINATE, MAX_VIRTUAL_COORDINATE)
                 if (track.trackingState != ZoneTrackingState.LOST) {
@@ -753,6 +757,9 @@ class OpenCvZoneMarkerTracker(
             tracks.values.forEach { track ->
                 track.trackingState = ZoneTrackingState.UNCERTAIN
                 track.misses = 0
+                if (previous.displayOriented != updated.displayOriented) {
+                    track.releaseReference()
+                }
                 if (previousWidth > 0 && previousHeight > 0 &&
                     currentWidth > 0 && currentHeight > 0
                 ) {
@@ -1849,15 +1856,20 @@ class OpenCvZoneMarkerTracker(
         width: Int,
         height: Int,
         viewport: VisibleViewport,
-    ): Point = ZoneCoordinateMapper.basePreviewToTexture(
+    ): Point {
+        val point = ZoneCoordinateMapper.basePreviewToTexture(
         baseX,
         baseY,
         width,
         height,
-        viewport,
+        if (frameCoordinatesAreDisplayOriented) viewport else VisibleViewport(0f, 0f, 1f, 1f),
         frameCoordinatesAreDisplayOriented,
         displayRotationDegrees(),
-    )
+        )
+        return if (frameCoordinatesAreDisplayOriented) point else Point(
+            width * (.5 + (point.x / width - .5) * trackedDisplayZoom),
+            height * (.5 + (point.y / height - .5) * trackedDisplayZoom))
+    }
 
     private fun textureToBasePreview(
         point: Point,
@@ -1865,10 +1877,12 @@ class OpenCvZoneMarkerTracker(
         height: Int,
         viewport: VisibleViewport,
     ): Pair<Float, Float> = ZoneCoordinateMapper.textureToBasePreview(
-        point,
+        if (frameCoordinatesAreDisplayOriented) point else Point(
+            width * (.5 + (point.x / width - .5) / trackedDisplayZoom),
+            height * (.5 + (point.y / height - .5) / trackedDisplayZoom)),
         width,
         height,
-        viewport,
+        if (frameCoordinatesAreDisplayOriented) viewport else VisibleViewport(0f, 0f, 1f, 1f),
         frameCoordinatesAreDisplayOriented,
         displayRotationDegrees(),
     )

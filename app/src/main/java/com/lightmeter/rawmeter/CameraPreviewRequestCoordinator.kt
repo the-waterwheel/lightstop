@@ -8,6 +8,7 @@ import android.hardware.camera2.CaptureRequest
 import android.os.Handler
 import android.os.Build
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.util.Range
 import android.view.Surface
@@ -39,10 +40,12 @@ internal class CameraPreviewRequestCoordinator(
     private val filmPreviewLocked: () -> Boolean = { false },
     private val filmPreviewPreparingCapture: () -> Boolean = { false },
     private val requestCharacteristics: () -> CameraCharacteristics? = characteristics,
+    private val exposureTransitionActive: () -> Boolean = { false },
 ) {
     private var compatibleYuvRequestActive = false
     private var pausedForRawCapture = false
     private var filmCurveRejected = false
+    private var lastTransitionLogMs = -1_000L
 
     var requestSequence: Long = 0L
         private set
@@ -134,14 +137,20 @@ internal class CameraPreviewRequestCoordinator(
             session.setRepeatingRequest(builder.build(), captureCallback(), cameraHandler())
             Log.w(TAG, "Film tone curve rejected; using approximate preview", error)
         }
-        Log.i(
-            TAG,
-            "Preview request submitted: fps=$fpsRange yuv=$includeYuv " +
-                "manualExposure=$appliedManualExposure " +
-                "exposureCompensationSteps=${exposureCompensationSteps()} " +
-                "filmCurve=$useFilmCurve " +
-                "profile=${sessionProfile()} tag=$requestTag",
-        )
+        // A fade submits small exposure steps with live frames. Keep diagnostic formatting
+        // and log writes off that hot path except for one bounded progress sample.
+        val now = SystemClock.elapsedRealtime()
+        if (!exposureTransitionActive() || now - lastTransitionLogMs >= 500L) {
+            lastTransitionLogMs = now
+            Log.i(
+                TAG,
+                "Preview request submitted: fps=$fpsRange yuv=$includeYuv " +
+                    "manualExposure=$appliedManualExposure " +
+                    "exposureCompensationSteps=${exposureCompensationSteps()} " +
+                    "filmCurve=$useFilmCurve " +
+                    "profile=${sessionProfile()} tag=$requestTag",
+            )
+        }
     }
 
     fun update() {

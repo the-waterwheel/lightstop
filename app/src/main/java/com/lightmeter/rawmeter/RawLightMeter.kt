@@ -75,6 +75,7 @@ private data class MeasurementAccumulator(
     val highlightProtectionStage: Int,
     val frameAspect: Float,
     val zoom: Float,
+    val evaluativeSensorCrop: NormalizedSensorViewport? = null,
     val meteringMode: MeteringMode,
     val meteringRoiFraction: Float? = null,
     val target: ZoneMeteringTarget? = null,
@@ -129,6 +130,7 @@ internal class RawLightMeter(
         target: ZoneMeteringTarget?,
         previewReference: PreviewLumaReference?,
         screenToSensorTransform: ScreenToSensorCoordinateTransform,
+        evaluativeSensorCrop: NormalizedSensorViewport? = null,
     ): Boolean {
         if (isMeasuring) return false
         val count = RawMeteringPolicy.frameCount(
@@ -142,6 +144,7 @@ internal class RawLightMeter(
             highlightProtectionStage = 0,
             frameAspect = frameAspect,
             zoom = zoom.coerceAtLeast(1f),
+            evaluativeSensorCrop = evaluativeSensorCrop,
             meteringMode = meteringMode,
             meteringRoiFraction = meteringRoiFraction,
             target = target,
@@ -455,7 +458,12 @@ internal class RawLightMeter(
                     vignettingCalibrationStore,
                     applyVignettingCalibration = active.target != null,
                     meteringRoiFraction = active.meteringRoiFraction,
+<<<<<<< .merge_file_cSw9FA
                     globalInputTransform = active.screenToSensorTransform,
+=======
+                    evaluativeSensorCrop = active.evaluativeSensorCrop,
+                    previewSensorViewport = active.screenToSensorTransform.sensorViewport,
+>>>>>>> .merge_file_9BlQD4
                 )
             }
         } finally {
@@ -554,6 +562,7 @@ internal class RawLightMeter(
                         vignettingCalibrationStore,
                         applyVignettingCalibration = true,
                         meteringRoiFraction = active.meteringRoiFraction,
+                        previewSensorViewport = active.screenToSensorTransform.sensorViewport,
                     )?.let { frameStats += batchTarget to it }
                 }
             }
@@ -645,6 +654,7 @@ internal class RawLightMeter(
             highlightProtectionStage = nextStage,
             frameAspect = active.frameAspect,
             zoom = active.zoom,
+            evaluativeSensorCrop = active.evaluativeSensorCrop,
             meteringMode = active.meteringMode,
             meteringRoiFraction = active.meteringRoiFraction,
             target = active.target,

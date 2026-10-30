@@ -42,41 +42,22 @@ internal object ParameterRecordToolGeometryCalculator {
         val contentHeight = (h - contentTop - pad).coerceAtLeast(1f)
         val historyHeight = (contentHeight * 0.22f).coerceIn(48f * density, 76f * density)
         val history = RectF(pad, contentTop, w - pad, contentTop + historyHeight)
-        val rowGap = gap * 0.75f
+        val rowGap = gap
         val optionsTop = history.bottom + gap
-        val optionsBottom = h - pad
-        val actionWidth = min(98f * density, w * 0.27f)
-        val optionsRight = (w - pad - actionWidth - gap).coerceAtLeast(pad + 1f)
-        val rowHeight = ((optionsBottom - optionsTop - rowGap * 2f) / 3f).coerceAtLeast(1f)
-        val gps = RectF(pad, optionsTop, optionsRight, optionsTop + rowHeight)
-        val time = RectF(pad, gps.bottom + rowGap, optionsRight, gps.bottom + rowGap + rowHeight)
-        val raw = RectF(pad, time.bottom + rowGap, optionsRight, optionsBottom)
-        val toggleWidth = min(54f * density, gps.width() * 0.26f)
-        val helpWidth = min(38f * density, raw.width() * 0.18f)
-        fun toggle(row: RectF, reserveHelp: Boolean) = RectF(
-            row.right - toggleWidth - if (reserveHelp) helpWidth else 0f,
-            row.top,
-            row.right - if (reserveHelp) helpWidth else 0f,
-            row.bottom,
-        )
-        val actionLeft = optionsRight + gap
-        val actionHeight = (optionsBottom - optionsTop).coerceAtLeast(1f)
-        val startSize = minOf(82f * density, actionWidth, actionHeight * 0.48f)
-        val startTop = optionsTop + (actionHeight - startSize) * 0.58f
-        val start = RectF(
-            actionLeft + (actionWidth - startSize) / 2f,
-            startTop,
-            actionLeft + (actionWidth + startSize) / 2f,
-            startTop + startSize,
-        )
-        val finishWidth = min(50f * density, w * 0.16f)
-        val finishHeight = min(34f * density, startSize * 0.48f)
-        val finish = RectF(
-            actionLeft + (actionWidth - finishWidth) / 2f,
-            optionsTop + 5f * density,
-            actionLeft + (actionWidth + finishWidth) / 2f,
-            optionsTop + 5f * density + finishHeight,
-        )
+        val actionHeight = min(52f*density,contentHeight*.16f)
+        val actionTop = h-pad-actionHeight
+        val optionsBottom = actionTop-gap*2
+        val rowHeight = min(82f*density,((optionsBottom-optionsTop-rowGap*2)/3f).coerceAtLeast(1f))
+        val gps = RectF(pad,optionsTop,w-pad,optionsTop+rowHeight)
+        val time = RectF(pad,gps.bottom+rowGap,w-pad,gps.bottom+rowGap+rowHeight)
+        val raw = RectF(pad,time.bottom+rowGap,w-pad,time.bottom+rowGap+rowHeight)
+        val toggleWidth = min(54f*density,gps.width()*.26f)
+        val helpWidth = min(38f*density,raw.width()*.18f)
+        fun toggle(row:RectF,reserveHelp:Boolean)=RectF(row.right-toggleWidth-if(reserveHelp)helpWidth else 0f,
+            row.top,row.right-if(reserveHelp)helpWidth else 0f,row.bottom)
+        val finishWidth=(w-2*pad-gap)*.42f
+        val finish=RectF(pad,actionTop,pad+finishWidth,h-pad)
+        val start=RectF(finish.right+gap,actionTop,w-pad,h-pad)
         return ParameterRecordToolGeometry(
             back,
             close,

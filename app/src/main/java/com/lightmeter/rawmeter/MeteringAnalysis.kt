@@ -66,7 +66,8 @@ internal object MeteringAnalysis {
         val lumaDecoder = ProcessedLumaMetadata.decoder(result)
         val spot = analyzePreviewRegion(
             bitmap,
-            spotRoiFraction(meteringMode, meteringRoiFraction),
+            spotRoiFraction(meteringMode, meteringRoiFraction) *
+                (if (meteringMode == MeteringMode.ANGLE) evaluativeViewport?.previewZoom ?: 1f else 1f),
             centerX,
             centerY,
             lumaDecoder,
@@ -139,9 +140,18 @@ internal object MeteringAnalysis {
             max(spotFraction, CENTER_WEIGHTED_ROI_FRACTION)
         } else spotFraction
         fun reader(plane: Image.Plane) = YuvPlaneReader(plane.buffer, plane.rowStride, plane.pixelStride)
+        val bounds = if (evaluativeViewport?.sensorCrop != null && previewGeometry != null) {
+            val sensor = if (meteringMode == MeteringMode.ANGLE) evaluativeViewport.previewSensorViewport ?: previewGeometry.sensorViewport
+                else evaluativeViewport.previewSensorCrop
+            sensor?.let {
+                EvaluativeMeteringGeometry.yuvCrop(image.width, image.height,
+                    evaluativeViewport.copy(sensorCrop = it), previewGeometry)
+            }?.let { NormalizedSensorViewport(it.left / image.width, it.top / image.height,
+                it.right / image.width, it.bottom / image.height) } ?: return null
+        } else null
         val analyzer = YuvRegionAnalyzer(
             image.width, image.height, reader(planes[0]), reader(planes[1]), reader(planes[2]),
-            lumaDecoder, yuvEncoding, maxFraction,
+            lumaDecoder, yuvEncoding, maxFraction, bounds,
         )
         val spot = analyzer.analyze(spotFraction) ?: return null
         val region = if (meteringMode == MeteringMode.CENTER_WEIGHTED) {
@@ -196,12 +206,14 @@ internal object MeteringAnalysis {
         applyVignettingCalibration: Boolean = false,
         meteringRoiFraction: Float? = null,
         globalInputTransform: ScreenToSensorCoordinateTransform? = null,
+        evaluativeSensorCrop: NormalizedSensorViewport? = null,
+        previewSensorViewport: NormalizedSensorViewport? = null,
     ): MeteringFrameStat? {
         if (meteringMode == MeteringMode.AVERAGE) {
             if (rawMeterPoint != null) return null
             return EvaluativeFrameAnalyzer.raw(
                 image, result, characteristics, cameraInfo, frameAspect, zoom, calibrationStore, vignettingStore,
-                globalInputTransform,
+                globalInputTransform = globalInputTransform, sensorCrop = evaluativeSensorCrop,
             )
         }
         val plane = image.planes.firstOrNull() ?: return null
@@ -227,6 +239,7 @@ internal object MeteringAnalysis {
             roiFraction = spotRoiFraction(meteringMode, meteringRoiFraction),
             rawMeterPoint = rawMeterPoint,
             preservePhysicalAngle = meteringMode == MeteringMode.ANGLE,
+            previewSensorViewport = previewSensorViewport,
         )
         var saturatedChannelCount = RawExposureRetryPolicy.saturatedChannelCount(spotValues)
         val values = if (meteringMode == MeteringMode.CENTER_WEIGHTED) {
@@ -241,6 +254,7 @@ internal object MeteringAnalysis {
                 zoom = zoom,
                 roiFraction = CENTER_WEIGHTED_ROI_FRACTION,
                 rawMeterPoint = rawMeterPoint,
+                previewSensorViewport = previewSensorViewport,
                 preservePhysicalAngle = false,
             )
             // Check the contributing regions before blending can hide a clipped metering point.
@@ -576,6 +590,7 @@ internal object MeteringAnalysis {
         roiFraction: Float,
         rawMeterPoint: RawMeterPoint?,
         preservePhysicalAngle: Boolean = false,
+        previewSensorViewport: NormalizedSensorViewport? = null,
     ): DoubleArray {
         val plane = image.planes[0]
         val roi = rawMeterRoi(
@@ -587,6 +602,7 @@ internal object MeteringAnalysis {
             roiFraction,
             rawMeterPoint,
             preservePhysicalAngle,
+            previewSensorViewport,
         )
         return RawMeterBridge.analyzeRaw(
             buffer = plane.buffer,
@@ -632,6 +648,7 @@ internal object MeteringAnalysis {
         roiFraction: Float,
         rawMeterPoint: RawMeterPoint?,
         preservePhysicalAngle: Boolean,
+        previewSensorViewport: NormalizedSensorViewport?,
     ): Rect {
         val pointCrop = rawMeterPoint?.let {
             RectF(it.visibleCropLeft, it.visibleCropTop, it.visibleCropRight, it.visibleCropBottom)
@@ -639,7 +656,13 @@ internal object MeteringAnalysis {
             it.left.isFinite() && it.top.isFinite() && it.right.isFinite() &&
                 it.bottom.isFinite() && it.width() > 1f && it.height() > 1f
         }
-        val crop = if (preservePhysicalAngle) {
+        val windowCrop = previewSensorViewport?.let {
+            val active = RectF(validatedActiveRect(imageWidth, imageHeight, reportedActiveArray))
+            centeredCrop(ViewfinderGeometry.rect(active, it), frameAspect, if (preservePhysicalAngle) 1f else zoom)
+        }
+        val crop = if (windowCrop != null) {
+            if (preservePhysicalAngle) windowCrop else pointCrop ?: windowCrop
+        } else if (preservePhysicalAngle) {
             rawMeterCrop(
                 imageWidth,
                 imageHeight,

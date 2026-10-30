@@ -46,6 +46,7 @@ internal object InstrumentPresentation {
     }
 
     fun formatShortLabel(format: FrameFormat, language: MenuLanguage): String = when (format.id) {
+        "none" -> if (language == MenuLanguage.ENGLISH) "None" else "无"
         "half" -> if (language == MenuLanguage.ENGLISH) "Half" else "半格"
         "645" -> "645"
         "66" -> "6×6"
@@ -97,20 +98,24 @@ internal object InstrumentPresentation {
         }
         val availableWidth = (right - left).coerceAtLeast(0f)
         if (availableWidth < 8f * density) return emptyList()
+        return formatOptionRects(RectF(left,geometry.formatButton.top,right,geometry.formatButton.bottom),density,geometry.formatButton.height())
+    }
+
+    fun formatOptionRects(bounds:RectF,density:Float,itemHeight:Float):List<RectF> {
+        val left=bounds.left;val availableWidth=bounds.width()
         val gap = 2f * density
-        val grid = formatMenuGrid(FrameFormat.ALL.size, availableWidth, density)
+        val grid = formatMenuGrid(FrameFormat.ALL.size + 1, availableWidth, density)
         if (grid.columns == 0) return emptyList()
         val itemWidth = (availableWidth - gap * (grid.columns - 1)) / grid.columns
-        val itemHeight = geometry.formatButton.height()
-        return FrameFormat.ALL.indices.map { index ->
+        return (0..FrameFormat.ALL.size).map { index ->
             val column = index % grid.columns
             val row = index / grid.columns
             val itemLeft = left + column * (itemWidth + gap)
-            val itemTop = geometry.formatButton.top + row * (itemHeight + gap)
+            val itemTop = bounds.top + row * (itemHeight + gap)
             RectF(
                 itemLeft,
                 itemTop,
-                min(itemLeft + itemWidth, right),
+                min(itemLeft + itemWidth, bounds.right),
                 itemTop + itemHeight,
             )
         }

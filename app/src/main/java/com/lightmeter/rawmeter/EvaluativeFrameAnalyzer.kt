@@ -18,6 +18,12 @@ data class EvaluativeMeteringViewport(
     val displayCrop: NormalizedSensorViewport,
     val screenFrameAspect: Float = sensorFrameAspect,
     val displayRotation: Int = 0,
+    /** Full sensor region framed by the focal-length slider, independent of inspection zoom. */
+    val sensorCrop: NormalizedSensorViewport? = null,
+    val previewZoom: Float = zoom,
+    val previewSensorCrop: NormalizedSensorViewport? = null,
+    val previewSensorViewport: NormalizedSensorViewport? = null,
+    val originalDisplayCrop: NormalizedSensorViewport? = null,
 )
 
 /** Synchronous borrowed-frame analysis; Camera2 resource ownership remains with the caller. */
@@ -39,6 +45,7 @@ internal object EvaluativeFrameAnalyzer {
         cameraInfo: CameraUiInfo, frameAspect: Float, zoom: Float,
         calibrationStore: CameraCalibrationStore, vignettingStore: VignettingCalibrationStore?,
         globalInputTransform: ScreenToSensorCoordinateTransform? = null,
+        sensorCrop: NormalizedSensorViewport? = null,
     ): MeteringFrameStat? {
         val plane = image.planes.firstOrNull() ?: return null
         val black = result.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL) ?: characteristics
@@ -53,8 +60,11 @@ internal object EvaluativeFrameAnalyzer {
             cameraInfo.sensorOrientationDegrees, CameraPreviewTransform.shouldMirrorPreview(cameraInfo.lensFacing),
             cameraInfo.previewSensorViewport,
         )
-        val crop = EvaluativeMeteringGeometry.rawCrop(image.width, image.height, cameraInfo.activeArray,
-            frameAspect, zoom, transformGeometry.sensorViewport)
+        val active = cameraInfo.activeArray?.takeIf { it.left >= 0 && it.top >= 0 && it.right <= image.width && it.bottom <= image.height }
+            ?.let { RectF(it) } ?: RectF(0f, 0f, image.width.toFloat(), image.height.toFloat())
+        val crop = sensorCrop?.let { ViewfinderGeometry.rect(active, it) }
+            ?: EvaluativeMeteringGeometry.rawCrop(image.width, image.height, cameraInfo.activeArray,
+                frameAspect, zoom, transformGeometry.sensorViewport)
         val gains = result.get(CaptureResult.COLOR_CORRECTION_GAINS)
         val transform = result.get(CaptureResult.COLOR_CORRECTION_TRANSFORM)
         val coefficients = if (gains != null && transform != null) {
@@ -239,6 +249,13 @@ internal object EvaluativeMeteringGeometry {
             !viewport.sensorFrameAspect.isFinite() || viewport.sensorFrameAspect <= 0f) return null
         val active = geometry?.activeArray?.takeIf { it.width() > 0 && it.height() > 0 }
             ?: return MeteringAnalysis.rawMeterCrop(width, height, null, viewport.sensorFrameAspect, viewport.zoom)
+        viewport.sensorCrop?.let { crop ->
+            val yuv = MeteringAnalysis.centeredCrop(RectF(active), width.toFloat() / height, 1f)
+            val visible = ViewfinderGeometry.rect(RectF(active), crop)
+            if (visible.left < yuv.left - 1f || visible.top < yuv.top - 1f || visible.right > yuv.right + 1f || visible.bottom > yuv.bottom + 1f) return null
+            return RectF((visible.left - yuv.left) / yuv.width() * width, (visible.top - yuv.top) / yuv.height() * height,
+                (visible.right - yuv.left) / yuv.width() * width, (visible.bottom - yuv.top) / yuv.height() * height)
+        }
         val aspect = CameraPreviewTransform.screenAspectInSensorCoordinates(viewport.screenFrameAspect,
             geometry.sensorOrientationDegrees, viewport.displayRotation, geometry.lensFacing)
         val preview = geometry.sensorViewport

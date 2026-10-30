@@ -5,6 +5,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.ImageFormat
+import android.graphics.Bitmap
 import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraAccessException
 import android.hardware.camera2.CameraCaptureSession
@@ -26,6 +27,7 @@ import android.util.Size
 import android.view.Surface
 import android.view.TextureView
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.abs
 import kotlin.math.max
@@ -315,6 +317,7 @@ class CameraController(
         cameraCharacteristics = { characteristics },
         cameraInfo = { cameraInfo },
         displayRotation = { lastDisplayRotation },
+        rawCorrectionEv = { calibrationStore.totalCorrection(it, MeteringSource.RAW) },
         listener = object : RawRecordCaptureListener {
             override fun onRawRecordCaptureResult(result: CaptureResult) {
                 latestResult = result
@@ -504,6 +507,7 @@ class CameraController(
         onRequestChanged = ::updatePreviewRepeatingRequest,
         onUnavailable = { mainHandler.post(callback::onExposurePreviewUnavailable) },
     )
+    private val exposurePreviewUpdateQueued = AtomicBoolean(false)
     private val previewBaseline = MeteringPreviewBaselineCoordinator { cameraHandler }
     private val previewRequests: CameraPreviewRequestCoordinator = CameraPreviewRequestCoordinator(
         cameraHandler = { cameraHandler },
@@ -512,7 +516,7 @@ class CameraController(
         previewSurface = { sessionCoordinator.previewSurface },
         trackingSurface = { trackingReader?.surface },
         trackingFramesEnabled = {
-            trackingFramesEnabled || (activeSessionProfile?.usesTracking == true && distanceCapture.wantsFrames)
+            trackingFramesEnabled || continuousMeter.enabled || (activeSessionProfile?.usesTracking == true && distanceCapture.wantsFrames)
         },
         combinationProbeActive = { combinationWorkflowProbe.isActive },
         cameraGeneration = { cameraGeneration },
@@ -529,9 +533,30 @@ class CameraController(
         filmPreviewLocked = { filmPreview.isLocked },
         filmPreviewPreparingCapture = { filmPreview.isPreparingCapture },
         requestCharacteristics = { logicalCharacteristics ?: characteristics },
+        exposureTransitionActive = { exposurePreviewState.isTransitioning },
     )
     @Volatile
     private var meteringOperationActive = false
+    private val continuousMeter = ContinuousPreviewMeter(
+        mainHandler, { cameraHandler }, ::compatibleMeteringContext,
+        canSample = { started && !stopInProgress && activeSessionProfile?.usesPreview == true &&
+            !meteringOperationActive && !previewBaseline.isActive && !filmPreview.isEnabled &&
+            !exposurePreviewCalibration.isActive && !combinationWorkflowProbe.isActive &&
+            !compatibleMeter.isMeasuring },
+        calibrationStore = calibrationStore, localized = ::localized,
+        onReading = callback::onContinuousMeterReading, onError = callback::onContinuousMeteringError,
+    )
+
+    internal fun setContinuousMeteringEnabled(enabled: Boolean, intervalMs: Long = 350L) {
+        val handler = cameraHandler
+        if (handler == null) { continuousMeter.intervalMs=intervalMs; continuousMeter.setEnabled(enabled); return }
+        handler.post {
+            continuousMeter.intervalMs=intervalMs
+            continuousMeter.setEnabled(enabled)
+            if (started && activeSessionProfile?.usesPreview == true && !meteringOperationActive)
+                updatePreviewRepeatingRequest()
+        }
+    }
     private val zoneCameraFrames = ZoneCameraFramePipeline(
         reserveTracker = callback::tryReserveZoneTrackingFrame,
         cancelTrackerReservation = callback::cancelZoneTrackingFrameReservation,
@@ -1053,14 +1078,17 @@ class CameraController(
 
     /** Applies the calibrated exposure represented by the currently displayed parameter rows. */
     fun updateExposurePreview(selection: ExposurePreviewSelection?) {
-        exposurePreviewState.updateSelection(selection)
+        if (!exposurePreviewState.updateSelection(selection)) return
         // Closing the camera publishes a distance-state callback on the main thread.
         // Preserve its selection, but do not enqueue work on the retiring camera thread.
         if (!started || stopInProgress) return
         val handler = cameraHandler ?: return
-        handler.post {
+        if (!exposurePreviewUpdateQueued.compareAndSet(false, true)) return
+        val accepted = handler.post {
+            exposurePreviewUpdateQueued.set(false)
             if (started && cameraHandler === handler) applyRequestedExposurePreview()
         }
+        if (!accepted) exposurePreviewUpdateQueued.set(false)
     }
 
     /**
@@ -1250,7 +1278,8 @@ class CameraController(
             manualRawCaptureBlocked()
         ) return false
         meteringOperationActive = true
-        val screenAspect = if (frameLandscape) {
+        val viewport = meteringViewport()
+        val screenAspect = viewport?.screenFrameAspect ?: if (frameLandscape) {
             frameFormat.landscapeAspect
         } else {
             1f / frameFormat.landscapeAspect
@@ -1268,8 +1297,8 @@ class CameraController(
             AngleMeteringMath.physicalRoiFraction(
                 angleDegrees = meteringAngleDegrees,
                 focalLengthMm = cameraInfo.focalLengthMm.toDouble(),
-                sensorWidthMm = cameraInfo.sensorWidthMm.toDouble(),
-                sensorHeightMm = cameraInfo.sensorHeightMm.toDouble(),
+                sensorWidthMm = cameraInfo.sensorWidthMm.toDouble() * (viewport?.previewSensorViewport?.width ?: 1f),
+                sensorHeightMm = cameraInfo.sensorHeightMm.toDouble() * (viewport?.previewSensorViewport?.height ?: 1f),
                 sensorFrameAspect = sensorFrameAspect.toDouble(),
             )
         } else {
@@ -1288,6 +1317,7 @@ class CameraController(
             sensorFrameAspect = sensorFrameAspect,
             meteringRoiFraction = meteringRoiFraction,
             displayedPreviewReference = displayedPreviewReference,
+            viewport = viewport,
         )
         val handler = cameraHandler ?: run {
             meteringOperationActive = false
@@ -1323,7 +1353,8 @@ class CameraController(
             return false
         }
         meteringOperationActive = true
-        val screenAspect = if (frameLandscape) {
+        val viewport = meteringViewport()
+        val screenAspect = viewport?.screenFrameAspect ?: if (frameLandscape) {
             frameFormat.landscapeAspect
         } else {
             1f / frameFormat.landscapeAspect
@@ -1340,8 +1371,8 @@ class CameraController(
             AngleMeteringMath.physicalRoiFraction(
                 angleDegrees = meteringAngleDegrees,
                 focalLengthMm = cameraInfo.focalLengthMm.toDouble(),
-                sensorWidthMm = cameraInfo.sensorWidthMm.toDouble(),
-                sensorHeightMm = cameraInfo.sensorHeightMm.toDouble(),
+                sensorWidthMm = cameraInfo.sensorWidthMm.toDouble() * (viewport?.previewSensorViewport?.width ?: 1f),
+                sensorHeightMm = cameraInfo.sensorHeightMm.toDouble() * (viewport?.previewSensorViewport?.height ?: 1f),
                 sensorFrameAspect = sensorFrameAspect.toDouble(),
             )
         } else {
@@ -1360,6 +1391,7 @@ class CameraController(
             sensorFrameAspect = sensorFrameAspect,
             meteringRoiFraction = meteringRoiFraction,
             displayedPreviewReference = null,
+            viewport = viewport,
             zoneBatchTargets = requests.map { request ->
                 ZoneRawBatchTarget(
                     markerId = request.markerId,
@@ -1706,13 +1738,14 @@ class CameraController(
             return
         }
         if (plan.requestedSource == MeteringSource.ISP_PREVIEW) {
-            measureProcessedPreview(plan.meteringMode, plan.target, plan.meteringRoiFraction)
+            measureCompatiblePreview(plan.meteringMode, plan.target, plan.meteringRoiFraction,
+                forceProcessedPreview = true, viewport = plan.viewport)
             return
         }
         if (plan.requestedSource == MeteringSource.YUV_PREVIEW ||
             plan.requestedSource == null && !cameraInfo.rawAvailable
         ) {
-            measureCompatiblePreview(plan.meteringMode, plan.target, plan.meteringRoiFraction)
+            measureCompatiblePreview(plan.meteringMode, plan.target, plan.meteringRoiFraction, viewport = plan.viewport)
             return
         }
         if (!cameraInfo.rawAvailable) {
@@ -1751,7 +1784,7 @@ class CameraController(
                 cameraInfo.lensFacing,
             ),
             mirrored = CameraPreviewTransform.shouldMirrorPreview(cameraInfo.lensFacing),
-            sensorViewport = cameraInfo.previewSensorViewport,
+            sensorViewport = plan.viewport?.previewSensorViewport ?: cameraInfo.previewSensorViewport,
         )
         val recentTrackingFrame = zoneCameraFrames.latestFrame(MAX_METERING_REFERENCE_AGE_NS)
         val previewReference = if (plan.target != null && recentTrackingFrame != null) {
@@ -1791,6 +1824,7 @@ class CameraController(
                 target = plan.target,
                 previewReference = previewReference,
                 screenToSensorTransform = screenToSensorTransform,
+                evaluativeSensorCrop = plan.viewport?.sensorCrop,
             )
         }
         if (!accepted) {
@@ -1812,10 +1846,12 @@ class CameraController(
     }
 
     /** Captures one full-resolution DNG and a compact RAW sample map for history point metering. */
-    fun captureRawRecord(
+    internal fun captureRawRecord(
         outputFile: File,
         screenAspect: Float,
         zoom: Float,
+        sensorCrop: NormalizedSensorViewport? = null,
+        screenToSensorTransform: ScreenToSensorCoordinateTransform? = null,
         completion: (Result<RawRecordArtifact>) -> Unit,
     ) {
         val handler = cameraHandler
@@ -1854,6 +1890,8 @@ class CameraController(
                 request = { rawMeter.buildCaptureRequest(context) },
                 beforeCapture = ::pausePreviewForRawCapture,
                 completion = completion,
+                sensorCrop = sensorCrop,
+                screenToSensorTransform = screenToSensorTransform,
             )
             if (!accepted) {
                 meteringOperationActive = false
@@ -2109,6 +2147,8 @@ class CameraController(
     @Synchronized
     fun isRawMeteringAvailable(): Boolean = cameraInfo.rawAvailable && rawReader != null
 
+    fun captureRecordPreview(completion: (Bitmap?) -> Unit) = filmPreview.captureRecordPreview(completion)
+
     @Synchronized
     fun isYuvMeteringAvailable(): Boolean =
         trackingReader != null && compatibleMeter.yuvAvailable
@@ -2210,6 +2250,7 @@ class CameraController(
         target: ZoneMeteringTarget?,
         meteringRoiFraction: Float? = null,
         forceProcessedPreview: Boolean = false,
+        viewport: EvaluativeMeteringViewport? = null,
     ) {
         if (compatibleMeter.isMeasuring || rawMeter.isMeasuring ||
             vignettingCapture.isActive
@@ -2224,7 +2265,7 @@ class CameraController(
         val accepted = compatibleMeter.measure(
             meteringMode = meteringMode,
             target = target,
-            context = compatibleMeteringContext(),
+            context = compatibleMeteringContext().let { if (viewport == null) it else it.copy(evaluativeViewport = viewport) },
             forceProcessedPreview = useProcessedPreview,
             meteringRoiFraction = meteringRoiFraction,
         )
@@ -2234,6 +2275,22 @@ class CameraController(
         } else if (needsYuvRequest) {
             previewRequests.beginCompatibleYuvRequest()
         }
+    }
+
+    /** A single Clear preview reading uses the existing stream and matching exposure metadata.
+     * It deliberately avoids a RAW session switch and the ordinary neutral-AE capture baseline. */
+    internal fun measureLiveGlobalPreview(): Boolean {
+        if (!started || stopInProgress || meteringOperationActive || filmPreview.isEnabled ||
+            combinationWorkflowProbe.isActive) return false
+        val handler=cameraHandler ?: return false
+        meteringOperationActive=true
+        handler.post {
+            if (!started || cameraDevice==null || captureSession==null || activeSessionProfile?.usesPreview!=true) {
+                meteringOperationActive=false
+                postMeterError(localized("相机预览尚未就绪", "Camera preview is not ready"))
+            } else measureCompatiblePreview(MeteringMode.AVERAGE,null,viewport=meteringViewport())
+        }
+        return true
     }
 
     private fun compatibleMeteringContext() = CompatibleMeteringContext(
@@ -2246,6 +2303,7 @@ class CameraController(
         cameraId = ::calibrationCameraId,
         evaluativeViewport = meteringViewport(),
         previewGeometry = geometryContext.preview,
+        captureFullPreview = filmPreview::captureMeteringFrame,
     )
 
     private fun measureProcessedPreview(
@@ -2946,7 +3004,10 @@ class CameraController(
     ): Boolean {
         try {
             previewHealth.armConfirmation(generation)
+            // A rebuilt stream starts from live AE evidence, never the RAW frame's exposure.
+            exposurePreviewState.reset(preserveSelection = true)
             previewRequests.submit(device, session, preview)
+            continuousMeter.resume()
             previewSurfaceCoordinator.onPreviewStarted()
             previewStreamGeneration += 1L
             val readyInfo = cameraInfo.copy(
@@ -3035,8 +3096,9 @@ class CameraController(
     }
 
     private fun applyRequestedExposurePreview() {
-        if (previewBaseline.isActive || exposurePreviewCalibration.isActive) return
-        exposurePreviewState.apply(characteristics, cameraInfo, latestResult)
+        if (!started || stopInProgress || meteringOperationActive || filmPreview.isEnabled ||
+            activeSessionProfile?.usesPreview != true || previewBaseline.isActive || exposurePreviewCalibration.isActive) return
+        exposurePreviewState.apply(characteristics, cameraInfo)
     }
 
     /** Restores neutral AE and waits for synchronized result frames before sampling the scene. */
@@ -3241,6 +3303,11 @@ class CameraController(
                 outputAspectOverride = previewOutputAspectOverride,
             )?.let(::postRuntimeInfo)
             updateDynamicLensInfo(effectiveResult)
+            if (session === captureSession && (request.tag as? PreviewRequestTag)?.cameraGeneration == cameraGeneration) {
+                exposurePreviewState.onPreviewFrame(effectiveResult, SystemClock.elapsedRealtimeNanos(),
+                    advance = !meteringOperationActive && !previewBaseline.isActive && !exposurePreviewCalibration.isActive && !filmPreview.isEnabled)
+                applyRequestedExposurePreview()
+            }
             distanceCapture.onCaptureResult(effectiveResult, timestamp)
             previewBaseline.onCaptureResult(request, effectiveResult)
             exposurePreviewCalibration.onCaptureResult(request, effectiveResult)
@@ -3251,6 +3318,8 @@ class CameraController(
                 effectiveResult,
                 result.get(CaptureResult.SENSOR_TIMESTAMP),
             )
+            if (session === captureSession && (request.tag as? PreviewRequestTag)?.cameraGeneration == cameraGeneration)
+                continuousMeter.onResult(effectiveResult, result.get(CaptureResult.SENSOR_TIMESTAMP))
         }
     }
 
@@ -3305,6 +3374,7 @@ class CameraController(
 
     private fun onTrackingImageAvailable(reader: ImageReader) {
         if (compatibleMeter.onImageAvailable(reader)) return
+        if (continuousMeter.onImage(reader)) return
         zoneCameraFrames.onImageAvailable(
             reader,
             cameraInfo.sensorOrientationDegrees,
@@ -3341,11 +3411,12 @@ class CameraController(
         cameraFailureStage = CameraFailureStage.OPENING
         previewBaseline.cancel()
         exposurePreviewCalibration.cancelForCameraClose()
+        exposurePreviewUpdateQueued.set(false)
+        exposurePreviewState.reset(preserveSelection = preserveExposurePreview)
         if (!preserveExposurePreview) {
             pendingCalibrationMeteringPlan = null
             calibrationSessionProfile = null
             calibrationStorageCameraId = null
-            exposurePreviewState.reset()
         }
         colorTemperatureEstimator.cancel(cameraHandler)?.let { completion ->
             mainHandler.post {
@@ -3359,6 +3430,7 @@ class CameraController(
         }
         rawMeter.cancel(cameraHandler)
         compatibleMeter.cancel(cameraHandler, resetYuvAvailability = true)
+        continuousMeter.suspend(resetSource = true)
         zoneRaw.reset()
         pendingResidentSessionProfile = null
         meteringOperationActive = false

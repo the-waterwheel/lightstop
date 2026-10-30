@@ -1,6 +1,5 @@
 package com.lightmeter.rawmeter
 
-import android.app.AlertDialog
 import android.content.Context
 import android.text.InputType
 import android.widget.EditText
@@ -21,7 +20,7 @@ internal class DepthOfFieldDialogs(
     fun showFrame(current: FrameFormat) {
         val labels = FrameFormat.ALL.map { it.displayLabel(state.menuLanguage) } +
             localized("自定义画幅…", "Custom format…")
-        AlertDialog.Builder(context)
+        AppDialogs.builder(context,state)
             .setTitle(localized("选择画幅（毫米）", "Select format (millimetres)"))
             .setItems(labels.toTypedArray()) { _, which ->
                 if (which == FrameFormat.ALL.size) {
@@ -42,7 +41,7 @@ internal class DepthOfFieldDialogs(
             val suffix = if (index == 0) localized("（画幅建议）", " (recommended)") else ""
             "${"%.3f".format(value)} mm$suffix"
         } + localized("自定义…", "Custom…")
-        AlertDialog.Builder(context)
+        AppDialogs.builder(context,state)
             .setTitle(localized("最大弥散圆 c", "Circle of confusion c"))
             .setItems(labels.toTypedArray()) { _, which ->
                 if (which == values.size) {
@@ -60,7 +59,7 @@ internal class DepthOfFieldDialogs(
         val editor = decimalEditor(finiteValue).apply {
             hint = localized("对焦距离（米）", "Focus distance (metres)")
         }
-        AlertDialog.Builder(context)
+        AppDialogs.builder(context,state)
             .setTitle(localized("输入对焦距离", "Enter focus distance"))
             .setMessage(localized("范围 0.1–100 米；无穷远请在刻度最右端选择", "Range 0.1–100 m; drag the ruler to its far-right end for infinity"))
             .setView(editorContainer(editor))
@@ -82,7 +81,7 @@ internal class DepthOfFieldDialogs(
         val container = editorContainer(widthEditor, heightEditor)
         widthEditor.hint = localized("宽度 mm", "Width mm")
         heightEditor.hint = localized("高度 mm", "Height mm")
-        AlertDialog.Builder(context)
+        AppDialogs.builder(context,state)
             .setTitle(localized("自定义画幅", "Custom format"))
             .setView(container)
             .setPositiveButton(localized("确定", "OK")) { _, _ ->
@@ -109,7 +108,7 @@ internal class DepthOfFieldDialogs(
         val editor = decimalEditor(currentValue).apply {
             hint = localized("c（毫米）", "c (millimetres)")
         }
-        AlertDialog.Builder(context)
+        AppDialogs.builder(context,state)
             .setTitle(localized("自定义弥散圆", "Custom circle of confusion"))
             .setView(editorContainer(editor))
             .setPositiveButton(localized("确定", "OK")) { _, _ ->

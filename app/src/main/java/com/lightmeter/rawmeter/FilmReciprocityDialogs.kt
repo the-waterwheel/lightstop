@@ -79,8 +79,8 @@ internal class FilmReciprocityDialogs(
             localized("固定 EV 补偿", "Fixed EV compensation"),
             localized("有限范围内无需补偿", "No correction in a finite range"),
         )
-        val methodSpinner = Spinner(context).apply {
-            adapter = ArrayAdapter(context, android.R.layout.simple_spinner_dropdown_item, choices)
+        val methodSpinner = Spinner(AppDialogs.themedContext(context,state.isDarkMode)).apply {
+            adapter = ArrayAdapter(AppDialogs.themedContext(context,state.isDarkMode), android.R.layout.simple_spinner_dropdown_item, choices)
         }
         container.addView(methodSpinner)
 
@@ -184,7 +184,7 @@ internal class FilmReciprocityDialogs(
         updateFields(initialKind)
 
         val scroll = ScrollView(context).apply { addView(container) }
-        val builder = AlertDialog.Builder(context)
+        val builder = AppDialogs.builder(context,state)
             .setTitle(
                 if (newFilm) localized("新增胶片倒易率", "Add film reciprocity")
                 else localized("修改倒易率：$filmName", "Edit reciprocity: $filmName"),
@@ -226,7 +226,7 @@ internal class FilmReciprocityDialogs(
             }
             if (canReset) {
                 dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
-                    AlertDialog.Builder(context)
+                    AppDialogs.builder(context,state)
                         .setMessage(
                             if (hasOriginal) {
                                 localized("恢复这款胶片的原始倒易率设定？", "Restore the original reciprocity data for this film?")

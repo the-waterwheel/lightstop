@@ -148,6 +148,29 @@ internal class CameraFilmPreviewCoordinator(
         }
     }
 
+    fun captureMeteringFrame(completion: (android.graphics.Bitmap?, Long) -> Unit) {
+        captureOriginalFrame(320, completion)
+    }
+
+    fun captureRecordPreview(completion: (android.graphics.Bitmap?) -> Unit) {
+        captureOriginalFrame(1600) { bitmap, _ -> completion(bitmap) }
+    }
+
+    private fun captureOriginalFrame(maxEdge: Int, completion: (android.graphics.Bitmap?, Long) -> Unit) {
+        val renderer = previewRenderer
+        val generation = host.cameraGeneration
+        if (renderer == null || isEnabled) { completion(null, 0L); return }
+        val orientation = renderer.orientationToken
+        renderer.captureMeteringFrame(maxEdge) { bitmap, timestamp ->
+            mainHandler.post {
+                if (generation != host.cameraGeneration || renderer !== previewRenderer || renderer.orientationToken != orientation || isEnabled) {
+                    bitmap?.recycle()
+                    completion(null, 0L)
+                } else completion(bitmap, timestamp)
+            }
+        }
+    }
+
     fun captureFrame(maxEdge: Int = 1280, completion: (FilmNegativeFrozenFrame?) -> Unit) {
         val handler = host.cameraHandler
         if (handler == null) { mainHandler.post { completion(null) }; return }

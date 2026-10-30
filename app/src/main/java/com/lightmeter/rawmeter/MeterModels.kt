@@ -46,6 +46,8 @@ data class FrameFormat(
             FrameFormat("45", "4×5 · 5:4", 120.0, 96.0),
             FrameFormat("57", "5×7 · 7:5", 168.0, 120.0),
             FrameFormat("810", "8×10 · 5:4", 240.0, 192.0),
+            // Append to preserve every existing persisted format index.
+            FrameFormat("none", "无", 36.0, 24.0, "None"),
         )
 
         private const val FULL_FRAME_DIAGONAL_MM = 43.266615
@@ -134,6 +136,7 @@ data class ZoneMeteringTarget(
     val previewY: Float,
     val previewFrameWidthFraction: Float,
     val previewFrameHeightFraction: Float,
+    val sourceViewport: NormalizedSensorViewport = NormalizedSensorViewport.FULL,
 )
 
 /** One visible Zone marker frozen at the instant a batch remeasurement begins. */
@@ -311,12 +314,25 @@ class MeterState(context: Context) {
             persist()
         }
 
+    /** Inspection magnification; never changes the selected focal length or metering frame. */
+    var previewZoom: Float = 1f
+        set(value) { field = if (value.isFinite()) value.coerceIn(1f, 8f) else 1f }
+
     var frameIndex: Int = preferences.getInt("frame_index", 0)
         set(value) {
             field = value.mod(FrameFormat.ALL.size)
             persist()
         }
     val frameFormat: FrameFormat get() = FrameFormat.ALL[frameIndex]
+    val isUnframed: Boolean get() = frameFormat.id == "none"
+    var viewfinderAspect: Float? = null
+        internal set
+    val zoomControlValue: Float get() = if (isUnframed) previewZoom else zoom
+    val zoomControlMaximum: Float get() = if (isUnframed) 8f else cameraInfo.maxDisplayZoom.coerceAtLeast(1.01f)
+
+    fun setZoomControl(value: Float) {
+        if (isUnframed) previewZoom = value else zoom = value
+    }
 
     var landscape: Boolean = preferences.getBoolean("landscape", false)
         set(value) {
@@ -324,7 +340,7 @@ class MeterState(context: Context) {
             persist()
         }
 
-    var frameLandscape: Boolean = true
+    var frameLandscape: Boolean = preferences.getBoolean("frame_landscape", true)
         private set
 
     var exposureLockMode: ExposureLockMode =
@@ -539,11 +555,34 @@ class MeterState(context: Context) {
 
     fun selectFrame(index: Int) {
         frameIndex = index.coerceIn(0, FrameFormat.ALL.lastIndex)
-        // Film-frame long edges always remain horizontal on screen. Phone orientation only
-        // changes which physical sensor axis supplies that horizontal field of view.
-        frameLandscape = true
         persist()
     }
+
+    fun toggleFrameOrientation() {
+        frameLandscape = !frameLandscape
+        persist()
+    }
+
+    fun frameAspect(): Float = if (isUnframed) viewfinderAspect ?: previewDisplayAspect()
+        else if (frameLandscape) frameFormat.landscapeAspect else 1f / frameFormat.landscapeAspect
+
+    fun previewDisplayAspect(layoutLandscape: Boolean = landscape): Float {
+        val relative = (cameraInfo.sensorOrientationDegrees - if (layoutLandscape) 90 else 0) + 360
+        return PreviewOutputGeometry.displayAspect(currentPreviewLandscapeAspect(), relative % 360)
+    }
+
+    fun sourcePreviewCrop(layoutLandscape: Boolean = landscape): NormalizedSensorViewport =
+        ViewfinderGeometry.framingCrop(previewDisplayAspect(layoutLandscape), viewfinderAspect ?: previewDisplayAspect(layoutLandscape), 1f)
+
+    fun framingCrop(layoutLandscape: Boolean = landscape): NormalizedSensorViewport = if (isUnframed)
+        ViewfinderGeometry.project(NormalizedSensorViewport.FULL, 1f / previewZoom)
+        else ViewfinderGeometry.framingCrop(viewfinderAspect ?: previewDisplayAspect(layoutLandscape), frameAspect(), zoom)
+
+    fun originalFramingCrop(layoutLandscape: Boolean = landscape): NormalizedSensorViewport =
+        ViewfinderGeometry.compose(sourcePreviewCrop(layoutLandscape), framingCrop(layoutLandscape))
+
+    fun displayedFramingCrop(layoutLandscape: Boolean = landscape): NormalizedSensorViewport =
+        ViewfinderGeometry.project(framingCrop(layoutLandscape), previewZoom)
 
     fun setExposureLockMode(mode: ExposureLockMode, evAtIso: Double) {
         if (mode == exposureLockMode) return
@@ -881,6 +920,7 @@ class MeterState(context: Context) {
     }
 
     private fun effectiveFullFrameEquivalentMm(): Double? {
+        if (isUnframed) return null
         val info = cameraInfo
         if (info.focalLengthMm <= 0f || info.sensorWidthMm <= 0f || info.sensorHeightMm <= 0f) {
             return null
@@ -907,7 +947,7 @@ class MeterState(context: Context) {
             focalLengthMm = info.focalLengthMm.toDouble(),
             sensorWidthMm = previewVisible.width,
             sensorHeightMm = previewVisible.height,
-            sensorFrameAspect = currentSensorFrameAspect(),
+            sensorFrameAspect = previewAspectInSensor(),
         )
     }
 
@@ -920,20 +960,21 @@ class MeterState(context: Context) {
             focalLengthMm = info.focalLengthMm.toDouble(),
             sensorWidthMm = previewVisible.width,
             sensorHeightMm = previewVisible.height,
-            sensorFrameAspect = currentSensorFrameAspect(),
+            sensorFrameAspect = previewAspectInSensor(),
         )
     }
 
     /** Display-only size: the fixed physical circle grows as the viewfinder is electronically cropped. */
     fun angleMeteringIndicatorFraction(): Float? = angleMeteringRoiFraction()
-        ?.times(zoom.coerceAtLeast(1f))
+        ?.times(previewZoom)
 
-    internal fun previewVisibleSensorSizeMm(): PreviewOutputGeometry.VisibleSensorSizeMm? {
+    internal fun previewVisibleSensorSizeMm(includeWindowCrop: Boolean = true): PreviewOutputGeometry.VisibleSensorSizeMm? {
         val info = cameraInfo
         if (info.sensorWidthMm <= 0f || info.sensorHeightMm <= 0f) return null
+        val viewport = if (includeWindowCrop) effectivePreviewSensorViewport() else info.previewSensorViewport
         return PreviewOutputGeometry.VisibleSensorSizeMm(
-            width = info.sensorWidthMm * info.previewSensorViewport.width.toDouble(),
-            height = info.sensorHeightMm * info.previewSensorViewport.height.toDouble(),
+            width = info.sensorWidthMm * viewport.width.toDouble(),
+            height = info.sensorHeightMm * viewport.height.toDouble(),
         )
     }
 
@@ -942,7 +983,7 @@ class MeterState(context: Context) {
         return PreviewOutputGeometry.visibleSensorSizeMm(
             sensorWidthMm = info.sensorWidthMm.toDouble(),
             sensorHeightMm = info.sensorHeightMm.toDouble(),
-            sensorViewport = info.previewSensorViewport,
+            sensorViewport = effectivePreviewSensorViewport(),
             frameAspectInSensor = currentSensorFrameAspect(),
             displayZoom = zoom.toDouble(),
         )
@@ -963,6 +1004,18 @@ class MeterState(context: Context) {
         } else {
             screenAspect.toDouble()
         }
+    }
+
+    private fun previewAspectInSensor(): Double {
+        val aspect = viewfinderAspect ?: previewDisplayAspect()
+        val relative = (cameraInfo.sensorOrientationDegrees - if (landscape) 90 else 0) + 360
+        return if (relative % 180 == 90) 1.0 / aspect else aspect.toDouble()
+    }
+
+    private fun effectivePreviewSensorViewport(): NormalizedSensorViewport {
+        val rotation = (cameraInfo.sensorOrientationDegrees - if (landscape) 90 else 0) + 360
+        return ViewfinderGeometry.sensorCrop(sourcePreviewCrop(), ScreenToSensorCoordinateTransform(
+            rotation % 360, CameraPreviewTransform.shouldMirrorPreview(cameraInfo.lensFacing), cameraInfo.previewSensorViewport))
     }
 
     private fun persist() {

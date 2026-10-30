@@ -1,0 +1,10 @@
+// Opt-in audit sources only; ordinary builds and test tasks do not include them.
+// See ZONE_RAW_ZOOM_TRACKING_RESEARCH_2026_10_25_ZH.md for expected failures.
+gradle.beforeProject { p ->
+    p.afterEvaluate {
+        if (p.path == ':app') {
+            p.android.sourceSets.getByName('test').java.srcDir(
+                p.rootProject.file('docs/research/zone-zoom-audit-20261025/src'))
+        }
+    }
+}

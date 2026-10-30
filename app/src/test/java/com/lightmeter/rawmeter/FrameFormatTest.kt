@@ -34,8 +34,11 @@ class FrameFormatTest {
         )
         assertEquals(
             listOf("612", "617", "45", "57", "810"),
-            FrameFormat.ALL.drop(7).map(FrameFormat::id),
+            FrameFormat.ALL.drop(7).take(5).map(FrameFormat::id),
         )
+        assertEquals("none", FrameFormat.ALL.last().id)
+        assertEquals("无", FrameFormat.ALL.last().displayLabel(MenuLanguage.CHINESE))
+        assertEquals("None", FrameFormat.ALL.last().displayLabel(MenuLanguage.ENGLISH))
     }
 
     @Test
@@ -68,8 +71,8 @@ class FrameFormatTest {
             maximumRows = 6,
         )
 
-        assertEquals(FormatMenuGrid(columns = 6, rows = 2), wide)
-        assertEquals(FormatMenuGrid(columns = 4, rows = 3), narrow)
-        assertEquals(FormatMenuGrid(columns = 2, rows = 6), zone)
+        assertEquals(FormatMenuGrid(columns = 6, rows = 3), wide)
+        assertEquals(FormatMenuGrid(columns = 4, rows = 4), narrow)
+        assertEquals(FormatMenuGrid(columns = 3, rows = 5), zone)
     }
 }

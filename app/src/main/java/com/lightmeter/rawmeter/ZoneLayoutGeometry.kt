@@ -71,18 +71,13 @@ internal object ZoneLayoutCalculator {
         val clearHandle: RectF
         val ev100Badge: RectF
         val markButton: RectF
-        val aspect = if (state.frameLandscape) {
-            state.frameFormat.landscapeAspect
-        } else {
-            1f / state.frameFormat.landscapeAspect
-        }
 
         if (!landscape) {
             previewPanel = RectF(
                 pad,
                 pad,
                 w - pad,
-                h * 0.42f,
+                h * 0.48f,
             )
             val frameArea = RectF(
                 previewPanel.left + gap,
@@ -90,7 +85,7 @@ internal object ZoneLayoutCalculator {
                 previewPanel.right - 34f * density - gap,
                 previewPanel.bottom - gap,
             )
-            cameraFrame = fitAspect(frameArea, aspect)
+            cameraFrame = RectF(frameArea)
             formatButton = RectF(
                 previewPanel.left + gap,
                 previewPanel.top + gap,
@@ -124,9 +119,9 @@ internal object ZoneLayoutCalculator {
                 previewPanel.bottom - gap,
             )
             normalHandle = RectF(
-                cameraFrame.centerX() - 38f * density,
+                w/2f - 38f * density,
                 previewPanel.bottom - 27f * density,
-                cameraFrame.centerX() + 38f * density,
+                w/2f + 38f * density,
                 previewPanel.bottom - 7f * density,
             )
 
@@ -200,7 +195,7 @@ internal object ZoneLayoutCalculator {
                 recordPanel.bottom - gap,
             )
         } else {
-            val previewWidth = w * 0.43f
+            val previewWidth = w * 0.49f
             previewPanel = if (state.isLeftHanded) {
                 RectF(w - previewWidth + pad, pad, w - pad, h - pad)
             } else {
@@ -222,7 +217,7 @@ internal object ZoneLayoutCalculator {
                     previewPanel.bottom - gap,
                 )
             }
-            cameraFrame = fitAspect(frameArea, aspect)
+            cameraFrame = RectF(frameArea)
             formatButton = RectF(
                 previewPanel.left + gap,
                 previewPanel.top + gap,
@@ -273,9 +268,9 @@ internal object ZoneLayoutCalculator {
             }
             normalHandle = RectF(
                 normalLeft,
-                zoomTrack.centerY() - normalHeight / 2f,
+                h/2f - normalHeight / 2f,
                 normalLeft + normalWidth,
-                zoomTrack.centerY() + normalHeight / 2f,
+                h/2f + normalHeight / 2f,
             )
 
             val scaleWidth = w * 0.045f
@@ -399,27 +394,6 @@ internal object ZoneLayoutCalculator {
             settingsButton = settingsButton,
             toolsButton = toolsButton,
         )
-    }
-
-    private fun fitAspect(bounds: RectF, aspect: Float): RectF {
-        val boundsAspect = bounds.width() / bounds.height()
-        return if (boundsAspect > aspect) {
-            val fittedWidth = bounds.height() * aspect
-            RectF(
-                bounds.centerX() - fittedWidth / 2f,
-                bounds.top,
-                bounds.centerX() + fittedWidth / 2f,
-                bounds.bottom,
-            )
-        } else {
-            val fittedHeight = bounds.width() / aspect
-            RectF(
-                bounds.left,
-                bounds.centerY() - fittedHeight / 2f,
-                bounds.right,
-                bounds.centerY() + fittedHeight / 2f,
-            )
-        }
     }
 
     /** Centers the mark action in the space beside the details list on every screen width. */

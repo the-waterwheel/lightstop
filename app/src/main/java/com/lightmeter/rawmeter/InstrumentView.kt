@@ -39,6 +39,10 @@ class InstrumentView(
         fun onMoreRequested()
         fun onToolsRequested()
         fun onZoneEntryDrag(progress: Float, released: Boolean)
+        fun onAutoEntryRequested() = Unit
+        fun onAutoEntryDrag(progress:Float,released:Boolean) {
+            if(released&&progress>=.45f)onAutoEntryRequested()
+        }
         fun onControlsChanged(frameChanged: Boolean)
     }
 
@@ -56,6 +60,9 @@ class InstrumentView(
     private val middleGray = Color.rgb(130, 130, 126)
 
     private val zoomRenderer = ZoomControlRenderer()
+    private val viewfinderControls = ViewfinderControls(state)
+    private val modeArrow = ModeGuideArrow()
+    private val modeGuide = ModeGuidePulse()
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
@@ -99,6 +106,13 @@ class InstrumentView(
     private var parameterDialInteractionEnabled = true
     private var zoneDragStartX = 0f
     private var zoneDragStartY = 0f
+    private var autoEntryDrag = false
+    private var clearMotion:ModePanelMotion?=null
+    internal fun setClearMotion(motion:ModePanelMotion?) {clearMotion=motion;invalidate()}
+    internal fun cancelModeGesture() {
+        if(touchTarget==TouchTarget.ZONE_ENTRY)touchTarget=TouchTarget.NONE
+        zoneTransitionFraction=0f;autoEntryDrag=false;modeGuide.clear();invalidate()
+    }
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
 
     private enum class TouchTarget {
@@ -116,21 +130,39 @@ class InstrumentView(
         invalidate()
     }
 
+    private val previewPinch = ViewfinderPinch(context) { factor ->
+        state.previewZoom *= factor
+        listener?.onControlsChanged(false)
+        invalidate()
+    }
+
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val g = LayoutGeometry.calculate(
             width,
             height,
             density,
-            state.frameFormat,
-            state.frameLandscape,
             state.isLeftHanded,
         )
         geometry = g
+        val motion=clearMotion
+        val frame=motion?.preview?:g.cameraFrame
+        state.viewfinderAspect = frame.width() / frame.height().coerceAtLeast(1f)
         accessibilityHelper.update(accessibilityNodes(g))
-        drawSurfaceOutsidePreview(canvas, g.cameraFrame)
-        drawPanels(canvas, g)
+        if(motion==null)drawSurfaceOutsidePreview(canvas,frame) else {
+            ViewfinderOverlay.outside(canvas,frame,width,height,surfaceColor,motion.density)
+        }
+        drawPanels(canvas,g)
+        if(motion!=null&&!state.isUnframed)ViewfinderOverlay.framing(canvas,frame,state.displayedFramingCrop(g.landscape),motion.density)
+        val chrome=if(motion!=null&&motion.alpha<1f)canvas.saveLayerAlpha(0f,0f,width.toFloat(),height.toFloat(),(motion.alpha*255).toInt()) else canvas.save()
         drawCameraOverlay(canvas, g)
+        canvas.restoreToCount(chrome)
+        val panel=motion?.begin(canvas,width,height)?:canvas.save()
+        drawParameters(canvas,g)
+        canvas.restoreToCount(panel)
+    }
+
+    private fun drawParameters(canvas:Canvas,g:LayoutGeometry) {
         drawExposureRows(canvas, g)
         drawDial(canvas, g)
         ev100BadgeRenderer.draw(canvas, g.ev100Badge, Ev100Readouts.normal(state), state.isDarkMode, red)
@@ -146,20 +178,16 @@ class InstrumentView(
     }
 
     private fun drawSurfaceOutsidePreview(canvas: Canvas, frame: RectF) {
-        paint.style = Paint.Style.FILL
-        paint.color = surfaceColor
-        canvas.drawRect(0f, 0f, width.toFloat(), frame.top, paint)
-        canvas.drawRect(0f, frame.top, frame.left, frame.bottom, paint)
-        canvas.drawRect(frame.right, frame.top, width.toFloat(), frame.bottom, paint)
-        canvas.drawRect(0f, frame.bottom, width.toFloat(), height.toFloat(), paint)
+        ViewfinderOverlay.outside(canvas, frame, width, height, surfaceColor, density)
     }
 
     private fun drawPanels(canvas: Canvas, g: LayoutGeometry) {
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 0.8f * density
         paint.color = InstrumentStyle.border(state.isDarkMode)
+        paint.alpha=(255*(clearMotion?.alpha?:1f)).toInt()
         canvas.drawRect(g.previewPanel, paint)
-        canvas.drawRect(g.cameraFrame, paint)
+        canvas.drawRoundRect(g.cameraFrame, 12f * density, 12f * density, paint)
         if (g.landscape) {
             val dividerX = if (g.previewPanel.centerX() < g.apertureRow.centerX()) {
                 (g.previewPanel.right + g.apertureRow.left) / 2f
@@ -171,9 +199,11 @@ class InstrumentView(
             val dividerY = (g.previewPanel.bottom + g.apertureRow.top) / 2f
             canvas.drawLine(0f, dividerY, width.toFloat(), dividerY, paint)
         }
+        paint.alpha=255
     }
 
     private fun drawCameraOverlay(canvas: Canvas, g: LayoutGeometry) {
+        if (clearMotion==null&&!state.isUnframed) ViewfinderOverlay.framing(canvas, g.cameraFrame, state.displayedFramingCrop(g.landscape), density)
         val roiFraction = if (state.meteringMode == MeteringMode.ANGLE) {
             state.angleMeteringIndicatorFraction() ?: DEFAULT_SPOT_DIAMETER_FRACTION
         } else {
@@ -184,14 +214,12 @@ class InstrumentView(
             ).coerceAtLeast(4f * density)
         canvas.save()
         // A fixed physical angle can extend outside an electronically cropped viewfinder.
-        canvas.clipRect(g.cameraFrame)
+        ViewfinderOverlay.clip(canvas, g.cameraFrame, density)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1.1f * density
         paint.color = surfaceColor
         if (state.meteringMode == MeteringMode.AVERAGE) {
-            paint.color = black
-            canvas.drawRect(g.cameraFrame.left + 6f * density, g.cameraFrame.top + 6f * density,
-                g.cameraFrame.right - 6f * density, g.cameraFrame.bottom - 6f * density, paint)
+            // The framing overlay itself identifies the entire metered scene region.
         } else {
             canvas.drawCircle(g.cameraFrame.centerX(), g.cameraFrame.centerY(), spotRadius + density, paint)
             paint.color = black
@@ -206,13 +234,7 @@ class InstrumentView(
         }
         canvas.restore()
 
-        drawOutlinedButton(
-            canvas,
-            g.formatButton,
-            InstrumentPresentation.formatShortLabel(state.frameFormat, state.menuLanguage),
-            formatMenuOpen,
-            overlayAlpha(g.formatButton, g.cameraFrame),
-        )
+        viewfinderControls.format(canvas,g.formatButton,density,formatMenuOpen,overlayAlpha(g.formatButton,g.cameraFrame))
         if (formatMenuOpen) drawFormatMenu(canvas, g)
         drawOrientationButton(
             canvas,
@@ -313,11 +335,13 @@ class InstrumentView(
 
     private fun drawZoneEntryHandle(canvas: Canvas, g: LayoutGeometry) {
         val rect = RectF(g.zoneEntryHandle)
+        val fraction=clearMotion?.progress?:zoneTransitionFraction
+        val enteringClear=clearMotion!=null||autoEntryDrag
         if (g.landscape) {
-            val direction = ModeTransitionDirection.zoneEntrySign(state.isLeftHanded)
-            rect.offset(direction * zoneTransitionFraction * width * 0.14f, 0f)
+            val direction = if(enteringClear) ModeTransitionDirection.normalEntrySign(state.isLeftHanded) else ModeTransitionDirection.zoneEntrySign(state.isLeftHanded)
+            rect.offset(direction * fraction * width * 0.14f, 0f)
         } else {
-            rect.offset(0f, -zoneTransitionFraction * height * 0.16f)
+            rect.offset(0f, (if(enteringClear) 1f else -1f) * fraction * height * 0.16f)
         }
         paint.style = Paint.Style.FILL
         paint.color = surfaceColor
@@ -333,100 +357,34 @@ class InstrumentView(
         if (g.landscape) {
             canvas.save()
             canvas.rotate(-90f, rect.centerX(), rect.centerY())
-            drawCenteredText(canvas, "zone", rect.centerX(), rect.centerY(), paint)
+            drawCenteredText(canvas, "mode", rect.centerX(), rect.centerY(), paint)
             canvas.restore()
         } else {
-            drawCenteredText(canvas, "zone", rect.centerX(), rect.centerY(), paint)
+            drawCenteredText(canvas, "mode", rect.centerX(), rect.centerY(), paint)
         }
 
-        if (touchTarget == TouchTarget.ZONE_ENTRY || zoneTransitionFraction > 0f) {
-            val arrow = Path()
-            val size = min(rect.width(), rect.height()) * 0.42f
+        val guide=modeGuide.frame(SystemClock.uptimeMillis())
+        if (clearMotion==null&&(guide!=null || touchTarget == TouchTarget.ZONE_ENTRY || zoneTransitionFraction > 0f)) {
+            val travel=(guide?.travel?:0f)*24f*density
+            val opacity=guide?.opacity?:1f
             if (g.landscape) {
-                val direction = ModeTransitionDirection.zoneEntrySign(state.isLeftHanded)
-                val x = if (direction < 0f) {
-                    rect.left - 5f * density - zoneTransitionFraction * 18f * density
-                } else {
-                    rect.right + 5f * density + zoneTransitionFraction * 18f * density
-                }
-                arrow.moveTo(x, rect.centerY() - size)
-                arrow.lineTo(x + direction * size, rect.centerY())
-                arrow.lineTo(x, rect.centerY() + size)
+                val zoneSign=ModeTransitionDirection.zoneEntrySign(state.isLeftHanded)
+                for(sign in listOf(-1f,1f)) if(guide!=null || (if(autoEntryDrag)-zoneSign else zoneSign)==sign)
+                    modeArrow.draw(canvas,rect.centerX()+sign*(rect.width()/2+20f*density+travel),rect.centerY(),density,sign*90f,opacity)
             } else {
-                val y = rect.top - 4f * density - zoneTransitionFraction * 18f * density
-                arrow.moveTo(rect.centerX() - size, y)
-                arrow.lineTo(rect.centerX(), y - size)
-                arrow.lineTo(rect.centerX() + size, y)
+                if (guide!=null || !autoEntryDrag) modeArrow.draw(canvas,rect.centerX(),rect.top-20f*density-travel,density,opacity=opacity)
+                if (guide!=null || autoEntryDrag) modeArrow.draw(canvas,rect.centerX(),rect.bottom+20f*density+travel,density,180f,opacity)
             }
-            arrow.close()
-            canvas.drawPath(arrow, paint)
+            if(guide!=null)postInvalidateOnAnimation()
         }
     }
-
     private fun drawFormatMenu(canvas: Canvas, g: LayoutGeometry) {
-        InstrumentPresentation.formatOptionRects(g, density).forEachIndexed { index, rect ->
-            val selected = index == state.frameIndex
-            paint.style = Paint.Style.FILL
-            paint.color = if (selected) black else surfaceColor
-            canvas.drawRoundRect(rect, 3f * density, 3f * density, paint)
-            paint.style = Paint.Style.STROKE
-            paint.strokeWidth = if (selected) 1.6f * density else 1f * density
-            paint.color = if (selected) red else black
-            canvas.drawRoundRect(rect, 3f * density, 3f * density, paint)
-            paint.style = Paint.Style.FILL
-            paint.color = if (selected) surfaceColor else black
-            paint.textSize = 7.5f * density
-            paint.typeface = Typeface.DEFAULT_BOLD
-            drawCenteredText(
-                canvas,
-                InstrumentPresentation.formatShortLabel(
-                    FrameFormat.ALL[index],
-                    state.menuLanguage,
-                ),
-                rect.centerX(),
-                rect.centerY(),
-                paint,
-            )
-        }
+        viewfinderControls.options(canvas,InstrumentPresentation.formatOptionRects(g,density),density)
     }
 
-    private fun drawOrientationButton(
-        canvas: Canvas,
-        rect: RectF,
-        landscape: Boolean,
-        alpha: Int = 255,
-    ) {
-        paint.style = Paint.Style.FILL
-        paint.withAlpha(InstrumentStyle.control(state.isDarkMode), alpha)
-        canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 1.3f * density
-        paint.withAlpha(InstrumentStyle.border(state.isDarkMode), alpha)
-        canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
-        paint.withAlpha(black, alpha)
-        val iconW = if (landscape) rect.width() * 0.52f else rect.width() * 0.36f
-        val iconH = if (landscape) rect.height() * 0.36f else rect.height() * 0.52f
-        canvas.drawRoundRect(
-            RectF(
-                rect.centerX() - iconW / 2f,
-                rect.centerY() - iconH / 2f,
-                rect.centerX() + iconW / 2f,
-                rect.centerY() + iconH / 2f,
-            ),
-            2f * density,
-            2f * density,
-            paint,
-        )
-        val arc = RectF(
-            rect.left + 5f * density,
-            rect.top + 5f * density,
-            rect.right - 5f * density,
-            rect.bottom - 5f * density,
-        )
-        paint.withAlpha(red, alpha)
-        canvas.drawArc(arc, 205f, 86f, false, paint)
+    private fun drawOrientationButton(canvas:Canvas,rect:RectF,landscape:Boolean,alpha:Int=255) {
+        viewfinderControls.orientation(canvas,rect,density,landscape,alpha)
     }
-
     private fun drawSettingsButton(canvas: Canvas, rect: RectF, alpha: Int = 255) {
         paint.style = Paint.Style.FILL
         paint.withAlpha(InstrumentStyle.control(state.isDarkMode), alpha)
@@ -498,8 +456,8 @@ class InstrumentView(
     }
 
     private fun drawZoom(canvas: Canvas, track: RectF) {
-        val maxZoom = state.cameraInfo.maxDisplayZoom.coerceAtLeast(1.01f)
-        val normalized = ((state.zoom - 1f) / (maxZoom - 1f)).coerceIn(0f, 1f)
+        val maxZoom = state.zoomControlMaximum
+        val normalized = ((state.zoomControlValue - 1f) / (maxZoom - 1f)).coerceIn(0f, 1f)
         val top = track.top + 22f * density
         val bottom = track.bottom - 16f * density
         zoomRenderer.draw(canvas, true, track.centerX(), top, bottom,
@@ -508,7 +466,7 @@ class InstrumentView(
         paint.textSize = 9f * density
         paint.typeface = InstrumentStyle.labelTypeface
         paint.color = black
-        drawCenteredText(canvas, "${"%.1f".format(state.zoom)}×", track.centerX(), track.top + 8f * density, paint)
+        drawCenteredText(canvas, "${"%.1f".format(state.zoomControlValue)}×", track.centerX(), track.top + 8f * density, paint)
     }
 
     private fun drawExposureRows(canvas: Canvas, g: LayoutGeometry) {
@@ -552,8 +510,6 @@ class InstrumentView(
             width,
             height,
             density,
-            state.frameFormat,
-            state.frameLandscape,
             state.isLeftHanded,
         ).meterButton,
     )
@@ -883,27 +839,6 @@ class InstrumentView(
         drawCenteredText(canvas, message, x, y, paint)
     }
 
-    private fun drawOutlinedButton(
-        canvas: Canvas,
-        rect: RectF,
-        text: String,
-        accented: Boolean,
-        alpha: Int = 255,
-    ) {
-        paint.style = Paint.Style.FILL
-        paint.withAlpha(InstrumentStyle.control(state.isDarkMode), alpha)
-        canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 1.2f * density
-        paint.withAlpha(if (accented) red else InstrumentStyle.border(state.isDarkMode), alpha)
-        canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
-        paint.style = Paint.Style.FILL
-        paint.withAlpha(if (accented) red else black, alpha)
-        paint.textSize = 9f * density
-        paint.typeface = Typeface.DEFAULT_BOLD
-        drawCenteredText(canvas, text, rect.centerX(), rect.centerY(), paint)
-    }
-
     /** Buttons overlapping the fitted viewfinder image become semi-transparent. */
     private fun overlayAlpha(rect: RectF, cameraFrame: RectF): Int =
         if (RectF.intersects(rect, cameraFrame)) OVERLAY_ALPHA else 255
@@ -926,13 +861,22 @@ class InstrumentView(
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         val g = geometry ?: return false
+        if (previewPinch.consume(event, g.cameraFrame, !state.measuring && !state.meteringInteractionBusy)) {
+            if(touchTarget==TouchTarget.ZONE_ENTRY&&autoEntryDrag)listener?.onAutoEntryDrag(0f,true)
+            touchTarget = TouchTarget.NONE
+            return true
+        }
+        if(event.pointerCount>1&&touchTarget==TouchTarget.ZONE_ENTRY) {
+            if(autoEntryDrag)listener?.onAutoEntryDrag(0f,true) else listener?.onZoneEntryDrag(0f,true)
+            cancelModeGesture();return true
+        }
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 if (formatMenuOpen) {
                     val selectedFormat = InstrumentPresentation.formatOptionRects(g, density)
                         .indexOfFirst { it.contains(event.x, event.y) }
                     if (selectedFormat >= 0) {
-                        state.selectFrame(selectedFormat)
+                        viewfinderControls.select(selectedFormat)
                         formatMenuOpen = false
                         haptic()
                         listener?.onControlsChanged(true)
@@ -948,6 +892,9 @@ class InstrumentView(
                         touchTarget = TouchTarget.ZONE_ENTRY
                         zoneDragStartX = event.x
                         zoneDragStartY = event.y
+                        autoEntryDrag = false
+                        modeGuide.show(SystemClock.uptimeMillis())
+                        invalidate()
                         return true
                     }
                     g.moreButton.containsAccessibleTarget(event.x, event.y, density) -> {
@@ -1046,6 +993,17 @@ class InstrumentView(
                     TouchTarget.LOCK -> updateExposureLockDrag(event.y, g.exposureLockTrack)
                     TouchTarget.DIAL -> updateDial(event.x, event.y, g.dial)
                     TouchTarget.ZONE_ENTRY -> {
+                        val autoDistance = if (g.landscape) (event.x-zoneDragStartX)*ModeTransitionDirection.normalEntrySign(state.isLeftHanded) else event.y-zoneDragStartY
+                        val crossDistance = if (g.landscape) event.y-zoneDragStartY else event.x-zoneDragStartX
+                        // Down in portrait / outward toward the handed edge enters clear.
+                        if (autoDistance > touchSlop && autoDistance > abs(crossDistance)*1.2f) autoEntryDrag = true
+                        if(abs(autoDistance)>touchSlop)modeGuide.clear()
+                        if (autoEntryDrag) {
+                            zoneTransitionFraction = (autoDistance / (if(g.landscape) width*.18f else height*.18f)).coerceIn(0f,1f)
+                            listener?.onAutoEntryDrag(zoneTransitionFraction,false)
+                            invalidate()
+                            return true
+                        }
                         zoneTransitionFraction = if (g.landscape) {
                             (ModeTransitionDirection.zoneEntryDistance(
                                 zoneDragStartX,
@@ -1074,7 +1032,12 @@ class InstrumentView(
                         cancelled = event.actionMasked == MotionEvent.ACTION_CANCEL,
                     )
                 } else if (touchTarget == TouchTarget.ZONE_ENTRY) {
-                    listener?.onZoneEntryDrag(
+                    if (event.actionMasked == MotionEvent.ACTION_UP && abs(event.x-zoneDragStartX)<touchSlop && abs(event.y-zoneDragStartY)<touchSlop) {
+                        modeGuide.show(SystemClock.uptimeMillis());invalidate()
+                    } else if (autoEntryDrag) {
+                        listener?.onAutoEntryDrag(if(event.actionMasked==MotionEvent.ACTION_CANCEL)0f else zoneTransitionFraction,true)
+                        setZoneTransitionFraction(0f)
+                    } else listener?.onZoneEntryDrag(
                         if (event.actionMasked == MotionEvent.ACTION_CANCEL) 0f else zoneTransitionFraction,
                         true,
                     )
@@ -1109,7 +1072,10 @@ class InstrumentView(
     }
 
     private fun accessibilityNodes(g: LayoutGeometry): List<CanvasAccessibilityHelper.VirtualNode> =
-        listOf(
+        (if(formatMenuOpen)InstrumentPresentation.formatOptionRects(g,density).mapIndexed {index,rect->
+            CanvasAccessibilityHelper.VirtualNode(200+index,rect,viewfinderControls.label(index))
+        } else emptyList())+listOf(
+            CanvasAccessibilityHelper.VirtualNode(7,g.zoneEntryHandle,localized("模式：normal、zone、clear", "Modes: normal, zone, clear")),
             CanvasAccessibilityHelper.VirtualNode(
                 ACCESSIBILITY_ISO,
                 g.isoModeButton,
@@ -1139,13 +1105,19 @@ class InstrumentView(
             CanvasAccessibilityHelper.VirtualNode(
                 ACCESSIBILITY_ORIENTATION,
                 g.orientationButton,
-                localized("左右手布局", "Handedness"),
+                localized("切换横竖屏", "Rotate interface"),
             ),
         )
 
     private fun handleAccessibilityClick(virtualViewId: Int): Boolean {
+        if(clearMotion!=null)return false
         if (state.measuring && virtualViewId != ACCESSIBILITY_METER) return false
+        if(virtualViewId in 200..200+FrameFormat.ALL.size) {
+            viewfinderControls.select(virtualViewId-200);formatMenuOpen=false
+            haptic();listener?.onControlsChanged(true);invalidate();return true
+        }
         return when (virtualViewId) {
+            7 -> { modeGuide.show(SystemClock.uptimeMillis());invalidate();true }
             ACCESSIBILITY_ISO -> {
                 state.isoAdjustMode = !state.isoAdjustMode
                 listener?.onControlsChanged(false)
@@ -1190,9 +1162,9 @@ class InstrumentView(
         val top = track.top + 22f * density
         val bottom = track.bottom - 16f * density
         val fraction = ((bottom - y) / (bottom - top)).coerceIn(0f, 1f)
-        val max = state.cameraInfo.maxDisplayZoom.coerceAtLeast(1.01f)
+        val max = state.zoomControlMaximum
         val raw = 1f + fraction * (max - 1f)
-        state.zoom = (raw * 10f).roundToInt() / 10f
+        state.setZoomControl((raw * 10f).roundToInt() / 10f)
         listener?.onControlsChanged(false)
         invalidate()
     }

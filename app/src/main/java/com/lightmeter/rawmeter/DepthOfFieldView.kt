@@ -2,7 +2,6 @@ package com.lightmeter.rawmeter
 
 import android.animation.ValueAnimator
 import android.annotation.SuppressLint
-import android.app.AlertDialog
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
@@ -715,7 +714,7 @@ class DepthOfFieldView(
     }
 
     private fun showAutomaticDistanceHelp() {
-        AlertDialog.Builder(context)
+        AppDialogs.builder(context,state)
             .setTitle(localized("自动测距", "Auto distance"))
             .setMessage(
                 localized(

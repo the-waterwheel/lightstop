@@ -63,7 +63,7 @@ class UiPreviewTest {
                 appTheme = if (dark) AppTheme.DARK else AppTheme.LIGHT
                 handedness = if (left) Handedness.LEFT else Handedness.RIGHT
             }
-            val geometry = LayoutGeometry.calculate(720, 1440, 2f, FrameFormat.ALL.first(), true, left)
+            val geometry = LayoutGeometry.calculate(720, 1440, 2f, left)
             val renderer = InstrumentExposureRenderer(state) { 2f }
             val rowHeight = (geometry.shutterRow.bottom - geometry.apertureRow.top).toInt() + 24
             val bitmap = Bitmap.createBitmap(720, rowHeight * 4, Bitmap.Config.ARGB_8888)

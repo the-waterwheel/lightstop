@@ -3,7 +3,6 @@ package com.lightmeter.rawmeter
 import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
-import android.app.AlertDialog
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Color
@@ -17,6 +16,7 @@ import android.view.TextureView
 import android.view.Surface
 import android.view.View
 import android.view.ViewGroup
+import android.view.MotionEvent
 import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
 import android.widget.Toast
@@ -69,6 +69,12 @@ class MeterLayout @JvmOverloads constructor(
         fun onOrientationToggle()
         fun onPreviewGeometryChanged(width: Int, height: Int)
         fun onControlsChanged(frameChanged: Boolean)
+        fun onAutoModeChanged(active: Boolean) = Unit
+        fun onAutoTransitionChanged(active:Boolean) = Unit
+        fun onAutoRawRequested() = Unit
+        fun onAutoResumeRequested() = Unit
+        fun onClearOptionsChanged() = Unit
+        fun onOriginalPreviewRequested(completion: (Bitmap?) -> Unit) { completion(null) }
         fun onAutomaticDistanceRequested()
         fun onAutomaticDistanceStopped()
         fun onSettingRejected(key: SettingKey, value: String)
@@ -115,6 +121,7 @@ class MeterLayout @JvmOverloads constructor(
             previewPath: String,
             previewAspect: Float,
             zoom: Float,
+            sensorCrop: NormalizedSensorViewport,
         )
     }
 
@@ -122,6 +129,12 @@ class MeterLayout @JvmOverloads constructor(
         isOpaque = true
     }
     val instrumentView = InstrumentView(context, state)
+    private val clearPreferences=ClearModePreferences(context)
+    internal val autoSession = AutoMeterSession().apply {clearPreferences.restore(this)}
+    internal val autoView = AutoMeterView(context, state, autoSession, clearPreferences)
+    internal fun persistClearOptions() {clearPreferences.save(autoSession)}
+    var isAutoMode = false
+        private set
     val settingsView = SettingsView(context, state)
     val informationView = InformationView(context, state)
     val cameraManagementView = CameraManagementView(context, state)
@@ -162,7 +175,7 @@ class MeterLayout @JvmOverloads constructor(
     }
     private val parameterRecordToolView = ParameterRecordToolView(context, state, parameterRecordRepository)
     private val parameterRecordEditorView = ParameterRecordEditorView(context, state)
-    private val parameterHistoryView = ParameterHistoryView(context, state, parameterRecordRepository)
+    private val parameterHistoryView = ParameterHistoryView(context, state, parameterRecordRepository, parameterIoDispatcher)
     private val colorTemperatureView = ColorTemperatureView(context, state)
     private val grayCardGuideView = GrayCardGuideView(context, state)
     private val angleMeteringDialView = AngleMeteringDialView(context, state)
@@ -207,6 +220,14 @@ class MeterLayout @JvmOverloads constructor(
     private var zoneTransitionFraction = 0f
     private var zoneAnimator: ValueAnimator? = null
     private var zoneTransitionPrepared = false
+    internal var clearTransitionFraction=0f
+        private set
+    private var clearAnimator:ValueAnimator?=null
+    private var clearTransitionPrepared=false
+    val isClearTransitionInProgress:Boolean get()=clearTransitionPrepared
+    private var clearTransitionLandscape=false
+    private var clearTransitionLeftHanded=false
+    private var clearAnimationTouchBlocked=false
     private var angleControlSuppressedForModeTransition = false
     private var angleControlFadeInAnimating = false
     private var angleControlFadeInRunnable: Runnable? = null
@@ -234,13 +255,46 @@ class MeterLayout @JvmOverloads constructor(
     @Volatile
     private var evaluativeViewport = EvaluativeMeteringViewport(1f, 1f, NormalizedSensorViewport.FULL)
 
-    internal fun evaluativeMeteringViewport(): EvaluativeMeteringViewport =
-        evaluativeViewport.copy(zoom = state.zoom)
+    internal fun evaluativeMeteringViewport(): EvaluativeMeteringViewport {
+        if (textureView.width <= 0 || textureView.height <= 0) return evaluativeViewport
+        val aspect = textureView.width.toFloat() / textureView.height
+        state.viewfinderAspect = aspect
+        val rotation = textureView.display?.rotation ?: Surface.ROTATION_0
+        val info = state.cameraInfo
+        val transform = ScreenToSensorCoordinateTransform(
+            CameraPreviewTransform.relativeRotationDegrees(info.sensorOrientationDegrees, rotation, info.lensFacing),
+            CameraPreviewTransform.shouldMirrorPreview(info.lensFacing), info.previewSensorViewport)
+        val source = state.sourcePreviewCrop(width > height)
+        val crop = state.framingCrop(width > height)
+        val original = ViewfinderGeometry.compose(source, crop)
+        val visible = ViewfinderGeometry.compose(source, ViewfinderGeometry.project(NormalizedSensorViewport.FULL, 1f / state.previewZoom))
+        return EvaluativeMeteringViewport(
+            sensorFrameAspect = CameraPreviewTransform.screenAspectInSensorCoordinates(aspect, info.sensorOrientationDegrees, rotation, info.lensFacing),
+            zoom = state.zoom,
+            displayCrop = ViewfinderGeometry.project(crop, state.previewZoom),
+            screenFrameAspect = aspect,
+            displayRotation = rotation,
+            sensorCrop = ViewfinderGeometry.sensorCrop(original, transform),
+            previewZoom = state.previewZoom,
+            previewSensorCrop = ViewfinderGeometry.sensorCrop(visible, transform),
+            previewSensorViewport = ViewfinderGeometry.sensorCrop(source, transform),
+            originalDisplayCrop = original,
+        )
+    }
 
     internal var listener: Listener? = null
         set(value) {
             field = value
+            autoView.onExit = { closeAutoMode() }
+            autoView.onExitDrag = {progress,released->handleClearDrag(progress,released,entering=false)}
+            autoView.onControls = { changed -> if(changed) requestLayout(); value?.onControlsChanged(changed) }
+            autoView.onOrientation = ::handleOrientationToggle
+            autoView.onRaw = { value?.onAutoRawRequested() }
+            autoView.onResumeMetering = { autoSession.unlock(resumeContinuous=autoSession.continuousMetering); value?.onAutoResumeRequested() }
+            autoView.onOptionsChanged = {persistClearOptions();value?.onClearOptionsChanged()}
             instrumentView.listener = object : InstrumentView.Listener {
+                override fun onAutoEntryRequested() { enterAutoMode() }
+                override fun onAutoEntryDrag(progress:Float,released:Boolean) {handleClearDrag(progress,released,entering=true)}
                 override fun onMeasureRequested() {
                     value?.onMeasureRequested()
                 }
@@ -586,6 +640,8 @@ class MeterLayout @JvmOverloads constructor(
         updateBackground()
         addView(textureView)
         addView(instrumentView)
+        autoView.visibility = View.GONE
+        addView(autoView)
         settingsView.visibility = View.GONE
         addView(settingsView)
         informationView.visibility = View.GONE
@@ -1010,6 +1066,8 @@ class MeterLayout @JvmOverloads constructor(
             MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
             MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
         )
+        autoView.measure(MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY))
         settingsView.measure(
             MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
             MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
@@ -1076,15 +1134,13 @@ class MeterLayout @JvmOverloads constructor(
             MeasureSpec.makeMeasureSpec(toolsRect.height().roundToInt().coerceAtLeast(0), MeasureSpec.EXACTLY),
         )
         parameterRecordEditorView.measure(
-            MeasureSpec.makeMeasureSpec(toolsRect.width().roundToInt().coerceAtLeast(0), MeasureSpec.EXACTLY),
-            MeasureSpec.makeMeasureSpec(toolsRect.height().roundToInt().coerceAtLeast(0), MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
         )
         val geometry = LayoutGeometry.calculate(
             width,
             height,
             resources.displayMetrics.density,
-            state.frameFormat,
-            state.frameLandscape,
             state.isLeftHanded,
         )
         val cameraFrame = if (isCombinationSelectionOpen || isFilmNegativeOpen) {
@@ -1095,6 +1151,10 @@ class MeterLayout @JvmOverloads constructor(
             exposurePreviewCalibrationView.calculatePreviewFrame(width, height)
         } else if (isCalibrationOpen) {
             calibrationView.calculatePreviewFrame(width, height)
+        } else if (clearTransitionPrepared) {
+            lerpRect(geometry.cameraFrame,autoView.previewFrame(width,height),clearTransitionFraction)
+        } else if (isAutoMode) {
+            autoView.previewFrame(width, height)
         } else if (zoneTransitionFraction > 0f || isZoneMode) {
             lerpRect(
                 geometry.cameraFrame,
@@ -1113,11 +1173,7 @@ class MeterLayout @JvmOverloads constructor(
                     height = height,
                     showFullPreview = isVignettingCalibrationOpen,
                 )
-            else -> normalZonePreviewTextureFrame(
-                normalCameraFrame = geometry.cameraFrame,
-                width = width,
-                height = height,
-            )
+            else -> RectF(cameraFrame)
         }
         textureView.measure(
             MeasureSpec.makeMeasureSpec(textureFrame.width().toInt(), MeasureSpec.EXACTLY),
@@ -1129,6 +1185,7 @@ class MeterLayout @JvmOverloads constructor(
         val width = right - left
         val height = bottom - top
         val layoutLandscape = width > height
+        if(clearTransitionPrepared&&(clearTransitionLandscape!=layoutLandscape||clearTransitionLeftHanded!=state.isLeftHanded))cancelClearModeTransition()
         val previousLayoutLandscape = lastLayoutLandscape
         val displayOrientationChanged = previousLayoutLandscape?.let {
             it != layoutLandscape
@@ -1146,8 +1203,6 @@ class MeterLayout @JvmOverloads constructor(
             width,
             height,
             resources.displayMetrics.density,
-            state.frameFormat,
-            state.frameLandscape,
             state.isLeftHanded,
         )
         val cameraFrame = if (isCombinationSelectionOpen || isFilmNegativeOpen) {
@@ -1158,6 +1213,10 @@ class MeterLayout @JvmOverloads constructor(
             exposurePreviewCalibrationView.calculatePreviewFrame(width, height)
         } else if (isCalibrationOpen) {
             calibrationView.calculatePreviewFrame(width, height)
+        } else if (clearTransitionPrepared) {
+            lerpRect(geometry.cameraFrame,autoView.previewFrame(width,height),clearTransitionFraction)
+        } else if (isAutoMode) {
+            autoView.previewFrame(width, height)
         } else if (zoneTransitionFraction > 0f || isZoneMode) {
             lerpRect(
                 geometry.cameraFrame,
@@ -1176,11 +1235,7 @@ class MeterLayout @JvmOverloads constructor(
                     height = height,
                     showFullPreview = isVignettingCalibrationOpen,
                 )
-            else -> normalZonePreviewTextureFrame(
-                normalCameraFrame = geometry.cameraFrame,
-                width = width,
-                height = height,
-            )
+            else -> RectF(cameraFrame)
         }
         textureView.layout(
             textureFrame.left.toInt(),
@@ -1188,12 +1243,9 @@ class MeterLayout @JvmOverloads constructor(
             textureFrame.right.toInt(),
             textureFrame.bottom.toInt(),
         )
-        zoneMarkerTracker.setVisibleViewport(
-            left = (cameraFrame.left - textureFrame.left) / textureFrame.width(),
-            top = (cameraFrame.top - textureFrame.top) / textureFrame.height(),
-            right = (cameraFrame.right - textureFrame.left) / textureFrame.width(),
-            bottom = (cameraFrame.bottom - textureFrame.top) / textureFrame.height(),
-        )
+        state.viewfinderAspect = textureFrame.width() / textureFrame.height().coerceAtLeast(1f)
+        val sourceCrop = state.sourcePreviewCrop(width > height)
+        zoneMarkerTracker.setVisibleViewport(sourceCrop.left, sourceCrop.top, sourceCrop.right, sourceCrop.bottom)
         evaluativeViewport = EvaluativeMeteringViewport(
             sensorFrameAspect = CameraPreviewTransform.screenAspectInSensorCoordinates(
                 cameraFrame.width() / cameraFrame.height(), state.cameraInfo.sensorOrientationDegrees,
@@ -1210,6 +1262,7 @@ class MeterLayout @JvmOverloads constructor(
             displayRotation = textureView.display?.rotation ?: android.view.Surface.ROTATION_0,
         )
         instrumentView.layout(0, 0, width, height)
+        autoView.layout(0, 0, width, height)
         settingsView.layout(0, 0, width, height)
         informationView.layout(0, 0, width, height)
         cameraManagementView.layout(0, 0, width, height)
@@ -1227,12 +1280,8 @@ class MeterLayout @JvmOverloads constructor(
         angleMeteringDialView.layout(0, 0, width, height)
         flashDistanceDialView.layout(0, 0, width, height)
         recordCaptureSliderView.layout(0, 0, width, height)
-        val parameterPanel = toolsPanelRect(width, height)
         parameterRecordEditorView.layout(
-            parameterPanel.left.toInt(),
-            parameterPanel.top.toInt(),
-            parameterPanel.right.toInt(),
-            parameterPanel.bottom.toInt(),
+            0, 0, width, height,
         )
         filmSelectorView.layout(0, 0, width, height)
         parameterHistoryView.layout(0, 0, width, height)
@@ -1289,6 +1338,7 @@ class MeterLayout @JvmOverloads constructor(
     }
 
     fun refresh(frameChanged: Boolean = false) {
+        autoView.invalidate()
         if (frameChanged) {
             zoneView.refreshGeometry()
             requestLayout()
@@ -1542,8 +1592,6 @@ class MeterLayout @JvmOverloads constructor(
                 width,
                 height,
                 density,
-                state.frameFormat,
-                state.frameLandscape,
                 state.isLeftHanded,
             ).previewPanel
         }
@@ -1801,7 +1849,7 @@ class MeterLayout @JvmOverloads constructor(
     }
 
     private fun showParameterCapturePrivacyNotice() {
-        AlertDialog.Builder(context)
+        AppDialogs.builder(context,state)
             .setTitle(localized("参数记录与系统备份", "Parameter records and system backup"))
             .setMessage(
                 localized(
@@ -1825,7 +1873,7 @@ class MeterLayout @JvmOverloads constructor(
     }
 
     private fun showParameterCapturePrivacyDetails() {
-        AlertDialog.Builder(context)
+        AppDialogs.builder(context,state)
             .setTitle(localized("隐私说明", "Privacy notice"))
             .setMessage(
                 localized(
@@ -1843,105 +1891,88 @@ class MeterLayout @JvmOverloads constructor(
         // Freeze every value the record must keep even if the user changes settings while the
         // preview is being encoded off the main thread.
         val options = parameterRecordRepository.options
-        val snapshot = currentParameterSnapshot()
-        // Freeze the crop and zoom at capture start so an asynchronous RAW request cannot pick up
-        // a later viewfinder change.
-        val previewAspect = if (state.frameLandscape) {
-            state.frameFormat.landscapeAspect
-        } else {
-            1f / state.frameFormat.landscapeAspect
-        }
-        val zoom = state.zoom
-        val previewFile = parameterRecordRepository.createPendingPreviewFile(id)
-        val source = capturePreviewBitmap()
-        if (source == null) {
-            parameterCaptureGuard.cancel()
-            recordCaptureSliderView.setCapturePending(false)
-            Toast.makeText(
-                context,
-                if (state.menuLanguage == MenuLanguage.ENGLISH) {
-                    "Unable to capture the current preview. Try again."
-                } else {
-                    "无法截取当前画面，请重试"
-                },
-                Toast.LENGTH_LONG,
-            ).show()
-            return
-        }
-        // Crop geometry depends on live view layout, so it is resolved on the main thread before
-        // the bitmap is handed to the I/O dispatcher, which owns and recycles it.
-        val crop = calculateParameterCrop(source.width, source.height)
-        val token = activeCaptureToken
-        parameterIoDispatcher.submit(
-            background = { writeParameterPreview(source, crop, previewFile) },
-            onMain = { path ->
-                if (!parameterCaptureGuard.isCurrent(token, id)) {
-                    path?.let { File(it).delete() }
-                    return@submit
-                }
-                if (path == null) {
-                    parameterCaptureGuard.cancel()
-                    recordCaptureSliderView.setCapturePending(false)
-                    Toast.makeText(
-                        context,
-                        if (state.menuLanguage == MenuLanguage.ENGLISH) {
-                            "Unable to capture the current preview. Try again."
-                        } else {
-                            "无法截取当前画面，请重试"
-                        },
-                        Toast.LENGTH_LONG,
-                    ).show()
-                } else {
-                    listener?.onParameterCaptureRequested(
-                        id,
-                        snapshot,
-                        options,
-                        path,
-                        previewAspect,
-                        zoom,
-                    ) ?: recordCaptureSliderView.setCapturePending(false)
-                }
+        val viewport = evaluativeMeteringViewport()
+        // Framed records retain the unzoomed window, including the surroundings of the gray
+        // frame. None records retain exactly the visible crop. Freeze both image and RAW domains.
+        val imageCrop = if (state.isUnframed) state.originalFramingCrop(width > height) else state.sourcePreviewCrop(width > height)
+        val sensorCrop = checkNotNull(if (state.isUnframed) viewport.sensorCrop else viewport.previewSensorViewport)
+        val rawSnapshot = currentParameterSnapshot()
+        val snapshot = rawSnapshot.copy(
+            viewfinder = RecordedViewfinder(state.frameFormat.id, state.frameLandscape, state.equivalentFrameFocalMm(),
+                if (state.isUnframed) 1f else state.zoom, state.previewZoom, if (state.isUnframed) null else state.framingCrop(width > height),
+                state.meteringMode, state.angleMeteringDegrees.takeIf { state.meteringMode == MeteringMode.ANGLE },
+                if (isZoneMode) rawSnapshot.zonePoints.map { it.source }.distinct().singleOrNull() else state.lastReading?.source,
+                CameraPreviewTransform.relativeRotationDegrees(state.cameraInfo.sensorOrientationDegrees, viewport.displayRotation, state.cameraInfo.lensFacing),
+                CameraPreviewTransform.shouldMirrorPreview(state.cameraInfo.lensFacing)),
+            zonePoints = rawSnapshot.zonePoints.mapNotNull { point ->
+                val x = if (state.isUnframed) point.normalizedX else .5f + (point.normalizedX - .5f) / state.previewZoom
+                val y = if (state.isUnframed) point.normalizedY else .5f + (point.normalizedY - .5f) / state.previewZoom
+                point.copy(normalizedX = x, normalizedY = y).takeIf { x in 0f..1f && y in 0f..1f }
             },
         )
+        val previewAspect = viewport.screenFrameAspect
+        val zoom = 1f // The frozen sensor crop already contains the saved image's entire mapping.
+        val previewFile = parameterRecordRepository.createPendingPreviewFile(id)
+        val token = activeCaptureToken
+        val receive: (Bitmap?) -> Unit = receive@ { source ->
+            if (!parameterCaptureGuard.isCurrent(token, id)) { source?.recycle(); return@receive }
+            if (source == null) {
+                parameterCaptureGuard.cancel()
+                recordCaptureSliderView.setCapturePending(false)
+                Toast.makeText(
+                    context,
+                    if (state.menuLanguage == MenuLanguage.ENGLISH) {
+                        "Unable to capture the current preview. Try again."
+                    } else {
+                        "无法截取当前画面，请重试"
+                    },
+                    Toast.LENGTH_LONG,
+                ).show()
+                return@receive
+            }
+            // Crop geometry depends on live view layout, so it is resolved on the main thread before
+            // the bitmap is handed to the I/O dispatcher, which owns and recycles it.
+            val crop = PixelCrop((imageCrop.left * source.width).roundToInt().coerceIn(0, source.width - 1),
+                (imageCrop.top * source.height).roundToInt().coerceIn(0, source.height - 1),
+                (imageCrop.right * source.width).roundToInt().coerceIn(1, source.width),
+                (imageCrop.bottom * source.height).roundToInt().coerceIn(1, source.height))
+            parameterIoDispatcher.submit(
+                background = { writeParameterPreview(source, crop, previewFile) },
+                onMain = { path ->
+                    if (!parameterCaptureGuard.isCurrent(token, id)) {
+                        path?.let { File(it).delete() }
+                        return@submit
+                    }
+                    if (path == null) {
+                        parameterCaptureGuard.cancel()
+                        recordCaptureSliderView.setCapturePending(false)
+                        Toast.makeText(
+                            context,
+                            if (state.menuLanguage == MenuLanguage.ENGLISH) {
+                                "Unable to capture the current preview. Try again."
+                            } else {
+                                "无法截取当前画面，请重试"
+                            },
+                            Toast.LENGTH_LONG,
+                        ).show()
+                    } else {
+                        listener?.onParameterCaptureRequested(
+                            id,
+                            snapshot,
+                            options,
+                            path,
+                            previewAspect,
+                            zoom,
+                            sensorCrop,
+                        ) ?: recordCaptureSliderView.setCapturePending(false)
+                    }
+                },
+            )
+        }
+        listener?.onOriginalPreviewRequested(receive) ?: receive(null)
     }
-
-    private fun capturePreviewBitmap(): Bitmap? = runCatching {
-        val sourceWidth = textureView.width.coerceAtLeast(1)
-        val sourceHeight = textureView.height.coerceAtLeast(1)
-        val scale = min(1f, 1600f / max(sourceWidth, sourceHeight).toFloat())
-        textureView.getBitmap(
-            (sourceWidth * scale).roundToInt().coerceAtLeast(1),
-            (sourceHeight * scale).roundToInt().coerceAtLeast(1),
-        )
-    }.getOrNull()
 
     private data class PixelCrop(val left: Int, val top: Int, val right: Int, val bottom: Int)
-
-    private fun calculateParameterCrop(sourceWidth: Int, sourceHeight: Int): PixelCrop {
-        val viewWidth = textureView.width.coerceAtLeast(1)
-        val viewHeight = textureView.height.coerceAtLeast(1)
-        val cameraFrame = if (isZoneMode) {
-            zoneView.calculatePreviewFrame(width, height)
-        } else {
-            LayoutGeometry.calculate(
-                width,
-                height,
-                resources.displayMetrics.density,
-                state.frameFormat,
-                state.frameLandscape,
-                state.isLeftHanded,
-            ).cameraFrame
-        }
-        val cropLeft = (((cameraFrame.left - textureView.left) / viewWidth) * sourceWidth)
-            .roundToInt().coerceIn(0, sourceWidth - 1)
-        val cropTop = (((cameraFrame.top - textureView.top) / viewHeight) * sourceHeight)
-            .roundToInt().coerceIn(0, sourceHeight - 1)
-        val cropRight = (((cameraFrame.right - textureView.left) / viewWidth) * sourceWidth)
-            .roundToInt().coerceIn(cropLeft + 1, sourceWidth)
-        val cropBottom = (((cameraFrame.bottom - textureView.top) / viewHeight) * sourceHeight)
-            .roundToInt().coerceIn(cropTop + 1, sourceHeight)
-        return PixelCrop(cropLeft, cropTop, cropRight, cropBottom)
-    }
 
     /** Runs on the I/O dispatcher; owns and recycles [source] and any cropped copy. */
     private fun writeParameterPreview(source: Bitmap, crop: PixelCrop, file: File): String? {
@@ -1995,18 +2026,18 @@ class MeterLayout @JvmOverloads constructor(
     private fun showParameterEditor(draft: ParameterCaptureDraft) {
         if (isParameterEditorOpen) return
         isParameterEditorOpen = true
+        bringRecordSliderToFrontIfDialsCollapsed()
         parameterRecordEditorView.open(parameterRecordRepository.applyActiveCategoryDefaults(draft))
         parameterRecordEditorView.animate().cancel()
         parameterRecordEditorView.visibility = View.VISIBLE
         parameterRecordEditorView.bringToFront()
-        val rect = toolsPanelRect(width, height)
         val landscape = width > height
         parameterRecordEditorView.translationX = if (landscape) {
-            if (state.isLeftHanded) -rect.width() else rect.width()
+            if (state.isLeftHanded) -width.toFloat() else width.toFloat()
         } else {
             0f
         }
-        parameterRecordEditorView.translationY = if (landscape) 0f else rect.height()
+        parameterRecordEditorView.translationY = if (landscape) 0f else height.toFloat()
         parameterRecordEditorView.animate()
             .translationX(0f)
             .translationY(0f)
@@ -2019,14 +2050,13 @@ class MeterLayout @JvmOverloads constructor(
         if (!isParameterEditorOpen) return false
         if (isFilmSelectorOpen) closeFilmSelector(animate = false)
         isParameterEditorOpen = false
-        val rect = toolsPanelRect(width, height)
         val landscape = width > height
         parameterRecordEditorView.animate().cancel()
         parameterRecordEditorView.animate()
             .translationX(if (landscape) {
-                if (state.isLeftHanded) -rect.width() else rect.width()
+                if (state.isLeftHanded) -width.toFloat() else width.toFloat()
             } else 0f)
-            .translationY(if (landscape) 0f else rect.height())
+            .translationY(if (landscape) 0f else height.toFloat())
             .setDuration(260L)
             .setInterpolator(DecelerateInterpolator())
             .withEndAction {
@@ -2065,6 +2095,7 @@ class MeterLayout @JvmOverloads constructor(
     private fun showParameterHistory() {
         if (isParameterHistoryOpen) return
         isParameterHistoryOpen = true
+        bringRecordSliderToFrontIfDialsCollapsed()
         parameterHistoryView.open()
         parameterHistoryView.animate().cancel()
         parameterHistoryView.visibility = View.VISIBLE
@@ -2087,7 +2118,10 @@ class MeterLayout @JvmOverloads constructor(
             .setDuration(260L)
             .setInterpolator(DecelerateInterpolator())
             .withEndAction {
-                if (!isParameterHistoryOpen) parameterHistoryView.visibility = View.GONE
+                if (!isParameterHistoryOpen) {
+                    parameterHistoryView.visibility = View.GONE
+                    bringRecordSliderToFrontIfDialsCollapsed()
+                }
             }
             .start()
         return true
@@ -2100,12 +2134,9 @@ class MeterLayout @JvmOverloads constructor(
     }
 
     private fun setRecordSliderVisible(visible: Boolean) {
-        recordCaptureSliderView.visibility = if (visible) View.VISIBLE else View.GONE
+        if (!visible) recordCaptureSliderView.visibility = View.GONE
         recordCaptureSliderView.setCapturePending(false)
-        if (visible) {
-            updateRecordSliderAnchor()
-            bringRecordSliderToFrontIfDialsCollapsed()
-        }
+        bringRecordSliderToFrontIfDialsCollapsed()
     }
 
     private fun updateRecordSliderAnchor() {
@@ -2116,13 +2147,14 @@ class MeterLayout @JvmOverloads constructor(
     }
 
     private fun updateAngleMeteringControl(fadeIn: Boolean = false) {
+        bringRecordSliderToFrontIfDialsCollapsed()
         if (angleControlSuppressedForModeTransition) {
             flashDistanceDialView.visibility = View.GONE
             flashDistanceDialView.collapse()
             return
         }
         val transitionSettled = zoneTransitionFraction <= 0f || zoneTransitionFraction >= 1f
-        val unobstructed = transitionSettled &&
+        val unobstructed = !isAutoMode && !clearTransitionPrepared && transitionSettled &&
             !isCalibrationOpen && !isExposurePreviewCalibrationOpen &&
             !isVignettingCalibrationOpen &&
             !isCameraManagementOpen && !isCombinationSelectionOpen && !isInformationOpen &&
@@ -2144,6 +2176,7 @@ class MeterLayout @JvmOverloads constructor(
             angleMeteringDialView.alpha = 1f
             angleMeteringDialView.visibility = View.GONE
             angleMeteringDialView.collapse()
+            bringRecordSliderToFrontIfDialsCollapsed()
             return
         }
         angleMeteringDialView.setAnchor(anchor, angleOffset)
@@ -2185,11 +2218,22 @@ class MeterLayout @JvmOverloads constructor(
     }
 
     private fun bringRecordSliderToFrontIfDialsCollapsed() {
-        if (recordCaptureSliderView.visibility == View.VISIBLE &&
+        val unobstructed = !isAutoMode && !clearTransitionPrepared && !angleControlSuppressedForModeTransition &&
+            (zoneTransitionFraction <= 0f || zoneTransitionFraction >= 1f) &&
+            !isSettingsOpen && !isInformationOpen && !isCalibrationOpen &&
+            !isExposurePreviewCalibrationOpen && !isVignettingCalibrationOpen &&
+            !isCameraManagementOpen && !isCombinationSelectionOpen && !isToolsOpen &&
+            !isFilmSelectorOpen && !isParameterEditorOpen && !isParameterHistoryOpen &&
+            listOf(settingsView, informationView, calibrationView, exposurePreviewCalibrationView,
+                vignettingCalibrationView, cameraManagementView, combinationSelectionView, toolsHost,
+                filmSelectorView, parameterRecordEditorView, parameterHistoryView).none { it.visibility == View.VISIBLE }
+        val visible = parameterRecordToolView.recording && unobstructed &&
             !angleMeteringDialView.isExpanded() &&
             !flashDistanceDialView.isExpanded()
-        ) {
-            recordCaptureSliderView.bringToFront()
+        recordCaptureSliderView.visibility = if (visible) View.VISIBLE else View.GONE
+        if (visible) {
+            updateRecordSliderAnchor()
+            if (indexOfChild(recordCaptureSliderView) != childCount - 1) recordCaptureSliderView.bringToFront()
         }
     }
 
@@ -2587,6 +2631,144 @@ class MeterLayout @JvmOverloads constructor(
         return true
     }
 
+    private fun prepareClearTransition():Boolean {
+        if(clearTransitionPrepared)return true
+        if(isZoneMode||state.measuring||state.meteringInteractionBusy||autoSession.rawPending||isToolsOpen||isSettingsOpen||zoneAnimator!=null)return false
+        if(zoneTransitionPrepared)finishZoneTransition(0f)
+        clearTransitionPrepared=true
+        clearTransitionLandscape=width>height;clearTransitionLeftHanded=state.isLeftHanded
+        clearTransitionFraction=if(isAutoMode)1f else 0f
+        if(!isAutoMode) {
+            autoSession.unlock(clear=true,resumeContinuous=autoSession.continuousMetering)
+            autoView.closeTransientUi()
+        }
+        instrumentView.visibility=View.VISIBLE;instrumentView.alpha=1f
+        autoView.visibility=View.VISIBLE;autoView.alpha=1f;autoView.bringToFront()
+        zoneView.visibility=View.GONE
+        suppressAngleControlForModeTransition()
+        listener?.onAutoTransitionChanged(true)
+        return true
+    }
+
+    private fun handleClearDrag(progress:Float,released:Boolean,entering:Boolean) {
+        if(clearAnimator!=null)return
+        if(released) {
+            if(clearTransitionPrepared)animateClearTransition(if(entering) {if(progress>=.45f)1f else 0f} else {if(progress>=.55f)0f else 1f})
+        } else if((progress>0f||clearTransitionPrepared)&&prepareClearTransition()) {
+            applyClearTransition(if(entering)progress else 1f-progress)
+        }
+    }
+
+    private fun applyClearTransition(fraction:Float) {
+        clearTransitionFraction=fraction.coerceIn(0f,1f)
+        val normal=LayoutGeometry.calculate(width,height,resources.displayMetrics.density,state.isLeftHanded)
+        val frame=lerpRect(normal.cameraFrame,autoView.previewFrame(width,height),clearTransitionFraction)
+        val normalDensity=AdaptiveLayout.density(width,height,resources.displayMetrics.density,LayoutProfile.METER)
+        val clearDensity=min(resources.displayMetrics.density,min(width,height).coerceAtLeast(1)/380f)
+        val density=normalDensity+(clearDensity-normalDensity)*clearTransitionFraction
+        val travel=if(width>height)width*.16f else height*.16f
+        val x=if(width>height)ModeTransitionDirection.normalEntrySign(state.isLeftHanded)*travel else 0f
+        val y=if(width>height)0f else travel
+        val f=clearTransitionFraction
+        instrumentView.setClearMotion(ModePanelMotion(frame,f,1-f,x*f,y*f,density))
+        autoView.setClearMotion(ModePanelMotion(frame,f,f,x*(f-1),y*(f-1),density))
+        requestLayout();invalidate()
+    }
+
+    private fun animateClearTransition(target:Float) {
+        val start=clearTransitionFraction
+        if(!ValueAnimator.areAnimatorsEnabled()||kotlin.math.abs(start-target)<.001f) {finishClearTransition(target);return}
+        clearAnimator=ValueAnimator.ofFloat(start,target).apply {
+            duration=(260+160*kotlin.math.abs(target-start)).toLong()
+            interpolator=DecelerateInterpolator()
+            addUpdateListener{applyClearTransition(it.animatedValue as Float)}
+            addListener(object:AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation:Animator) {
+                    if(clearAnimator===this@apply){clearAnimator=null;finishClearTransition(target)}
+                }
+            })
+            start()
+        }
+    }
+
+    private fun finishClearTransition(target:Float) {
+        val wasPrepared=clearTransitionPrepared
+        val wasAuto=isAutoMode
+        clearTransitionFraction=target.coerceIn(0f,1f)
+        clearTransitionPrepared=false
+        instrumentView.setClearMotion(null);autoView.setClearMotion(null)
+        instrumentView.cancelModeGesture();autoView.closeTransientUi()
+        isAutoMode=target>=1f
+        instrumentView.visibility=if(isAutoMode)View.GONE else View.VISIBLE
+        autoView.visibility=if(isAutoMode)View.VISIBLE else View.GONE
+        instrumentView.alpha=1f;autoView.alpha=1f
+        if(isAutoMode)autoView.bringToFront()
+        if(wasAuto!=isAutoMode)listener?.onAutoModeChanged(isAutoMode)
+        if(wasPrepared)listener?.onAutoTransitionChanged(false)
+        scheduleAngleControlAfterModeTransition()
+        requestLayout();invalidate()
+    }
+
+    internal fun cancelClearModeTransition() {
+        val animator=clearAnimator;clearAnimator=null;animator?.cancel()
+        if(clearTransitionPrepared)finishClearTransition(if(isAutoMode)1f else 0f)
+    }
+
+    override fun onSizeChanged(w:Int,h:Int,oldw:Int,oldh:Int) {
+        super.onSizeChanged(w,h,oldw,oldh)
+        if(clearTransitionPrepared&&(w!=oldw||h!=oldh))cancelClearModeTransition()
+    }
+
+    override fun onInterceptTouchEvent(event:MotionEvent):Boolean {
+        if(event.actionMasked==MotionEvent.ACTION_DOWN)clearAnimationTouchBlocked=clearAnimator!=null
+        return clearAnimationTouchBlocked||super.onInterceptTouchEvent(event)
+    }
+
+    override fun onTouchEvent(event:MotionEvent):Boolean {
+        if(clearAnimationTouchBlocked) {
+            if(event.actionMasked==MotionEvent.ACTION_UP||event.actionMasked==MotionEvent.ACTION_CANCEL)clearAnimationTouchBlocked=false
+            if(event.actionMasked==MotionEvent.ACTION_UP)performClick()
+            return true
+        }
+        return super.onTouchEvent(event)
+    }
+
+    override fun performClick():Boolean {super.performClick();return true}
+
+    internal fun enterAutoMode() {
+        if (isAutoMode || isZoneMode || state.measuring || state.meteringInteractionBusy ||
+            isToolsOpen || isSettingsOpen || zoneAnimator != null) return
+        cancelClearModeTransition()
+        if (zoneTransitionPrepared) finishZoneTransition(0f)
+        autoSession.unlock(clear = true,resumeContinuous=autoSession.continuousMetering)
+        isAutoMode = true
+        clearTransitionFraction=1f
+        instrumentView.visibility = View.GONE
+        zoneView.visibility = View.GONE
+        autoView.visibility = View.VISIBLE
+        autoView.bringToFront()
+        updateAngleMeteringControl()
+        listener?.onAutoModeChanged(true)
+        requestLayout()
+    }
+
+    internal fun closeAutoMode(): Boolean {
+        if(!isAutoMode&&clearTransitionPrepared){cancelClearModeTransition();return true}
+        if (!isAutoMode) return false
+        if (autoSession.rawPending || state.meteringInteractionBusy) return true
+        cancelClearModeTransition()
+        isAutoMode = false
+        clearTransitionFraction=0f
+        autoView.closeTransientUi()
+        autoView.visibility = View.GONE
+        instrumentView.visibility = View.VISIBLE
+        instrumentView.alpha = 1f
+        listener?.onAutoModeChanged(false)
+        updateAngleMeteringControl()
+        requestLayout()
+        return true
+    }
+
     fun pauseZoneTracking() {
         zoneMarkerTracker.stop()
     }
@@ -2671,7 +2853,16 @@ class MeterLayout @JvmOverloads constructor(
     fun currentExposurePreviewSelection(): ExposurePreviewSelection? {
         val sceneEv100: Double
         val selectedExposureEv100: Double
-        if (isZoneMode) {
+        if (isAutoMode) {
+            autoSession.recoveryCameraEv100?.let { cameraEv ->
+                val correction = state.previewCameraCorrectionEv()
+                val execution = state.exposurePreviewExecutionCorrectionEv()
+                return ExposurePreviewSelection(cameraEv+correction,cameraEv+correction-execution,correction,execution)
+            }
+            val reading = autoSession.reading ?: return null
+            sceneEv100 = state.previewCalibratedSceneEv100(reading.sceneEv100, reading.source)
+            selectedExposureEv100 = reading.sceneEv100 + (reading.evaluative?.exposureReductionEv ?: 0.0) - state.exposureCompEv
+        } else if (isZoneMode) {
             sceneEv100 = zoneView.currentPreviewCalibratedMeanEv100() ?: return null
             selectedExposureEv100 = ExposurePreviewMath.exposureEv100(
                 apertureCoordinate = zoneView.session.apertureCoordinate,
@@ -2847,39 +3038,9 @@ class MeterLayout @JvmOverloads constructor(
         }
     }
 
-    /**
-     * Keeps the native TextureView layer identical while Normal and Zone animate between their
-     * differently shaped viewports. Resizing a live SurfaceTexture on every animation frame makes
-     * some vendor compositors keep the previous sampling geometry, leaving the destination mode
-     * stretched until the Activity is backgrounded. The union is only a transport surface: each
-     * mode still clips and maps through its own [cameraFrame].
-     */
-    private fun normalZonePreviewTextureFrame(
-        normalCameraFrame: RectF,
-        width: Int,
-        height: Int,
-    ): RectF {
-        val zoneCameraFrame = zoneView.calculatePreviewFrame(width, height)
-        val coverageFrame = RectF(
-            minOf(normalCameraFrame.left, zoneCameraFrame.left),
-            minOf(normalCameraFrame.top, zoneCameraFrame.top),
-            maxOf(normalCameraFrame.right, zoneCameraFrame.right),
-            maxOf(normalCameraFrame.bottom, zoneCameraFrame.bottom),
-        )
-        return previewTextureFrame(coverageFrame, width, height)
-    }
-
     private fun zoneMeteringTarget(marker: ZoneMarker): ZoneMeteringTarget {
         val cameraFrame = zoneView.calculatePreviewFrame(width, height)
-        val normalCameraFrame = LayoutGeometry.calculate(
-            width,
-            height,
-            resources.displayMetrics.density,
-            state.frameFormat,
-            state.frameLandscape,
-            state.isLeftHanded,
-        ).cameraFrame
-        val textureFrame = normalZonePreviewTextureFrame(normalCameraFrame, width, height)
+        val textureFrame = RectF(textureView.left.toFloat(), textureView.top.toFloat(), textureView.right.toFloat(), textureView.bottom.toFloat())
         val screenX = cameraFrame.left + marker.normalizedX * cameraFrame.width()
         val screenY = cameraFrame.top + marker.normalizedY * cameraFrame.height()
         return ZoneMeteringTarget(
@@ -2893,6 +3054,7 @@ class MeterLayout @JvmOverloads constructor(
                 (cameraFrame.width() / textureFrame.width()).coerceIn(0f, 1f),
             previewFrameHeightFraction =
                 (cameraFrame.height() / textureFrame.height()).coerceIn(0f, 1f),
+            sourceViewport = state.sourcePreviewCrop(width > height),
         )
     }
 
@@ -2906,6 +3068,8 @@ class MeterLayout @JvmOverloads constructor(
         if (state.menuLanguage == MenuLanguage.ENGLISH) english else chinese
 
     override fun onDetachedFromWindow() {
+        cancelClearModeTransition()
+        clearAnimationTouchBlocked=false
         zoneAnimator?.cancel()
         stopPreviewHistogramSampling()
         angleControlFadeInRunnable?.let(::removeCallbacks)

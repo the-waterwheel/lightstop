@@ -1,6 +1,5 @@
 package com.lightmeter.rawmeter
 
-import android.app.AlertDialog
 import android.content.Context
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
@@ -36,8 +35,8 @@ internal object FlashSettingsDialog {
             setPadding(0, dp(14f, density), 0, dp(6f, density))
         }
 
-        fun spinner(values: List<String>, selected: Int): Spinner = Spinner(context).apply {
-            adapter = largeSpinnerAdapter(context, values, density)
+        fun spinner(values: List<String>, selected: Int): Spinner = Spinner(AppDialogs.themedContext(context,state.isDarkMode)).apply {
+            adapter = largeSpinnerAdapter(context, values, density,state.isDarkMode)
             setSelection(selected.coerceIn(0, values.lastIndex))
             minimumHeight = dp(54f, density)
         }
@@ -70,7 +69,7 @@ internal object FlashSettingsDialog {
         }
         content.addView(lossInput)
 
-        val dialog = AlertDialog.Builder(context)
+        AppDialogs.builder(context,state)
             .setTitle(if (english) "Flash settings" else "闪光灯设置")
             .setView(content)
             .setNegativeButton(if (english) "Cancel" else "取消", null)
@@ -89,7 +88,6 @@ internal object FlashSettingsDialog {
                 )
             }
             .show()
-        styleDialog(dialog, density)
     }
 
     fun showGuideNumberInput(
@@ -132,7 +130,7 @@ internal object FlashSettingsDialog {
                 dp(60f, density),
             ),
         )
-        val dialog = AlertDialog.Builder(context)
+        AppDialogs.builder(context,state)
             .setTitle(if (english) "Guide number" else "闪光指数")
             .setView(content)
             .setNegativeButton(if (english) "Cancel" else "取消", null)
@@ -141,7 +139,6 @@ internal object FlashSettingsDialog {
                 onConfirmed(value.coerceIn(1.0, 1000.0))
             }
             .show()
-        styleDialog(dialog, density)
     }
 
     fun showMeteringIsoInput(
@@ -167,13 +164,13 @@ internal object FlashSettingsDialog {
             setPadding(0, dp(8f, density), 0, dp(10f, density))
         })
         val values = state.isoValues.map(Int::toString)
-        val isoSpinner = Spinner(context).apply {
-            adapter = largeSpinnerAdapter(context, values, density)
+        val isoSpinner = Spinner(AppDialogs.themedContext(context,state.isDarkMode)).apply {
+            adapter = largeSpinnerAdapter(context, values, density,state.isDarkMode)
             setSelection(nearestIsoIndex(state, initial.iso))
             minimumHeight = dp(54f, density)
         }
         content.addView(isoSpinner)
-        val dialog = AlertDialog.Builder(context)
+        AppDialogs.builder(context,state)
             .setTitle(if (english) "Flash metering ISO" else "闪光测光 ISO")
             .setView(content)
             .setNegativeButton(if (english) "Cancel" else "取消", null)
@@ -181,7 +178,6 @@ internal object FlashSettingsDialog {
                 onConfirmed(state.isoValues.getOrElse(isoSpinner.selectedItemPosition) { state.iso })
             }
             .show()
-        styleDialog(dialog, density)
     }
 
     private fun numericInput(
@@ -212,8 +208,9 @@ internal object FlashSettingsDialog {
         context: Context,
         values: List<String>,
         density: Float,
+        dark:Boolean,
     ): ArrayAdapter<String> = object : ArrayAdapter<String>(
-        context,
+        AppDialogs.themedContext(context,dark),
         android.R.layout.simple_spinner_item,
         values,
     ) {
@@ -239,23 +236,6 @@ internal object FlashSettingsDialog {
                 dp(12f, density),
                 dp(8f, density),
             )
-        }
-    }
-
-    private fun styleDialog(dialog: AlertDialog, density: Float) {
-        val alertTitleId = dialog.context.resources.getIdentifier("alertTitle", "id", "android")
-        if (alertTitleId != 0) dialog.findViewById<TextView>(alertTitleId)?.textSize = 22f
-        dialog.findViewById<TextView>(android.R.id.message)?.apply {
-            textSize = 17f
-            setLineSpacing(dp(3f, density).toFloat(), 1f)
-        }
-        dialog.getButton(AlertDialog.BUTTON_NEGATIVE)?.apply {
-            textSize = 17f
-            minHeight = dp(52f, density)
-        }
-        dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.apply {
-            textSize = 17f
-            minHeight = dp(52f, density)
         }
     }
 
