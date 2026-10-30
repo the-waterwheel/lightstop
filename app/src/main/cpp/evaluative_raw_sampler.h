@@ -89,4 +89,49 @@ inline std::vector<double> sample(
     result[1] = dark / result[2];
     return result;
 }
+
+/** Display-oriented fixed grid for Global's model. Four planar, black/white-normalized channels. */
+inline std::vector<float> sampleRgb(
+    const uint8_t* bytes, int64_t limit, int offset, int width, int height,
+    int row_stride, int pixel_stride, int cfa, const std::array<float, 4>& black,
+    int white, int left, int top, int right, int bottom,
+    int rotation, bool mirrored, const Shading& shading = {}) {
+    constexpr int nx = 96, ny = 64, count = nx * ny;
+    if (!bytes || width < 2 || height < 2 || offset < 0 || pixel_stride < 2 || row_stride <= 0 ||
+        cfa < 0 || cfa > 3 || white <= 0 || left < 0 || top < 0 || right > width || bottom > height ||
+        left >= right || top >= bottom) return {};
+    rotation = (rotation % 360 + 360) % 360;
+    if (rotation % 90) return {};
+    for (float b : black) if (!std::isfinite(b) || b < 0 || b >= white) return {};
+    const int64_t last = static_cast<int64_t>(offset) + static_cast<int64_t>(bottom - 1) * row_stride +
+        static_cast<int64_t>(right - 1) * pixel_stride;
+    if (last + 1 >= limit || static_cast<int64_t>(right) * pixel_stride > row_stride) return {};
+    // Only complete Bayer units inside the selected crop; tiny ROIs reuse cells rather than leaking out.
+    left += left & 1; top += top & 1;
+    const int columns = (right - left) / 2, rows = (bottom - top) / 2;
+    if (columns <= 0 || rows <= 0) return {};
+    static constexpr int channel[4][4] = {{0,1,2,3},{1,0,3,2},{1,3,0,2},{3,1,2,0}};
+    std::vector<float> result(4 * count);
+    for (int sy = 0; sy < ny; ++sy) for (int sx = 0; sx < nx; ++sx) {
+        const double u = mirrored ? 1 - (sx + .5) / nx : (sx + .5) / nx;
+        const double v = (sy + .5) / ny;
+        double px = u, py = v;
+        if (rotation == 90) { px = v; py = 1 - u; }
+        if (rotation == 180) { px = 1 - u; py = 1 - v; }
+        if (rotation == 270) { px = 1 - v; py = u; }
+        const int x = left + 2 * std::min(columns - 1, static_cast<int>(px * columns));
+        const int y = top + 2 * std::min(rows - 1, static_cast<int>(py * rows));
+        const double gain = shading.at((x + 1.0) / width, (y + 1.0) / height);
+        if (!std::isfinite(gain)) return {};
+        for (int dy = 0; dy < 2; ++dy) for (int dx = 0; dx < 2; ++dx) {
+            const int position = dy * 2 + dx;
+            const int64_t i = static_cast<int64_t>(offset) + static_cast<int64_t>(y + dy) * row_stride +
+                static_cast<int64_t>(x + dx) * pixel_stride;
+            const unsigned raw = bytes[i] | (static_cast<unsigned>(bytes[i + 1]) << 8U);
+            result[channel[cfa][position] * count + sy * nx + sx] = static_cast<float>(gain *
+                clampValue((static_cast<double>(raw) - black[position]) / (white - black[position]), 0., 1.));
+        }
+    }
+    return result;
+}
 } // namespace evaluative

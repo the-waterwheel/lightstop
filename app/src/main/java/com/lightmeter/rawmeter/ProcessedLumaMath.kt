@@ -67,6 +67,15 @@ internal class ProcessedLumaDecoder(
             0.7152 * lookup(greenLookup, green) +
             0.0722 * lookup(blueLookup, blue)
 
+    /** Global's model keeps color; all other metering continues using linearLuma unchanged. */
+    inline fun <T> withLinearRgb(red: Double, green: Double, blue: Double,
+                                consume: (Double, Double, Double) -> T): T =
+        consume(linearRed(red), linearGreen(green), linearBlue(blue))
+
+    fun linearRed(value: Double): Double = lookup(redLookup, value)
+    fun linearGreen(value: Double): Double = lookup(greenLookup, value)
+    fun linearBlue(value: Double): Double = lookup(blueLookup, value)
+
     private fun buildLookup(channel: Int): DoubleArray {
         val validatedCurve = (transfer as? ProcessedTransfer.CURVES)
             ?.curveFor(channel)

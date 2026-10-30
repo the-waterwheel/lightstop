@@ -44,6 +44,10 @@ class EvaluativeMeteringIntegrationTest {
         assertEquals(0.0, reading.clippedFraction, 0.0)
         assertTrue(reading.evaluative!!.highlightsConfirmed)
         assertEquals(0.0, reading.evaluative.exposureReductionEv, 0.0)
+        assertNotNull(stat.globalInput)
+        assertEquals(6144,stat.globalInput!!.sampleCount)
+        assertEquals(0f,stat.globalInput.features[771],0f)
+        assertEquals(0f,stat.globalInput.features[770],1e-6f)
         bitmap.recycle()
     }
 
@@ -57,6 +61,7 @@ class EvaluativeMeteringIntegrationTest {
             store, evaluativeViewport = viewport)!!
         assertEquals(display.ev100, yuv.ev100, 1e-8)
         assertEquals(display.evaluative!!.highlightEv100, yuv.evaluative!!.highlightEv100, 1e-8)
+        assertArrayEquals(display.globalInput!!.features,yuv.globalInput!!.features,1e-6f)
         assertFalse(image.isClosed()) // Analyzer borrows; CompatibleLightMeter owns close().
         bitmap.recycle()
     }
@@ -72,6 +77,7 @@ class EvaluativeMeteringIntegrationTest {
         val store = CameraCalibrationStore(context)
         fun analyze(iso: Int) = EvaluativeFrameAnalyzer.preview(bitmap, result(iso), characteristics, "0", store, viewport)!!
         assertEquals(3.0, analyze(100).ev100 - analyze(800).ev100, 1e-8)
+        assertArrayEquals(analyze(100).globalInput!!.features,analyze(800).globalInput!!.features,0f)
         bitmap.recycle()
     }
 
@@ -112,6 +118,23 @@ class EvaluativeMeteringIntegrationTest {
             640,480, NormalizedSensorViewport.FULL)
         assertNull(EvaluativeMeteringGeometry.yuvCrop(640,360,
             viewport.copy(sensorFrameAspect = 4f/3, screenFrameAspect = 4f/3), geometry))
+    }
+
+    @Test fun rawGlobalCropHonorsPreviewFieldAndZoomOnce() {
+        val crop=EvaluativeMeteringGeometry.rawCrop(4000,3000,Rect(0,0,4000,3000),4f/3,2f,
+            NormalizedSensorViewport(.25f,.25f,.75f,.75f))
+        assertEquals(1500f,crop.left,.01f);assertEquals(1125f,crop.top,.01f)
+        assertEquals(2500f,crop.right,.01f);assertEquals(1875f,crop.bottom,.01f)
+    }
+
+    @Test fun localMeteringHasNoGlobalMappingPayload() {
+        val bitmap=Bitmap.createBitmap(64,64,Bitmap.Config.ARGB_8888).apply { eraseColor(Color.GRAY) }
+        for (mode in listOf(MeteringMode.SPOT,MeteringMode.CENTER_WEIGHTED,MeteringMode.ANGLE)) {
+            val stat=MeteringAnalysis.analyzePreview(bitmap,result(),characteristics,"0",mode,
+                CameraCalibrationStore(context),evaluativeViewport=viewport)!!
+            assertNull(stat.globalInput)
+        }
+        bitmap.recycle()
     }
 
     @Test fun globalIsTheFourthModeAndKeepsTheExistingSavedIdentifier() {

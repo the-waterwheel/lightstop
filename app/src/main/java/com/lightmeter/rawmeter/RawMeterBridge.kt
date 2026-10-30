@@ -36,4 +36,13 @@ object RawMeterBridge {
         lumaCoefficients: DoubleArray,
         shadingColumns: Int, shadingRows: Int, shadingBounds: FloatArray, shadingGains: FloatArray,
     ): DoubleArray
+
+    /** Global-only 96x64 grid; planar R/G-even/G-odd/B, after black/white and lens shading. */
+    external fun sampleGlobalRgbRaw(
+        buffer: ByteBuffer, bufferOffset: Int, bufferLimit: Int,
+        width: Int, height: Int, rowStride: Int, pixelStride: Int,
+        cfa: Int, blackLevels: FloatArray, whiteLevel: Int,
+        left: Int, top: Int, right: Int, bottom: Int, rotationDegrees: Int, mirrored: Boolean,
+        shadingColumns: Int, shadingRows: Int, shadingBounds: FloatArray, shadingGains: FloatArray,
+    ): FloatArray
 }

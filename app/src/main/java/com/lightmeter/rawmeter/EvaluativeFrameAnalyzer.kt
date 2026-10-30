@@ -22,11 +22,23 @@ data class EvaluativeMeteringViewport(
 
 /** Synchronous borrowed-frame analysis; Camera2 resource ownership remains with the caller. */
 internal object EvaluativeFrameAnalyzer {
-    private class PixelSample(var luma: Double = 0.0, var clipped: Boolean = false)
+    private class PixelSample(var luma: Double = 0.0, var clipped: Boolean = false) {
+        var red = 0.0
+        var green = 0.0
+        var blue = 0.0
+        fun decode(decoder: ProcessedLumaDecoder, r: Double, g: Double, b: Double) {
+            decoder.withLinearRgb(r, g, b) { lr, lg, lb ->
+                red = lr; green = lg; blue = lb
+                luma = .2126 * lr + .7152 * lg + .0722 * lb
+            }
+            clipped = r >= .98 || g >= .98 || b >= .98
+        }
+    }
     fun raw(
         image: Image, result: CaptureResult, characteristics: CameraCharacteristics,
         cameraInfo: CameraUiInfo, frameAspect: Float, zoom: Float,
         calibrationStore: CameraCalibrationStore, vignettingStore: VignettingCalibrationStore?,
+        globalInputTransform: ScreenToSensorCoordinateTransform? = null,
     ): MeteringFrameStat? {
         val plane = image.planes.firstOrNull() ?: return null
         val black = result.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL) ?: characteristics
@@ -37,7 +49,12 @@ internal object EvaluativeFrameAnalyzer {
             ?: characteristics.get(CameraCharacteristics.SENSOR_INFO_WHITE_LEVEL) ?: return null
         val cfa = characteristics.get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT)
             ?.takeIf(RawSensorFormatPolicy::isBayerCfa) ?: return null
-        val crop = MeteringAnalysis.rawMeterCrop(image.width, image.height, cameraInfo.activeArray, frameAspect, zoom)
+        val transformGeometry = globalInputTransform ?: ScreenToSensorCoordinateTransform(
+            cameraInfo.sensorOrientationDegrees, CameraPreviewTransform.shouldMirrorPreview(cameraInfo.lensFacing),
+            cameraInfo.previewSensorViewport,
+        )
+        val crop = EvaluativeMeteringGeometry.rawCrop(image.width, image.height, cameraInfo.activeArray,
+            frameAspect, zoom, transformGeometry.sensorViewport)
         val gains = result.get(CaptureResult.COLOR_CORRECTION_GAINS)
         val transform = result.get(CaptureResult.COLOR_CORRECTION_TRANSFORM)
         val coefficients = if (gains != null && transform != null) {
@@ -56,7 +73,21 @@ internal object EvaluativeFrameAnalyzer {
         )
         if (values.size < 19 || values[2].toInt() != values.size - 3) return null
         val correction = calibrationStore.totalCorrection(cameraInfo.calibrationCameraId, MeteringSource.RAW)
-        return frame(values.copyOfRange(3, values.size), values[0], values[1], result, characteristics) { correction }
+        val mapped = if (gains != null && transform != null) {
+            val channels = RawMeterBridge.sampleGlobalRgbRaw(
+                plane.buffer, plane.buffer.position(), plane.buffer.limit(), image.width, image.height,
+                plane.rowStride, plane.pixelStride, cfa, black, white,
+                crop.left.roundToInt(), crop.top.roundToInt(), crop.right.roundToInt(), crop.bottom.roundToInt(),
+                transformGeometry.rotationDegrees, transformGeometry.mirrored,
+                shading?.gridWidth ?: 0, shading?.gridHeight ?: 0,
+                shading?.let { floatArrayOf(it.activeLeft, it.activeTop, it.activeRight, it.activeBottom) } ?: floatArrayOf(),
+                shading?.gains ?: floatArrayOf(),
+            )
+            GlobalMeteringInputMapping.fromRaw(MeteringMode.AVERAGE, channels,
+                doubleArrayOf(gains.red.toDouble(), gains.greenEven.toDouble(), gains.greenOdd.toDouble(), gains.blue.toDouble()),
+                DoubleArray(9) { transform.getElement(it / 3, it % 3).toDouble() }, correction)
+        } else null
+        return frame(values.copyOfRange(3, values.size), values[0], values[1], result, characteristics, mapped) { correction }
     }
 
     fun preview(
@@ -71,14 +102,13 @@ internal object EvaluativeFrameAnalyzer {
         val decoder = ProcessedLumaMetadata.decoder(result)
         val pixels = IntArray(bitmap.width * bitmap.height)
         bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
-        return processed(bounds, bitmap.width, bitmap.height, result, characteristics,
-            calibrationStore.responseCorrectionSnapshot(cameraId, MeteringSource.ISP_PREVIEW)) { x, y, sample ->
+        return processed(bounds, bitmap.width, bitmap.height, result, characteristics, MeteringSource.ISP_PREVIEW,
+            correction = calibrationStore.responseCorrectionSnapshot(cameraId, MeteringSource.ISP_PREVIEW)) { x, y, sample ->
             val color = pixels[y * bitmap.width + x]
             val r = ((color ushr 16) and 255) / 255.0
             val g = ((color ushr 8) and 255) / 255.0
             val b = (color and 255) / 255.0
-            sample.luma = decoder.linearLuma(r, g, b)
-            sample.clipped = r >= 0.98 || g >= 0.98 || b >= 0.98
+            sample.decode(decoder, r, g, b)
             true
         }
     }
@@ -95,15 +125,20 @@ internal object EvaluativeFrameAnalyzer {
         val crop = EvaluativeMeteringGeometry.yuvCrop(image.width, image.height, viewport, previewGeometry)
             ?: return null
         val bounds = Rect(crop.left.roundToInt(), crop.top.roundToInt(), crop.right.roundToInt(), crop.bottom.roundToInt())
-        return processed(bounds, image.width, image.height, result, characteristics,
+        val facing = previewGeometry?.lensFacing ?: characteristics.get(CameraCharacteristics.LENS_FACING)
+            ?: CameraCharacteristics.LENS_FACING_BACK
+        val rotation = CameraPreviewTransform.relativeRotationDegrees(
+            previewGeometry?.sensorOrientationDegrees ?: characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0,
+            viewport.displayRotation, facing)
+        return processed(bounds, image.width, image.height, result, characteristics, MeteringSource.YUV_PREVIEW,
+            rotation, CameraPreviewTransform.shouldMirrorPreview(facing),
             calibrationStore.responseCorrectionSnapshot(cameraId, MeteringSource.YUV_PREVIEW)) { x, y, sample ->
             val yc = planes[0].sample(x, y)
             val uc = planes[1].sample(x / 2, y / 2)
             val vc = planes[2].sample(x / 2, y / 2)
             if (yc < 0 || uc < 0 || vc < 0) false else {
                 ProcessedLumaMath.withEncodedRgb(yc, uc, vc, encoding) { r, g, b ->
-                    sample.luma = decoder.linearLuma(r, g, b)
-                    sample.clipped = r >= 0.98 || g >= 0.98 || b >= 0.98
+                    sample.decode(decoder, r, g, b)
                 }
                 true
             }
@@ -112,7 +147,9 @@ internal object EvaluativeFrameAnalyzer {
 
     private inline fun processed(
         bounds: Rect, width: Int, height: Int, result: CaptureResult,
-        characteristics: CameraCharacteristics, noinline correction: (Double) -> Double,
+        characteristics: CameraCharacteristics, source: MeteringSource,
+        rotationDegrees: Int = 0, mirrored: Boolean = false,
+        noinline correction: (Double) -> Double,
         sample: (Int, Int, PixelSample) -> Boolean,
     ): MeteringFrameStat? {
         if (bounds.left < 0 || bounds.top < 0 || bounds.right > width || bounds.bottom > height || bounds.isEmpty) return null
@@ -131,13 +168,27 @@ internal object EvaluativeFrameAnalyzer {
             if (value.luma <= EvaluativeMeteringAlgorithm.SIGNAL_FLOOR) dark++
             lumas[sy * nx + sx] = value.luma.coerceAtLeast(EvaluativeMeteringAlgorithm.SIGNAL_FLOOR)
         }
+        val rgb = FloatArray(3 * GlobalMeteringInputMapping.SAMPLES)
+        for (row in 0 until GlobalMeteringInputMapping.HEIGHT) for (column in 0 until GlobalMeteringInputMapping.WIDTH) {
+            val ok = GlobalMeteringInputMapping.withSamplePosition(column, row,
+                bounds.left, bounds.top, bounds.right, bounds.bottom, rotationDegrees, mirrored) { x, y ->
+                sample(x, y, value)
+            }
+            if (!ok) return null
+            val at = row * GlobalMeteringInputMapping.WIDTH + column
+            rgb[at] = value.red.toFloat()
+            rgb[GlobalMeteringInputMapping.SAMPLES + at] = value.green.toFloat()
+            rgb[2 * GlobalMeteringInputMapping.SAMPLES + at] = value.blue.toFloat()
+        }
+        val mapped = GlobalMeteringInputMapping.fromProcessedLinear(MeteringMode.AVERAGE, rgb, source, correction)
         return frame(lumas, clipped.toDouble() / lumas.size, dark.toDouble() / lumas.size,
-            result, characteristics, correction)
+            result, characteristics, mapped, correction)
     }
 
     private fun frame(
         lumas: DoubleArray, clipped: Double, dark: Double,
-        result: CaptureResult, characteristics: CameraCharacteristics, correction: (Double) -> Double,
+        result: CaptureResult, characteristics: CameraCharacteristics,
+        globalInput: GlobalMeteringInput? = null, correction: (Double) -> Double,
     ): MeteringFrameStat? {
         val exposure = result.get(CaptureResult.SENSOR_EXPOSURE_TIME)?.takeIf { it > 0 } ?: return null
         val iso = result.get(CaptureResult.SENSOR_SENSITIVITY)?.takeIf { it > 0 } ?: return null
@@ -151,7 +202,7 @@ internal object EvaluativeFrameAnalyzer {
             ev100 = stats.baseEv100,
             luma = 0.18 * 2.0.pow(stats.baseEv100 - cameraEv),
             clipped = clipped, captureIso = iso, exposureTimeNs = exposure, aperture = aperture,
-            sampleCount = lumas.size, evaluative = stats,
+            sampleCount = lumas.size, evaluative = stats, globalInput = globalInput,
         )
     }
 
@@ -172,6 +223,15 @@ internal object EvaluativeColorMath {
 }
 
 internal object EvaluativeMeteringGeometry {
+    fun rawCrop(width: Int, height: Int, reportedActive: Rect?, aspect: Float, zoom: Float,
+                viewport: NormalizedSensorViewport): RectF {
+        val active = reportedActive?.takeIf { it.left >= 0 && it.top >= 0 && it.right <= width &&
+            it.bottom <= height && it.width() > 0 && it.height() > 0 } ?: Rect(0, 0, width, height)
+        val preview = RectF(active.left + viewport.left * active.width(), active.top + viewport.top * active.height(),
+            active.left + viewport.right * active.width(), active.top + viewport.bottom * active.height())
+        return MeteringAnalysis.centeredCrop(preview, aspect, zoom)
+    }
+
     /** Map the displayed stream's visible crop to YUV, retaining the preview geometry domain. */
     fun yuvCrop(width: Int, height: Int, viewport: EvaluativeMeteringViewport,
                 geometry: PreviewStreamGeometry?): RectF? {

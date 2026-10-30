@@ -28,6 +28,8 @@ internal data class MeteringFrameStat(
     /** Valid RAW samples used for the median, for quality assessment. */
     val sampleCount: Int = 0,
     val evaluative: EvaluativeFrameStats? = null,
+    /** Populated exclusively by Global; input mapping is upstream of the future model. */
+    val globalInput: GlobalMeteringInput? = null,
 )
 
 internal data class RawColorSample(
@@ -193,11 +195,13 @@ internal object MeteringAnalysis {
         vignettingStore: VignettingCalibrationStore? = null,
         applyVignettingCalibration: Boolean = false,
         meteringRoiFraction: Float? = null,
+        globalInputTransform: ScreenToSensorCoordinateTransform? = null,
     ): MeteringFrameStat? {
         if (meteringMode == MeteringMode.AVERAGE) {
             if (rawMeterPoint != null) return null
             return EvaluativeFrameAnalyzer.raw(
                 image, result, characteristics, cameraInfo, frameAspect, zoom, calibrationStore, vignettingStore,
+                globalInputTransform,
             )
         }
         val plane = image.planes.firstOrNull() ?: return null

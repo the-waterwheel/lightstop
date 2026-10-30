@@ -27,6 +27,11 @@ int main() {
         assert(samples.size() > 19 && samples.size() <= 32768 + 3);
         assert(samples[0] == 0 && samples[1] == 0);
         for (size_t i = 3; i < samples.size(); ++i) assert(std::abs(samples[i] - .458) < .001);
+        const auto rgb = evaluative::sampleRgb(bytes.data(), bytes.size(), offset, width, height, stride, 4,
+            cfa, black, 1040, 0, 0, width, height, 0, false);
+        assert(rgb.size() == 4 * 6144);
+        for (int c = 0; c < 4; ++c) for (int i = 0; i < 6144; ++i)
+            assert(std::abs(rgb[c * 6144 + i] - colors[c]) < .001);
     }
     // Bright material outside the chosen crop cannot influence the measurement.
     for (int y = 0; y < height; ++y) for (int x = 0; x < width; ++x) {
@@ -37,8 +42,33 @@ int main() {
     const auto cropped = run(0, width / 2, width);
     assert(cropped[0] == 0);
     assert(std::abs(cropped[3] - .18) < .001);
+    for (int rotation : {0,90,180,270}) for (bool mirror : {false,true}) {
+        const auto rgb = evaluative::sampleRgb(bytes.data(), bytes.size(), offset, width, height, stride, 4,
+            0, black, 1040, width/2+1, 3, width-1, height-1, rotation, mirror);
+        assert(rgb.size() == 4 * 6144);
+        for (float value : rgb) assert(std::abs(value-.18) < .001);
+    }
+    assert(evaluative::sampleRgb(bytes.data(), 100, offset, width, height, stride, 4,
+        0, black, 1040, 0,0,width,height,0,false).empty());
+    assert(evaluative::sampleRgb(bytes.data(), bytes.size(), offset, width, height, stride, 4,
+        0, black, 1040, 0,0,width,height,45,false).empty());
     assert(run(0, 0, width, 100).empty());
     assert(run(4).empty());
+    // Spatial values make rotations/mirroring observable, rather than testing a uniform frame only.
+    for (int y = 0; y < height; ++y) for (int x = 0; x < width; ++x) {
+        const int p = (y & 1) * 2 + (x & 1);
+        const double value = .05 + .5 * x / width + .2 * y / height;
+        write(x, y, std::lround(black[p] + value * (1040 - black[p])));
+    }
+    const double expected[4] = {.053833333, .251166667, .742333333, .545};
+    for (int turn = 0; turn < 4; ++turn) {
+        const auto rgb = evaluative::sampleRgb(bytes.data(), bytes.size(), offset, width, height, stride, 4,
+            0, black, 1040, 0,0,width,height,turn*90,false);
+        assert(std::abs(rgb[0] - expected[turn]) < .001);
+    }
+    const auto mirrored = evaluative::sampleRgb(bytes.data(), bytes.size(), offset, width, height, stride, 4,
+        0, black, 1040, 0,0,width,height,0,true);
+    assert(std::abs(mirrored[0] - .546333333) < .001);
     // Keep dark areas represented and flagged, and test per-position shading.
     std::fill(bytes.begin(), bytes.end(), 0);
     assert(run(0)[1] == 1);
