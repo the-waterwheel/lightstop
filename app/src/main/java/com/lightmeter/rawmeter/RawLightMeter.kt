@@ -458,12 +458,9 @@ internal class RawLightMeter(
                     vignettingCalibrationStore,
                     applyVignettingCalibration = active.target != null,
                     meteringRoiFraction = active.meteringRoiFraction,
-<<<<<<< .merge_file_cSw9FA
                     globalInputTransform = active.screenToSensorTransform,
-=======
                     evaluativeSensorCrop = active.evaluativeSensorCrop,
                     previewSensorViewport = active.screenToSensorTransform.sensorViewport,
->>>>>>> .merge_file_9BlQD4
                 )
             }
         } finally {
