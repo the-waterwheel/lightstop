@@ -173,9 +173,6 @@ internal class CameraOpenConfigurationResolver(
         val capabilities = streamCharacteristics.get(
             CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES,
         ) ?: intArrayOf()
-        val rawCapability = capabilities.contains(
-            CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_RAW,
-        )
         val manualSensorAvailable = capabilities.contains(
             CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR,
         )
@@ -187,10 +184,7 @@ internal class CameraOpenConfigurationResolver(
             CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL,
         )
         val rawHardwareAvailable = RawSensorFormatPolicy.supportsBayerMetering(
-            rawCapabilityAdvertised = rawCapability,
             hasRawSensorOutput = !map.getOutputSizes(ImageFormat.RAW_SENSOR).isNullOrEmpty(),
-            isLegacyHardware =
-                hardwareLevel == CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_LEGACY,
             colorFilterArrangement = streamCharacteristics.get(
                 CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT,
             ),

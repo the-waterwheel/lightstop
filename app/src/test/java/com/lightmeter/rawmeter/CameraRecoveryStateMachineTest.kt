@@ -52,18 +52,6 @@ class CameraRecoveryStateMachineTest {
     }
 
     @Test
-    fun `two consecutive raw failures request compatible pipeline until raw succeeds`() {
-        val state = stateMachine(rawFailures = 2)
-
-        assertFalse(state.recordRawMeasurementFailed(MeteringPipelineMode.AUTO))
-        assertTrue(state.recordRawMeasurementFailed(MeteringPipelineMode.AUTO))
-        state.recordRawMeasurementSucceeded()
-        assertFalse(state.recordRawMeasurementFailed(MeteringPipelineMode.AUTO))
-        assertFalse(state.recordRawMeasurementFailed(MeteringPipelineMode.ISOLATED))
-        assertFalse(state.recordRawMeasurementFailed(MeteringPipelineMode.FAST))
-    }
-
-    @Test
     fun `manual safe profile preserves selected route and resets recovery budget`() {
         val state = stateMachine(maxAttempts = 1)
         state.resolveProfile(MeteringPipelineMode.AUTO, rawSupported = true, trackingSupported = true)
@@ -103,6 +91,6 @@ class CameraRecoveryStateMachineTest {
         assertEquals(CameraRecoveryAction.STOP, disabled.action)
     }
 
-    private fun stateMachine(maxAttempts: Int = 6, rawFailures: Int = 2) =
-        CameraRecoveryStateMachine(maxAttempts, rawFailures)
+    private fun stateMachine(maxAttempts: Int = 6) =
+        CameraRecoveryStateMachine(maxAttempts)
 }
