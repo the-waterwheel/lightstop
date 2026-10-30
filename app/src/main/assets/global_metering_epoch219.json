@@ -1,0 +1,152 @@
+{
+  "schema": "global-metering-android-mlp-v1",
+  "epoch": 219,
+  "checkpoint_sha256": "c548b23435c5bb7f383020a731da96abf1835d13098274988db36d066913b0db",
+  "weights_sha256": "1d4f4b5528878f78093e34ba9fb9b10b57d6a7b6e862917a49d1cd15dd5f2dbd",
+  "weights_bytes": 213740,
+  "architecture": [
+    776,
+    64,
+    32,
+    2
+  ],
+  "parameters": 51874,
+  "feature_version": "relative-image-ev-grid-v1",
+  "mapping_version": "global-input-mapping-v1",
+  "domain_version": "scene-linear-sparse-pairs-v2",
+  "code_license": "Apache-2.0",
+  "source_manifest_sha256": "297c54bb8d25484591accf28924a45c991f8675a019d904ecb4bb0f1a146ad46",
+  "source_licences": {
+    "CC0-1.0": 538,
+    "CC-BY-4.0": 126
+  },
+  "source_counts": {
+    "train": 648,
+    "val": 16
+  },
+  "validation": {
+    "legacy_jpeg": {
+      "mae_ev": 0.6204565269247017,
+      "p90_ev": 1.5227869391441353,
+      "max_ev": 5.96510124206543,
+      "samples": 2304
+    },
+    "synthetic_raw": {
+      "mae_ev": 0.4362519680992894,
+      "p90_ev": 0.9825789690017709,
+      "max_ev": 4.2599087953567505,
+      "samples": 2304
+    },
+    "synthetic_processed": {
+      "mae_ev": 0.4444142239836866,
+      "p90_ev": 1.005230510234833,
+      "max_ev": 3.6654025316238403,
+      "samples": 2304
+    },
+    "paired_prediction_mae_ev": 0.06397799236300569,
+    "selection_mae_ev": 0.44033309604148796,
+    "comparisons": {
+      "legacy_jpeg": {
+        "common_coverage": 0.6076388888888888,
+        "common": {
+          "model": {
+            "mae_ev": 0.47799309837434917,
+            "p90_ev": 1.2144139826297768,
+            "max_ev": 3.7356613874435425,
+            "samples": 1400
+          },
+          "project_global": {
+            "mae_ev": 1.2436826489960076,
+            "p90_ev": 2.7967297315597532,
+            "max_ev": 4.48061728477478,
+            "samples": 1400
+          },
+          "uniform_ev": {
+            "mae_ev": 1.3665050731372022,
+            "p90_ev": 2.8173028469085692,
+            "max_ev": 4.609977722167969,
+            "samples": 1400
+          },
+          "uniform_linear": {
+            "mae_ev": 1.1034079985952343,
+            "p90_ev": 2.6836001485586167,
+            "max_ev": 4.450546026229858,
+            "samples": 1400
+          }
+        }
+      },
+      "synthetic_raw": {
+        "common_coverage": 0.6310763888888888,
+        "common": {
+          "model": {
+            "mae_ev": 0.35802682459084045,
+            "p90_ev": 0.8321357041597367,
+            "max_ev": 4.2599087953567505,
+            "samples": 1454
+          },
+          "project_global": {
+            "mae_ev": 0.7875577434319352,
+            "p90_ev": 1.5819225311279297,
+            "max_ev": 5.585318088531494,
+            "samples": 1454
+          },
+          "uniform_ev": {
+            "mae_ev": 0.7942716656605993,
+            "p90_ev": 1.669363558292389,
+            "max_ev": 6.5992302894592285,
+            "samples": 1454
+          },
+          "uniform_linear": {
+            "mae_ev": 0.7191075648596308,
+            "p90_ev": 1.6371568441390991,
+            "max_ev": 4.568215012550354,
+            "samples": 1454
+          }
+        }
+      },
+      "synthetic_processed": {
+        "common_coverage": 0.5651041666666666,
+        "common": {
+          "model": {
+            "mae_ev": 0.3517243136413486,
+            "p90_ev": 0.8076490789651872,
+            "max_ev": 2.0912957191467285,
+            "samples": 1302
+          },
+          "project_global": {
+            "mae_ev": 0.7609164465741847,
+            "p90_ev": 1.529925656318665,
+            "max_ev": 2.401670455932617,
+            "samples": 1302
+          },
+          "uniform_ev": {
+            "mae_ev": 0.7807765933000762,
+            "p90_ev": 1.5795396327972417,
+            "max_ev": 2.8494365215301514,
+            "samples": 1302
+          },
+          "uniform_linear": {
+            "mae_ev": 0.6926750130152677,
+            "p90_ev": 1.4773869901895524,
+            "max_ev": 2.4080259203910828,
+            "samples": 1302
+          }
+        }
+      }
+    },
+    "scope": "16 fixed validation originals; virtual ISP pairs, not real sensor validation; test untouched"
+  },
+  "status": "device-test; reference-exposure supervision; synthetic RAW validation",
+  "inference": "FP32 local MLP, normalization and output transforms included; no calibration refit",
+  "output_semantics": "positive compensation increases exposure; target EV100 = frame camera EV100 - compensation",
+  "export_check": {
+    "compensation_max_abs_difference_ev": 1.1920928955078125e-06,
+    "scale_max_abs_difference_ev": 3.5762786865234375e-07,
+    "tolerance_ev": 0.001,
+    "passed": true,
+    "model_sha256": "2997de6f48e96f1e18148ad5e6f79955e429eef23ec6368feadca31c7e689883",
+    "safetensors_sha256": "7ac83b551af544d43de44d9008b660fdb4e82dd297398554922f02062ddb17a9",
+    "onnx_version": "1.23.2",
+    "onnxruntime_version": "1.31.0"
+  }
+}

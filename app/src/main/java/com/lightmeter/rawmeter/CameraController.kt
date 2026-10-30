@@ -55,6 +55,8 @@ class CameraController(
     private val meteringViewport: () -> EvaluativeMeteringViewport? = { null },
 ) : TextureView.SurfaceTextureListener {
 
+    init { GlobalMeteringModel.initialize(context.assets) }
+
     private val mainHandler = Handler(Looper.getMainLooper())
     private val statusFormatter = CameraStatusFormatter(::localized)
     private val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager

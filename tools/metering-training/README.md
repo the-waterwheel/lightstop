@@ -1,5 +1,7 @@
 # 参考曝光监督的轻量测光预训练
 
+2026-10-30：[第219轮模型已接入全局测光设备测试](../../docs/research/GLOBAL_MODEL_EPOCH219_DEVICE_TEST_2026_10_30_ZH.md)。应用采用约209 KiB的FP32本地MLP，保留ONNX导出与PyTorch对照，源码入口为 `export_android_model.py`。以下早期准备状态保留为历史记录。
+
 此工具独立于 Android 构建。把原图作为曝光合适的弱参考，通过线性域的曝光扰动训练正负 EV 补偿；不预测绝对 EV100，不生成图像，不代表已经验证真实 RAW/YUV 的通用性。
 
 当前模型的完整搭建说明见 [从图像到曝光补偿的完整实现](<C:/Users/15449/.codex/worktrees/5b24/lightmeter a/docs/research/CURRENT_METERING_MODEL_ARCHITECTURE_ZH.md>)，包含ROI采样、776维特征、网络、损失、持续训练和推理流程。

@@ -1,0 +1,21 @@
+{
+  "mapping_version": "global-input-mapping-v1",
+  "domain_version": "scene-linear-sparse-pairs-v2",
+  "feature_version": "relative-image-ev-grid-v1",
+  "applies_to_saved_metering_mode": "AVERAGE",
+  "sample_width": 96,
+  "sample_height": 64,
+  "sample_count": 6144,
+  "grid_columns": 12,
+  "grid_rows": 8,
+  "samples_per_cell_edge": 8,
+  "feature_count": 776,
+  "sample_order": "display-oriented row-major positions, planar RGB",
+  "raw_sampling": "complete 2x2 Bayer cells inside the visible cropped ROI",
+  "raw_matrix_order": "Camera2 column-major, after separate R/G-even/G-odd/B gains",
+  "linear_rgb_range": [0, 1],
+  "ev_coordinate": "log2(max(linear_luma, 1e-6) / 0.18)",
+  "calibration": "reuse existing device/source EV response exactly once before feature extraction",
+  "normalization": "frozen training mean/std inside the model; no per-frame brightness normalization",
+  "inference_weights_status": "epoch 219 FP32 enabled for Global device testing"
+}

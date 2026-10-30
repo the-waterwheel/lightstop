@@ -213,6 +213,9 @@ internal object EvaluativeFrameAnalyzer {
             luma = 0.18 * 2.0.pow(stats.baseEv100 - cameraEv),
             clipped = clipped, captureIso = iso, exposureTimeNs = exposure, aperture = aperture,
             sampleCount = lumas.size, evaluative = stats, globalInput = globalInput,
+            neuralExposure = globalInput?.let(GlobalMeteringModel::predict)?.let {
+                GlobalMeteringExposure.from(cameraEv, it)
+            },
         )
     }
 

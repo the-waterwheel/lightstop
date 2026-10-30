@@ -15,6 +15,10 @@ data class EvaluativeMeteringResult(
     val highlightEv100: Double?,
     val exposureReductionEv: Double,
     val highlightResidualEv: Double,
+    /** Epoch 219 may add or reduce exposure; this offset is signed when the model is active. */
+    val modelEpoch: Int? = null,
+    val neuralCompensationEv: Double? = null,
+    val neuralErrorScaleEv: Double? = null,
 ) {
     val recommendedEv100: Double get() = baseEv100 + exposureReductionEv
     val highlightsConfirmed: Boolean get() = highlightEv100 != null
@@ -98,7 +102,20 @@ internal object EvaluativeMeteringFusion {
         if (bases.isEmpty()) return null
         val base = median(bases.map { it.evaluative!!.baseEv100 })
         val highlights = stats.mapNotNull { it.evaluative!!.takeIf { e -> e.highlightReliable }?.highlightEv100 }
-        val decision = EvaluativeMeteringAlgorithm.decide(base, highlights.takeIf { it.isNotEmpty() }?.let(::median))
+        val highlight = highlights.takeIf { it.isNotEmpty() }?.let(::median)
+        val estimates = bases.mapNotNull { it.neuralExposure }.filter {
+            it.modelEpoch == GlobalMeteringNetwork.EPOCH && it.targetEv100.isFinite() &&
+                it.compensationEv.isFinite() && it.errorScaleEv.isFinite() && it.errorScaleEv > 0
+        }
+        // Use a single policy for this burst. Never add the old highlight reduction to model C.
+        val decision = if (estimates.size == bases.size) {
+            val target = median(estimates.map { it.targetEv100 })
+            EvaluativeMeteringResult(base, highlight, target - base,
+                highlight?.let { (it - target - EvaluativeMeteringAlgorithm.HIGHLIGHT_HEADROOM_EV).coerceAtLeast(0.0) } ?: 0.0,
+                modelEpoch = GlobalMeteringNetwork.EPOCH,
+                neuralCompensationEv = median(estimates.map { it.compensationEv }),
+                neuralErrorScaleEv = median(estimates.map { it.errorScaleEv }))
+        } else EvaluativeMeteringAlgorithm.decide(base, highlight)
         val representative = bases[bases.size / 2]
         return MeterReading(
             sceneEv100 = base,

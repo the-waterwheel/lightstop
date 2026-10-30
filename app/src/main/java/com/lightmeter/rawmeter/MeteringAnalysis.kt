@@ -28,8 +28,9 @@ internal data class MeteringFrameStat(
     /** Valid RAW samples used for the median, for quality assessment. */
     val sampleCount: Int = 0,
     val evaluative: EvaluativeFrameStats? = null,
-    /** Populated exclusively by Global; input mapping is upstream of the future model. */
+    /** Populated exclusively by Global; calibration modes do not use the photographic model. */
     val globalInput: GlobalMeteringInput? = null,
+    val neuralExposure: GlobalMeteringExposure? = null,
 )
 
 internal data class RawColorSample(

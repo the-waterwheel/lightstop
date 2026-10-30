@@ -121,3 +121,16 @@ val verifyOpenCvAar = tasks.register("verifyOpenCvAar") {
 }
 
 tasks.named("preBuild").configure { dependsOn(verifyOpenCvAar) }
+
+val verifyGlobalMeteringModel = tasks.register("verifyGlobalMeteringModel") {
+    val model = file("src/main/assets/global_metering_epoch219.bin")
+    inputs.file(model)
+    doLast {
+        val hash = MessageDigest.getInstance("SHA-256").digest(model.readBytes())
+            .joinToString("") { "%02x".format(it.toInt() and 255) }
+        check(hash == "1d4f4b5528878f78093e34ba9fb9b10b57d6a7b6e862917a49d1cd15dd5f2dbd") {
+            "The epoch 219 metering weights changed; re-export and verify before replacing them"
+        }
+    }
+}
+tasks.named("preBuild").configure { dependsOn(verifyGlobalMeteringModel) }
