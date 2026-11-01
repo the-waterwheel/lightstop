@@ -31,6 +31,7 @@ internal class AutoMeterSession {
     var recoveryCameraEv100: Double? = null
         private set
     private var filteredEv: Double? = null
+    private var filteredExposureEv: Double? = null
 
     fun accept(reading: MeterReading): Boolean {
         if (!continuousMetering || locked || rawPending || !reading.sceneEv100.isFinite()) return false
@@ -50,7 +51,7 @@ internal class AutoMeterSession {
             signalLimited = true
             return true
         }
-        if (recoveryCameraEv100 != null) filteredEv = null
+        if (recoveryCameraEv100 != null) { filteredEv = null; filteredExposureEv = null }
         recoveryCameraEv100 = null
         val wasLimited = signalLimited
         signalLimited = false
@@ -59,14 +60,38 @@ internal class AutoMeterSession {
         val next = if (previous == null) reading.sceneEv100 else
             previous + (reading.sceneEv100 - previous).coerceIn(-2.0, 2.0) * .55
         val stable = previous != null && abs(next - previous) < .06
+        val decision = reading.evaluative
+        val neural = decision?.modelEpoch != null
+        val target = reading.sceneEv100 + (decision?.exposureReductionEv ?: 0.0)
+        if (!target.isFinite()) return false
+        val previousTarget = filteredExposureEv.takeIf {
+            this.reading?.source == reading.source && this.reading?.evaluative?.modelEpoch == decision?.modelEpoch
+        }
+        val nextTarget = if (!neural || previousTarget == null) target else
+            previousTarget + (target - previousTarget).coerceIn(-2.0, 2.0) * .55
+        val stableTarget = previousTarget != null && abs(nextTarget - previousTarget) < .03
+        val sameRecommendation = if (neural) stableTarget else
+            abs((this.reading?.evaluative?.exposureReductionEv ?: 0.0)-(decision?.exposureReductionEv ?: 0.0)) < .03
         if (stable && this.reading?.source == reading.source &&
-            abs((this.reading?.evaluative?.exposureReductionEv ?: 0.0)-(reading.evaluative?.exposureReductionEv ?: 0.0)) < .03) {
+            sameRecommendation) {
             val changed = error != null || wasLimited
             error = null
             return changed
         }
         filteredEv = if(stable) previous else next
-        this.reading = reading.copy(sceneEv100 = checkNotNull(filteredEv))
+        val base = checkNotNull(filteredEv)
+        filteredExposureEv = if (neural) {
+            if (stableTarget) previousTarget else nextTarget
+        } else base + (decision?.exposureReductionEv ?: 0.0)
+        // The offset belongs to its own base. Rebase after smoothing so an unchanged neural
+        // exposure target cannot acquire a darker EV merely because the sampled base moved.
+        this.reading = reading.copy(sceneEv100 = base, evaluative = decision?.copy(
+            baseEv100 = base,
+            exposureReductionEv = if (neural) checkNotNull(filteredExposureEv) - base else decision.exposureReductionEv,
+            highlightResidualEv = decision.highlightEv100?.let {
+                (it - checkNotNull(filteredExposureEv) - EvaluativeMeteringAlgorithm.HIGHLIGHT_HEADROOM_EV).coerceAtLeast(0.0)
+            } ?: 0.0,
+        ))
         error = null
         return true
     }
@@ -91,6 +116,7 @@ internal class AutoMeterSession {
         if (!rawPending || (reading.source == MeteringSource.RAW) != manualExpectsRaw || !reading.sceneEv100.isFinite()) return false
         rawPending = false
         filteredEv = reading.sceneEv100
+        filteredExposureEv = reading.sceneEv100 + (reading.evaluative?.exposureReductionEv ?: 0.0)
         this.reading = reading
         error = null
         return true
@@ -111,6 +137,6 @@ internal class AutoMeterSession {
         signalLimited = false
         recoveryCameraEv100 = null
         error = null
-        if (clear) { reading = null; filteredEv = null }
+        if (clear) { reading = null; filteredEv = null; filteredExposureEv = null }
     }
 }

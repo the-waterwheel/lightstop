@@ -16,6 +16,24 @@ import org.robolectric.Shadows.shadowOf
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class ExposurePreviewTransitionTest {
+    @Test fun continuousMeteringWaitsForBothTheFadeAndMatchingSensorExposure() {
+        val f = Fixture()
+        assertFalse(f.state.readyForContinuousMetering)
+        f.frame()
+        assertTrue(f.state.readyForContinuousMetering)
+        f.select(f.sourceEv + 3)
+        assertFalse(f.state.readyForContinuousMetering)
+        repeat(90) { f.frame() }
+        assertTrue(f.state.readyForContinuousMetering)
+        // A delayed result from the old neutral request must not start the next sample.
+        f.frame(time = 10_000_000L)
+        assertFalse(f.state.readyForContinuousMetering)
+        f.frame()
+        assertTrue(f.state.readyForContinuousMetering)
+        f.state.reset()
+        assertFalse(f.state.readyForContinuousMetering)
+    }
+
     @Test fun measurementResultsFadeBothBrighterAndDarkerFromTheLivePreview() {
         for (delta in listOf(-3.0, 3.0)) {
             val f = Fixture()

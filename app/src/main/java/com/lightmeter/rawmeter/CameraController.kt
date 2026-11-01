@@ -544,7 +544,7 @@ class CameraController(
         canSample = { started && !stopInProgress && activeSessionProfile?.usesPreview == true &&
             !meteringOperationActive && !previewBaseline.isActive && !filmPreview.isEnabled &&
             !exposurePreviewCalibration.isActive && !combinationWorkflowProbe.isActive &&
-            !compatibleMeter.isMeasuring },
+            !compatibleMeter.isMeasuring && exposurePreviewState.readyForContinuousMetering },
         calibrationStore = calibrationStore, localized = ::localized,
         onReading = callback::onContinuousMeterReading, onError = callback::onContinuousMeteringError,
     )

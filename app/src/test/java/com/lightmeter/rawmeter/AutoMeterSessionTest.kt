@@ -5,6 +5,30 @@ import org.junit.Test
 
 class AutoMeterSessionTest {
     private fun reading(ev: Double,source: MeteringSource = MeteringSource.YUV_PREVIEW) = MeterReading(ev,.18,0.0,1,100,10_000_000,2f,source)
+    private fun neural(scene: Double, target: Double) = reading(scene).copy(evaluative =
+        EvaluativeMeteringResult(scene, scene + 3, target - scene, 0.0, modelEpoch = 219))
+
+    @Test fun unchangedNeuralExposureTargetSurvivesChangesInTheSampledBase() {
+        val session = AutoMeterSession()
+        session.accept(neural(12.0, 10.0))
+        session.accept(neural(10.0, 10.0))
+        val result = session.reading!!
+        // Smoothing the old base while applying the new base-relative offset used to turn
+        // this unchanged 10-EV recommendation into 10.9 EV, darkening the simulated preview.
+        assertEquals(10.0, result.sceneEv100 + result.evaluative!!.exposureReductionEv, 1e-9)
+        assertEquals(result.sceneEv100, result.evaluative.baseEv100, 1e-9)
+        val calibrated = ExposurePreviewSelection(result.sceneEv100,
+            result.sceneEv100 + result.evaluative.exposureReductionEv, .4, -1.0)
+        assertEquals(8.6, ExposurePreviewMath.targetCameraEv100(calibrated), 1e-9)
+    }
+
+    @Test fun neuralPreferenceChangesAreFilteredEvenWhenTheBaseDoesNotMove() {
+        val session = AutoMeterSession()
+        session.accept(neural(10.0, 10.0))
+        session.accept(neural(10.0, 14.0))
+        val result = session.reading!!
+        assertEquals(11.1, result.sceneEv100 + result.evaluative!!.exposureReductionEv, 1e-9)
+    }
     @Test fun liveNoiseHasADeadBandButSceneChangesStillConverge() {
         val s=AutoMeterSession()
         assertTrue(s.accept(reading(10.0)))

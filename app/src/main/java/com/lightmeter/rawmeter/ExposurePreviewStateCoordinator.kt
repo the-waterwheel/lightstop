@@ -3,6 +3,7 @@ package com.lightmeter.rawmeter
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CaptureResult
 import android.util.Log
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
@@ -47,6 +48,23 @@ internal class ExposurePreviewStateCoordinator(
     private var needsResolve = true
 
     val isTransitioning: Boolean get() = ramp.running || manualTarget != null && manualStart == null
+
+    /** A finished ramp can still have old exposures in the camera's in-flight frame queue. */
+    val readyForContinuousMetering: Boolean
+        get() {
+            if (isTransitioning) return false
+            val result = lastPreviewResult ?: return false
+            val manual = manualExposure
+            if (manual != null) {
+                if (result.get(CaptureResult.CONTROL_AE_MODE) == CaptureResult.CONTROL_AE_MODE_ON) return false
+                val actualEv = ExposurePreviewMath.cameraEv100(manualAperture,
+                    result.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: return false,
+                    result.get(CaptureResult.SENSOR_SENSITIVITY) ?: return false) ?: return false
+                return abs(actualEv - manual.appliedCameraEv100) <= .1
+            }
+            return result.get(CaptureResult.CONTROL_AE_MODE) != CaptureResult.CONTROL_AE_MODE_OFF &&
+                (result.get(CaptureResult.CONTROL_AE_EXPOSURE_COMPENSATION) ?: 0) == compensationSteps
+        }
 
     val isNeutral: Boolean
         get() = manualExposure == null && compensationSteps == 0 && !isTransitioning && !nonNeutralFramesPending
