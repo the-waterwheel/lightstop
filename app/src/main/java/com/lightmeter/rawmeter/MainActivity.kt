@@ -1587,6 +1587,10 @@ class MainActivity : Activity(), CameraControllerCallback {
         ).show()
     }
 
+    override fun onExposurePreviewLimitChanged(limit: ExposurePreviewLimit?) {
+        meterLayout.setExposurePreviewLimit(if (activityResumed) limit else null)
+    }
+
     private fun updateExposurePreviewFromMeter() {
         val previewEnabled = if(meterLayout.isAutoMode) meterLayout.autoSession.simulation else state.exposurePreviewMode == ExposurePreviewMode.ON
         val selection = if (previewEnabled &&
@@ -1598,6 +1602,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             null
         }
         cameraController.updateExposurePreview(selection)
+        if (selection == null) meterLayout.setExposurePreviewLimit(null)
     }
 
     private fun updateAutoMetering() {
@@ -1609,6 +1614,14 @@ class MainActivity : Activity(), CameraControllerCallback {
     override fun onContinuousMeterReading(reading: MeterReading) {
         if (!activityResumed || !meterLayout.isAutoMode || meterLayout.isClearTransitionInProgress) return
         if (meterLayout.autoSession.accept(reading)) {
+            meterLayout.autoView.invalidate()
+            updateExposurePreviewFromMeter()
+        }
+    }
+
+    override fun onContinuousMeteringSignalLimited(evidence: MeteringSignalEvidence) {
+        if (!activityResumed || !meterLayout.isAutoMode || meterLayout.isClearTransitionInProgress) return
+        if (meterLayout.autoSession.acceptSignalLimited(evidence)) {
             meterLayout.autoView.invalidate()
             updateExposurePreviewFromMeter()
         }

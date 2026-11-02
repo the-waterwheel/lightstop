@@ -19,7 +19,9 @@ interface CameraControllerCallback {
     fun onMeteringRestoreStateChanged(restoring: Boolean) = Unit
     fun onMeteringBaselineRestoring() = Unit
     fun onExposurePreviewUnavailable() = Unit
+    fun onExposurePreviewLimitChanged(limit: ExposurePreviewLimit?) = Unit
     fun onContinuousMeterReading(reading: MeterReading) = Unit
+    fun onContinuousMeteringSignalLimited(evidence: MeteringSignalEvidence) = Unit
     fun onContinuousMeteringError(message: String) = Unit
     fun onVignettingCalibrationStarted()
     fun onVignettingCalibrationCompleted(info: VignettingCalibrationInfo)

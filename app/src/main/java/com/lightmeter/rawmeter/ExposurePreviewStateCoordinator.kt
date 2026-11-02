@@ -2,6 +2,7 @@ package com.lightmeter.rawmeter
 
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CaptureResult
+import android.os.SystemClock
 import android.util.Log
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -14,6 +15,9 @@ import kotlin.math.roundToInt
 internal class ExposurePreviewStateCoordinator(
     private val onRequestChanged: () -> Unit,
     private val onUnavailable: () -> Unit,
+    private val onMeteringStalled: () -> Unit = {},
+    private val onLimitChanged: (ExposurePreviewLimit?) -> Unit = {},
+    private val nanoClock: () -> Long = SystemClock::elapsedRealtimeNanos,
 ) {
     @Volatile
     private var requestedSelection: ExposurePreviewSelection? = null
@@ -46,24 +50,44 @@ internal class ExposurePreviewStateCoordinator(
     private var resolvedAperture = Float.NaN
     private var resolvedManualAvailable = false
     private var needsResolve = true
+    private var limit: ExposurePreviewLimit? = null
+    private var samplingWaitStartedNs = nanoClock()
+    private var requestPublishedFrameNs = 0L
+    private var lastFrameReceivedNs = 0L
+    private var lastFrameMatchesCurrentRequest = false
+    private var stableActualEv: Double? = null
+    private var stableActualFrames = 0
+    private var samplingStallReported = false
 
     val isTransitioning: Boolean get() = ramp.running || manualTarget != null && manualStart == null
 
-    /** A finished ramp can still have old exposures in the camera's in-flight frame queue. */
+    /**
+     * A finished ramp can still have old exposures in the camera's in-flight frame queue.
+     * If the HAL persistently quantizes a request, admit fresh, stable actual exposure after a
+     * bounded wait. Metering uses that frame's own exposure metadata, not the requested values.
+     */
     val readyForContinuousMetering: Boolean
         get() {
-            if (isTransitioning) return false
-            val result = lastPreviewResult ?: return false
-            val manual = manualExposure
-            if (manual != null) {
-                if (result.get(CaptureResult.CONTROL_AE_MODE) == CaptureResult.CONTROL_AE_MODE_ON) return false
-                val actualEv = ExposurePreviewMath.cameraEv100(manualAperture,
-                    result.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: return false,
-                    result.get(CaptureResult.SENSOR_SENSITIVITY) ?: return false) ?: return false
-                return abs(actualEv - manual.appliedCameraEv100) <= .1
+            val now = nanoClock()
+            val timedOut = now - samplingWaitStartedNs >= SAMPLING_WAIT_NS
+            if (isTransitioning) {
+                if (timedOut) reportSamplingStall()
+                return false
             }
-            return result.get(CaptureResult.CONTROL_AE_MODE) != CaptureResult.CONTROL_AE_MODE_OFF &&
-                (result.get(CaptureResult.CONTROL_AE_EXPOSURE_COMPENSATION) ?: 0) == compensationSteps
+            val result = lastPreviewResult
+            val manual = manualExposure
+            val fresh = lastFrameMatchesCurrentRequest && lastFrameTimestampNs > requestPublishedFrameNs &&
+                now - lastFrameReceivedNs in 0..MAX_FRAME_AGE_NS
+            val modeMatches = result?.let(::exposureModeMatches) == true
+            val matchesExposure = if (manual != null) {
+                result?.let(::actualCameraEv)?.let { abs(it - manual.appliedCameraEv100) <= .1 } == true
+            } else {
+                result != null && result.get(CaptureResult.CONTROL_AE_EXPOSURE_COMPENSATION) == compensationSteps
+            }
+            if (fresh && modeMatches && result?.let(::actualCameraEv) != null && (matchesExposure ||
+                    timedOut && stableActualFrames >= REQUIRED_STABLE_ACTUAL_FRAMES)) return true
+            if (timedOut) reportSamplingStall()
+            return false
         }
 
     val isNeutral: Boolean
@@ -84,6 +108,8 @@ internal class ExposurePreviewStateCoordinator(
     fun clearRequestedSelection() {
         requestedSelection = null
         cancelTransition()
+        resetSamplingWait(newTarget = true)
+        publishLimit(null)
         needsResolve = true
     }
 
@@ -160,6 +186,12 @@ internal class ExposurePreviewStateCoordinator(
             )
         }
         val supported = selection == null || requestedManualExposure != null || compensation.supported
+        publishLimit(when {
+            selection == null -> null
+            requestedManualExposure != null -> ExposurePreviewLimit.manual(selection, requestedManualExposure)
+            compensation.supported -> ExposurePreviewLimit.compensation(compensation)
+            else -> null
+        })
         if (selection == null) {
             unsupportedReported = false
         } else if (!supported && !unsupportedReported) {
@@ -177,6 +209,7 @@ internal class ExposurePreviewStateCoordinator(
                 manualTarget = requestedManualExposure
                 manualStart = null
                 pendingManualFrames = 0
+                resetSamplingWait(newTarget = true)
                 beginManualTransition()
             }
         } else {
@@ -186,6 +219,7 @@ internal class ExposurePreviewStateCoordinator(
             if (compensationTarget != requestedSteps || compensationStepEv != stepEv) {
                 compensationTarget = requestedSteps
                 compensationStepEv = stepEv
+                resetSamplingWait(newTarget = true)
                 ramp.start(compensationSteps * stepEv, requestedSteps * stepEv, lastFrameTimestampNs)
             }
             publish(null, if (ramp.running) compensationSteps else requestedSteps)
@@ -202,12 +236,25 @@ internal class ExposurePreviewStateCoordinator(
     }
 
     /** Only current-session preview results belong here; RAW metadata must never seed a fade. */
-    fun onPreviewFrame(result: CaptureResult, timestampNs: Long, advance: Boolean = true) {
+    fun onPreviewFrame(
+        result: CaptureResult,
+        timestampNs: Long,
+        advance: Boolean = true,
+        matchesCurrentRequest: Boolean = true,
+    ) {
         if (timestampNs <= lastFrameTimestampNs) return
         lastFrameTimestampNs = timestampNs
         lastPreviewResult = result
+        val receivedNs = nanoClock()
+        if (receivedNs - lastFrameReceivedNs > MAX_FRAME_AGE_NS) {
+            stableActualEv = null
+            stableActualFrames = 0
+        }
+        lastFrameReceivedNs = receivedNs
+        lastFrameMatchesCurrentRequest = advance && matchesCurrentRequest
         nonNeutralFramesPending = result.get(CaptureResult.CONTROL_AE_MODE) == CaptureResult.CONTROL_AE_MODE_OFF ||
             (result.get(CaptureResult.CONTROL_AE_EXPOSURE_COMPENSATION) ?: 0) != 0
+        observeActualExposure(result)
         if (!advance) return
         if (manualTarget != null && manualStart == null) {
             pendingManualFrames++
@@ -252,8 +299,61 @@ internal class ExposurePreviewStateCoordinator(
         if (manualExposure == manual && compensationSteps == steps) return
         manualExposure = manual
         compensationSteps = steps
+        resetSamplingWait()
         if (manual != null || steps != 0) nonNeutralFramesPending = true
         onRequestChanged()
+    }
+
+    private fun exposureModeMatches(result: CaptureResult): Boolean {
+        val mode = result.get(CaptureResult.CONTROL_AE_MODE) ?: return false
+        return if (manualExposure != null) mode == CaptureResult.CONTROL_AE_MODE_OFF
+            else mode != CaptureResult.CONTROL_AE_MODE_OFF
+    }
+
+    private fun actualCameraEv(result: CaptureResult): Double? {
+        return ExposurePreviewMath.cameraEv100(
+            if (manualExposure != null) manualAperture else
+                result.get(CaptureResult.LENS_APERTURE)?.toDouble() ?: resolvedAperture.toDouble(),
+            result.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: return null,
+            result.get(CaptureResult.SENSOR_SENSITIVITY) ?: return null,
+        )
+    }
+
+    private fun observeActualExposure(result: CaptureResult) {
+        val ev = actualCameraEv(result)?.takeIf {
+            lastFrameMatchesCurrentRequest && !isTransitioning &&
+                lastFrameTimestampNs > requestPublishedFrameNs && exposureModeMatches(result)
+        }
+        if (ev == null) {
+            stableActualEv = null
+            stableActualFrames = 0
+        } else if (stableActualEv?.let { abs(ev - it) <= ACTUAL_STABILITY_EV } == true) {
+            stableActualFrames++
+        } else {
+            stableActualEv = ev
+            stableActualFrames = 1
+        }
+    }
+
+    private fun resetSamplingWait(newTarget: Boolean = false) {
+        samplingWaitStartedNs = nanoClock()
+        requestPublishedFrameNs = lastFrameTimestampNs
+        lastFrameMatchesCurrentRequest = false
+        stableActualEv = null
+        stableActualFrames = 0
+        if (newTarget) samplingStallReported = false
+    }
+
+    private fun reportSamplingStall() {
+        if (samplingStallReported) return
+        samplingStallReported = true
+        onMeteringStalled()
+    }
+
+    private fun publishLimit(value: ExposurePreviewLimit?) {
+        if (limit == value) return
+        limit = value
+        onLimitChanged(value)
     }
 
     private fun cancelTransition() {
@@ -274,6 +374,8 @@ internal class ExposurePreviewStateCoordinator(
         needsResolve = true
         this.manualExposure = manualExposure
         this.compensationSteps = compensationSteps
+        resetSamplingWait(newTarget = true)
+        publishLimit(null)
         if (manualExposure != null || compensationSteps != 0) nonNeutralFramesPending = true
         onRequestChanged()
     }
@@ -284,6 +386,7 @@ internal class ExposurePreviewStateCoordinator(
         clearRequestedSelection()
         manualExposure = null
         compensationSteps = 0
+        resetSamplingWait(newTarget = true)
         return changed
     }
 
@@ -294,14 +397,21 @@ internal class ExposurePreviewStateCoordinator(
         compensationSteps = 0
         lastPreviewResult = null
         lastFrameTimestampNs = 0L
+        lastFrameReceivedNs = 0L
         nextRequestTimestampNs = 0L
         nonNeutralFramesPending = false
         needsResolve = true
+        resetSamplingWait(newTarget = true)
+        publishLimit(null)
         if (!preserveSelection) unsupportedReported = false
     }
 
     companion object {
         private const val TAG = "lightstop"
         private const val MIN_REQUEST_INTERVAL_NS = 33_333_333L
+        private const val SAMPLING_WAIT_NS = 1_500_000_000L
+        private const val MAX_FRAME_AGE_NS = 500_000_000L
+        private const val REQUIRED_STABLE_ACTUAL_FRAMES = 3
+        private const val ACTUAL_STABILITY_EV = .05
     }
 }

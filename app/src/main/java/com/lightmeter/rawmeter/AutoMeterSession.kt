@@ -37,19 +37,8 @@ internal class AutoMeterSession {
         if (!continuousMetering || locked || rawPending || !reading.sceneEv100.isFinite()) return false
         if (reading.clippedFraction > .7 || reading.rawLuma < .001) {
             val cameraEv = ExposurePreviewMath.cameraEv100(reading.aperture.toDouble(),reading.exposureTimeNs,reading.captureIso) ?: return false
-            val previousReading = this.reading
-            val previousCameraEv = previousReading?.let {
-                ExposurePreviewMath.cameraEv100(it.aperture.toDouble(),it.exposureTimeNs,it.captureIso)
-            }
-            val expected = if (previousReading != null && previousCameraEv != null)
-                previousReading.rawLuma * 2.0.pow(previousCameraEv-cameraEv) else .18
-            // Deliberate exposure compensation may itself clip. Hold the last valid scene EV;
-            // do not feed clipped pixels back into that selection. A newly out-of-range scene
-            // instead walks camera exposure toward usable signal, through the ordinary ramp.
-            val deliberate = if(reading.clippedFraction>.7) expected>.75 else expected<.001
-            recoveryCameraEv100 = if(deliberate) null else cameraEv + if(reading.clippedFraction>.7) .8 else -.8
-            signalLimited = true
-            return true
+            return acceptSignalLimited(MeteringSignalEvidence(cameraEv, reading.rawLuma,
+                reading.clippedFraction, 0.0, reading.source))
         }
         if (recoveryCameraEv100 != null) { filteredEv = null; filteredExposureEv = null }
         recoveryCameraEv100 = null
@@ -92,6 +81,26 @@ internal class AutoMeterSession {
                 (it - checkNotNull(filteredExposureEv) - EvaluativeMeteringAlgorithm.HIGHLIGHT_HEADROOM_EV).coerceAtLeast(0.0)
             } ?: 0.0,
         ))
+        error = null
+        return true
+    }
+
+    fun acceptSignalLimited(evidence: MeteringSignalEvidence): Boolean {
+        if (!continuousMetering || locked || rawPending || !evidence.cameraEv100.isFinite() ||
+            !evidence.luma.isFinite() || evidence.luma < 0.0 ||
+            evidence.clippedFraction !in 0.0..1.0 || evidence.darkFraction !in 0.0..1.0) return false
+        val previous = reading?.takeIf { it.source == evidence.source }
+        val previousCameraEv = previous?.let {
+            ExposurePreviewMath.cameraEv100(it.aperture.toDouble(), it.exposureTimeNs, it.captureIso)
+        }
+        val expected = if (previous != null && previousCameraEv != null)
+            previous.rawLuma * 2.0.pow(previousCameraEv - evidence.cameraEv100) else .18
+        val step = evidence.recoveryStepEv
+        // Preserve deliberate bright/dark simulations. Recovery only moves the camera, and
+        // never publishes censored pixels as a scene EV or feeds them into the model filter.
+        val deliberate = step?.let { if (it > 0) expected > .75 else expected < .001 } ?: false
+        recoveryCameraEv100 = if (deliberate) null else step?.let { evidence.cameraEv100 + it }
+        signalLimited = true
         error = null
         return true
     }
