@@ -42,15 +42,31 @@ class GlobalMeteringNetworkTest {
         neuralExposure = GlobalMeteringExposure.from(cameraEv, GlobalMeteringPrediction(compensation,.3)))
 
     @Test fun positiveCompensationIncreasesExposure() {
+        // target = cameraEv - compensation - NEGATIVE_FILM_OVEREXPOSURE_EV
         val reading = MeteringFusion.fuse(listOf(stat(12.0,1.0)),MeteringSource.RAW)!!
-        assertEquals(11.0,reading.evaluative!!.recommendedEv100,1e-9)
-        assertEquals(-1.0,reading.evaluative.exposureReductionEv,1e-9)
+        assertEquals(10.0,reading.evaluative!!.recommendedEv100,1e-9)
+        assertEquals(-2.0,reading.evaluative.exposureReductionEv,1e-9)
         assertEquals(219,reading.evaluative.modelEpoch)
         assertNull(reading.calibrationSample)
     }
 
+    @Test fun negativeFilmBiasBrightensOnlyTheModelRecommendation() {
+        assertEquals(1.0,NEGATIVE_FILM_OVEREXPOSURE_EV,0.0)
+        val exposure = GlobalMeteringExposure.from(12.0,GlobalMeteringPrediction(0.0,.3))
+        assertEquals(1.0,exposure.overexposureBiasEv,0.0)
+        assertEquals(0.0,exposure.compensationEv,0.0) // raw model output stays comparable
+        assertEquals(11.0,exposure.targetEv100,1e-9)
+        // The statistical fallback keeps its own placement: base 12 + 0.5 EV highlight
+        // reduction, no film bias.
+        val fallback = MeteringFusion.fuse(listOf(stat(12.0,0.0).copy(neuralExposure=null)),MeteringSource.RAW)!!
+        assertNull(fallback.evaluative!!.modelEpoch)
+        assertEquals(12.5,fallback.evaluative.recommendedEv100,1e-9)
+    }
+
     @Test fun burstFusesTargetsUsingEachFramesOwnExposureAndDoesNotStackHighlightPolicy() {
-        val reading = MeteringFusion.fuse(listOf(stat(12.0,-1.0),stat(14.0,1.0)),MeteringSource.RAW)!!
+        // Both frames stay one stop above the pre-bias fixture so their biased targets
+        // (12 and 14 EV100) still fuse to the same 13 EV100 placement.
+        val reading = MeteringFusion.fuse(listOf(stat(14.0,1.0),stat(17.0,2.0)),MeteringSource.RAW)!!
         assertEquals(13.0,reading.evaluative!!.recommendedEv100,1e-9)
         assertEquals(1.0,reading.evaluative.exposureReductionEv,1e-9)
         val fallback = MeteringFusion.fuse(listOf(stat(12.0,-1.0).copy(neuralExposure=null)),MeteringSource.RAW)!!

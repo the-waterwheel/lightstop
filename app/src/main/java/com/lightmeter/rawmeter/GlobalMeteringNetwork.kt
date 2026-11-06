@@ -8,16 +8,44 @@ import kotlin.math.tanh
 
 internal data class GlobalMeteringPrediction(val compensationEv: Double, val errorScaleEv: Double)
 
-/** Target is tied to its own frame metadata, including when a shorter RAW is recaptured. */
+/**
+ * Deliberate over-exposure applied to the global model's final exposure, in EV.
+ *
+ * Negative film has strongly asymmetric latitude. Over-exposure keeps recording
+ * separable highlight density well past the metered placement and is normally
+ * recoverable in development or scanning; under-exposure starves the shadows of light
+ * that no later stage can restore. Given that asymmetry, erring one stop bright costs a
+ * negative far less than erring one stop dark, so the app raises the model's final
+ * recommendation by this amount instead of reproducing the model's placement exactly.
+ *
+ * Scope is deliberately narrow. This touches only the exposure the global model
+ * proposes. The scene EV reading, the statistical fallback policy, the RAW/YUV/ISP
+ * metering calibration and the preview-execution calibration are separate domains and
+ * stay untouched, so no calibration record can absorb or double-count this bias.
+ *
+ * Positive = brighter. Applied unconditionally, independent of the selected film stock.
+ */
+internal const val NEGATIVE_FILM_OVEREXPOSURE_EV = 1.0
+
+/**
+ * Target is tied to its own frame metadata, including when a shorter RAW is recaptured.
+ *
+ * [targetEv100] already carries [overexposureBiasEv]; [compensationEv] stays the raw
+ * model output so it can still be compared against the trained network directly.
+ */
 internal data class GlobalMeteringExposure(
     val targetEv100: Double,
     val compensationEv: Double,
     val errorScaleEv: Double,
     val modelEpoch: Int = GlobalMeteringNetwork.EPOCH,
+    /** Negative-film over-exposure folded into [targetEv100]; see [NEGATIVE_FILM_OVEREXPOSURE_EV]. */
+    val overexposureBiasEv: Double = NEGATIVE_FILM_OVEREXPOSURE_EV,
 ) {
     companion object {
         fun from(cameraEv100: Double, prediction: GlobalMeteringPrediction) = GlobalMeteringExposure(
-            cameraEv100 - prediction.compensationEv, prediction.compensationEv, prediction.errorScaleEv,
+            targetEv100 = cameraEv100 - prediction.compensationEv - NEGATIVE_FILM_OVEREXPOSURE_EV,
+            compensationEv = prediction.compensationEv,
+            errorScaleEv = prediction.errorScaleEv,
         )
     }
 }
