@@ -12,7 +12,7 @@ import struct
 import zipfile
 from pathlib import Path
 
-HOME = re.compile(rb"[A-Za-z]:[/\\]Users[/\\][^/\\\x00\r\n]+(?=[/\\])", re.I)
+HOME = re.compile(rb"[A-Za-z]:[/\\](?:Users|Project)[/\\][^/\\\x00\r\n]+(?=[/\\])", re.I)
 
 
 def rodata_range(data):
@@ -47,9 +47,9 @@ def sanitize(data):
             raise ValueError("Private path outside .rodata; rebuild instead")
         start = max(lower, data.rfind(b"\0", lower, match.start()) + 1)
         end = data.find(b"\0", match.end(), upper)
-        if end < 0 or any(byte < 32 or byte > 126 for byte in data[start:end]):
+        if end < 0 or any((byte < 32 and byte not in (9, 10, 13)) or byte > 126 for byte in data[start:end]):
             raise ValueError("Path is not an ASCII diagnostic string; rebuild instead")
-        replacement = b"<HOME>".ljust(match.end() - match.start(), b"_")
+        replacement = b"<SOURCE>".ljust(match.end() - match.start(), b"_")
         if len(replacement) != match.end() - match.start():
             raise ValueError("Cannot preserve diagnostic string length")
         result[match.start():match.end()] = replacement

@@ -55,6 +55,8 @@ android {
 
     buildTypes {
         release {
+            isDebuggable = false
+            isJniDebuggable = false
             isMinifyEnabled = true
             isShrinkResources = true
             vcsInfo {
@@ -98,7 +100,7 @@ android {
 }
 
 dependencies {
-    implementation(files("libs/opencv-slim-4.12.0-r2.aar"))
+    implementation(files("libs/opencv-slim-4.12.0-r2-public.aar"))
     testImplementation("junit:junit:4.13.2")
     if (uiPreview) testImplementation("org.robolectric:robolectric:4.14.1")
 }
@@ -106,8 +108,8 @@ dependencies {
 // The slim OpenCV runtime is a pinned local artifact. Fail the build if the bytes change so a
 // swapped AAR cannot silently alter native behavior or licensing.
 val verifyOpenCvAar = tasks.register("verifyOpenCvAar") {
-    val aar = file("libs/opencv-slim-4.12.0-r2.aar")
-    val expected = "321c84621fe818e35cc7b6401953039bc784e4fe4cfb9d35690b4dbedf4d57cd"
+    val aar = file("libs/opencv-slim-4.12.0-r2-public.aar")
+    val expected = "55f87ad6a1a6aa181d4459180989369e432796158ced736e1b30f79203f3b60b"
     inputs.file(aar)
     doLast {
         check(aar.isFile) { "Missing pinned OpenCV AAR: ${aar.absolutePath}" }
