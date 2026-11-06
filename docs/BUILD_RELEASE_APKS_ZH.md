@@ -32,7 +32,7 @@ GitHub 直接下载使用这些 APK。AAB 用于支持 App Bundle 的商店，�
 
 当前待发布版本为 `0.7.0` / `13`，采用与 0.5.0 相同的 r2 OpenCV 运行库。每个架构 APK 使用相同版本号，用于 GitHub 直接分发；不套用旧式 Google Play 多 APK 的架构版本号规则。此前已发布版本保留原有附件。
 
-0.7.0 使用已集成的 epoch 219 测光模型，全局模型最终建议固定提亮 1 EV；正在训练的 A/B/C 模型、checkpoint、共享原图与缓存不进入 APK。请沿用 0.6.1 的发布密钥签名。Robolectric 验证需额外传入 `-PuiPreview=true` 和 `-Pandroid.useAndroidX=true`，正式 APK 构建无需这两个测试开关。
+0.7.0 使用已集成的 epoch 219 测光模型；正在训练的 A/B/C 模型、checkpoint、共享原图与缓存不进入 APK。请沿用 0.6.1 的发布密钥签名。Robolectric 验证需额外传入 `-PuiPreview=true` 和 `-Pandroid.useAndroidX=true`，正式 APK 构建无需这两个测试开关。
 
 ## OpenCV 加速与功能依赖
 

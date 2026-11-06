@@ -12,15 +12,7 @@ All notable user-facing changes are recorded here. The project follows
 - Updated framing controls, Clear and parameter-record interfaces, and utility layouts.
 - Ongoing A/B/C training checkpoints and shared image caches are excluded from the app.
 
-- Global (Average) metering now raises the neural exposure model's final recommendation
-  by exactly one stop. Negative film tolerates over-exposure far better than
-  under-exposure: highlight density keeps separating and is normally recoverable in
-  development or scanning, while shadow detail starved of light is gone for good. The
-  bias applies only to the model's own recommendation; scene EV readings, the
-  statistical fallback and every calibration domain (RAW/YUV/ISP and preview execution)
-  are unchanged, so no calibration record can absorb it or apply it twice.
-
-中文：全局（平均）测光对神经网络模型最终给出的曝光固定提亮一档。原因是负片宽容度不对称：过曝仍能保留可分辨的高光密度，通常可在冲洗或扫描阶段找回；欠曝的阴影则永久丢失。该偏置只作用于模型自身的建议，场景 EV 读数、统计回退以及各校准存储域（RAW／YUV／ISP 与预览执行）均不变，因此不会被校准记录吸收或叠加两次。
+中文：新增轻量神经网络全局测光和 Clear 连续测光界面，改进曝光预览衔接、异常信号恢复、取景裁切和工具页面。应用不包含正在训练的候选模型与共享训练缓存。
 
 ## 0.6.1 - 2026-10-07
 
