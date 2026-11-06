@@ -3,7 +3,14 @@
 All notable user-facing changes are recorded here. The project follows
 [Semantic Versioning](https://semver.org/) for public releases.
 
-## Unreleased
+## 0.7.0 - 2026-11-06
+
+- Added the packaged epoch 219 lightweight global metering model, crop-aware input
+  mapping and Clear continuous metering with stable exposure-preview transitions.
+- Improved recovery from clipped readings, bounded preview synchronization and
+  calibration readiness, and added feedback when preview exposure reaches its limits.
+- Updated framing controls, Clear and parameter-record interfaces, and utility layouts.
+- Ongoing A/B/C training checkpoints and shared image caches are excluded from the app.
 
 - Global (Average) metering now raises the neural exposure model's final recommendation
   by exactly one stop. Negative film tolerates over-exposure far better than

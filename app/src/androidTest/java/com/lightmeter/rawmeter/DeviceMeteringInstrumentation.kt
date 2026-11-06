@@ -42,12 +42,22 @@ class DeviceMeteringInstrumentation : Instrumentation() {
     override fun onStart() {
         var original: Controls? = null
         try {
+            if (suite == "release-screenshots") {
+                check(android.os.Build.FINGERPRINT.contains("generic") ||
+                    android.os.Build.MODEL.contains("Android SDK")) { "Screenshots require a dedicated emulator" }
+                targetContext.getSharedPreferences("raw_light_meter_state", 0).edit()
+                    .putBoolean("suppress_first_metering_calibration_prompt", true).commit()
+            }
             activity = startActivitySync(Intent(targetContext, MainActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)) as MainActivity
             state = field(activity, "state")
             layout = field(activity, "meterLayout")
             camera = field(activity, "cameraController")
             dismissCalibrationNotice()
+            if (suite == "release-screenshots") {
+                releaseScreenshots()
+                return
+            }
             waitCameraReady()
             SystemClock.sleep(1_500)
             original = main { Controls(state.meteringMode, state.meteringPipelineMode, state.zoom,
@@ -70,6 +80,53 @@ class DeviceMeteringInstrumentation : Instrumentation() {
             finish(if (failures == 0) Activity.RESULT_OK else Activity.RESULT_CANCELED,
                 Bundle().apply { putString("stream", report.toString(2)); putInt("failures", failures) })
         }
+    }
+
+    /** Captures production screens on a dedicated emulator, without synthetic readings. */
+    private fun releaseScreenshots() {
+        check(android.os.Build.FINGERPRINT.contains("generic") ||
+            android.os.Build.MODEL.contains("Android SDK")) { "Use a dedicated emulator for release screenshots" }
+        val directory = File(targetContext.filesDir, "release-screenshots").apply { mkdirs() }
+        main {
+            state.menuLanguage = MenuLanguage.CHINESE
+            state.appTheme = AppTheme.LIGHT
+        }
+        SystemClock.sleep(2_000)
+        fun capture(name: String, open: () -> Unit = {}) {
+            main { open(); layout.refresh(); layout.requestLayout(); layout.invalidate() }
+            SystemClock.sleep(1_200)
+            dismissInfoNotice()
+            val bitmap = checkNotNull(uiAutomation.takeScreenshot()) { "Screenshot unavailable: $name" }
+            File(directory, "$name.png").outputStream().use {
+                check(bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it))
+            }
+            bitmap.recycle()
+            results.put(JSONObject().put("screen", name).put("synthetic_readings", false))
+        }
+        for (mode in MeteringMode.entries) {
+            capture("normal-${mode.name.lowercase()}") { state.meteringMode = mode }
+        }
+        capture("tools") { layout.showTools() }
+        for ((name, method) in listOf(
+            "depth-of-field" to "showDepthOfField", "latitude" to "showLatitude",
+            "reciprocity" to "showReciprocity", "flash" to "showFlashExposure",
+            "parameter-log" to "showParameterRecord", "color-temperature" to "showColorTemperature",
+            "negative-preview" to "showFilmNegative",
+        )) {
+            capture(name) { invoke(layout, method) }
+            main { layout.closeTools() }
+            SystemClock.sleep(400)
+            main { layout.showTools() }
+        }
+        main { layout.closeTools() }
+        SystemClock.sleep(500)
+        capture("settings") { layout.showSettings() }
+        main { layout.closeSettings() }
+        SystemClock.sleep(500)
+        transition(true)
+        capture("zone")
+        transition(false)
+        capture("clear") { layout.enterAutoMode() }
     }
 
     /** Also runs against the preserved pre-change APK, with stricter fade gates on the new APK. */
