@@ -1,12 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """Bridge for the existing shared ops CLI and its single terminal monitor."""
 import json
+from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
 import time
+import unicodedata
 
 WORKSPACE=Path(__file__).resolve().parents[2]
 CONTROL=Path('C:/Users/15449/.codex/worktrees/5b24/lightmeter a/outputs/shared-training-20261025')
@@ -32,29 +34,43 @@ def panel():
     cache=read(Path(c['owned_cache'])/'cache-status.json') if c else {}
     replay=Path(c['owned_cache'])/'replay' if c else None
     prepared=sum((replay/(sha+'.npy')).is_file() for sha in c.get('selected_train',[])) if replay else 0
-    lines=['测光 A/B/C 同源192×128实验（无人脸）', '='*90,
-        f"状态 {s.get('state',pointer.get('state'))} | PID {s.get('pid',pointer.get('pid','-'))} | epoch {s.get('epoch',0)}/{c.get('epochs',200)} | 批次 {s.get('batch',0)}/{s.get('batches','-')}",
-        f"本轮训练原图 {s.get('active_sources',0)}/{c.get('train_count',400)}；新恢复原图仅在轮次边界加入；不是全部计划原图已训练",
-        f"缓存 {cache.get('state','-')} | {cache.get('pool_bytes',0)/1024**3:.2f}/{c.get('pool_limit_bytes',1)/1024**3:.1f} GiB | 训练缓存已准备 {prepared}/{c.get('train_count',400)} | 重试源 {len(cache.get('failures',{}))}"]
-    loss=s.get('loss',{});val=s.get('last_validation') or {}
-    lines.append('模型                       更新数    本批曝光损失   最佳两域MAE / EV')
-    for k,label in (('A','统计+TinyDS'),('B','Wide TinyDS'),('C','MobileNetV3-Small0.5')):
-        value=loss.get(k,{}).get('compensation');best=s.get('best',{}).get(k)
-        lines.append(f"{k} {label:<24} {s.get('updates',{}).get(k,0):>6}    {value if value is not None else '-'}    {best if best is not None and best<100 else '-'}")
-    if s.get('state','').startswith('validation'):lines.append('正在验证：下方仅为最近一次完整结果。')
-    if val:
-        for d,title in (('synthetic_raw','模拟RAW'),('synthetic_processed','模拟预览')):
-            lines.append(title+'：                    全量MAE    P90       >1EV比例')
-            for k,label in (('A','A'),('B','B'),('C','C'),('epoch219','现用219轮'),('uniform_ev','平均EV'),('uniform_linear','平均亮度')):
-                m=val['domains'][d][k]['all']
-                lines.append(f"  {label:<20} {m['mae_ev']:.4f}     {m['p90_ev']:.4f}    {m['over_1ev']*100:.1f}%")
-        lines.append('固定16张验证图；合成曝光/ISP；原图宏平均。平均策略只使用冻结训练集锚点，非绝对EV100实拍精度。')
-    else:lines.append('尚无完整验证，不显示推测指标。')
-    if s.get('error'):lines.append('错误：'+s['error'])
+    phase=s.get('state',pointer.get('state','-'))
+    phases={'training':'训练中','validation':'验证中','validation-initial':'初始验证',
+        'epoch-complete':'本轮完成，准备下一轮','preparing-fixed-validation':'准备固定验证',
+        'complete':'训练完成','budget-complete-partial-source-coverage':'轮数用完，原图尚未全部覆盖',
+        'failed':'训练失败','paused-checkpoint-saved':'已保存断点并暂停'}
+    epoch=s.get('epoch',0);active=s.get('active_sources',0);batch=s.get('batch',0);batches=s.get('batches',0)
+    progress=f"第 {epoch+1} 轮，已提交源批次 {batch}/{batches}" if active else '轮次边界'
+    cache_phase=cache.get('state','-')
+    cache_phase={'preparing':'准备图源','ready':'全部准备完成',
+        'capacity-wait-training-continues':'容量不足，暂停下载，训练继续',
+        'source-retry-training-continues':'图源重试，训练继续',
+        'waiting-capacity-or-source':'等待容量或图源，训练继续'}.get(cache_phase,cache_phase)
+    lines=['测光 A/B/C 实时监视 | 192×128 | '+datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M:%S'),
+        f"状态：{phases.get(phase,phase)} | 已完成 {epoch}/{c.get('epochs',200)} 轮 | {progress}",
+        f"原图：本轮 {active} 张 | 训练缓存已准备 {prepared}/{c.get('train_count',400)} 张（下轮加入新图）",
+        f"缓存：{cache.get('pool_bytes',0)/1024**3:.2f}/{c.get('pool_limit_bytes',1)/1024**3:.1f} GiB | {cache_phase} | 重试源 {len(cache.get('failures',{}))}",
+        f"GPU：{s.get('gpu_name','-')} | 设备 {s.get('device','-')} | PID {s.get('pid',pointer.get('pid','-'))}"]
     perf=s.get('performance') or {}
     if perf:
-        lines.append(f"GPU {s.get('gpu_name')} | 三模型每{perf['batch_rois']} ROI更新 {perf['abc_step_seconds']:.3f}s | 全{c['train_count']}张每轮纯优化约 {perf['estimated_full_epoch_optimizer_seconds']:.1f}s")
-    lines.append('关闭监视窗口不停止训练；停止请通过 stop-metering-candidates 保存批次断点。')
+        lines.append(f"取景样本：{s.get('roi_cursor','-')}/{s.get('roi_total','-')} | 联合更新滚动均时 {perf['abc_step_seconds']:.3f}s | 最近小批 {perf['batch_rois']} 个样本")
+    lines+=['='*88,'模型                  更新数    损失    最佳MAE   RAW/预览MAE    RAW/预览P90   >1EV%(R/P)']
+    loss=s.get('loss',{});val=s.get('last_validation') or {};domains=val.get('domains',{})
+    def number(v):return f'{v:.4f}' if isinstance(v,(int,float)) else '-'
+    def pad(label):return label+' '*max(0,21-sum(2 if unicodedata.east_asian_width(x) in 'WF' else 1 for x in label))
+    for k,label in (('A','A 统计+TinyDS'),('B','B Wide TinyDS'),('C','C MobileNetV3 0.5'),
+                    ('epoch219','现用模型219轮'),('uniform_ev','平均EV'),('uniform_linear','平均亮度')):
+        raw=domains.get('synthetic_raw',{}).get(k,{}).get('all',{})
+        processed=domains.get('synthetic_processed',{}).get(k,{}).get('all',{})
+        best=s.get('best',{}).get(k)
+        best=best if best is not None and best<100 else None
+        tails=f"{raw['over_1ev']*100:4.1f}/{processed['over_1ev']*100:4.1f}" if raw and processed else '-'
+        lines.append(f"{pad(label)} {s.get('updates',{}).get(k,'-'):>6} {number(loss.get(k,{}).get('compensation')):>7} {number(best):>8} {number(raw.get('mae_ev')):>6}/{number(processed.get('mae_ev')):>6} {number(raw.get('p90_ev')):>6}/{number(processed.get('p90_ev')):>6} {tails}")
+    lines.append('最近完整验证；当前验证尚未结束。' if phase.startswith('validation') else '表中RAW/预览为最近完整验证；最佳MAE为该模型两域平均的历史最低值。')
+    lines.append('固定16张验证图 ×16取景 ×9曝光；合成RAW/预览，MAE单位EV，越低越好。')
+    lines.append('训练曝光：25%保持，75%随机±3EV；每次重新抽样，A/B/C共用增强样本。')
+    lines.append('每3秒刷新 | 历史详情：ops.py status | 关闭窗口不停止训练。')
+    if s.get('error'):lines.append('错误：'+s['error'][:160])
     return '\n'.join(lines)
 
 
