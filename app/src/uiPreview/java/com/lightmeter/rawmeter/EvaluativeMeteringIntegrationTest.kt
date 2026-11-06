@@ -24,6 +24,23 @@ import org.robolectric.shadows.ShadowCaptureResult
 @Config(sdk = [34], qualifiers = "zh-rCN-w420dp-h900dp-xhdpi")
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class EvaluativeMeteringIntegrationTest {
+    @Test fun censoredYuvRetainsExposureMatchedQualityButCannotBecomeASceneReading() {
+        for (level in listOf(0, 255)) {
+            val image = EvaluativeTestImage(level)
+            val stat = MeteringAnalysis.analyzeYuvPreview(image, result(iso = 200), characteristics,
+                "0", MeteringMode.AVERAGE, CameraCalibrationStore(context), evaluativeViewport = viewport)!!
+            assertNull(MeteringFusion.fuse(listOf(stat), MeteringSource.YUV_PREVIEW))
+            val evidence = MeteringSignalEvidence.from(stat, MeteringSource.YUV_PREVIEW)!!
+            val cameraEv = ExposurePreviewMath.cameraEv100(2.0, 10_000_000L, 200)!!
+            assertEquals(cameraEv, evidence.cameraEv100, 1e-9)
+            val session = AutoMeterSession()
+            assertTrue(session.acceptSignalLimited(evidence))
+            assertNull(session.reading)
+            assertEquals(cameraEv + if (level == 0) -.8 else .8, session.recoveryCameraEv100!!, 1e-9)
+            image.close()
+        }
+    }
+
     private val context get() = RuntimeEnvironment.getApplication()
     private val viewport = EvaluativeMeteringViewport(1f, 1f, NormalizedSensorViewport.FULL)
     private val characteristics get() = ShadowCameraCharacteristics.newCameraCharacteristics()

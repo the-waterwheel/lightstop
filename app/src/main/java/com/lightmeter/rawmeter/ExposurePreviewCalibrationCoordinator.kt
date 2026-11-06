@@ -37,6 +37,7 @@ internal class ExposurePreviewCalibrationCoordinator(
     private var operation: Operation? = null
     private var timeout: Runnable? = null
     private var stableFrames = 0
+    private var lastPreparationTimestampNs = 0L
     private var baseline: Baseline? = null
     private var expectedIdentity: CalibrationCaptureIdentity? = null
     private var activeCallback: ((Boolean) -> Unit)? = null
@@ -57,6 +58,7 @@ internal class ExposurePreviewCalibrationCoordinator(
         activeCallback = onReady
         baseline = null
         stableFrames = 0
+        lastPreparationTimestampNs = latestResult()?.get(CaptureResult.SENSOR_TIMESTAMP) ?: 0L
         applyPreview(null, 0)
         val pending = Operation(
             cameraGeneration = cameraGeneration(),
@@ -66,7 +68,9 @@ internal class ExposurePreviewCalibrationCoordinator(
         operation = pending
         val timeoutAction = Runnable {
             if (operation === pending) {
-                finishPreparation(pending, baselineFrom(latestResult()))
+                // A cached result has no proof of this request's neutral, stable AE. A
+                // timeout ends preparation; it must never manufacture calibration readiness.
+                finishPreparation(pending, null)
             }
         }
         timeout = timeoutAction
@@ -111,7 +115,7 @@ internal class ExposurePreviewCalibrationCoordinator(
     }
 
     /** Must run on the camera callback thread. */
-    fun onCaptureResult(request: CaptureRequest, result: CaptureResult) {
+    fun onCaptureResult(request: CaptureRequest, result: CaptureResult, pairedTimestampNs: Long? = null) {
         if (!isActive) return
         val currentIdentity = calibrationIdentity()
         val expected = expectedIdentity
@@ -122,23 +126,32 @@ internal class ExposurePreviewCalibrationCoordinator(
         expectedIdentity = expected?.withReportedPhysicalFrom(currentIdentity) ?: currentIdentity
         cameraId = calibrationCameraId()
         val pending = operation ?: return
+        if (cameraGeneration() != pending.cameraGeneration) {
+            finishPreparation(pending, null)
+            return
+        }
         val tag = request.tag as? PreviewRequestTag ?: return
         if (tag.cameraGeneration != pending.cameraGeneration ||
             tag.requestSequence < pending.requestSequence
         ) {
             return
         }
+        // Some physical results omit this key. The caller may supply only the resolved
+        // timestamp from the logical result for this same frame, never callback wall time.
+        val timestampNs = result.get(CaptureResult.SENSOR_TIMESTAMP) ?: pairedTimestampNs ?: return
+        if (timestampNs <= lastPreparationTimestampNs) return
+        lastPreparationTimestampNs = timestampNs
         val aeMode = result.get(CaptureResult.CONTROL_AE_MODE)
             ?: request.get(CaptureRequest.CONTROL_AE_MODE)
         val compensationSteps = result.get(CaptureResult.CONTROL_AE_EXPOSURE_COMPENSATION)
             ?: request.get(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION)
-            ?: 0
         val aeState = result.get(CaptureResult.CONTROL_AE_STATE)
-        val neutralAndStable = aeMode != CameraMetadata.CONTROL_AE_MODE_OFF &&
-            compensationSteps == 0 && isStableAeState(aeState)
+        val capturedBaseline = baselineFrom(result)
+        val neutralAndStable = aeMode != null && aeMode != CameraMetadata.CONTROL_AE_MODE_OFF &&
+            compensationSteps == 0 && isStableAeState(aeState) && capturedBaseline != null
         stableFrames = if (neutralAndStable) stableFrames + 1 else 0
         if (stableFrames < PreviewBaselinePolicy.REQUIRED_STABLE_FRAMES) return
-        finishPreparation(pending, baselineFrom(result))
+        finishPreparation(pending, capturedBaseline)
     }
 
     private fun finishPreparation(pending: Operation, capturedBaseline: Baseline?) {
@@ -148,8 +161,9 @@ internal class ExposurePreviewCalibrationCoordinator(
         operation = null
         stableFrames = 0
         baseline = capturedBaseline
-        val ready = capturedBaseline?.let { manualExposure(it, correctionEv = 0.0) } != null ||
-            compensation(correctionEv = 0.0).supported
+        val ready = capturedBaseline != null &&
+            (manualExposure(capturedBaseline, correctionEv = 0.0) != null ||
+                compensation(correctionEv = 0.0).supported)
         if (!ready) {
             isActive = false
             expectedIdentity = null

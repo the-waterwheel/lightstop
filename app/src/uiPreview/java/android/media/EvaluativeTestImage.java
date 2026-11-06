@@ -11,6 +11,12 @@ public final class EvaluativeTestImage extends Image {
         planes = new Plane[] {new TestPlane(8,8,10,1,3,truncated),
                 new TestPlane(4,4,9,2,2,false), new TestPlane(4,4,9,2,2,false)};
     }
+    public EvaluativeTestImage(int luma) {
+        this(false);
+        ByteBuffer yPlane = planes[0].getBuffer();
+        for (int y = 0; y < 8; ++y) for (int x = 0; x < 8; ++x)
+            yPlane.put(yPlane.position() + y * planes[0].getRowStride() + x, (byte) luma);
+    }
     public boolean isClosed() { return closed; }
     @Override public int getFormat() { return ImageFormat.YUV_420_888; }
     @Override public int getWidth() { return 8; }

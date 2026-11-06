@@ -12,6 +12,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowCameraCharacteristics
 import org.robolectric.shadows.ShadowCaptureResult
 import org.robolectric.Shadows.shadowOf
+import kotlin.math.pow
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -32,6 +33,136 @@ class ExposurePreviewTransitionTest {
         assertTrue(f.state.readyForContinuousMetering)
         f.state.reset()
         assertFalse(f.state.readyForContinuousMetering)
+    }
+
+    @Test fun stableActualManualExposureCanResumeMeteringAfterTheBoundedWait() {
+        val f = Fixture()
+        f.frame(); f.select(f.sourceEv + 1)
+        repeat(60) { if (f.state.isTransitioning) f.frame(evOffset = -.2) }
+        assertFalse(f.state.isTransitioning)
+        repeat(20) { f.frame(evOffset = -.2) }
+        assertFalse("Keep the normal request-matching grace period", f.state.readyForContinuousMetering)
+        repeat(30) { f.frame(evOffset = -.2) }
+        assertTrue("Meter using the stable HAL exposure and its own metadata", f.state.readyForContinuousMetering)
+        assertEquals(f.sourceEv + 1, f.state.manualExposure!!.appliedCameraEv100, .0001)
+        assertEquals(0, f.stalled)
+    }
+
+    @Test fun changingTheTargetRestartsTheActualExposureGracePeriod() {
+        val f = Fixture()
+        f.frame(); f.select(f.sourceEv + 1)
+        repeat(90) { f.frame(evOffset = -.2) }
+        assertTrue(f.state.readyForContinuousMetering)
+        f.select(f.sourceEv + 2)
+        assertFalse(f.state.readyForContinuousMetering)
+        repeat(60) { if (f.state.isTransitioning) f.frame(evOffset = -.2) }
+        assertFalse(f.state.isTransitioning)
+        repeat(20) { f.frame(evOffset = -.2) }
+        assertFalse(f.state.readyForContinuousMetering)
+        repeat(30) { f.frame(evOffset = -.2) }
+        assertTrue(f.state.readyForContinuousMetering)
+    }
+
+    @Test fun staleRequestsCannotUnlockTheActualExposureFallback() {
+        val f = Fixture()
+        f.frame(); f.select(f.sourceEv + 1)
+        repeat(90) { f.frame(evOffset = -.2, matchesCurrentRequest = false) }
+        assertFalse(f.state.readyForContinuousMetering)
+        assertEquals(1, f.stalled)
+        repeat(2) {
+            f.frame(evOffset = -.2)
+            assertFalse(f.state.readyForContinuousMetering)
+        }
+        f.frame(evOffset = -.2)
+        assertTrue(f.state.readyForContinuousMetering)
+    }
+
+    @Test fun aFreshFrameIsRequiredAfterThePreviewStopsDeliveringResults() {
+        val f = Fixture()
+        f.frame(); f.select(f.sourceEv + 1)
+        repeat(90) { f.frame(evOffset = -.2) }
+        assertTrue(f.state.readyForContinuousMetering)
+        f.timestamp += 600_000_000L
+        assertFalse("A cached exposure must not unlock a frozen stream", f.state.readyForContinuousMetering)
+        assertEquals(1, f.stalled)
+        repeat(2) {
+            f.frame(evOffset = -.2)
+            assertFalse(f.state.readyForContinuousMetering)
+        }
+        f.frame(evOffset = -.2)
+        assertTrue(f.state.readyForContinuousMetering)
+    }
+
+    @Test fun unstableOrMissingActualExposureReportsFailureOnceInsteadOfSilentlyRetrying() {
+        val f = Fixture()
+        f.frame(); f.select(f.sourceEv + 1)
+        repeat(90) { f.frame(evOffset = if (it % 2 == 0) -.2 else -.8) }
+        repeat(3) { assertFalse(f.state.readyForContinuousMetering) }
+        assertEquals(1, f.stalled)
+        repeat(10) { f.frame(missingExposureMetadata = true) }
+        assertFalse(f.state.readyForContinuousMetering)
+        assertEquals(1, f.stalled)
+        repeat(3) { f.frame(evOffset = -.2) }
+        assertTrue(f.state.readyForContinuousMetering)
+    }
+
+    @Test fun ignoredManualControlNeverUsesTheStableExposureFallback() {
+        val f = Fixture()
+        f.frame(); f.select(f.sourceEv + 1)
+        repeat(90) { f.frame(evOffset = -.2, aeMode = CaptureResult.CONTROL_AE_MODE_ON) }
+        assertFalse(f.state.readyForContinuousMetering)
+        assertEquals(1, f.stalled)
+    }
+
+    @Test fun aeCompensationMismatchCanUseFreshStableActualExposureAfterTheWait() {
+        val f = Fixture(manual = false)
+        f.frame(); f.select(f.sourceEv - 1)
+        repeat(60) { if (f.state.isTransitioning) f.frame(compensation = 2) }
+        assertFalse(f.state.isTransitioning)
+        repeat(20) { f.frame(compensation = 2) }
+        assertFalse(f.state.readyForContinuousMetering)
+        repeat(30) { f.frame(compensation = 2) }
+        assertEquals(3, f.state.compensationSteps)
+        assertTrue(f.state.readyForContinuousMetering)
+        assertEquals(0, f.stalled)
+    }
+
+    @Test fun noLiveFramesDuringTransitionReportFailureWithoutEndingTheFade() {
+        val f = Fixture()
+        f.select(f.sourceEv + 1)
+        assertTrue(f.state.isTransitioning)
+        f.timestamp += 1_600_000_000L
+        repeat(3) { assertFalse(f.state.readyForContinuousMetering) }
+        assertEquals(1, f.stalled)
+        assertTrue(f.state.isTransitioning)
+        f.frame()
+        repeat(90) { f.frame() }
+        assertFalse(f.state.isTransitioning)
+        assertTrue(f.state.readyForContinuousMetering)
+    }
+
+    @Test fun previewLimitsAreDeduplicatedAndClearedForCalibrationResetAndNeutralPreview() {
+        for (manual in listOf(true, false)) {
+            val f = Fixture(manual = manual)
+            f.select(-20.0)
+            assertNotNull(f.limits.single())
+            repeat(10) { f.select(-20.0) }
+            assertEquals(1, f.limits.size)
+            f.state.applyCalibrationComparison(null, 0)
+            assertNull(f.limits.last())
+            f.state.apply(f.chars, f.info)
+            assertNotNull(f.limits.last())
+            f.state.reset(preserveSelection = true)
+            assertNull(f.limits.last())
+            f.state.apply(f.chars, f.info)
+            assertNotNull(f.limits.last())
+            f.state.clearRequestedSelection()
+            assertNull(f.limits.last())
+            f.select(-20.0)
+            assertNotNull(f.limits.last())
+            f.select(f.sourceEv)
+            assertNull(f.limits.last())
+        }
     }
 
     @Test fun measurementResultsFadeBothBrighterAndDarkerFromTheLivePreview() {
@@ -213,7 +344,9 @@ class ExposurePreviewTransitionTest {
 
     private class Fixture(manual: Boolean = true, compensationRange: Range<Int> = Range(-6, 6)) {
         val requests = mutableListOf<Pair<ExposurePreviewManualExposure?, Int>>()
+        val limits = mutableListOf<ExposurePreviewLimit?>()
         var unavailable = 0
+        var stalled = 0
         var timestamp = 1_000_000_000L
         val sourceEv = ExposurePreviewMath.cameraEv100(2.0, 10_000_000L, 100)!!
         val info = CameraUiInfo(aperture = 2f, manualSensorAvailable = manual)
@@ -224,22 +357,36 @@ class ExposurePreviewTransitionTest {
             shadowOf(it).set(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE, compensationRange)
             shadowOf(it).set(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP, Rational(1, 3))
         }
-        val state = ExposurePreviewStateCoordinator({ changed() }, { unavailable++ })
+        val state = ExposurePreviewStateCoordinator({ changed() }, { unavailable++ },
+            onMeteringStalled = { stalled++ }, onLimitChanged = { limits += it }, nanoClock = { timestamp })
         private fun changed() { requests += state.manualExposure to state.compensationSteps }
         fun select(target: Double) {
             state.updateSelection(ExposurePreviewSelection(sourceEv, target, 0.0))
             state.apply(chars, info)
         }
-        fun frame(deltaNs: Long = 33_333_334L, time: Long? = null, advance: Boolean = true) {
+        fun frame(
+            deltaNs: Long = 33_333_334L,
+            time: Long? = null,
+            advance: Boolean = true,
+            evOffset: Double = 0.0,
+            matchesCurrentRequest: Boolean = true,
+            compensation: Int? = null,
+            aeMode: Int? = null,
+            missingExposureMetadata: Boolean = false,
+        ) {
             timestamp += deltaNs
             val applied = state.manualExposure
             val result = ShadowCaptureResult.newCaptureResult().also {
-                shadowOf(it).set(CaptureResult.SENSOR_EXPOSURE_TIME, time ?: applied?.exposureTimeNs ?: 10_000_000L)
-                shadowOf(it).set(CaptureResult.SENSOR_SENSITIVITY, if (time != null) 100 else applied?.sensitivity ?: 100)
-                shadowOf(it).set(CaptureResult.CONTROL_AE_MODE, if (applied == null || time != null) CaptureResult.CONTROL_AE_MODE_ON else CaptureResult.CONTROL_AE_MODE_OFF)
-                shadowOf(it).set(CaptureResult.CONTROL_AE_EXPOSURE_COMPENSATION, state.compensationSteps)
+                if (!missingExposureMetadata) {
+                    val exposure = time ?: applied?.exposureTimeNs ?: 10_000_000L
+                    shadowOf(it).set(CaptureResult.SENSOR_EXPOSURE_TIME, (exposure * 2.0.pow(-evOffset)).toLong())
+                    shadowOf(it).set(CaptureResult.SENSOR_SENSITIVITY, if (time != null) 100 else applied?.sensitivity ?: 100)
+                    shadowOf(it).set(CaptureResult.LENS_APERTURE, 2f)
+                }
+                shadowOf(it).set(CaptureResult.CONTROL_AE_MODE, aeMode ?: if (applied == null || time != null) CaptureResult.CONTROL_AE_MODE_ON else CaptureResult.CONTROL_AE_MODE_OFF)
+                shadowOf(it).set(CaptureResult.CONTROL_AE_EXPOSURE_COMPENSATION, compensation ?: state.compensationSteps)
             }
-            state.onPreviewFrame(result, timestamp, advance)
+            state.onPreviewFrame(result, timestamp, advance, matchesCurrentRequest)
         }
     }
 }

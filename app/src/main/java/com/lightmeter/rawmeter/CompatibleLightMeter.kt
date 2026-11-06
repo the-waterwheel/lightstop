@@ -26,6 +26,7 @@ internal data class CompatibleMeteringContext(
 internal interface CompatibleLightMeterListener {
     fun onCompatibleMeteringStarted(source: MeteringSource, frameCount: Int)
     fun onCompatibleMeteringReading(reading: MeterReading)
+    fun onCompatibleMeteringSignalLimited(evidence: MeteringSignalEvidence) = Unit
     fun onCompatibleMeteringError(message: String)
     fun onCompatibleMeteringCompleted(requiresPreviewOnlySession: Boolean)
 }
@@ -46,6 +47,7 @@ internal class CompatibleLightMeter(
     private val calibrationStore: CameraCalibrationStore,
     private val localized: (zh: String, en: String) -> String,
     private val listener: CompatibleLightMeterListener,
+    private val reportSignalEvidence: Boolean = false,
 ) {
     private data class YuvMeasurement(
         val id: Int,
@@ -228,11 +230,14 @@ internal class CompatibleLightMeter(
         if (activeYuvMeasurement?.id != measurement.id || !isCurrent(measurement.id)) return
         if (stat != null) {
             val reading = MeteringFusion.fuse(listOf(stat), MeteringSource.YUV_PREVIEW)
-            if (reading != null) {
+            val evidence = if (reading == null && reportSignalEvidence)
+                MeteringSignalEvidence.from(stat, MeteringSource.YUV_PREVIEW) else null
+            if (reading != null || evidence != null) {
                 cancelYuvTimeout(measurement.context.cameraHandler)
                 activeYuvMeasurement = null
                 yuvFramePairer.clear()
-                finishWithReading(measurement.id, reading)
+                if (reading != null) finishWithReading(measurement.id, reading)
+                else finishWithSignalEvidence(measurement.id, checkNotNull(evidence))
                 return
             }
         }
@@ -411,7 +416,11 @@ internal class CompatibleLightMeter(
         mainHandler.post finishAnalysis@{
             if (!isCurrent(capture.id)) return@finishAnalysis
             val reading = stat?.let { MeteringFusion.fuse(listOf(it), MeteringSource.ISP_PREVIEW) }
-            if (reading == null) {
+            val evidence = if (reading == null && reportSignalEvidence)
+                stat?.let { MeteringSignalEvidence.from(it, MeteringSource.ISP_PREVIEW) } else null
+            if (evidence != null) {
+                finishWithSignalEvidence(capture.id, evidence)
+            } else if (reading == null) {
                 retryProcessedPreviewCapture(
                     capture.id, capture.meteringMode, capture.target, capture.meteringRoiFraction,
                     capture.context, capture.attempt,
@@ -456,6 +465,19 @@ internal class CompatibleLightMeter(
                 attempt + 1,
             )
         }, CompatibleMeteringPolicy.DISPLAY_CAPTURE_RETRY_DELAY_MS)
+    }
+
+    private fun finishWithSignalEvidence(id: Int, evidence: MeteringSignalEvidence) {
+        if (!isCurrent(id)) return
+        isMeasuring = false
+        // A censored scene does not imply an unavailable YUV stream or a valid reading.
+        val requiresPreviewOnly = downgradeYuvSessionAfterSuccess
+        downgradeYuvSessionAfterSuccess = false
+        mainHandler.post {
+            if (id != measurementId) return@post
+            listener.onCompatibleMeteringSignalLimited(evidence)
+            listener.onCompatibleMeteringCompleted(requiresPreviewOnly)
+        }
     }
 
     private fun finishWithReading(id: Int, reading: MeterReading) {
