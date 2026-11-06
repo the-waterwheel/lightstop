@@ -33,7 +33,11 @@ class GlobalMeteringModelIntegrationTest {
         val cameraEv = kotlin.math.ln(400.0)/kotlin.math.ln(2.0)
         val reading = MeteringFusion.fuse(listOf(stat),MeteringSource.ISP_PREVIEW)!!
         assertEquals(219,reading.evaluative!!.modelEpoch)
-        assertEquals(cameraEv-prediction.compensationEv,reading.evaluative.recommendedEv100,1e-6)
+        // The model's own placement is one stop darker than the app's negative-film intent.
+        assertEquals(cameraEv-prediction.compensationEv-NEGATIVE_FILM_OVEREXPOSURE_EV,
+            reading.evaluative.recommendedEv100,1e-6)
+        assertEquals(NEGATIVE_FILM_OVEREXPOSURE_EV,stat.neuralExposure!!.overexposureBiasEv,0.0)
+        assertEquals(prediction.compensationEv,reading.evaluative.neuralCompensationEv!!,1e-9)
         assertNull(reading.calibrationSample)
         val state = MeterState(context)
         state.acceptNormalReading(reading)

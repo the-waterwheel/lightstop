@@ -201,6 +201,41 @@ control is required.
 This makes YUV an optimization, not a requirement. The practical compatibility
 boundary is any device that can provide a basic third-party Camera2 preview.
 
+## Global model exposure bias
+
+The global (Average) mode may replace its statistical placement with the recommendation
+of the packaged neural exposure model. That recommendation is the model's own EV100
+target, so it needs an explicit photographic policy rather than an implicit one.
+
+**Policy: the model's final exposure is raised by exactly one stop.**
+
+```text
+recommendedEv100 = cameraEv100 - modelCompensationEv - NEGATIVE_FILM_OVEREXPOSURE_EV
+NEGATIVE_FILM_OVEREXPOSURE_EV = 1.0
+```
+
+The bias exists because negative film has strongly asymmetric latitude. Over-exposure
+keeps recording separable highlight density well past the metered placement and is
+normally recoverable in development or scanning. Under-exposure starves the shadows of
+light, and no later stage can restore information that was never captured. One stop
+bright therefore costs a negative far less than one stop dark, and the app prefers that
+error deliberately rather than reproducing the reference placement of the training
+photographs exactly.
+
+Scope is deliberately narrow, and the bias must stay narrow:
+
+- it applies only to the exposure the global model proposes; it is not a general
+  exposure compensation and is never added to the statistical fallback policy;
+- scene EV readings are unchanged, so the reported scene brightness keeps describing the
+  measurement rather than the recommendation;
+- the RAW/YUV/ISP metering calibration and the preview-execution calibration are
+  independent domains and are not modified, so no calibration record can absorb the bias
+  or apply it twice;
+- the raw model compensation is preserved as its own field next to the applied bias, so
+  the network output can still be compared against the trained model directly;
+- the exposure preview follows the biased recommendation, because it renders the
+  exposure the photographer would actually set.
+
 ## Calibration sequence
 
 One calibration request uses the same fixed reference input for a sequential,
@@ -368,6 +403,27 @@ RAW 分离 -> RAW 完全瞬时隔离 -> FULL -> 稳定 YUV -> 兼容 ISP
 6. 当前会话会记住 YUV 失败。处于内部 YUV 会话时，在返回本次结果后重开为 `PREVIEW_ONLY`，后续测光不再重复等待，也不再保留无用 YUV 流。
 
 因此 YUV 是快速路径而不是必要条件。实际兼容边界是：设备能够向普通第三方应用提供基础 Camera2 预览。
+
+### 全局模型曝光偏置
+
+全局（平均）模式可能用内置神经网络曝光模型的建议取代统计落点。该建议本身就是模型的 EV100 目标，因此它需要一条明确的摄影政策，而不能靠隐式约定。
+
+**政策：模型最终给出的曝光固定提亮一档。**
+
+```text
+recommendedEv100 = cameraEv100 - modelCompensationEv - NEGATIVE_FILM_OVEREXPOSURE_EV
+NEGATIVE_FILM_OVEREXPOSURE_EV = 1.0
+```
+
+偏置的理由是负片的宽容度强烈不对称。过曝仍会继续记录可分辨的高光密度，通常可在冲洗或扫描阶段找回；欠曝则让阴影得不到足够光量，后续任何环节都无法恢复从未记录下来的信息。因此对负片而言，亮一档的代价明显小于暗一档，应用宁可选这个方向的误差，而不去精确复现训练照片的原始落点。
+
+作用范围刻意收窄，并且必须保持收窄：
+
+- 只作用于全局模型给出的曝光，不是通用曝光补偿，也绝不叠加到统计回退策略上；
+- 场景 EV 读数不变，读数继续描述“测到的场景亮度”，而不是“建议的曝光”；
+- RAW／YUV／ISP 测光校准与预览执行校准属于独立存储域，不作修改，因此任何校准记录都无法吸收该偏置，也不会被叠加两次；
+- 模型原始补偿保留为独立字段，与已应用的偏置并列，便于继续直接比对训练模型输出；
+- 曝光预览跟随提亮后的建议值，因为它呈现的正是摄影师实际会设置的曝光。
 
 ### 校准顺序
 
