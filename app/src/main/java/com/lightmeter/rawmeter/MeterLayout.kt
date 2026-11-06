@@ -5,6 +5,7 @@ import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.RectF
 import android.graphics.SurfaceTexture
@@ -132,6 +133,39 @@ class MeterLayout @JvmOverloads constructor(
     private val clearPreferences=ClearModePreferences(context)
     internal val autoSession = AutoMeterSession().apply {clearPreferences.restore(this)}
     internal val autoView = AutoMeterView(context, state, autoSession, clearPreferences)
+    private var previewLimit: ExposurePreviewLimit? = null
+    private val exposurePreviewLimitBanner = ExposurePreviewLimitBanner()
+
+    fun setExposurePreviewLimit(limit: ExposurePreviewLimit?) {
+        if (previewLimit == limit) return
+        val newlyLimited = previewLimit == null && limit != null
+        previewLimit = limit
+        invalidate()
+        if (newlyLimited && visibleExposurePreviewLimit() != null) {
+            announceForAccessibility("${limit!!.title(state.menuLanguage)}. ${limit.detail(state.menuLanguage)}")
+        }
+    }
+
+    internal fun visibleExposurePreviewLimit(): ExposurePreviewLimit? {
+        if (isSettingsOpen || isInformationOpen || isCalibrationOpen || isExposurePreviewCalibrationOpen ||
+            isVignettingCalibrationOpen || isCameraManagementOpen || isCombinationSelectionOpen || isToolsOpen ||
+            isFilmSelectorOpen || isParameterEditorOpen || isParameterHistoryOpen || clearTransitionPrepared ||
+            zoneTransitionFraction > 0f && zoneTransitionFraction < 1f) return null
+        if (listOf(settingsView, informationView, calibrationView, exposurePreviewCalibrationView,
+            vignettingCalibrationView, cameraManagementView, combinationSelectionView, toolsHost,
+            filmSelectorView, parameterRecordEditorView, parameterHistoryView).any { it.visibility == View.VISIBLE }) return null
+        val enabled = if (isAutoMode) autoSession.simulation else state.exposurePreviewMode == ExposurePreviewMode.ON
+        return previewLimit.takeIf { enabled }
+    }
+
+    override fun dispatchDraw(canvas: Canvas) {
+        super.dispatchDraw(canvas)
+        visibleExposurePreviewLimit()?.let { limit ->
+            exposurePreviewLimitBanner.draw(canvas,
+                RectF(textureView.left.toFloat(), textureView.top.toFloat(), textureView.right.toFloat(), textureView.bottom.toFloat()),
+                resources.displayMetrics.density, limit, state.menuLanguage)
+        }
+    }
     internal fun persistClearOptions() {clearPreferences.save(autoSession)}
     var isAutoMode = false
         private set

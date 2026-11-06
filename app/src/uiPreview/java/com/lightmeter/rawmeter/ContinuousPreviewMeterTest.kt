@@ -23,6 +23,44 @@ import java.time.Duration
 @Config(sdk=[34])
 @LooperMode(LooperMode.Mode.PAUSED)
 class ContinuousPreviewMeterTest {
+    @Test fun censoredDisplayFramesReachRecoveryWithoutReplacingTheLastValidReading() {
+        val f = Fixture()
+        f.meter.setEnabled(true); drain()
+        val previous = f.session.reading!!
+        f.clippedPortion = .8; f.timestamp += 33_333_333L
+        advance(350)
+        assertEquals(1, f.readings.size)
+        assertSame(previous, f.session.reading)
+        assertTrue(f.evidence.single().clippedFraction > .7)
+        val cameraEv = ExposurePreviewMath.cameraEv100(2.0, f.time, 100)!!
+        assertEquals(cameraEv + .8, f.session.recoveryCameraEv100!!, 1e-6)
+        f.clippedPortion = 0.0; f.time = 5_000_000L; f.timestamp += 33_333_333L
+        advance(350)
+        assertEquals(2, f.readings.size)
+        assertNull(f.session.recoveryCameraEv100)
+        assertFalse(f.session.signalLimited)
+        assertTrue(f.bitmaps.all { it.isRecycled })
+        f.meter.setEnabled(false)
+    }
+
+    @Test fun aBlackStartupFrameCanRecoverBeforeAnyValidSceneHasBeenMeasured() {
+        val f = Fixture(); f.gray = 0
+        f.meter.setEnabled(true); drain()
+        assertTrue(f.readings.isEmpty())
+        assertNull(f.session.reading)
+        assertEquals(1.0, f.evidence.single().darkFraction, 0.0)
+        val cameraEv = ExposurePreviewMath.cameraEv100(2.0, f.time, 100)!!
+        assertEquals(cameraEv - .8, f.session.recoveryCameraEv100!!, 1e-6)
+        f.gray = 128; f.time = 20_000_000L; f.timestamp += 33_333_333L
+        advance(350)
+        assertNotNull(f.session.reading)
+        assertNull(f.session.recoveryCameraEv100)
+        f.meter.setEnabled(false)
+        val count = f.evidence.size
+        f.gray = 0; advance(2_000)
+        assertEquals(count, f.evidence.size)
+    }
+
     @Test fun chosenCadenceAndDisableControlTheActualSamplingLoop() {
         val f=Fixture();f.meter.intervalMs=1000;f.meter.setEnabled(true);drain()
         assertEquals(1,f.readings.size)
@@ -72,6 +110,9 @@ class ContinuousPreviewMeterTest {
     private class Fixture {
         val handler=Handler(Looper.getMainLooper())
         var ready=true;var time=10_000_000L;var gray=128;var timestamp=1_000_000_000L
+        var clippedPortion = 0.0
+        val evidence = mutableListOf<MeteringSignalEvidence>()
+        val session = AutoMeterSession()
         val bitmaps=mutableListOf<Bitmap>();val readings=mutableListOf<MeterReading>()
         val view: TextureView=object:TextureView(RuntimeEnvironment.getApplication()) {
             private val texture: SurfaceTexture=object: SurfaceTexture(0){ override fun getTimestamp(): Long=this@Fixture.timestamp }
@@ -82,7 +123,9 @@ class ContinuousPreviewMeterTest {
                 b.eraseColor(Color.WHITE)
                 val pixels=IntArray(w*h){index ->
                     val x=index%w;val y=index/w
-                    if(x in w/4 until w*3/4 && y in h/4 until h*3/4) Color.rgb(gray,gray,gray) else Color.WHITE
+                    if(x in w/4 until w*3/4 && y in h/4 until h*3/4) {
+                        if (x < w/4 + (w/2 * clippedPortion).toInt()) Color.WHITE else Color.rgb(gray,gray,gray)
+                    } else Color.WHITE
                 }
                 b.setPixels(pixels,0,w,0,0,w,h);bitmaps+=b;return b
             }
@@ -92,7 +135,8 @@ class ContinuousPreviewMeterTest {
             CompatibleMeteringContext(view,handler,false,{ready},{ts -> result(ts)},{chars},{"auto-test"},
                 evaluativeViewport=EvaluativeMeteringViewport(1f,1f,NormalizedSensorViewport(.25f,.25f,.75f,.75f)))
         },canSample={ready},calibrationStore=CameraCalibrationStore(RuntimeEnvironment.getApplication()),
-            localized={_,en->en},onReading={readings+=it},onError={throw AssertionError(it)})
+            localized={_,en->en},onReading={readings+=it; session.accept(it)},onError={throw AssertionError(it)},
+            onSignalLimited={evidence+=it; session.acceptSignalLimited(it)})
         private fun result(ts: Long): CaptureResult=ShadowCaptureResult.newCaptureResult().also {
             shadowOf(it).set(CaptureResult.SENSOR_TIMESTAMP,ts)
             shadowOf(it).set(CaptureResult.SENSOR_EXPOSURE_TIME,time)

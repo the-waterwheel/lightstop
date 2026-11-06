@@ -508,6 +508,15 @@ class CameraController(
     private val exposurePreviewState = ExposurePreviewStateCoordinator(
         onRequestChanged = ::updatePreviewRepeatingRequest,
         onUnavailable = { mainHandler.post(callback::onExposurePreviewUnavailable) },
+        onMeteringStalled = {
+            mainHandler.post {
+                callback.onContinuousMeteringError(localized(
+                    "预览曝光未稳定，连续测光等待中",
+                    "Preview exposure has not settled; continuous metering is waiting",
+                ))
+            }
+        },
+        onLimitChanged = { limit -> mainHandler.post { callback.onExposurePreviewLimitChanged(limit) } },
     )
     private val exposurePreviewUpdateQueued = AtomicBoolean(false)
     private val previewBaseline = MeteringPreviewBaselineCoordinator { cameraHandler }
@@ -547,6 +556,7 @@ class CameraController(
             !compatibleMeter.isMeasuring && exposurePreviewState.readyForContinuousMetering },
         calibrationStore = calibrationStore, localized = ::localized,
         onReading = callback::onContinuousMeterReading, onError = callback::onContinuousMeteringError,
+        onSignalLimited = callback::onContinuousMeteringSignalLimited,
     )
 
     internal fun setContinuousMeteringEnabled(enabled: Boolean, intervalMs: Long = 350L) {
@@ -3307,12 +3317,14 @@ class CameraController(
             updateDynamicLensInfo(effectiveResult)
             if (session === captureSession && (request.tag as? PreviewRequestTag)?.cameraGeneration == cameraGeneration) {
                 exposurePreviewState.onPreviewFrame(effectiveResult, SystemClock.elapsedRealtimeNanos(),
-                    advance = !meteringOperationActive && !previewBaseline.isActive && !exposurePreviewCalibration.isActive && !filmPreview.isEnabled)
+                    advance = !meteringOperationActive && !previewBaseline.isActive && !exposurePreviewCalibration.isActive && !filmPreview.isEnabled,
+                    matchesCurrentRequest = (request.tag as? PreviewRequestTag)?.requestSequence == previewRequests.requestSequence)
                 applyRequestedExposurePreview()
             }
             distanceCapture.onCaptureResult(effectiveResult, timestamp)
             previewBaseline.onCaptureResult(request, effectiveResult)
-            exposurePreviewCalibration.onCaptureResult(request, effectiveResult)
+            exposurePreviewCalibration.onCaptureResult(request, effectiveResult,
+                timestamp ?: result.get(CaptureResult.SENSOR_TIMESTAMP))
             observePreviewLighting(effectiveResult, timestamp)
             // A few physical-camera HALs omit SENSOR_TIMESTAMP from the physical result even
             // though the logical TotalCaptureResult carries the timestamp for the same frame.

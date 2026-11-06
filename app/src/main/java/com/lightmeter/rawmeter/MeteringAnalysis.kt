@@ -31,6 +31,8 @@ internal data class MeteringFrameStat(
     /** Populated exclusively by Global; calibration modes do not use the photographic model. */
     val globalInput: GlobalMeteringInput? = null,
     val neuralExposure: GlobalMeteringExposure? = null,
+    /** Censored dark area retained even when no reliable global EV can be fused. */
+    val darkFraction: Double = 0.0,
 )
 
 internal data class RawColorSample(

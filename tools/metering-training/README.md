@@ -1,5 +1,7 @@
 # 参考曝光监督的轻量测光预训练
 
+2026-11-02最新交接：[测光／曝光预览现状及五项待处理问题](../../docs/research/METERING_EXPOSURE_PREVIEW_HANDOFF_2026_11_02_ZH.md)。当前应用已使用第219轮模型，生产基线为main的8154bac；本阶段先处理应用测光与预览问题，不据下文历史记录自动恢复训练。
+
 2026-10-30：[第219轮模型已接入全局测光设备测试](../../docs/research/GLOBAL_MODEL_EPOCH219_DEVICE_TEST_2026_10_30_ZH.md)。应用采用约209 KiB的FP32本地MLP，保留ONNX导出与PyTorch对照，源码入口为 `export_android_model.py`。以下早期准备状态保留为历史记录。
 
 此工具独立于 Android 构建。把原图作为曝光合适的弱参考，通过线性域的曝光扰动训练正负 EV 补偿；不预测绝对 EV100，不生成图像，不代表已经验证真实 RAW/YUV 的通用性。

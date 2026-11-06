@@ -14,6 +14,7 @@ internal class ContinuousPreviewMeter(
     localized: (String, String) -> String,
     private val onReading: (MeterReading) -> Unit,
     private val onError: (String) -> Unit,
+    private val onSignalLimited: (MeteringSignalEvidence) -> Unit = {},
 ) {
     @Volatile var enabled = false
         private set
@@ -26,12 +27,15 @@ internal class ContinuousPreviewMeter(
             override fun onCompatibleMeteringReading(reading: MeterReading) {
                 if (enabled) onReading(reading)
             }
+            override fun onCompatibleMeteringSignalLimited(evidence: MeteringSignalEvidence) {
+                if (enabled) onSignalLimited(evidence)
+            }
             override fun onCompatibleMeteringError(message: String) {
                 if (enabled) onError(message)
                 schedule()
             }
             override fun onCompatibleMeteringCompleted(requiresPreviewOnlySession: Boolean) { schedule() }
-        })
+        }, reportSignalEvidence = true)
 
     fun setEnabled(value: Boolean) {
         enabled = value
