@@ -29,7 +29,7 @@
 | --- | --- | --- |
 | ![Normal 模式](docs/screenshots/v0.7.0/normal-average.png) | ![Clear 模式](docs/screenshots/v0.7.0/clear.png) | ![Zone 模式](docs/screenshots/v0.7.0/zone.png) |
 
-以上为 Android 模拟器截图，取景区为空白。[查看各模式与工具的全部截图](docs/screenshots/v0.7.0/README.md)。
+以上为 Android 模拟器截图，取景区为空白。[查看三种模式演示](docs/screenshots/v0.7.0/README.md)。
 
 ## 构建
 

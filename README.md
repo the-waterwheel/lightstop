@@ -29,7 +29,7 @@ Global metering now uses a small neural network to evaluate the spatial distribu
 | --- | --- | --- |
 | ![Normal mode](docs/screenshots/v0.7.0/normal-average.png) | ![Clear mode](docs/screenshots/v0.7.0/clear.png) | ![Zone mode](docs/screenshots/v0.7.0/zone.png) |
 
-Android emulator screenshots with a blank viewfinder. [All mode and tool screenshots](docs/screenshots/v0.7.0/README.md).
+Android emulator screenshots with a blank viewfinder. [Mode demos](docs/screenshots/v0.7.0/README.md).
 
 ## Build
 

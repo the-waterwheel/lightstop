@@ -1,4 +1,4 @@
-"""Redact Windows home paths only in ELF read-only diagnostic strings.
+"""Redact Windows build paths in ELF read-only diagnostic strings.
 
 Replacement preserves length; code, offsets, relocations and exported symbols
 are unchanged. Unknown sections fail closed. Also covers duplicate Prefab libs.
