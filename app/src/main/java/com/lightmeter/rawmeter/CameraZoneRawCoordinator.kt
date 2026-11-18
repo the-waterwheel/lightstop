@@ -110,7 +110,7 @@ internal class CameraZoneRawCoordinator(
             ))
         } else {
             transaction.reading = reading
-            deliver(transaction) { listener.onReading(reading) }
+            if (!transaction.plan.isCalibration) deliver(transaction) { listener.onReading(reading) }
         }
         restore(transaction)
         return true
@@ -144,15 +144,21 @@ internal class CameraZoneRawCoordinator(
         if (!transaction.sessionState.markResidentSessionConfigured()) return
         transaction.restoreCompletedAtNs = System.nanoTime()
         if (!transactions.clear(transaction)) return
-        if (transaction.resultDelivered) {
+        val calibrationReading = transaction.reading.takeIf { transaction.plan.isCalibration }
+        if (transaction.resultDelivered || calibrationReading != null) {
             host.finishOperation(rawSucceeded = true)
             logLatency(transaction)
-            mainHandler.post { listener.onRestoreStateChanged(false) }
+            mainHandler.post {
+                if (calibrationReading != null) listener.onReading(calibrationReading)
+                else listener.onRestoreStateChanged(false)
+            }
             return
         }
         val failure = transaction.failure ?: failureFor(transaction.plan,
             localized("RAW 测光失败，请重试", "RAW metering failed. Please try again"))
-        if (transaction.plan.zoneBatchTargets.isNotEmpty() || host.confirmedRawWorkflow) {
+        if (transaction.plan.isCalibration || transaction.plan.zoneBatchTargets.isNotEmpty() ||
+            host.confirmedRawWorkflow
+        ) {
             host.finishOperation(rawSucceeded = false)
             host.postMeterError(failure.message)
         } else {

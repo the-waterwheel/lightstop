@@ -352,12 +352,20 @@ internal class RawLightMeter(
         isMeasuring = false
     }
 
-    private val captureCallback = object : CameraCaptureSession.CaptureCallback() {
+    private fun captureCallback(
+        active: MeasurementAccumulator,
+        frameNumber: Int,
+    ) = object : CameraCaptureSession.CaptureCallback() {
+        private fun ownsFrame(session: CameraCaptureSession): Boolean =
+            activeMeasurement === active && activeContext?.session === session &&
+                active.submittedFrames == frameNumber && active.completedFrames < frameNumber
+
         override fun onCaptureCompleted(
             session: CameraCaptureSession,
             request: CaptureRequest,
             result: TotalCaptureResult,
         ) {
+            if (!ownsFrame(session)) return
             val context = activeContext ?: return
             val resolution = metadataResolver.resolve(
                 total = result,
@@ -371,7 +379,7 @@ internal class RawLightMeter(
                     "RAW frame metadata rejected: ${resolution.failure} " +
                         "physical=${context.selectedPhysicalCameraId}",
                 )
-                resolution.pairedTimestampNs?.let { activeMeasurement?.framePairer?.reject(it) }
+                resolution.pairedTimestampNs?.let(active.framePairer::reject)
                 finishWithError(
                     localized(
                         "相机未提供本次测光所需的物理元数据，请重试",
@@ -384,7 +392,6 @@ internal class RawLightMeter(
             val timestamp = resolution.pairedTimestampNs
                 ?: effectiveResult.get(CaptureResult.SENSOR_TIMESTAMP)
                 ?: return
-            val active = activeMeasurement ?: return
             active.framePairer.offerResult(timestamp, effectiveResult)?.let { pair ->
                 processPair(active, pair)
             }
@@ -395,6 +402,7 @@ internal class RawLightMeter(
             request: CaptureRequest,
             failure: CaptureFailure,
         ) {
+            if (!ownsFrame(session)) return
             finishWithError(
                 localized(
                     "相机未能完成本次测光，请重试",
@@ -404,6 +412,7 @@ internal class RawLightMeter(
         }
 
         override fun onCaptureSequenceAborted(session: CameraCaptureSession, sequenceId: Int) {
+            if (!ownsFrame(session)) return
             finishWithError(
                 localized(
                     "本次测光被相机中止，请重试",
@@ -734,7 +743,7 @@ internal class RawLightMeter(
         }
         active.submittedFrames += 1
         try {
-            context.session.capture(request, captureCallback, context.handler)
+            context.session.capture(request, captureCallback(active, active.submittedFrames), context.handler)
         } catch (error: Exception) {
             finishWithError(
                 localized("无法继续测光，请重试", "Unable to continue metering. Please try again"),

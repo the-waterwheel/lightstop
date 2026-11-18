@@ -44,3 +44,31 @@ internal object FilmSelectorGeometryCalculator {
         return FilmSelectorGeometry(back, add, search, favorites, list, rowHeight)
     }
 }
+
+internal data class FilmLatitudeCardGeometry(
+    val artwork: RectF,
+    val textLeft: Float,
+    val textRight: Float,
+    val reset: RectF,
+    val favorite: RectF,
+) {
+    companion object {
+        private const val ARTWORK_ASPECT = 4f / 3f
+
+        fun calculate(row: RectF, density: Float, textDensity: Float): FilmLatitudeCardGeometry {
+            val artworkWidth = min((row.height() - 16f * density) * ARTWORK_ASPECT, row.width() * 0.31f)
+            val halfArtworkHeight = artworkWidth / ARTWORK_ASPECT / 2f
+            val artwork = RectF(
+                row.left + 8f * density,
+                row.centerY() - halfArtworkHeight,
+                row.left + 8f * density + artworkWidth,
+                row.centerY() + halfArtworkHeight,
+            )
+            val textLeft = artwork.right + 10f * density
+            val actionTop = row.bottom - 36f * density
+            val favorite = RectF(row.right - 44f * density, actionTop, row.right, row.bottom)
+            val reset = RectF(max(textLeft, favorite.left - 106f * textDensity), actionTop, favorite.left, row.bottom)
+            return FilmLatitudeCardGeometry(artwork, textLeft, row.right - 10f * density, reset, favorite)
+        }
+    }
+}

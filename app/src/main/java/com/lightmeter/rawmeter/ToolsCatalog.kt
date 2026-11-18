@@ -22,7 +22,7 @@ data class ToolSpec(
 
 object ToolsCatalog {
     val tools: List<ToolSpec> = listOf(
-        ToolSpec(ToolId.DEPTH_OF_FIELD, LocalizedLabel("景深计算", "Depth of field")),
+        ToolSpec(ToolId.DEPTH_OF_FIELD, LocalizedLabel("测距/景深", "Distance / DOF")),
         ToolSpec(ToolId.LATITUDE, LocalizedLabel("宽容度", "Latitude")),
         ToolSpec(ToolId.PARAMETER_LOG, LocalizedLabel("参数记录", "Parameter log")),
         ToolSpec(ToolId.RECIPROCITY, LocalizedLabel("倒易率计算", "Reciprocity")),

@@ -4,6 +4,12 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
+import android.view.View
+
+internal fun View.invalidateModeGuide() {
+    // The meter draws these hints after all its children, outside their clipping bounds.
+    (parent as? MeterLayout ?: this).postInvalidateOnAnimation()
+}
 
 /** Three open chevrons, white with a black outline, shared by normal/zone/clear. */
 internal class ModeGuideArrow {

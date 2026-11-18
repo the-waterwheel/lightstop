@@ -80,7 +80,6 @@ class ToolsView(
             ToolId.PARAMETER_LOG to decodeToolIcon(R.drawable.tool_icon_parameter_record),
             ToolId.RECIPROCITY to decodeToolIcon(R.drawable.tool_icon_reciprocity),
             ToolId.COLOR_TEMPERATURE to decodeToolIcon(R.drawable.tool_icon_color_temperature),
-            ToolId.DEPTH_OF_FIELD to decodeToolIcon(R.drawable.tool_icon_depth_of_field),
         )
     }
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
@@ -190,12 +189,34 @@ class ToolsView(
                 drawIconFitCenter(canvas, icon, iconBox)
             }
             if (spec.id == ToolId.FILM_NEGATIVE) drawNegativeIcon(canvas, iconBox)
+            if (spec.id == ToolId.DEPTH_OF_FIELD) drawRulerIcon(canvas, iconBox)
             drawCellLabel(canvas, label, cell, lines)
         }
         canvas.restore()
         paint.style = Paint.Style.FILL
         paint.color = dividerColor
         canvas.drawRect(0f, g.headerHeight - 0.8f * density, width.toFloat(), g.headerHeight, paint)
+    }
+
+    private fun drawRulerIcon(canvas: Canvas, box: RectF) {
+        val size = min(box.width(), box.height()) * .75f
+        val x = box.centerX()
+        val y = box.centerY()
+        val left = x - size * .55f
+        val top = y - size * .21f
+        val right = x + size * .55f
+        val bottom = y + size * .21f
+        canvas.save()
+        canvas.rotate(-25f, x, y)
+        paint.color = foreground
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 2f * density
+        canvas.drawRoundRect(left, top, right, bottom, 3f * density, 3f * density, paint)
+        for (tick in 1..7) {
+            val at = left + (right - left) * tick / 8f
+            canvas.drawLine(at, top, at, top + size * if (tick % 2 == 0) .20f else .12f, paint)
+        }
+        canvas.restore()
     }
 
     private fun drawNegativeIcon(canvas: Canvas, box: RectF) {

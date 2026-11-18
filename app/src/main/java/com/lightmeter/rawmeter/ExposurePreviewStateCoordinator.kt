@@ -79,12 +79,14 @@ internal class ExposurePreviewStateCoordinator(
             val fresh = lastFrameMatchesCurrentRequest && lastFrameTimestampNs > requestPublishedFrameNs &&
                 now - lastFrameReceivedNs in 0..MAX_FRAME_AGE_NS
             val modeMatches = result?.let(::exposureModeMatches) == true
+            val actualEv = result?.let(::actualCameraEv)
             val matchesExposure = if (manual != null) {
-                result?.let(::actualCameraEv)?.let { abs(it - manual.appliedCameraEv100) <= .1 } == true
+                actualEv != null && abs(actualEv - manual.appliedCameraEv100) <= .1
             } else {
-                result != null && result.get(CaptureResult.CONTROL_AE_EXPOSURE_COMPENSATION) == compensationSteps
+                result != null && result.get(CaptureResult.CONTROL_AE_EXPOSURE_COMPENSATION) == compensationSteps &&
+                    hasSettledAutoExposure(result)
             }
-            if (fresh && modeMatches && result?.let(::actualCameraEv) != null && (matchesExposure ||
+            if (fresh && modeMatches && actualEv != null && (matchesExposure ||
                     timedOut && stableActualFrames >= REQUIRED_STABLE_ACTUAL_FRAMES)) return true
             if (timedOut) reportSamplingStall()
             return false
@@ -308,6 +310,14 @@ internal class ExposurePreviewStateCoordinator(
         val mode = result.get(CaptureResult.CONTROL_AE_MODE) ?: return false
         return if (manualExposure != null) mode == CaptureResult.CONTROL_AE_MODE_OFF
             else mode != CaptureResult.CONTROL_AE_MODE_OFF
+    }
+
+    private fun hasSettledAutoExposure(result: CaptureResult): Boolean = when (result.get(CaptureResult.CONTROL_AE_STATE)) {
+        CaptureResult.CONTROL_AE_STATE_CONVERGED,
+        CaptureResult.CONTROL_AE_STATE_LOCKED,
+        CaptureResult.CONTROL_AE_STATE_FLASH_REQUIRED -> true
+        null, CaptureResult.CONTROL_AE_STATE_INACTIVE -> stableActualFrames >= REQUIRED_STABLE_ACTUAL_FRAMES
+        else -> false
     }
 
     private fun actualCameraEv(result: CaptureResult): Double? {

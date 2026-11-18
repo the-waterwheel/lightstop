@@ -4,7 +4,7 @@ import kotlin.math.abs
 import kotlin.math.pow
 
 /** Main-thread state for the small automatic meter; never overwrites Normal/Zone readings. */
-internal class AutoMeterSession {
+internal class AutoMeterSession(private val nanoClock: () -> Long = System::nanoTime) {
     var reading: MeterReading? = null
         private set
     var locked = false
@@ -17,7 +17,7 @@ internal class AutoMeterSession {
     var continuousMetering = true
         set(value) {
             field=value
-            if(!value) { locked=false;recoveryCameraEv100=null;signalLimited=false }
+            if(!value) { locked=false;recoveryCameraEv100=null;signalLimited=false;resetConfirmation() }
         }
     var sampleIntervalMs = 350L
     var showInterfaceText = true
@@ -32,6 +32,9 @@ internal class AutoMeterSession {
         private set
     private var filteredEv: Double? = null
     private var filteredExposureEv: Double? = null
+    private var lastSampleNs: Long? = null
+    private val sceneConfirmation = ContinuousEvConfirmation()
+    private val targetConfirmation = ContinuousEvConfirmation()
 
     fun accept(reading: MeterReading): Boolean {
         if (!continuousMetering || locked || rawPending || !reading.sceneEv100.isFinite()) return false
@@ -44,34 +47,31 @@ internal class AutoMeterSession {
         recoveryCameraEv100 = null
         val wasLimited = signalLimited
         signalLimited = false
-        // A small dead band prevents preview noise from continually restarting the exposure ramp.
         val previous = filteredEv
-        val next = if (previous == null) reading.sceneEv100 else
-            previous + (reading.sceneEv100 - previous).coerceIn(-2.0, 2.0) * .55
-        val stable = previous != null && abs(next - previous) < .06
         val decision = reading.evaluative
         val neural = decision?.modelEpoch != null
         val target = reading.sceneEv100 + (decision?.exposureReductionEv ?: 0.0)
         if (!target.isFinite()) return false
-        val previousTarget = filteredExposureEv.takeIf {
-            this.reading?.source == reading.source && this.reading?.evaluative?.modelEpoch == decision?.modelEpoch
-        }
-        val nextTarget = if (!neural || previousTarget == null) target else
-            previousTarget + (target - previousTarget).coerceIn(-2.0, 2.0) * .55
-        val stableTarget = previousTarget != null && abs(nextTarget - previousTarget) < .03
-        val sameRecommendation = if (neural) stableTarget else
+        val sameSource = this.reading?.source == reading.source
+        val sameModel = this.reading?.evaluative?.modelEpoch == decision?.modelEpoch
+        if (!sameSource || !sameModel) resetConfirmation()
+        val now = nanoClock()
+        val elapsedSeconds = lastSampleNs?.let { (now - it).coerceIn(0L, 1_000_000_000L) / 1e9 }
+            ?: REFERENCE_INTERVAL_SECONDS
+        lastSampleNs = now
+        val next = sceneConfirmation.update(previous, reading.sceneEv100, elapsedSeconds)
+        val previousTarget = filteredExposureEv.takeIf { sameSource && sameModel }
+        val nextTarget = if (neural) targetConfirmation.update(previousTarget, target, elapsedSeconds) else target
+        val sameRecommendation = if (neural) nextTarget == previousTarget else
             abs((this.reading?.evaluative?.exposureReductionEv ?: 0.0)-(decision?.exposureReductionEv ?: 0.0)) < .03
-        if (stable && this.reading?.source == reading.source &&
-            sameRecommendation) {
+        if (next == previous && sameSource && sameModel && sameRecommendation) {
             val changed = error != null || wasLimited
             error = null
             return changed
         }
-        filteredEv = if(stable) previous else next
-        val base = checkNotNull(filteredEv)
-        filteredExposureEv = if (neural) {
-            if (stableTarget) previousTarget else nextTarget
-        } else base + (decision?.exposureReductionEv ?: 0.0)
+        val base = next
+        filteredEv = base
+        filteredExposureEv = if (neural) nextTarget else base + (decision?.exposureReductionEv ?: 0.0)
         // The offset belongs to its own base. Rebase after smoothing so an unchanged neural
         // exposure target cannot acquire a darker EV merely because the sampled base moved.
         this.reading = reading.copy(sceneEv100 = base, evaluative = decision?.copy(
@@ -100,6 +100,7 @@ internal class AutoMeterSession {
         // never publishes censored pixels as a scene EV or feeds them into the model filter.
         val deliberate = step?.let { if (it > 0) expected > .75 else expected < .001 } ?: false
         recoveryCameraEv100 = if (deliberate) null else step?.let { evidence.cameraEv100 + it }
+        resetConfirmation()
         signalLimited = true
         error = null
         return true
@@ -109,6 +110,7 @@ internal class AutoMeterSession {
 
     fun beginManual(useRaw: Boolean): Boolean {
         if (rawPending) return false
+        resetConfirmation()
         manualExpectsRaw=useRaw
         restoreLockOnFailure=locked
         locked=continuousMetering
@@ -141,11 +143,55 @@ internal class AutoMeterSession {
         return true
     }
     fun unlock(clear: Boolean = false, resumeContinuous: Boolean = true) {
+        resetConfirmation()
         locked = false
         continuousMetering=resumeContinuous
         signalLimited = false
         recoveryCameraEv100 = null
         error = null
         if (clear) { reading = null; filteredEv = null; filteredExposureEv = null }
+    }
+
+    private fun resetConfirmation() {
+        lastSampleNs = null
+        sceneConfirmation.reset()
+        targetConfirmation.reset()
+    }
+
+    private class ContinuousEvConfirmation {
+        private var pendingDirection = 0
+
+        fun reset() { pendingDirection = 0 }
+
+        fun update(previous: Double?, sample: Double, elapsedSeconds: Double): Double {
+            if (previous == null) {
+                reset()
+                return sample
+            }
+            val change = sample - previous
+            if (abs(change) < .12) {
+                reset()
+                return previous
+            }
+            // Small reversals are common in the live exposure feedback loop. Confirm
+            // the direction across two samples before publishing a new exposure target.
+            if (abs(change) < .5) {
+                val direction = if (change > 0) 1 else -1
+                val confirmed = pendingDirection == direction
+                pendingDirection = direction
+                if (!confirmed) return previous
+            } else {
+                reset()
+            }
+            // Match the previous filter weight at 350 ms, with a time-based rate limit.
+            val weight = 1.0 - .45.pow(elapsedSeconds / REFERENCE_INTERVAL_SECONDS)
+            val maximumStep = MAX_CHANGE_EV_PER_SECOND * elapsedSeconds
+            return previous + (change * weight).coerceIn(-maximumStep, maximumStep)
+        }
+    }
+
+    private companion object {
+        const val REFERENCE_INTERVAL_SECONDS = .35
+        const val MAX_CHANGE_EV_PER_SECOND = 3.0
     }
 }

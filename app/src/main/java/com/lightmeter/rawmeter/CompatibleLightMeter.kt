@@ -21,6 +21,8 @@ internal data class CompatibleMeteringContext(
     val evaluativeViewport: EvaluativeMeteringViewport? = null,
     val previewGeometry: PreviewStreamGeometry? = null,
     val captureFullPreview: (((Bitmap?, Long) -> Unit) -> Unit)? = null,
+    val finalizeReading: (MeterReading) -> MeterReading = { it },
+    val allowSessionDowngrade: Boolean = true,
 )
 
 internal interface CompatibleLightMeterListener {
@@ -236,7 +238,7 @@ internal class CompatibleLightMeter(
                 cancelYuvTimeout(measurement.context.cameraHandler)
                 activeYuvMeasurement = null
                 yuvFramePairer.clear()
-                if (reading != null) finishWithReading(measurement.id, reading)
+                if (reading != null) finishWithReading(measurement.id, reading, measurement.context)
                 else finishWithSignalEvidence(measurement.id, checkNotNull(evidence))
                 return
             }
@@ -430,7 +432,7 @@ internal class CompatibleLightMeter(
                     ),
                 )
             } else {
-                finishWithReading(capture.id, reading)
+                finishWithReading(capture.id, reading, capture.context)
             }
         }
     }
@@ -480,19 +482,20 @@ internal class CompatibleLightMeter(
         }
     }
 
-    private fun finishWithReading(id: Int, reading: MeterReading) {
+    private fun finishWithReading(id: Int, reading: MeterReading, context: CompatibleMeteringContext) {
         if (!isCurrent(id)) return
+        val finalizedReading = context.finalizeReading(reading)
         isMeasuring = false
         Log.i(
             TAG,
             "Compatible metering completed: source=${reading.source} " +
                 "frames=${reading.frameCount} ev100=${reading.sceneEv100}",
         )
-        val requiresPreviewOnly = downgradeYuvSessionAfterSuccess
+        val requiresPreviewOnly = downgradeYuvSessionAfterSuccess && context.allowSessionDowngrade
         downgradeYuvSessionAfterSuccess = false
         mainHandler.post {
             if (id != measurementId) return@post
-            listener.onCompatibleMeteringReading(reading)
+            listener.onCompatibleMeteringReading(finalizedReading)
             listener.onCompatibleMeteringCompleted(requiresPreviewOnly)
         }
     }

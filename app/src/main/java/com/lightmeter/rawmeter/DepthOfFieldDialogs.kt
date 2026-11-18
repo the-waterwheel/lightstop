@@ -3,6 +3,7 @@ package com.lightmeter.rawmeter
 import android.content.Context
 import android.text.InputType
 import android.widget.EditText
+import android.widget.Switch
 import android.widget.LinearLayout
 import android.widget.Toast
 import kotlin.math.roundToInt
@@ -14,19 +15,28 @@ internal class DepthOfFieldDialogs(
     private val onFrameSelected: (FrameFormat) -> Unit,
     private val onCircleOfConfusionSelected: (Double) -> Unit,
     private val onFocusDistanceSelected: (Double) -> Unit,
+    private val onMeterDisplayChanged: (Boolean) -> Unit,
 ) {
     private val density = context.resources.displayMetrics.density
 
     fun showFrame(current: FrameFormat) {
-        val labels = FrameFormat.ALL.map { it.displayLabel(state.menuLanguage) } +
+        val formats = FrameFormat.ALL.filter { it.id != "none" }
+        val labels = formats.map { it.displayLabel(state.menuLanguage) } +
             localized("自定义画幅…", "Custom format…")
+        @Suppress("UseSwitchCompatOrMaterialCode")
+        val display = Switch(AppDialogs.themedContext(context, state.isDarkMode)).apply {
+            text = localized("显示到测光", "Show on meter")
+            isChecked = state.showDistanceOnMeter
+            setOnCheckedChangeListener { _, checked -> onMeterDisplayChanged(checked) }
+        }
         AppDialogs.builder(context,state)
             .setTitle(localized("选择画幅（毫米）", "Select format (millimetres)"))
+            .setView(display)
             .setItems(labels.toTypedArray()) { _, which ->
-                if (which == FrameFormat.ALL.size) {
+                if (which == formats.size) {
                     showCustomFrame(current)
                 } else {
-                    onFrameSelected(FrameFormat.ALL[which])
+                    onFrameSelected(formats[which])
                 }
             }
             .setNegativeButton(localized("取消", "Cancel"), null)

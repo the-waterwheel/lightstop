@@ -21,27 +21,34 @@ internal class MeteringPreviewBaselineCoordinator(
     val activeGeneration: Long?
         get() = operation?.generation
 
-    fun start(cameraGeneration: Int, continuation: () -> Unit) {
+    fun start(
+        cameraGeneration: Int,
+        onUnavailable: (() -> Unit)? = null,
+        continuation: () -> Unit,
+    ) {
         stableFrames = 0
         val pending = PreviewBaselineOperation(
             cameraGeneration = cameraGeneration,
             generation = ++generation,
             startedAtElapsedMs = SystemClock.elapsedRealtime(),
             continuation = continuation,
+            requiresExposureMetadata = onUnavailable != null,
         )
         operation = pending
         val handler = cameraHandler() ?: run {
-            finish(pending, "no camera handler")
+            finish(pending, "no camera handler", onUnavailable ?: continuation)
             return
         }
         val timeoutAction = Runnable {
             if (operation == pending) {
-                Log.w(TAG, "Timed out waiting for neutral preview AE; continuing measurement")
-                finish(pending, "timeout")
+                finish(pending, "timeout", onUnavailable ?: continuation)
             }
         }
         timeout = timeoutAction
-        handler.postDelayed(timeoutAction, TIMEOUT_MS)
+        val waitMs = if (onUnavailable != null) CALIBRATION_TIMEOUT_MS else TIMEOUT_MS
+        if (!handler.postDelayed(timeoutAction, waitMs)) {
+            finish(pending, "camera handler stopped", onUnavailable ?: continuation)
+        }
     }
 
     fun onCaptureResult(request: CaptureRequest, result: CaptureResult) {
@@ -57,7 +64,10 @@ internal class MeteringPreviewBaselineCoordinator(
             aeState == CaptureResult.CONTROL_AE_STATE_CONVERGED ||
             aeState == CaptureResult.CONTROL_AE_STATE_FLASH_REQUIRED ||
             aeState == CaptureResult.CONTROL_AE_STATE_LOCKED
-        stableFrames = if (neutralRequestReached && aeStable) stableFrames + 1 else 0
+        val hasExposure = !pending.requiresExposureMetadata ||
+            ((result.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: 0L) > 0L &&
+                (result.get(CaptureResult.SENSOR_SENSITIVITY) ?: 0) > 0)
+        stableFrames = if (neutralRequestReached && aeStable && hasExposure) stableFrames + 1 else 0
         if (PreviewBaselinePolicy.hasEnoughStableFrames(stableFrames)) {
             finish(pending, "stable tagged AE")
         }
@@ -70,7 +80,11 @@ internal class MeteringPreviewBaselineCoordinator(
         operation = null
     }
 
-    private fun finish(pending: PreviewBaselineOperation, reason: String) {
+    private fun finish(
+        pending: PreviewBaselineOperation,
+        reason: String,
+        next: () -> Unit = pending.continuation,
+    ) {
         if (operation != pending) return
         timeout?.let { cameraHandler()?.removeCallbacks(it) }
         timeout = null
@@ -81,11 +95,12 @@ internal class MeteringPreviewBaselineCoordinator(
             "Neutral preview baseline finished: reason=$reason generation=${pending.generation} " +
                 "waitMs=${SystemClock.elapsedRealtime() - pending.startedAtElapsedMs}",
         )
-        pending.continuation()
+        next()
     }
 
     companion object {
         private const val TAG = "lightstop"
         private const val TIMEOUT_MS = 1_200L
+        private const val CALIBRATION_TIMEOUT_MS = 2_500L
     }
 }

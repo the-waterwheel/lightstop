@@ -57,7 +57,7 @@ internal class VignettingCalibrationCaptureCoordinator(
             val captureRequest = request()
             scheduleTimeout(capture)
             beforeCapture()
-            context.session.capture(captureRequest, captureCallback, context.handler)
+            context.session.capture(captureRequest, captureCallback(capture), context.handler)
             true
         } catch (_: Exception) {
             finishWithError(
@@ -93,13 +93,13 @@ internal class VignettingCalibrationCaptureCoordinator(
         return true
     }
 
-    private val captureCallback = object : CameraCaptureSession.CaptureCallback() {
+    private fun captureCallback(capture: ActiveCapture) = object : CameraCaptureSession.CaptureCallback() {
         override fun onCaptureCompleted(
             session: CameraCaptureSession,
             request: CaptureRequest,
             result: TotalCaptureResult,
         ) {
-            val capture = active ?: return
+            if (active !== capture || session !== capture.context.session) return
             val resolution = metadataResolver.resolve(
                 total = result,
                 routeKind = capture.context.routeKind,
@@ -130,6 +130,7 @@ internal class VignettingCalibrationCaptureCoordinator(
             request: CaptureRequest,
             failure: CaptureFailure,
         ) {
+            if (active !== capture || session !== capture.context.session) return
             finishWithError(
                 localized(
                     "相机未能完成暗角校准，请重试",

@@ -8,6 +8,7 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.text.Editable
+import android.text.StaticLayout
 import android.text.TextUtils
 import android.text.TextPaint
 import android.text.TextWatcher
@@ -55,9 +56,17 @@ internal class FilmSelectorView(
     private val surface: Int get() = if (state.isDarkMode) Color.rgb(38, 38, 36) else Color.rgb(242, 242, 239)
     private val red = InstrumentStyle.red
     private val blue = InstrumentStyle.blue
+    private val favoriteGold = Color.rgb(219, 157, 17)
+    private val packaging = FilmPackagingRenderer(context.assets)
     private var geometry = FilmSelectorGeometry.EMPTY
     private var visibleFilms: List<FilmLatitudeProfile> = emptyList()
     private var mode = FilmSelectorMode.STANDARD
+    private val rowHeight: Float
+        get() = if (mode == FilmSelectorMode.LATITUDE) {
+            max(geometry.rowHeight + 12f * density, 44f * density + 55f * scaledDensity)
+        } else {
+            geometry.rowHeight
+        }
     private var favoritesOnly = false
     private var scrollOffset = 0f
     private var touchStartX = 0f
@@ -158,11 +167,15 @@ internal class FilmSelectorView(
 
     private fun drawSearchControls(canvas: Canvas) {
         drawOutlinedBox(canvas, geometry.add, if (state.menuLanguage == MenuLanguage.ENGLISH) "+" else "＋", false)
-        drawOutlinedBox(canvas, geometry.favorites, if (favoritesOnly) "★" else "☆", favoritesOnly)
+        drawOutlinedBox(
+            canvas, geometry.favorites, if (favoritesOnly) "★" else "☆", favoritesOnly,
+            activeLabelColor = if (mode == FilmSelectorMode.LATITUDE) favoriteGold else background,
+        )
     }
 
     private fun drawFilms(canvas: Canvas) {
-        val totalHeight = visibleFilms.size * geometry.rowHeight
+        val rowHeight = rowHeight
+        val totalHeight = visibleFilms.size * rowHeight
         val maxScroll = max(0f, totalHeight - geometry.list.height())
         scrollOffset = scrollOffset.coerceIn(0f, maxScroll)
         canvas.save()
@@ -170,13 +183,12 @@ internal class FilmSelectorView(
         if (visibleFilms.isEmpty()) {
             drawEmpty(canvas)
         } else {
-            val firstIndex = (scrollOffset / geometry.rowHeight).toInt().coerceIn(0, visibleFilms.lastIndex)
-            val lastIndex = ((scrollOffset + geometry.list.height()) / geometry.rowHeight)
+            val firstIndex = (scrollOffset / rowHeight).toInt().coerceIn(0, visibleFilms.lastIndex)
+            val lastIndex = ((scrollOffset + geometry.list.height()) / rowHeight)
                 .toInt().plus(1).coerceIn(firstIndex, visibleFilms.lastIndex)
             for (index in firstIndex..lastIndex) {
                 val profile = visibleFilms[index]
-                val top = geometry.list.top + index * geometry.rowHeight - scrollOffset
-                val row = RectF(geometry.list.left, top, geometry.list.right, top + geometry.rowHeight - 5f * density)
+                val row = rowBounds(index)
                 if (RectF.intersects(row, geometry.list)) drawFilmRow(canvas, row, profile)
             }
         }
@@ -193,6 +205,12 @@ internal class FilmSelectorView(
         paint.color = divider
         canvas.drawRoundRect(row, 6f * density, 6f * density, paint)
 
+        val range = repository.effectiveRange(profile)
+        if (mode == FilmSelectorMode.LATITUDE) {
+            drawLatitudeRow(canvas, row, profile, range)
+            return
+        }
+
         val actionWidth = (row.width() * 0.22f).coerceIn(64f * density, 104f * density)
         val favoriteWidth = 44f * density
         val textRight = row.right - actionWidth - favoriteWidth - 14f * density
@@ -202,7 +220,6 @@ internal class FilmSelectorView(
         val label = TextUtils.ellipsize(profile.displayName, boldPaint, textRight - row.left - 14f * density, TextUtils.TruncateAt.END)
         canvas.drawText(label.toString(), row.left + 10f * density, row.top + 25f * density, boldPaint)
 
-        val range = repository.effectiveRange(profile)
         paint.style = Paint.Style.FILL
         paint.color = if (unavailable) {
             muted
@@ -221,10 +238,7 @@ internal class FilmSelectorView(
                     iso.takeIf(String::isNotEmpty),
                 ).joinToString(" · ")
             mode == FilmSelectorMode.RECIPROCITY -> iso
-            else -> listOfNotNull(
-                "${signed(range.shadowEv)} / ${signed(range.highlightEv)} EV",
-                iso.takeIf(String::isNotEmpty),
-            ).joinToString(" · ")
+            else -> latitudeDetails(range, iso)
         }
         canvas.drawText(
             details,
@@ -252,6 +266,65 @@ internal class FilmSelectorView(
         boldPaint.textSize = 18f * scaledDensity
         boldPaint.color = if (repository.isFavorite(profile.id)) red else foreground
         centeredText(canvas, if (repository.isFavorite(profile.id)) "★" else "☆", rowFavoriteRect(row).centerX(), row.centerY(), boldPaint)
+    }
+
+    private fun drawLatitudeRow(
+        canvas: Canvas,
+        row: RectF,
+        profile: FilmLatitudeProfile,
+        range: FilmLatitudeRange,
+    ) {
+        val card = FilmLatitudeCardGeometry.calculate(row, density, scaledDensity)
+        packaging.draw(canvas, card.artwork, profile, surface, density)
+
+        val name = profile.displayName
+        val textWidth = (card.textRight - card.textLeft).toInt().coerceAtLeast(1)
+        boldPaint.color = foreground
+        boldPaint.textAlign = Paint.Align.LEFT
+        boldPaint.textSize = 14f * scaledDensity
+        val title = StaticLayout.Builder.obtain(name, 0, name.length, boldPaint, textWidth)
+            .setIncludePad(false)
+            .setEllipsize(TextUtils.TruncateAt.END)
+            .setMaxLines(2)
+            .build()
+        val textTop = row.top + 9f * density
+        canvas.save()
+        canvas.translate(card.textLeft, textTop)
+        title.draw(canvas)
+        canvas.restore()
+
+        paint.style = Paint.Style.FILL
+        paint.textAlign = Paint.Align.LEFT
+        paint.color = muted
+        paint.textSize = 13f * scaledDensity
+        val iso = profile.iso?.let { "ISO $it" }.orEmpty()
+        // Reduce the detail text on narrow windows so both latitude and ISO remain available.
+        val details = latitudeDetails(range, iso)
+        fitText(paint, details, textWidth.toFloat())
+        canvas.drawText(details, card.textLeft, textTop + title.height + 4f * density - paint.ascent(), paint)
+
+        paint.textAlign = Paint.Align.CENTER
+        paint.textSize = 11f * scaledDensity
+        paint.color = if (range != profile.originalRange) foreground else muted
+        val reset = localized("重置宽容度", "Reset latitude")
+        fitText(paint, reset, card.reset.width() - 8f * density)
+        centeredText(canvas, reset, card.reset.centerX(), card.reset.centerY(), paint)
+
+        val favorite = repository.isFavorite(profile.id)
+        boldPaint.textAlign = Paint.Align.CENTER
+        boldPaint.textSize = 20f * scaledDensity
+        boldPaint.color = if (favorite) favoriteGold else foreground
+        centeredText(canvas, if (favorite) "★" else "☆", card.favorite.centerX(), card.favorite.centerY(), boldPaint)
+    }
+
+    private fun fitText(paint: Paint, text: String, width: Float) {
+        val measured = paint.measureText(text)
+        if (measured > width && width > 0f) paint.textSize *= width / measured
+    }
+
+    private fun latitudeDetails(range: FilmLatitudeRange, iso: String): String {
+        val latitude = "${signed(range.shadowEv)} / ${signed(range.highlightEv)} EV"
+        return if (iso.isEmpty()) latitude else "$latitude · $iso"
     }
 
     private fun drawEmpty(canvas: Canvas) {
@@ -293,7 +366,7 @@ internal class FilmSelectorView(
                     (abs(dx) > touchSlop || abs(dy) > touchSlop)
                 ) dragging = true
                 if (dragging) {
-                    val maxScroll = max(0f, visibleFilms.size * geometry.rowHeight - geometry.list.height())
+                    val maxScroll = max(0f, visibleFilms.size * rowHeight - geometry.list.height())
                     scrollOffset = flingScroller.drag(event, scrollOffset, maxScroll)
                     postInvalidateOnAnimation()
                 }
@@ -306,7 +379,7 @@ internal class FilmSelectorView(
                     handleTap()
                     flingScroller.cancel()
                 } else if (!cancelled && dragging) {
-                    val maxScroll = max(0f, visibleFilms.size * geometry.rowHeight - geometry.list.height())
+                    val maxScroll = max(0f, visibleFilms.size * rowHeight - geometry.list.height())
                     if (flingScroller.finish(event, scrollOffset, maxScroll)) postInvalidateOnAnimation()
                 } else {
                     flingScroller.cancel()
@@ -321,7 +394,7 @@ internal class FilmSelectorView(
     }
 
     override fun computeScroll() {
-        val maxScroll = max(0f, visibleFilms.size * geometry.rowHeight - geometry.list.height())
+        val maxScroll = max(0f, visibleFilms.size * rowHeight - geometry.list.height())
         flingScroller.compute(maxScroll)?.let {
             scrollOffset = it
             postInvalidateOnAnimation()
@@ -329,16 +402,27 @@ internal class FilmSelectorView(
     }
 
     private fun targetForRow(x: Float, y: Float): TouchTarget {
-        val index = ((y - geometry.list.top + scrollOffset) / geometry.rowHeight).toInt()
+        val index = ((y - geometry.list.top + scrollOffset) / rowHeight).toInt()
         val profile = visibleFilms.getOrNull(index) ?: return TouchTarget.LIST
+        val row = rowBounds(index)
+        if (mode == FilmSelectorMode.LATITUDE && !row.contains(x, y)) return TouchTarget.LIST
         touchFilm = profile
-        val top = geometry.list.top + index * geometry.rowHeight - scrollOffset
-        val row = RectF(geometry.list.left, top, geometry.list.right, top + geometry.rowHeight - 5f * density)
+        val card = if (mode == FilmSelectorMode.LATITUDE) {
+            FilmLatitudeCardGeometry.calculate(row, density, scaledDensity)
+        } else {
+            null
+        }
         return when {
-            rowFavoriteRect(row).contains(x, y) -> TouchTarget.ROW_FAVORITE
-            rowResetRect(row).contains(x, y) -> TouchTarget.ROW_RESET
+            (card?.favorite ?: rowFavoriteRect(row)).contains(x, y) -> TouchTarget.ROW_FAVORITE
+            (card?.reset ?: rowResetRect(row)).contains(x, y) -> TouchTarget.ROW_RESET
             else -> TouchTarget.ROW_SELECT
         }
+    }
+
+    private fun rowBounds(index: Int): RectF {
+        val rowHeight = rowHeight
+        val top = geometry.list.top + index * rowHeight - scrollOffset
+        return RectF(geometry.list.left, top, geometry.list.right, top + rowHeight - 5f * density)
     }
 
     private fun handleTap() {
@@ -453,7 +537,13 @@ internal class FilmSelectorView(
         row.bottom,
     )
 
-    private fun drawOutlinedBox(canvas: Canvas, rect: RectF, label: String, active: Boolean) {
+    private fun drawOutlinedBox(
+        canvas: Canvas,
+        rect: RectF,
+        label: String,
+        active: Boolean,
+        activeLabelColor: Int = background,
+    ) {
         paint.style = Paint.Style.FILL
         paint.color = if (active) foreground else surface
         canvas.drawRoundRect(rect, 5f * density, 5f * density, paint)
@@ -461,7 +551,7 @@ internal class FilmSelectorView(
         paint.strokeWidth = 1f * density
         paint.color = divider
         canvas.drawRoundRect(rect, 5f * density, 5f * density, paint)
-        boldPaint.color = if (active) background else foreground
+        boldPaint.color = if (active) activeLabelColor else foreground
         boldPaint.textSize = 18f * scaledDensity
         boldPaint.textAlign = Paint.Align.CENTER
         centeredText(canvas, label, rect.centerX(), rect.centerY(), boldPaint)

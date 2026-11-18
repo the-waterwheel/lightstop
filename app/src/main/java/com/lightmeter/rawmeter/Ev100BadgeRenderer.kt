@@ -41,7 +41,7 @@ internal class Ev100BadgeRenderer(
         bold.color = if (readout.lowConfidence) muted else foreground
         bold.textSize = 7.5f * scaledDensity
         val header = readout.sourceLabel?.let { "EV100 · $it" } ?: "EV100"
-        centered(canvas, header, rect.centerX(), rect.top + rect.height() * 0.31f, bold)
+        centered(canvas, header, rect.centerX(), rect.top + rect.height() * 0.31f, bold, rect.width() - 3f * density)
         bold.color = when {
             readout.pending -> red
             readout.lowConfidence -> muted
@@ -53,7 +53,7 @@ internal class Ev100BadgeRenderer(
             readout.value != null -> "%.2f".format(java.util.Locale.US, readout.value)
             else -> "--"
         }
-        centered(canvas, text, rect.centerX(), rect.top + rect.height() * 0.70f, bold)
+        centered(canvas, text, rect.centerX(), rect.top + rect.height() * 0.70f, bold, rect.width() - 3f * density)
     }
 
     fun drawFlashIndicator(
@@ -65,7 +65,7 @@ internal class Ev100BadgeRenderer(
     ) {
         val flash = configuration ?: return
         if (evRect.isEmpty) return
-        val width = 42f * density
+        val width = evRect.width()
         val height = 22f * density
         val top = evRect.bottom + 4f * density
         val left = (evRect.centerX() - width / 2f).coerceIn(
@@ -90,10 +90,12 @@ internal class Ev100BadgeRenderer(
         } else {
             "%.1f".format(java.util.Locale.US, flash.guideNumber)
         }
-        centered(canvas, "GN$gn", rect.centerX(), rect.centerY(), bold)
+        centered(canvas, "GN$gn", rect.centerX(), rect.centerY(), bold, rect.width() - 3f * density)
     }
 
-    private fun centered(canvas: Canvas, text: String, x: Float, y: Float, textPaint: Paint) {
+    private fun centered(canvas: Canvas, text: String, x: Float, y: Float, textPaint: Paint, availableWidth: Float) {
+        val measured = textPaint.measureText(text)
+        if (measured > availableWidth) textPaint.textSize *= availableWidth.coerceAtLeast(1f) / measured
         val metrics = textPaint.fontMetrics
         canvas.drawText(text, x, y - (metrics.ascent + metrics.descent) / 2f, textPaint)
     }

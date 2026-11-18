@@ -50,7 +50,7 @@ class ClearNavigationUiTest {
         val handle=LayoutGeometry.calculate(840,1800,view.layoutDensity(LayoutProfile.METER),false).zoneEntryHandle
         tap(view,handle);val start=render(view)
         assertNull(ShadowAlertDialog.getLatestAlertDialog());assertFalse(clean.sameAs(start))
-        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(500));val held=render(view)
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(200));val held=render(view)
         assertTrue(start.sameAs(held))
         shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(200));val moving=render(view)
         assertFalse(start.sameAs(moving));assertFalse(clean.sameAs(moving))

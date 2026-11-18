@@ -51,7 +51,8 @@ internal class FlashDistanceDialView(
     private var distanceState = DistanceMeasurementState()
     private var anchor = RectF()
     private var compactCenterOffsetX = 0f
-    private var compactBounds = RectF()
+    private var compactOverride: RectF? = null
+    private var compactBounds = compactOverride ?: RectF()
     private var expandedCenterX = 0f
     private var expandedCenterY = 0f
     private var expandedRadius = 0f
@@ -66,9 +67,10 @@ internal class FlashDistanceDialView(
     private var expansionAnimator: ValueAnimator? = null
     private var settleAnimator: ValueAnimator? = null
 
-    fun setAnchor(value: RectF, compactCenterOffsetX: Float = 0f) {
+    fun setAnchor(value: RectF, compactCenterOffsetX: Float = 0f, compactOverride: RectF? = null) {
         anchor = RectF(value)
         this.compactCenterOffsetX = compactCenterOffsetX
+        this.compactOverride = compactOverride
         calculateGeometry()
         invalidate()
     }
@@ -302,7 +304,7 @@ internal class FlashDistanceDialView(
     private fun calculateGeometry() {
         if (width <= 0 || height <= 0 || anchor.isEmpty) return
         val margin = 10f * density
-        val compactSize = 34f * density
+        val compactSize = compactOverride?.width() ?: 34f * density
         val gap = 5f * density
         val labelReserve = 18f * density
         // Keep both metering accessories in the row above the meter button. Falling below used
@@ -313,7 +315,7 @@ internal class FlashDistanceDialView(
         )
         val compactLeft = (anchor.centerX() + compactCenterOffsetX - compactSize / 2f)
             .coerceIn(margin, (width - margin - compactSize).coerceAtLeast(margin))
-        compactBounds = RectF(compactLeft, compactTop, compactLeft + compactSize, compactTop + compactSize)
+        compactBounds = compactOverride ?: RectF(compactLeft, compactTop, compactLeft + compactSize, compactTop + compactSize)
         expandedRadius = min(88f * density, min(width * 0.22f, height * 0.23f)).coerceAtLeast(compactSize / 2f)
         expandedCenterX = anchor.centerX().coerceIn(
             margin + expandedRadius,

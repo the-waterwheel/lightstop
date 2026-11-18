@@ -58,20 +58,14 @@ class CameraCalibrationStore(context: Context) {
         inputLuma: Double,
     ): Double {
         val fallback = userCorrection(cameraId, source)
-        if (activeContext != null && !signatureState(cameraId, source).isApplicable) return 0.0
-        val response = ProcessedResponseCalibration.parse(
-            preferences.getString(responseKey(cameraId, source), null),
-        )
-        return response?.correctionEv(inputLuma, fallback) ?: fallback
+        return applicableResponse(cameraId, source)?.correctionEv(inputLuma, fallback) ?: fallback
     }
 
     /** Resolve preferences/signature once per frame, not once per sampled pixel. */
     @Synchronized
     internal fun responseCorrectionSnapshot(cameraId: String, source: MeteringSource): (Double) -> Double {
         val fallback = userCorrection(cameraId, source)
-        if (activeContext != null && !signatureState(cameraId, source).isApplicable) return { 0.0 }
-        val anchors = ProcessedResponseCalibration.parse(preferences.getString(responseKey(cameraId, source), null))
-            ?.anchors?.sortedBy { it.inputLuma }.orEmpty()
+        val anchors = applicableResponse(cameraId, source)?.anchors?.sortedBy { it.inputLuma }.orEmpty()
         return correction@ { luma ->
             if (anchors.isEmpty()) return@correction fallback
             if (anchors.size == 1 || !luma.isFinite() || luma <= anchors.first().inputLuma) {
@@ -90,13 +84,23 @@ class CameraCalibrationStore(context: Context) {
         }
     }
 
+    private fun applicableResponse(cameraId: String, source: MeteringSource): ProcessedResponseCalibration? {
+        if (!hasValidMeteringTimestamp(cameraId) ||
+            preferences.getInt(schemaVersionKey(cameraId), 1) < CameraCalibrationRecord.CURRENT_SCHEMA_VERSION ||
+            (activeContext != null && !signatureState(cameraId, source).isApplicable)
+        ) return null
+        return ProcessedResponseCalibration.parse(preferences.getString(responseKey(cameraId, source), null))
+    }
+
+    private fun hasValidMeteringTimestamp(cameraId: String): Boolean =
+        CalibrationEnvironmentStore.isCalibrationTimestampValid(
+            appContext,
+            preferences.getLong(updatedAtKey(cameraId), 0L),
+        )
+
     @Synchronized
     fun userCorrection(cameraId: String, source: MeteringSource = MeteringSource.RAW): Double {
-        if (!CalibrationEnvironmentStore.isCalibrationTimestampValid(
-                appContext,
-                preferences.getLong(updatedAtKey(cameraId), 0L),
-            )
-        ) return 0.0
+        if (!hasValidMeteringTimestamp(cameraId)) return 0.0
         val schemaVersion = preferences.getInt(schemaVersionKey(cameraId), 1)
         // Version-2 processed corrections were measured from Y-only averages / fixed sRGB output.
         // Applying them after RGB reconstruction and tonemap inversion would double-correct an
@@ -357,6 +361,7 @@ class CameraCalibrationStore(context: Context) {
             response = responseForSource(
                 source,
                 previous,
+                usableSample.signature,
                 usableSample.inputLuma ?: inputLuma,
                 correction,
             ),
@@ -366,12 +371,18 @@ class CameraCalibrationStore(context: Context) {
     private fun responseForSource(
         source: MeteringSource,
         previous: StreamCalibration?,
+        signature: CalibrationSignature?,
         inputLuma: Double?,
         correctionEv: Double,
     ): ProcessedResponseCalibration? {
-        if (source == MeteringSource.RAW) return previous?.response
-        val luma = inputLuma?.takeIf { it.isFinite() } ?: return previous?.response
-        val base = previous?.response ?: ProcessedResponseCalibration(emptyList())
+        if (source == MeteringSource.RAW) return null
+        val existingResponse = previous?.response?.takeIf {
+            signature != null && CalibrationSignaturePolicy.classify(
+                previous.signature, previous.signature != null, signature,
+            ).isApplicable
+        }
+        val luma = inputLuma?.takeIf { it.isFinite() } ?: return existingResponse
+        val base = existingResponse ?: ProcessedResponseCalibration(emptyList())
         return base.withAnchor(ProcessedResponseAnchor(luma, correctionEv))
     }
 

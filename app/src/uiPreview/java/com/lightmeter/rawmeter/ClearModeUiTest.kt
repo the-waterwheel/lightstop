@@ -193,26 +193,44 @@ class ClearModeUiTest {
             tap(view,view.normalHandle());save("guide")
         }
     }
-    @Test fun renderTheThreeProductionModeHandlesWithTheirGuidesVisible() {
-        val output=File(requireNotNull(System.getProperty("uiPreview.output")),"clear").apply{mkdirs()}
-        val state=MeterState(context).apply{appTheme=AppTheme.LIGHT}
-        val normal=InstrumentView(context,state);val zone=ZoneSystemView(context,state).apply{enter()}
-        val clear=fixture()
-        for((name,view) in listOf("normal" to normal,"zone" to zone,"clear" to clear)) {
-            size(view);render(view).recycle()
-            val handle=when(view) {
-                is InstrumentView->LayoutGeometry.calculate(840,1800,view.layoutDensity(LayoutProfile.METER),false).zoneEntryHandle
-                is ZoneSystemView->ZoneLayoutCalculator.calculate(840,1800,context.resources.displayMetrics.density,state).normalHandle
-                else->clear.normalHandle()
+    @Test fun allThreeModeGuidesRenderAboveTheFrontmostChild() {
+        val output = File(requireNotNull(System.getProperty("uiPreview.output")), "clear").apply { mkdirs() }
+        val state = MeterState(context).apply { appTheme = AppTheme.LIGHT }
+        val layout = MeterLayout(context, state)
+        val normal = layout.instrumentView
+        val zone = layout.zoneView
+        val clear = layout.autoView
+        size(layout)
+        zone.enter()
+        val handles = listOf(
+            LayoutGeometry.calculate(840, 1800, normal.layoutDensity(LayoutProfile.METER), false).zoneEntryHandle,
+            ZoneLayoutCalculator.calculate(840, 1800, context.resources.displayMetrics.density, state).normalHandle,
+            clear.normalHandle(),
+        )
+        val cover = View(context).apply { setBackgroundColor(Color.MAGENTA) }
+        layout.addView(cover)
+        cover.layout(0, 0, layout.width, layout.height)
+        val views = listOf(normal, zone, clear)
+        for ((index, name) in listOf("normal", "zone", "clear").withIndex()) {
+            val view = views[index]
+            views.forEach { it.visibility = if (it == view) View.VISIBLE else View.GONE }
+            cover.visibility = View.VISIBLE
+            cover.bringToFront()
+            val before = render(layout)
+            val handle = handles[index]
+            tap(view, handle)
+            val guided = render(layout)
+            assertFalse("$name guide must draw over the last child", before.sameAs(guided))
+            cover.visibility = View.GONE
+            val preview = render(layout, true)
+            File(output, "$name-mode-guide.png").outputStream().use {
+                preview.compress(Bitmap.CompressFormat.PNG, 100, it)
             }
-            val before=render(view)
-            touch(view,MotionEvent.ACTION_DOWN,handle.centerX(),handle.centerY())
-            val after=render(view,true)
-            File(output,"$name-mode-guide.png").outputStream().use{after.compress(Bitmap.CompressFormat.PNG,100,it)}
-            // Both frames use the same scene for the interaction assertion.
-            val pressed=render(view);assertFalse("$name must show a guide on press",before.sameAs(pressed))
-            touch(view,MotionEvent.ACTION_CANCEL,handle.centerX(),handle.centerY())
-            listOf(before,after,pressed).forEach(Bitmap::recycle)
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(600))
+            cover.visibility = View.VISIBLE
+            val ended = render(layout)
+            assertTrue("$name guide must clear after the pulse", before.sameAs(ended))
+            listOf(before, guided, preview, ended).forEach(Bitmap::recycle)
         }
     }
 }

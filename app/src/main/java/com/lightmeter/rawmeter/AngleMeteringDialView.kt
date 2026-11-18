@@ -53,7 +53,8 @@ internal class AngleMeteringDialView(
 
     private var anchor = RectF()
     private var compactCenterOffsetX = 0f
-    private var compactBounds = RectF()
+    private var compactOverride: RectF? = null
+    private var compactBounds = compactOverride ?: RectF()
     private var expandedCenterX = 0f
     private var expandedCenterY = 0f
     private var expandedRadius = 0f
@@ -68,9 +69,10 @@ internal class AngleMeteringDialView(
     private var expansionAnimator: ValueAnimator? = null
     private var settleAnimator: ValueAnimator? = null
 
-    fun setAnchor(value: RectF, compactCenterOffsetX: Float = 0f) {
+    fun setAnchor(value: RectF, compactCenterOffsetX: Float = 0f, compactOverride: RectF? = null) {
         anchor = RectF(value)
         this.compactCenterOffsetX = compactCenterOffsetX
+        this.compactOverride = compactOverride
         calculateGeometry()
         invalidate()
     }
@@ -342,7 +344,7 @@ internal class AngleMeteringDialView(
     private fun calculateGeometry() {
         if (width <= 0 || height <= 0 || anchor.isEmpty) return
         val margin = 2f * density
-        val compactSize = 34f * density
+        val compactSize = compactOverride?.width() ?: 34f * density
         val gap = 2f * density
         // Angle and flash distance share one row above the primary meter button. MeterLayout
         // supplies opposite horizontal offsets when both controls are visible.
@@ -352,7 +354,7 @@ internal class AngleMeteringDialView(
         )
         val compactLeft = (anchor.centerX() + compactCenterOffsetX - compactSize / 2f)
             .coerceIn(margin, (width - margin - compactSize).coerceAtLeast(margin))
-        compactBounds = RectF(
+        compactBounds = compactOverride ?: RectF(
             compactLeft,
             compactTop,
             compactLeft + compactSize,

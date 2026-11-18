@@ -27,6 +27,7 @@ import android.util.Size
 import android.view.Surface
 import android.view.TextureView
 import java.io.File
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.abs
@@ -69,6 +70,10 @@ class CameraController(
             override fun onCameraOpened(generation: Int) {
                 if (!started || generation != cameraGeneration) return
                 cameraFailureStage = CameraFailureStage.CONFIGURING
+            }
+
+            override fun onCameraOpenTimedOut(generation: Int, error: TimeoutException) {
+                handlePreparationFailure(error, generation)
             }
 
             override fun onSessionConfigured(
@@ -218,7 +223,7 @@ class CameraController(
 
             override fun onCompatibleMeteringReading(reading: MeterReading) {
                 meteringOperationActive = false
-                callback.onMeterReading(freezeCalibrationSample(reading))
+                callback.onMeterReading(reading)
             }
 
             override fun onCompatibleMeteringError(message: String) {
@@ -255,10 +260,11 @@ class CameraController(
             }
 
             override fun onRawMeteringReading(reading: MeterReading) {
-                if (zoneRaw.onReading(reading)) return
-                resumePreviewAfterRawCapture()
+                val finalizedReading = freezeCalibrationSample(reading)
+                if (zoneRaw.onReading(finalizedReading)) return
                 meteringOperationActive = false
-                mainHandler.post { callback.onMeterReading(freezeCalibrationSample(reading)) }
+                resumePreviewAfterRawCapture()
+                mainHandler.post { callback.onMeterReading(finalizedReading) }
             }
 
             override fun onRawZoneBatchReading(results: List<ZoneMeteringResult>) {
@@ -278,12 +284,13 @@ class CameraController(
                         ZoneRawFailure(message, meteringMode, target, meteringRoiFraction),
                     )
                 ) return
-                resumePreviewAfterRawCapture()
-                if (isConfirmedRawWorkflow()) {
+                if (calibrationStorageCameraId != null || isConfirmedRawWorkflow()) {
                     meteringOperationActive = false
+                    resumePreviewAfterRawCapture()
                     postMeterError(message)
                     return
                 }
+                resumePreviewAfterRawCapture()
                 val canUsePreview = textureView?.isAvailable == true &&
                     cameraDevice != null && captureSession != null
                 if (canUsePreview) {
@@ -470,11 +477,19 @@ class CameraController(
                 measureCompatiblePreview(failure.meteringMode, failure.target, failure.meteringRoiFraction)
             }
             override fun postMeterError(message: String) = this@CameraController.postMeterError(message)
-            override fun recoverSafePreview() = scheduleRecovery(
-                CameraSessionProfile.PREVIEW_ONLY,
-                localized("正在恢复安全预览", "Restoring safe preview"),
-                delayMs = 0L,
-            )
+            override fun recoverSafePreview() {
+                if (calibrationStorageCameraId != null) {
+                    // The next source or finishCalibrationSession owns the reopen.
+                    calibrationSessionProfile = desiredResidentSessionProfile()
+                    closeCamera(preserveExposurePreview = true)
+                    return
+                }
+                scheduleRecovery(
+                    CameraSessionProfile.PREVIEW_ONLY,
+                    localized("正在恢复安全预览", "Restoring safe preview"),
+                    delayMs = 0L,
+                )
+            }
         },
         listener = object : CameraZoneRawListener {
             override fun onRestoreStateChanged(restoring: Boolean) = callback.onMeteringRestoreStateChanged(restoring)
@@ -605,7 +620,7 @@ class CameraController(
         started = { started },
         cameraGeneration = { cameraGeneration },
         sessionTransitionActive = {
-            zoneRaw.isActive || pendingResidentSessionProfile != null
+            zoneRaw.isActive || pendingResidentSessionProfile != null || calibrationStorageCameraId != null
         },
         retryAtStandardFrameRate = {
             if ((previewFpsRange?.upper ?: 0) > PreviewFrameRateMode.LOW.requestedCeiling &&
@@ -1045,10 +1060,11 @@ class CameraController(
     }
 
     /** Starts a fresh Camera2 AF sampling run for the flash Auto distance control. */
-    fun requestAutomaticDistance() {
+    fun requestAutomaticDistance(whenPreviewIdle: Boolean = false) {
         cameraHandler?.post {
-            if (!started) return@post
-            distanceCapture.beginAutomaticSampling()
+            if (!started || whenPreviewIdle && (meteringOperationActive || filmPreview.isEnabled ||
+                    activeSessionProfile?.usesPreview != true || combinationWorkflowProbe.isActive)) return@post
+            distanceCapture.beginAutomaticSampling(observePreview = whenPreviewIdle)
         }
     }
 
@@ -1284,6 +1300,8 @@ class CameraController(
         target: ZoneMeteringTarget? = null,
         meteringAngleDegrees: Int = AngleMeteringMath.DEFAULT_DEGREES,
         requestedSource: MeteringSource? = null,
+        isCalibration: Boolean = false,
+        forceDistanceSample: Boolean = false,
     ): Boolean {
         if (filmPreview.isEnabled || filmPreview.isReleasingRenderer ||
             meteringOperationActive || combinationWorkflowProbe.isActive ||
@@ -1330,6 +1348,7 @@ class CameraController(
             meteringRoiFraction = meteringRoiFraction,
             displayedPreviewReference = displayedPreviewReference,
             viewport = viewport,
+            isCalibration = isCalibration,
         )
         val handler = cameraHandler ?: run {
             meteringOperationActive = false
@@ -1344,7 +1363,7 @@ class CameraController(
             }
             // Each metering pass gets a new AF distance acquisition. It is intentionally
             // independent of flash Auto so future distance consumers share the same result.
-            distanceCapture.beginAutomaticSampling()
+            distanceCapture.beginAutomaticSampling(force = forceDistanceSample)
             startMeteringPlan(plan)
         }
         return true
@@ -1358,6 +1377,7 @@ class CameraController(
         meteringMode: MeteringMode,
         requests: List<ZoneMeteringRequest>,
         meteringAngleDegrees: Int = AngleMeteringMath.DEFAULT_DEGREES,
+        forceDistanceSample: Boolean = false,
     ): Boolean {
         if (requests.isEmpty() || meteringOperationActive || combinationWorkflowProbe.isActive ||
             manualRawCaptureBlocked()
@@ -1433,7 +1453,7 @@ class CameraController(
                 )
                 return@post
             }
-            distanceCapture.beginAutomaticSampling()
+            distanceCapture.beginAutomaticSampling(force = forceDistanceSample)
             startMeteringPlan(plan)
         }
         return true
@@ -1460,22 +1480,43 @@ class CameraController(
                     "storage=$calibrationStorageCameraId",
             )
         }
-        val calibrationProfile = requestedSource?.let(CalibrationSessionProfilePolicy::profileFor)
-        if (calibrationProfile != null && (sessionProfile != calibrationProfile ||
-                cameraDevice == null || captureSession == null)
+        val workflowMeteringProfile = activeCombinationPlan?.let { workflow ->
+            if (trackingFramesEnabled) workflow.zoneMeteringProfile else workflow.normalMeteringProfile
+        }
+        val isRawCalibration = plan.isCalibration && requestedSource == MeteringSource.RAW
+        val residentPreviewReady = activeSessionProfile?.usesPreview == true && captureSession != null
+        val canIsolateRaw = residentPreviewReady && rawHardwareAvailable && !manualSafePreviewActive
+        val retryingIsolatedRaw = plan.rawCalibrationFallbackProfile != null &&
+            plan.rawCalibrationFallbackProfile == activeSessionProfile
+        if (retryingIsolatedRaw && !canIsolateRaw) {
+            finishMeasurementStartFailure(plan, localized("RAW 流尚未就绪", "The RAW stream is not ready"))
+            return
+        }
+        val useIsolatedCalibrationRaw = isRawCalibration && canIsolateRaw &&
+            (workflowMeteringProfile == CameraSessionProfile.RAW_ISOLATED || retryingIsolatedRaw)
+        val calibrationProfile = when {
+            useIsolatedCalibrationRaw -> null
+            isRawCalibration && residentPreviewReady && rawReader != null -> activeSessionProfile
+            else -> requestedSource?.let(CalibrationSessionProfilePolicy::profileFor)
+        }
+        if (calibrationProfile != null && CalibrationSessionProfilePolicy.requiresFreshSession(
+                profile = calibrationProfile,
+                activeProfile = activeSessionProfile,
+                sessionReady = cameraDevice != null && captureSession != null,
+                yuvAvailable = compatibleMeter.yuvAvailable,
+            )
         ) {
-            switchCalibrationSession(calibrationProfile, plan)
+            val fallback = if (isRawCalibration && canIsolateRaw) {
+                CalibrationSessionProfilePolicy.rawFallbackPreview(calibrationProfile, activeSessionProfile)
+            } else null
+            switchCalibrationSession(calibrationProfile, plan.copy(rawCalibrationFallbackProfile = fallback))
             return
         }
         meteringOperationActive = true
-        prepareMeteringPreviewBaseline {
-            if (plan.zoneBatchTargets.isNotEmpty()) {
+        prepareMeteringPreviewBaseline(requireFreshBaseline = plan.isCalibration) {
+            if (plan.zoneBatchTargets.isNotEmpty() || useIsolatedCalibrationRaw) {
                 zoneRaw.begin(plan)
                 return@prepareMeteringPreviewBaseline
-            }
-            val workflowMeteringProfile = activeCombinationPlan?.let { workflow ->
-                if (trackingFramesEnabled) workflow.zoneMeteringProfile
-                else workflow.normalMeteringProfile
             }
             val useTransientRaw = plan.requestedSource == null &&
                 workflowMeteringProfile == CameraSessionProfile.RAW_ISOLATED &&
@@ -1511,6 +1552,7 @@ class CameraController(
         calibrationSessionProfile = profile
         Log.i(TAG, "Switching to isolated calibration session profile=$profile source=${plan.requestedSource}")
         closeCamera(preserveExposurePreview = true)
+        meteringOperationActive = true
         openCamera(texture)
     }
 
@@ -1725,6 +1767,7 @@ class CameraController(
             calibrationStorageCameraId = null
             if (calibrationSessionProfile == null) {
                 if (storageCameraId != null) {
+                    previewHealth.refreshMonitoring()
                     Log.i(TAG, "Calibration run released storage=$storageCameraId without session restore")
                 }
                 return@post
@@ -2277,7 +2320,13 @@ class CameraController(
         val accepted = compatibleMeter.measure(
             meteringMode = meteringMode,
             target = target,
-            context = compatibleMeteringContext().let { if (viewport == null) it else it.copy(evaluativeViewport = viewport) },
+            context = compatibleMeteringContext().let { context ->
+                context.copy(
+                    evaluativeViewport = viewport ?: context.evaluativeViewport,
+                    finalizeReading = ::freezeCalibrationSample,
+                    allowSessionDowngrade = calibrationStorageCameraId == null,
+                )
+            },
             forceProcessedPreview = useProcessedPreview,
             meteringRoiFraction = meteringRoiFraction,
         )
@@ -2291,7 +2340,7 @@ class CameraController(
 
     /** A single Clear preview reading uses the existing stream and matching exposure metadata.
      * It deliberately avoids a RAW session switch and the ordinary neutral-AE capture baseline. */
-    internal fun measureLiveGlobalPreview(): Boolean {
+    internal fun measureLiveGlobalPreview(forceDistanceSample: Boolean = false): Boolean {
         if (!started || stopInProgress || meteringOperationActive || filmPreview.isEnabled ||
             combinationWorkflowProbe.isActive) return false
         val handler=cameraHandler ?: return false
@@ -2300,7 +2349,10 @@ class CameraController(
             if (!started || cameraDevice==null || captureSession==null || activeSessionProfile?.usesPreview!=true) {
                 meteringOperationActive=false
                 postMeterError(localized("相机预览尚未就绪", "Camera preview is not ready"))
-            } else measureCompatiblePreview(MeteringMode.AVERAGE,null,viewport=meteringViewport())
+            } else {
+                if (forceDistanceSample) distanceCapture.beginAutomaticSampling(force = true)
+                measureCompatiblePreview(MeteringMode.AVERAGE, null, viewport = meteringViewport())
+            }
         }
         return true
     }
@@ -2397,7 +2449,10 @@ class CameraController(
 
     override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
         cameraHandler?.post {
-            closeCamera()
+            if (!abortCalibrationStageIfActive()) {
+                notifyInterruptedOperations()
+                closeCamera()
+            }
             filmPreview.releaseRenderer()
         }
         return true
@@ -2417,9 +2472,17 @@ class CameraController(
     @SuppressLint("MissingPermission")
     private fun openCamera(surfaceTexture: SurfaceTexture?) {
         if (!started || opening || cameraDevice != null || surfaceTexture == null ||
-            filmPreview.isReleasingRenderer) return
-        val cameraInputTexture = filmPreview.inputFor(surfaceTexture) ?: return
+            filmPreview.isReleasingRenderer
+        ) {
+            if (pendingCalibrationMeteringPlan != null && !opening) abortCalibrationStageIfActive()
+            return
+        }
+        val cameraInputTexture = filmPreview.inputFor(surfaceTexture) ?: run {
+            if (pendingCalibrationMeteringPlan != null) abortCalibrationStageIfActive()
+            return
+        }
         if (context.checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            if (pendingCalibrationMeteringPlan != null && abortCalibrationStageIfActive()) return
             postInfo(
                 cameraInfo.copy(
                     status = localized("等待相机权限", "Waiting for camera permission"),
@@ -2437,6 +2500,7 @@ class CameraController(
                 meteringPipelineMode = meteringPipelineMode,
             )
             if (configuration == null) {
+                if (pendingCalibrationMeteringPlan != null && abortCalibrationStageIfActive()) return
                 combinationWorkflowProbe.cancel(IllegalStateException("No configuration for manual probe"))
                 postInfo(
                     CameraUiInfo(
@@ -2747,7 +2811,7 @@ class CameraController(
                 "负片预览无法启动，请重启预览或切换摄像头", "Negative preview could not start. Retry or select another camera"))
             return
         }
-        if (abortIsolatedCalibrationSessionIfActive()) return
+        if (retryIsolatedRawCalibration() || abortCalibrationStageIfActive()) return
         if (isConfirmedRawWorkflow()) {
             scheduleRecovery(
                 sessionProfile ?: activeCombinationPlan?.normalResidentProfile
@@ -2803,7 +2867,7 @@ class CameraController(
             finishCameraFailure(statusFormatter.failure(failure))
             return
         }
-        if (abortIsolatedCalibrationSessionIfActive()) return
+        if (abortCalibrationStageIfActive()) return
         val decision = recoveryState.decideFailure(
             failure = failure,
             stage = stage,
@@ -2882,12 +2946,24 @@ class CameraController(
         return true
     }
 
-    /** A failed calibration-only session advances the UI to the next source instead of recovery. */
-    private fun abortIsolatedCalibrationSessionIfActive(): Boolean {
-        if (calibrationSessionProfile == null && pendingCalibrationMeteringPlan == null) return false
+    /** A rejected preview + RAW session can still meter through the isolated RAW path. */
+    private fun retryIsolatedRawCalibration(): Boolean {
+        val plan = pendingCalibrationMeteringPlan ?: return false
+        val preview = CalibrationSessionProfilePolicy.rawFallbackPreview(
+            calibrationSessionProfile, plan.rawCalibrationFallbackProfile,
+        ) ?: return false
+        if (!started || textureView?.isAvailable != true) return false
+        switchCalibrationSession(preview, plan)
+        return true
+    }
+
+    /** Fail the current source and leave the run's storage identity and restore obligation intact. */
+    private fun abortCalibrationStageIfActive(): Boolean {
+        if (calibrationStorageCameraId == null || !meteringOperationActive) return false
         pendingCalibrationMeteringPlan = null
-        calibrationSessionProfile = null
-        closeCamera()
+        // The first stage can reuse the resident profile. It also needs a restore if we close it.
+        calibrationSessionProfile = calibrationSessionProfile ?: activeSessionProfile
+        closeCamera(preserveExposurePreview = true)
         postMeterError(
             localized(
                 "当前校准流无法安全启动，已跳过该来源",
@@ -3096,8 +3172,8 @@ class CameraController(
     private fun resumePendingCalibrationMetering(generation: Int) {
         val plan = pendingCalibrationMeteringPlan ?: return
         if (generation != cameraGeneration || !started) return
-        val expectedProfile = plan.requestedSource?.let(CalibrationSessionProfilePolicy::profileFor)
-        if (expectedProfile == null || sessionProfile != expectedProfile) return
+        val expectedProfile = calibrationSessionProfile ?: return
+        if (activeSessionProfile != expectedProfile) return
         pendingCalibrationMeteringPlan = null
         Log.i(
             TAG,
@@ -3114,13 +3190,25 @@ class CameraController(
     }
 
     /** Restores neutral AE and waits for synchronized result frames before sampling the scene. */
-    private fun prepareMeteringPreviewBaseline(continuation: () -> Unit) {
-        if (!exposurePreviewState.neutralizeForMetering()) {
+    private fun prepareMeteringPreviewBaseline(
+        requireFreshBaseline: Boolean,
+        continuation: () -> Unit,
+    ) {
+        if (!exposurePreviewState.neutralizeForMetering() && !requireFreshBaseline) {
             continuation()
             return
         }
         mainHandler.post { callback.onMeteringBaselineRestoring() }
-        previewBaseline.start(cameraGeneration, continuation)
+        val onUnavailable = if (requireFreshBaseline) {
+            {
+                meteringOperationActive = false
+                postMeterError(localized(
+                    "自动曝光未稳定，已跳过当前校准流",
+                    "Auto exposure did not stabilize. The current calibration stream was skipped",
+                ))
+            }
+        } else null
+        previewBaseline.start(cameraGeneration, onUnavailable, continuation)
         updatePreviewRepeatingRequest()
     }
 
@@ -3135,6 +3223,7 @@ class CameraController(
 
     private fun handlePreviewRequestFailure(generation: Int) {
         if (generation != cameraGeneration) return
+        if (retryIsolatedRawCalibration() || abortCalibrationStageIfActive()) return
         if (pendingManualAcceptance != null || manualProbeId != null) {
             val error = IllegalStateException("Preview failed during manual verification")
             failManualAcceptance(error)
@@ -3282,6 +3371,8 @@ class CameraController(
             request: CaptureRequest,
             result: TotalCaptureResult,
         ) {
+            val tag = request.tag as? PreviewRequestTag
+            if (session !== captureSession || tag != null && tag.cameraGeneration != cameraGeneration) return
             updateActivePhysicalCamera(result)
             val resolution = metadataResolver.resolve(
                 total = result,
@@ -3303,7 +3394,7 @@ class CameraController(
             val timestamp = resolution.pairedTimestampNs
                 ?: effectiveResult.get(CaptureResult.SENSOR_TIMESTAMP)
             if (timestamp != null) previewResultStore.put(timestamp, effectiveResult)
-            if (session === captureSession && (request.tag as? PreviewRequestTag)?.cameraGeneration == cameraGeneration) {
+            if (tag != null) {
                 filmPreview.observeResult(request, effectiveResult, timestamp)
             }
             runtimeMetadata.observeActualPreviewFps(timestamp, cameraInfo)
@@ -3315,14 +3406,13 @@ class CameraController(
                 outputAspectOverride = previewOutputAspectOverride,
             )?.let(::postRuntimeInfo)
             updateDynamicLensInfo(effectiveResult)
-            if (session === captureSession && (request.tag as? PreviewRequestTag)?.cameraGeneration == cameraGeneration) {
+            if (tag != null) {
                 exposurePreviewState.onPreviewFrame(effectiveResult, SystemClock.elapsedRealtimeNanos(),
                     advance = !meteringOperationActive && !previewBaseline.isActive && !exposurePreviewCalibration.isActive && !filmPreview.isEnabled,
-                    matchesCurrentRequest = (request.tag as? PreviewRequestTag)?.requestSequence == previewRequests.requestSequence)
+                    matchesCurrentRequest = tag.requestSequence == previewRequests.requestSequence)
                 applyRequestedExposurePreview()
             }
             distanceCapture.onCaptureResult(effectiveResult, timestamp)
-            previewBaseline.onCaptureResult(request, effectiveResult)
             exposurePreviewCalibration.onCaptureResult(request, effectiveResult,
                 timestamp ?: result.get(CaptureResult.SENSOR_TIMESTAMP))
             observePreviewLighting(effectiveResult, timestamp)
@@ -3332,8 +3422,9 @@ class CameraController(
                 effectiveResult,
                 result.get(CaptureResult.SENSOR_TIMESTAMP),
             )
-            if (session === captureSession && (request.tag as? PreviewRequestTag)?.cameraGeneration == cameraGeneration)
+            if (tag != null)
                 continuousMeter.onResult(effectiveResult, result.get(CaptureResult.SENSOR_TIMESTAMP))
+            previewBaseline.onCaptureResult(request, effectiveResult)
         }
     }
 

@@ -89,7 +89,7 @@ internal class RawRecordCaptureCoordinator(
             outputFile.parentFile?.mkdirs()
             beforeCapture()
             scheduleTimeout(capture)
-            context.session.capture(request(), captureCallback, context.handler)
+            context.session.capture(request(), captureCallback(capture), context.handler)
             true
         } catch (error: Exception) {
             finish(Result.failure(error))
@@ -121,13 +121,13 @@ internal class RawRecordCaptureCoordinator(
         return capture.callback
     }
 
-    private val captureCallback = object : CameraCaptureSession.CaptureCallback() {
+    private fun captureCallback(capture: ActiveCapture) = object : CameraCaptureSession.CaptureCallback() {
         override fun onCaptureCompleted(
             session: CameraCaptureSession,
             request: CaptureRequest,
             result: TotalCaptureResult,
         ) {
-            val capture = active ?: return
+            if (active !== capture || session !== capture.context.session) return
             val resolution = metadataResolver.resolve(
                 total = result,
                 routeKind = capture.context.routeKind,
@@ -162,6 +162,7 @@ internal class RawRecordCaptureCoordinator(
             request: CaptureRequest,
             failure: CaptureFailure,
         ) {
+            if (active !== capture || session !== capture.context.session) return
             finish(
                 Result.failure(
                     IllegalStateException(localized("RAW 记录失败", "RAW recording failed")),

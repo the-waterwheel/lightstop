@@ -44,6 +44,23 @@ class MainActivity : Activity(), CameraControllerCallback {
     private lateinit var cameraController: CameraController
     private lateinit var calibrationEnvironmentStore: CalibrationEnvironmentStore
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val meterDistanceSampler = object : Runnable {
+        override fun run() {
+            if (!activityResumed || !state.showDistanceOnMeter) return
+            if (meterLayout.canSampleMeterDistance()) {
+                meterLayout.refreshMeterDistance()
+                if (!meterLayout.isDepthOfFieldAutomaticDistanceEnabled()) {
+                    cameraController.requestAutomaticDistance(whenPreviewIdle = true)
+                }
+            }
+            mainHandler.postDelayed(this, 500L)
+        }
+    }
+
+    private fun updateMeterDistanceSampling() {
+        mainHandler.removeCallbacks(meterDistanceSampler)
+        if (activityResumed && state.showDistanceOnMeter) mainHandler.post(meterDistanceSampler)
+    }
     private val filmNegativeCameraSession = FilmNegativeCameraSession()
     private var rawDialogVisible = false
     private var compatibilityModeDialogVisible = false
@@ -230,7 +247,8 @@ class MainActivity : Activity(), CameraControllerCallback {
                 if (!session.beginManual(useRaw)) return
                 updateAutoMetering()
                 val accepted = if(useRaw) cameraController.measure(state.frameFormat,state.frameLandscape,state.previewZoom,
-                    MeteringMode.AVERAGE, requestedSource = MeteringSource.RAW) else cameraController.measureLiveGlobalPreview()
+                    MeteringMode.AVERAGE, requestedSource = MeteringSource.RAW, forceDistanceSample = state.showDistanceOnMeter)
+                else cameraController.measureLiveGlobalPreview(forceDistanceSample = state.showDistanceOnMeter)
                 if (!accepted) {
                     session.fail(localized("相机忙，请稍后重试", "Camera busy; try again"))
                     updateAutoMetering()
@@ -248,6 +266,7 @@ class MainActivity : Activity(), CameraControllerCallback {
                     state.previewZoom,
                     state.meteringMode,
                     meteringAngleDegrees = state.angleMeteringDegrees,
+                    forceDistanceSample = state.showDistanceOnMeter,
                 )
             }
 
@@ -310,7 +329,13 @@ class MainActivity : Activity(), CameraControllerCallback {
             }
 
             override fun onAutomaticDistanceStopped() {
-                cameraController.stopAutomaticDistance()
+                if (!state.showDistanceOnMeter) cameraController.stopAutomaticDistance()
+            }
+
+            override fun onMeterDistanceDisplayChanged() {
+                updateMeterDistanceSampling()
+                if (!state.showDistanceOnMeter && !meterLayout.isFlashAutomaticDistanceEnabled() &&
+                    !meterLayout.isDepthOfFieldAutomaticDistanceEnabled()) cameraController.stopAutomaticDistance()
             }
 
             override fun onSettingRejected(key: SettingKey, value: String) {
@@ -518,6 +543,7 @@ class MainActivity : Activity(), CameraControllerCallback {
                     MeteringAreaPolicy.zoneMode(state.meteringMode),
                     target,
                     meteringAngleDegrees = state.angleMeteringDegrees,
+                    forceDistanceSample = state.showDistanceOnMeter,
                 )
                 if (!accepted) {
                     zoneMeasurementPending = false
@@ -582,6 +608,7 @@ class MainActivity : Activity(), CameraControllerCallback {
                     MeteringAreaPolicy.zoneMode(state.meteringMode),
                     requests,
                     meteringAngleDegrees = state.angleMeteringDegrees,
+                    forceDistanceSample = state.showDistanceOnMeter,
                 )
                 if (!accepted) {
                     meterLayout.failZoneRemeasureBatch()
@@ -756,6 +783,7 @@ class MainActivity : Activity(), CameraControllerCallback {
     override fun onResume() {
         super.onResume()
         activityResumed = true
+        updateMeterDistanceSampling()
         (getSystemService(DISPLAY_SERVICE) as DisplayManager)
             .registerDisplayListener(displayListener, mainHandler)
         hideSystemBars()
@@ -788,6 +816,7 @@ class MainActivity : Activity(), CameraControllerCallback {
 
     override fun onPause() {
         activityResumed = false
+        updateMeterDistanceSampling()
         meterLayout.cancelClearModeTransition()
         cameraController.setContinuousMeteringEnabled(false)
         if (meterLayout.autoSession.rawPending) meterLayout.autoSession.fail(localized("测光已中止，请重试", "Measurement interrupted; retry"))
@@ -1266,6 +1295,8 @@ class MainActivity : Activity(), CameraControllerCallback {
         }
         this.state.distanceMeasurementState = state
         meterLayout.onDistanceStateChanged(state)
+        if (this.state.showDistanceOnMeter && !meterLayout.isFlashAutomaticDistanceEnabled() &&
+            !meterLayout.isDepthOfFieldAutomaticDistanceEnabled()) return
         meterLayout.refresh()
         updateExposurePreviewFromMeter()
     }
@@ -1688,6 +1719,7 @@ class MainActivity : Activity(), CameraControllerCallback {
             MeteringAreaPolicy.localMode(state.meteringMode),
             meteringAngleDegrees = state.angleMeteringDegrees,
             requestedSource = step.source,
+            isCalibration = true,
         )
         if (!accepted) {
             clearCalibrationRun()

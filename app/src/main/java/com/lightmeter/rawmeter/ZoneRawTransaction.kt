@@ -17,6 +17,8 @@ internal data class MeteringPlan(
     val displayedPreviewReference: PreviewLumaReference?,
     val zoneBatchTargets: List<ZoneRawBatchTarget> = emptyList(),
     val viewport: EvaluativeMeteringViewport? = null,
+    val isCalibration: Boolean = false,
+    val rawCalibrationFallbackProfile: CameraSessionProfile? = null,
     /** Monotonic request time used only for phase-by-phase latency diagnostics. */
     val requestedAtNs: Long = System.nanoTime(),
 )

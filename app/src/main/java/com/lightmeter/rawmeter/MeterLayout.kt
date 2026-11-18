@@ -78,6 +78,7 @@ class MeterLayout @JvmOverloads constructor(
         fun onOriginalPreviewRequested(completion: (Bitmap?) -> Unit) { completion(null) }
         fun onAutomaticDistanceRequested()
         fun onAutomaticDistanceStopped()
+        fun onMeterDistanceDisplayChanged() = Unit
         fun onSettingRejected(key: SettingKey, value: String)
         fun onCombinationSelectionModeChanged(mode: MeteringCombinationSelectionMode)
         fun onManualCombinationLooksNormal()
@@ -165,6 +166,17 @@ class MeterLayout @JvmOverloads constructor(
                 RectF(textureView.left.toFloat(), textureView.top.toFloat(), textureView.right.toFloat(), textureView.bottom.toFloat()),
                 resources.displayMetrics.density, limit, state.menuLanguage)
         }
+        drawModeGuide(canvas, instrumentView, instrumentView::drawModeGuide)
+        drawModeGuide(canvas, zoneView, zoneView::drawModeGuide)
+        drawModeGuide(canvas, autoView, autoView::drawModeGuide)
+    }
+
+    private inline fun drawModeGuide(canvas: Canvas, view: View, draw: (Canvas) -> Unit) {
+        if (view.visibility != View.VISIBLE || view.alpha <= 0f) return
+        val layer = canvas.save()
+        canvas.translate(view.x, view.y)
+        draw(canvas)
+        canvas.restoreToCount(layer)
     }
     internal fun persistClearOptions() {clearPreferences.save(autoSession)}
     var isAutoMode = false
@@ -254,6 +266,7 @@ class MeterLayout @JvmOverloads constructor(
     private var zoneTransitionFraction = 0f
     private var zoneAnimator: ValueAnimator? = null
     private var zoneTransitionPrepared = false
+    private var distanceLayoutAnimator: ValueAnimator? = null
     internal var clearTransitionFraction=0f
         private set
     private var clearAnimator:ValueAnimator?=null
@@ -815,6 +828,13 @@ class MeterLayout @JvmOverloads constructor(
             }
         }
         depthOfFieldView.listener = object : DepthOfFieldView.Listener {
+            override fun onMeterDistanceDisplayChanged(previouslyEnabled: Boolean) {
+                val start = state.distanceDisplayProgressOverride ?: if (previouslyEnabled) 1f else 0f
+                state.distanceDisplayProgressOverride = start
+                animateDistanceLayout()
+                listener?.onMeterDistanceDisplayChanged()
+            }
+
             override fun onBackToToolsRequested() {
                 activeToolId = null
                 depthOfFieldView.visibility = View.GONE
@@ -831,7 +851,7 @@ class MeterLayout @JvmOverloads constructor(
             }
 
             override fun onAutomaticDistanceStopped() {
-                if (state.appliedFlashConfiguration?.isAutoDistance != true) {
+                if (!state.showDistanceOnMeter && state.appliedFlashConfiguration?.isAutoDistance != true) {
                     listener?.onAutomaticDistanceStopped()
                 }
             }
@@ -1176,6 +1196,8 @@ class MeterLayout @JvmOverloads constructor(
             height,
             resources.displayMetrics.density,
             state.isLeftHanded,
+            state.distanceDisplayProgress,
+            state.distanceBesideTools,
         )
         val cameraFrame = if (isCombinationSelectionOpen || isFilmNegativeOpen) {
             RectF(0f, 0f, width.toFloat(), height.toFloat())
@@ -1238,6 +1260,8 @@ class MeterLayout @JvmOverloads constructor(
             height,
             resources.displayMetrics.density,
             state.isLeftHanded,
+            state.distanceDisplayProgress,
+            state.distanceBesideTools,
         )
         val cameraFrame = if (isCombinationSelectionOpen || isFilmNegativeOpen) {
             RectF(0f, 0f, width.toFloat(), height.toFloat())
@@ -1461,6 +1485,7 @@ class MeterLayout @JvmOverloads constructor(
         zoneView.setModeTransitionEnabled(false)
         angleMeteringDialView.collapse()
         isToolsOpen = true
+        placeDistanceBesideTools(true)
         updateAngleMeteringControl()
         Log.i("lightstop", "Tools panel opened")
         when (activeToolId) {
@@ -1604,10 +1629,75 @@ class MeterLayout @JvmOverloads constructor(
                     instrumentView.setParameterDialInteractionEnabled(true)
                     zoneView.setModeTransitionEnabled(true)
                     updateAngleMeteringControl()
+                    placeDistanceBesideTools(false)
                 }
             }
             .start()
         return true
+    }
+
+    internal fun canSampleMeterDistance(): Boolean = state.showDistanceOnMeter &&
+        (!isToolsOpen || activeToolId == null || activeToolId == ToolId.DEPTH_OF_FIELD) &&
+        !isSettingsOpen && !isInformationOpen && !isCalibrationOpen &&
+        !isExposurePreviewCalibrationOpen && !isVignettingCalibrationOpen &&
+        !isCameraManagementOpen && !isCombinationSelectionOpen && !isFilmSelectorOpen &&
+        !isParameterEditorOpen && !isParameterHistoryOpen &&
+        !clearTransitionPrepared && (zoneTransitionFraction <= 0f || zoneTransitionFraction >= 1f)
+
+    internal fun refreshMeterDistance() {
+        when {
+            isAutoMode -> autoView.invalidate()
+            isZoneMode -> zoneView.invalidate()
+            else -> instrumentView.invalidate()
+        }
+    }
+
+    private fun animateDistanceLayout() {
+        val start = state.distanceDisplayProgressOverride ?: return
+        val end = if (state.showDistanceOnMeter) 1f else 0f
+        cancelDistanceLayoutAnimation()
+        if (start == end || !ValueAnimator.areAnimatorsEnabled()) {
+            state.distanceDisplayProgressOverride = null
+            updateDistanceLayout()
+            return
+        }
+        distanceLayoutAnimator = ValueAnimator.ofFloat(start, end).apply {
+            duration = 280L
+            interpolator = DecelerateInterpolator()
+            addUpdateListener {
+                state.distanceDisplayProgressOverride = it.animatedValue as Float
+                updateDistanceLayout()
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    if (distanceLayoutAnimator !== animation) return
+                    distanceLayoutAnimator = null
+                    state.distanceDisplayProgressOverride = null
+                    updateDistanceLayout()
+                }
+            })
+        }
+        distanceLayoutAnimator?.start()
+    }
+
+    private fun cancelDistanceLayoutAnimation() {
+        val animator = distanceLayoutAnimator
+        distanceLayoutAnimator = null
+        animator?.cancel()
+    }
+
+    private fun updateDistanceLayout() {
+        if (clearTransitionPrepared) applyClearTransition(clearTransitionFraction)
+        autoView.invalidate()
+        instrumentView.invalidate()
+        zoneView.refreshGeometry()
+        requestLayout()
+    }
+
+    private fun placeDistanceBesideTools(beside: Boolean) {
+        if (state.distanceBesideTools == beside) return
+        state.distanceBesideTools = beside
+        if (width > height && state.distanceDisplayProgress > 0f) updateDistanceLayout()
     }
 
     fun isDepthOfFieldAutomaticDistanceEnabled(): Boolean =
@@ -1620,7 +1710,7 @@ class MeterLayout @JvmOverloads constructor(
         val density = resources.displayMetrics.density
         val landscape = width > height
         val previewPanel = if (isZoneMode || zoneTransitionFraction > 0f) {
-            ZoneLayoutCalculator.calculate(width, height, density, state).previewPanel
+            ZoneLayoutCalculator.calculate(width, height, density, state, distanceProgress = 0f).previewPanel
         } else {
             LayoutGeometry.calculate(
                 width,
@@ -1684,6 +1774,7 @@ class MeterLayout @JvmOverloads constructor(
             instrumentView.setModeTransitionEnabled(true)
             instrumentView.setParameterDialInteractionEnabled(true)
             zoneView.setModeTransitionEnabled(true)
+            placeDistanceBesideTools(false)
         }
         resumeZoneTracking()
         listener?.onZoneTrackingActiveChanged(isZoneMode)
@@ -1806,10 +1897,10 @@ class MeterLayout @JvmOverloads constructor(
         filmSelectionTarget = target
         isFilmSelectorOpen = true
         filmSelectorView.open(
-            if (target == FilmSelectionTarget.RECIPROCITY) {
-                FilmSelectorMode.RECIPROCITY
-            } else {
-                FilmSelectorMode.STANDARD
+            when (target) {
+                FilmSelectionTarget.LATITUDE -> FilmSelectorMode.LATITUDE
+                FilmSelectionTarget.RECIPROCITY -> FilmSelectorMode.RECIPROCITY
+                FilmSelectionTarget.PARAMETER_RECORD -> FilmSelectorMode.STANDARD
             },
         )
         filmSelectorView.animate().cancel()
@@ -2203,7 +2294,8 @@ class MeterLayout @JvmOverloads constructor(
         val pairOffset = 38f * resources.displayMetrics.density
         val angleOffset = if (visible && flashVisible) -pairOffset else 0f
         val flashOffset = if (visible && flashVisible) pairOffset else 0f
-        updateFlashDistanceControl(flashVisible, anchor, flashOffset)
+        val flashBounds = if (isZoneMode) zoneView.auxiliaryBadge(1) else null
+        updateFlashDistanceControl(flashVisible, anchor, flashOffset, flashBounds)
         if (!visible) {
             angleMeteringDialView.animate().cancel()
             angleControlFadeInAnimating = false
@@ -2213,7 +2305,8 @@ class MeterLayout @JvmOverloads constructor(
             bringRecordSliderToFrontIfDialsCollapsed()
             return
         }
-        angleMeteringDialView.setAnchor(anchor, angleOffset)
+        val angleBounds = if (isZoneMode) zoneView.auxiliaryBadge(0) else null
+        angleMeteringDialView.setAnchor(anchor, angleOffset, angleBounds)
         angleMeteringDialView.refreshSupport()
         if (fadeIn) {
             angleMeteringDialView.animate().cancel()
@@ -2275,6 +2368,7 @@ class MeterLayout @JvmOverloads constructor(
         visible: Boolean,
         anchor: RectF,
         compactCenterOffsetX: Float,
+        compactBounds: RectF?,
     ) {
         if (!visible) {
             flashDistanceDialView.visibility = View.GONE
@@ -2285,7 +2379,7 @@ class MeterLayout @JvmOverloads constructor(
             state.appliedFlashConfiguration,
             state.distanceMeasurementState,
         )
-        flashDistanceDialView.setAnchor(anchor, compactCenterOffsetX)
+        flashDistanceDialView.setAnchor(anchor, compactCenterOffsetX, compactBounds)
         flashDistanceDialView.visibility = View.VISIBLE
         flashDistanceDialView.bringToFront()
     }
@@ -2695,7 +2789,8 @@ class MeterLayout @JvmOverloads constructor(
 
     private fun applyClearTransition(fraction:Float) {
         clearTransitionFraction=fraction.coerceIn(0f,1f)
-        val normal=LayoutGeometry.calculate(width,height,resources.displayMetrics.density,state.isLeftHanded)
+        val normal = LayoutGeometry.calculate(width, height, resources.displayMetrics.density,
+            state.isLeftHanded, state.distanceDisplayProgress, state.distanceBesideTools)
         val frame=lerpRect(normal.cameraFrame,autoView.previewFrame(width,height),clearTransitionFraction)
         val normalDensity=AdaptiveLayout.density(width,height,resources.displayMetrics.density,LayoutProfile.METER)
         val clearDensity=min(resources.displayMetrics.density,min(width,height).coerceAtLeast(1)/380f)
@@ -3102,6 +3197,9 @@ class MeterLayout @JvmOverloads constructor(
         if (state.menuLanguage == MenuLanguage.ENGLISH) english else chinese
 
     override fun onDetachedFromWindow() {
+        cancelDistanceLayoutAnimation()
+        state.distanceDisplayProgressOverride = null
+        state.distanceBesideTools = false
         cancelClearModeTransition()
         clearAnimationTouchBlocked=false
         zoneAnimator?.cancel()

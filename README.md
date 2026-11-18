@@ -6,6 +6,12 @@ An Android light meter for manual exposure and film photography. Android 9 or ne
 
 [Download the latest release](https://github.com/the-waterwheel/lightstop/releases/latest) · [Changes](CHANGELOG.md)
 
+## 0.7.1
+
+Improved RAW/YUV/preview calibration recovery, isolated RAW retry, and continuous metering stability. Added live distance and depth-of-field readouts and film latitude cards. Automatic distance is available under Tools → Distance / DOF and depends on device support.
+
+[Release notes](docs/releases/v0.7.1.md)
+
 ## What it does
 
 - RAW-first reflected-light metering, with preview-based fallback on unsupported cameras.
@@ -29,7 +35,7 @@ Global metering now uses a small neural network to evaluate the spatial distribu
 | --- | --- | --- |
 | ![Normal mode](docs/screenshots/v0.7.0/normal-average.png) | ![Clear mode](docs/screenshots/v0.7.0/clear.png) | ![Zone mode](docs/screenshots/v0.7.0/zone.png) |
 
-Android emulator screenshots with a blank viewfinder. [All mode and tool screenshots](docs/screenshots/v0.7.0/README.md).
+Android emulator screenshots with a blank viewfinder. [Mode demos](docs/screenshots/v0.7.0/README.md).
 
 ## Build
 

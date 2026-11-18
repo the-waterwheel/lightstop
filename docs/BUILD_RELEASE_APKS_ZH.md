@@ -30,7 +30,7 @@ GitHub 直接下载使用这些 APK。AAB 用于支持 App Bundle 的商店，�
 
 当前 AGP 的 AAB 资源压缩器要求单输出，项目检测 `bundleRelease` / `bundleDebug` 等 bundle 任务并自动关闭 APK 分包。Android Studio 生成 AAB 仍得到一个商店分发包，商店再完成按设备分发。若同一命令同时含 `assembleRelease` 与 `bundleRelease`，APK 也会使用通用配置；需要各架构 APK 时单独执行 `assembleRelease`。
 
-当前待发布版本为 `0.7.0` / `13`，采用与 0.5.0 相同的 r2 OpenCV 运行库。每个架构 APK 使用相同版本号，用于 GitHub 直接分发；不套用旧式 Google Play 多 APK 的架构版本号规则。此前已发布版本保留原有附件。
+当前版本为 `0.7.0` / `13`。OpenCV 使用 r2 compact 运行库，已清理原生库诊断字符串中的本机构建路径。四种 APK 使用同一版本号，可在 GitHub 分发。
 
 0.7.0 使用已集成的 epoch 219 测光模型；正在训练的 A/B/C 模型、checkpoint、共享原图与缓存不进入 APK。请沿用 0.6.1 的发布密钥签名。Robolectric 验证需额外传入 `-PuiPreview=true` 和 `-Pandroid.useAndroidX=true`，正式 APK 构建无需这两个测试开关。
 

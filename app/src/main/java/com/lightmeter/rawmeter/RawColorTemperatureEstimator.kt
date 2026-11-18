@@ -57,7 +57,7 @@ internal class RawColorTemperatureEstimator(
         isEstimating = true
         return try {
             scheduleTimeout(capture)
-            context.session.capture(request, captureCallback, context.handler)
+            context.session.capture(request, captureCallback(capture), context.handler)
             true
         } catch (error: Exception) {
             finish(Result.failure(error))
@@ -89,13 +89,13 @@ internal class RawColorTemperatureEstimator(
         return capture.callback
     }
 
-    private val captureCallback = object : CameraCaptureSession.CaptureCallback() {
+    private fun captureCallback(capture: ActiveCapture) = object : CameraCaptureSession.CaptureCallback() {
         override fun onCaptureCompleted(
             session: CameraCaptureSession,
             request: CaptureRequest,
             result: TotalCaptureResult,
         ) {
-            val capture = active ?: return
+            if (active !== capture || session !== capture.context.session) return
             val resolution = metadataResolver.resolve(
                 total = result,
                 routeKind = capture.context.routeKind,
@@ -130,6 +130,7 @@ internal class RawColorTemperatureEstimator(
             request: CaptureRequest,
             failure: CaptureFailure,
         ) {
+            if (active !== capture || session !== capture.context.session) return
             finish(
                 Result.failure(
                     IllegalStateException(
@@ -140,6 +141,7 @@ internal class RawColorTemperatureEstimator(
         }
 
         override fun onCaptureSequenceAborted(session: CameraCaptureSession, sequenceId: Int) {
+            if (active !== capture || session !== capture.context.session) return
             finish(
                 Result.failure(
                     IllegalStateException(

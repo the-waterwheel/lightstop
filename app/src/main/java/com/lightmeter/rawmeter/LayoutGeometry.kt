@@ -20,6 +20,7 @@ data class LayoutGeometry(
     val isoModeButton: RectF,
     val ev100Badge: RectF,
     val meterButton: RectF,
+    val distanceRow: RectF = RectF(),
 ) {
     companion object {
         fun calculate(
@@ -27,6 +28,8 @@ data class LayoutGeometry(
             height: Int,
             density: Float,
             leftHanded: Boolean,
+            distanceProgress: Float = 0f,
+            distanceBesideTools: Boolean = false,
         ): LayoutGeometry {
             if (width <= 0 || height <= 0) return LayoutGeometry(false,
                 RectF(), RectF(), RectF(), RectF(), RectF(), RectF(), RectF(), RectF(),
@@ -39,20 +42,28 @@ data class LayoutGeometry(
             val isLandscape = w > h
 
             val previewPanel: RectF
+            val distanceRow = RectF()
+            val distanceOffset: Float
+            val distanceGap = 4f * density * distanceProgress
             val controlsPanel: RectF
             if (isLandscape) {
+                distanceOffset = min(METER_DISTANCE_ROW_DP * density, (h - 2 * pad) * .16f * .8f) * distanceProgress + distanceGap
+                val extra = if (distanceBesideTools) 0f else 12f * density * distanceProgress
+                val previewBottom = h - pad - if (distanceBesideTools) distanceOffset else extra / 2
                 if (leftHanded) {
-                    val divider = w * 0.40f
+                    val divider = w * 0.40f + extra
                     controlsPanel = RectF(pad, pad, divider - gap, h - pad)
-                    previewPanel = RectF(divider + gap, pad, w - pad, h - pad)
+                    previewPanel = RectF(divider + gap, pad, w - pad, previewBottom)
                 } else {
-                    val divider = w * 0.60f
-                    previewPanel = RectF(pad, pad, divider - gap, h - pad)
+                    val divider = w * 0.60f - extra
+                    previewPanel = RectF(pad, pad, divider - gap, previewBottom)
                     controlsPanel = RectF(divider + gap, pad, w - pad, h - pad)
                 }
             } else {
                 val previewBottom = h * 0.58f
-                previewPanel = RectF(pad, pad, w - pad, previewBottom)
+                val exposureRowHeight = (h - pad - previewBottom - gap) * .20f
+                distanceOffset = min(METER_DISTANCE_ROW_DP * density, exposureRowHeight * .8f) * distanceProgress + distanceGap
+                previewPanel = RectF(pad, pad, w - pad, previewBottom - distanceOffset)
                 controlsPanel = RectF(pad, previewBottom + gap, w - pad, h - pad)
             }
 
@@ -121,10 +132,11 @@ data class LayoutGeometry(
                     previewPanel.top + gap + buttonSize,
                 )
             }
+            val settingsLeft = previewPanel.left + gap + if (leftHanded) zoomWidth else 0f
             val moreButton = RectF(
-                previewPanel.left + gap,
+                settingsLeft,
                 previewPanel.bottom - gap - buttonSize,
-                previewPanel.left + gap + buttonSize,
+                settingsLeft + buttonSize,
                 previewPanel.bottom - gap,
             )
             val toolsButton = RectF(
@@ -157,143 +169,38 @@ data class LayoutGeometry(
                 )
             }
 
-            val rowHeight: Float
-            val apertureRow: RectF
-            val shutterRow: RectF
-            val dial: RectF
-            val meterButton: RectF
-            val ev100Badge: RectF
-            if (isLandscape) {
-                rowHeight = controlsPanel.height() * 0.16f
-                apertureRow = RectF(
-                    controlsPanel.left,
-                    controlsPanel.top + gap,
-                    controlsPanel.right,
-                    controlsPanel.top + gap + rowHeight,
-                )
-                shutterRow = RectF(
-                    controlsPanel.left,
-                    apertureRow.bottom + gap,
-                    controlsPanel.right,
-                    apertureRow.bottom + gap + rowHeight,
-                )
-                val lower = RectF(
-                    controlsPanel.left,
-                    shutterRow.bottom + gap,
-                    controlsPanel.right,
-                    controlsPanel.bottom,
-                )
-                val dialSize = min(lower.height(), lower.width() * 0.62f)
-                dial = if (leftHanded) {
-                    RectF(
-                        lower.right - dialSize,
-                        lower.centerY() - dialSize / 2f,
-                        lower.right,
-                        lower.centerY() + dialSize / 2f,
-                    )
+            val rowHeight = controlsPanel.height() * if (isLandscape) .16f else .20f
+            val distanceAboveControls = isLandscape && !distanceBesideTools
+            val rowsTop = controlsPanel.top + if (isLandscape) gap + (if (distanceAboveControls) distanceOffset else 0f) else 0f
+            val apertureRow = RectF(controlsPanel.left, rowsTop, controlsPanel.right, rowsTop + rowHeight)
+            val shutterTop = apertureRow.bottom + if (isLandscape) gap else gap / 2f
+            val shutterRow = RectF(controlsPanel.left, shutterTop, controlsPanel.right, shutterTop + rowHeight)
+            if (distanceProgress > 0f) {
+                if (distanceAboveControls) {
+                    distanceRow.set(apertureRow.left, rowsTop - distanceOffset, apertureRow.right, rowsTop - distanceGap)
                 } else {
-                    RectF(
-                        lower.left,
-                        lower.centerY() - dialSize / 2f,
-                        lower.left + dialSize,
-                        lower.centerY() + dialSize / 2f,
-                    )
+                    // End at the original preview boundary so a stationary tools panel cannot cover the ruler.
+                    val inset = if (isLandscape) 0f else density * distanceProgress
+                    val bottom = previewPanel.bottom + distanceOffset - inset
+                    val left = if (isLandscape) cameraFrame.left else apertureRow.left
+                    val right = if (isLandscape) cameraFrame.right else apertureRow.right
+                    distanceRow.set(left, previewPanel.bottom + distanceGap - inset, right, bottom)
                 }
-                val actionArea = if (leftHanded) {
-                    RectF(lower.left, lower.top, dial.left - gap, lower.bottom)
-                } else {
-                    RectF(dial.right + gap, lower.top, lower.right, lower.bottom)
-                }
-                val badgeGap = 5f * density
-                val meterSize = min(
-                    lower.height() * 0.56f,
-                    (actionArea.width() - badgeGap).coerceAtLeast(1f) * 0.62f,
-                )
-                val badgeHeight = min(52f * density, meterSize).coerceAtMost(
-                    (actionArea.width() - meterSize - badgeGap).coerceAtLeast(34f * density),
-                )
-                val badgeWidth = min(42f * density, badgeHeight * 0.82f)
-                val groupWidth = badgeWidth + badgeGap + meterSize
-                val groupLeft = (actionArea.centerX() - groupWidth / 2f)
-                    .coerceIn(actionArea.left, (actionArea.right - groupWidth).coerceAtLeast(actionArea.left))
-                ev100Badge = RectF(
-                    groupLeft,
-                    lower.centerY() - badgeHeight / 2f - meterButtonNudge,
-                    groupLeft + badgeWidth,
-                    lower.centerY() + badgeHeight / 2f - meterButtonNudge,
-                )
-                meterButton = RectF(
-                    ev100Badge.right + badgeGap,
-                    lower.centerY() - meterSize / 2f - meterButtonNudge,
-                    ev100Badge.right + badgeGap + meterSize,
-                    lower.centerY() + meterSize / 2f - meterButtonNudge,
-                )
-            } else {
-                rowHeight = controlsPanel.height() * 0.20f
-                apertureRow = RectF(
-                    controlsPanel.left,
-                    controlsPanel.top,
-                    controlsPanel.right,
-                    controlsPanel.top + rowHeight,
-                )
-                shutterRow = RectF(
-                    controlsPanel.left,
-                    apertureRow.bottom + gap * 0.5f,
-                    controlsPanel.right,
-                    apertureRow.bottom + gap * 0.5f + rowHeight,
-                )
-                val lower = RectF(
-                    controlsPanel.left,
-                    shutterRow.bottom + gap,
-                    controlsPanel.right,
-                    controlsPanel.bottom,
-                )
-                val dialSize = min(lower.height(), lower.width() * 0.62f)
-                dial = if (leftHanded) {
-                    RectF(
-                        lower.right - dialSize,
-                        lower.centerY() - dialSize / 2f,
-                        lower.right,
-                        lower.centerY() + dialSize / 2f,
-                    )
-                } else {
-                    RectF(
-                        lower.left,
-                        lower.centerY() - dialSize / 2f,
-                        lower.left + dialSize,
-                        lower.centerY() + dialSize / 2f,
-                    )
-                }
-                val actionArea = if (leftHanded) {
-                    RectF(lower.left, lower.top, dial.left - gap, lower.bottom)
-                } else {
-                    RectF(dial.right + gap, lower.top, lower.right, lower.bottom)
-                }
-                val badgeGap = 5f * density
-                val meterSize = min(
-                    lower.height() * 0.56f,
-                    (actionArea.width() - badgeGap).coerceAtLeast(1f) * 0.62f,
-                )
-                val badgeHeight = min(52f * density, meterSize).coerceAtMost(
-                    (actionArea.width() - meterSize - badgeGap).coerceAtLeast(34f * density),
-                )
-                val badgeWidth = min(42f * density, badgeHeight * 0.82f)
-                val groupWidth = badgeWidth + badgeGap + meterSize
-                val groupLeft = (actionArea.centerX() - groupWidth / 2f)
-                    .coerceIn(actionArea.left, (actionArea.right - groupWidth).coerceAtLeast(actionArea.left))
-                ev100Badge = RectF(
-                    groupLeft,
-                    lower.centerY() - badgeHeight / 2f,
-                    groupLeft + badgeWidth,
-                    lower.centerY() + badgeHeight / 2f,
-                )
-                meterButton = RectF(
-                    ev100Badge.right + badgeGap,
-                    lower.centerY() - meterSize / 2f,
-                    ev100Badge.right + badgeGap + meterSize,
-                    lower.centerY() + meterSize / 2f,
-                )
             }
+
+            val lower = RectF(controlsPanel.left, shutterRow.bottom + gap, controlsPanel.right, controlsPanel.bottom)
+            val dialSize = min(lower.height(), lower.width() * .58f)
+            val dialLeft = if (leftHanded) lower.right - dialSize else lower.left
+            val dial = RectF(dialLeft, lower.centerY() - dialSize / 2, dialLeft + dialSize, lower.centerY() + dialSize / 2)
+            val badgeGap = 6f * density
+            val badgeWidth = min(44f * density, lower.width() * .19f)
+            val meterSize = min(lower.height() * .56f, (lower.width() - dialSize - badgeWidth - 2 * badgeGap).coerceAtLeast(1f))
+            val centerY = lower.centerY() - if (isLandscape) meterButtonNudge else 0f
+            val badgeHeight = min(46f * density, lower.height() * .36f)
+            val badgeLeft = if (leftHanded) lower.left else lower.right - badgeWidth
+            val meterLeft = if (leftHanded) dial.left - badgeGap - meterSize else dial.right + badgeGap
+            val ev100Badge = RectF(badgeLeft, centerY - badgeHeight / 2, badgeLeft + badgeWidth, centerY + badgeHeight / 2)
+            val meterButton = RectF(meterLeft, centerY - meterSize / 2, meterLeft + meterSize, centerY + meterSize / 2)
 
             val lockWidth = 38f * density
             val exposureLockTrack = if (leftHanded) {
@@ -345,6 +252,7 @@ data class LayoutGeometry(
                 isoModeButton = isoModeButton,
                 ev100Badge = ev100Badge,
                 meterButton = meterButton,
+                distanceRow = distanceRow,
             )
         }
 

@@ -67,13 +67,18 @@ internal class CameraDistanceCaptureCoordinator(
     }
 
     /** Must run on the camera handler so the trigger and following capture plan stay ordered. */
-    fun beginAutomaticSampling() {
+    fun beginAutomaticSampling(force: Boolean = false, observePreview: Boolean = false) {
         val context = currentContext() ?: run {
             invalidate("Active physical camera is unknown")
             return
         }
         val info = cameraInfo()
-        if (activeContext == context && System.nanoTime() - lastStartNs < 1_500_000_000L) {
+        val continuousAf = observePreview && requestCharacteristics()
+            ?.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES)
+            ?.contains(CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE) == true
+        // A live readout can reuse continuous AF frames. Restarting AF every tick would
+        // discard the stable sample window and briefly disturb the exposure preview.
+        if (!force && activeContext == context && (continuousAf || System.nanoTime() - lastStartNs < 1_500_000_000L)) {
             distanceCoordinator.refresh()
             return
         }
@@ -99,7 +104,7 @@ internal class CameraDistanceCaptureCoordinator(
             handler.postDelayed(expiryCheck, 250L)
         }
         onSamplingChanged()
-        triggerAutoFocus()
+        if (force || !continuousAf) triggerAutoFocus()
     }
 
     fun stop() {

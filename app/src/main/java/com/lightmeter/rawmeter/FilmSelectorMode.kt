@@ -1,6 +1,6 @@
 package com.lightmeter.rawmeter
 
-internal enum class FilmSelectorMode { STANDARD, RECIPROCITY }
+internal enum class FilmSelectorMode { STANDARD, LATITUDE, RECIPROCITY }
 
 internal object FilmSelectorOrdering {
     fun <T> availableFirst(items: List<T>, isAvailable: (T) -> Boolean): List<T> =

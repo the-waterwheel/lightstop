@@ -34,6 +34,7 @@ class DepthOfFieldView(
         fun onCloseRequested()
         fun onAutomaticDistanceSampleRequested()
         fun onAutomaticDistanceStopped()
+        fun onMeterDistanceDisplayChanged(previouslyEnabled: Boolean) = Unit
     }
 
     var listener: Listener? = null
@@ -65,19 +66,28 @@ class DepthOfFieldView(
     private val muted: Int get() = InstrumentStyle.secondary(state.isDarkMode)
     private val secondaryStrong: Int get() = InstrumentStyle.secondary(state.isDarkMode)
     private val panel: Int get() = InstrumentStyle.panel(state.isDarkMode)
-    private val red = InstrumentStyle.red
+    private val red get() = InstrumentStyle.accent(state.isDarkMode)
 
     private val session = DepthOfFieldSession()
     private val dialogs = DepthOfFieldDialogs(
         context = context,
         state = state,
         onFrameSelected = {
+            state.depthToolFormat = it
             session.selectFrame(it)
             animateCurrentResult()
         },
         onCircleOfConfusionSelected = {
+            state.depthToolCircle = it
             session.selectCircleOfConfusion(it)
             animateCurrentResult()
+        },
+        onMeterDisplayChanged = { enabled ->
+            val previouslyEnabled = state.showDistanceOnMeter
+            state.depthToolFormat = session.selectedFormat
+            state.depthToolCircle = session.circleOfConfusionMm
+            state.showDistanceOnMeter = enabled
+            listener?.onMeterDistanceDisplayChanged(previouslyEnabled)
         },
         onFocusDistanceSelected = {
             session.selectFocusDistance(it)
@@ -116,10 +126,11 @@ class DepthOfFieldView(
     /** Starts a fresh calculator page using the controls visible on the metering screen. */
     fun openWithMeterDefaults(apertureStop: Double) {
         session.reset(
-            frameFormat = state.frameFormat,
+            frameFormat = state.depthToolFormat ?: state.frameFormat.takeUnless { it.id == "none" } ?: FrameFormat.ALL.first(),
             aperture = ExposureMath.apertureValueForCoordinate(apertureStop, state.apertureStep),
-            fullFrameEquivalentMm = state.equivalent35mm()?.toDouble() ?: 50.0,
+            fullFrameEquivalentMm = state.distanceEquivalentFocalLengthMm() ?: 50.0,
         )
+        state.depthToolCircle?.let(session::selectCircleOfConfusion)
         updateMarkers(animate = false)
     }
 
@@ -163,26 +174,26 @@ class DepthOfFieldView(
 
     private fun drawHeader(canvas: Canvas) {
         chrome.header(canvas, width.toFloat(), geometry.headerBack, geometry.headerClose,
-            localized("景深计算", "Depth of field"), density, scaledDensity, state.isDarkMode)
+            localized("测距/景深", "Distance / DOF"), density, scaledDensity, state.isDarkMode)
     }
 
     private fun drawDistanceRuler(canvas: Canvas) {
         chrome.surface(canvas, geometry.ruler, density, state.isDarkMode)
-        val lineLeft = geometry.ruler.left + 17f * density
-        val lineRight = geometry.ruler.right - 17f * density
+        val lineLeft = geometry.rulerTrack.left
+        val lineRight = geometry.rulerTrack.right
         val rulerY = geometry.ruler.top + 24f * density
         val lineWidth = lineRight - lineLeft
 
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 2f * density
-        paint.color = foreground
+        paint.color = InstrumentStyle.border(state.isDarkMode)
         canvas.drawLine(lineLeft, rulerY, lineRight, rulerY, paint)
         val nearX = lineLeft + lineWidth * displayedNearFraction.toFloat()
         val focusX = lineLeft + lineWidth * displayedFocusFraction.toFloat()
         val farX = lineLeft + lineWidth * displayedFarFraction.toFloat()
         paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 9f * density
-        paint.color = muted
+        paint.strokeWidth = 7f * density
+        paint.color = InstrumentStyle.accentSurface(state.isDarkMode)
         canvas.drawLine(nearX, rulerY, farX, rulerY, paint)
         paint.strokeWidth = 2.4f * density
         paint.color = red
@@ -194,9 +205,8 @@ class DepthOfFieldView(
         paint.color = red
         canvas.drawCircle(focusX, rulerY - 18f * density, 3.2f * density, paint)
 
-        // Keep the pictograms inside the ruler region: clear of both the header and the scale.
-        drawFlower(canvas, lineLeft, rulerY - 18f * density)
-        drawMountain(canvas, lineRight, rulerY - 15f * density)
+        drawRulerEndpoint(canvas, lineLeft - 17f * density, rulerY, near = true)
+        drawRulerEndpoint(canvas, lineRight + 17f * density, rulerY, near = false)
 
         val labelY = geometry.ruler.top + min(91f * density, geometry.ruler.height() * 0.64f)
         val labelCenters = floatArrayOf(
@@ -616,6 +626,16 @@ class DepthOfFieldView(
         canvas.drawText(value, x, y + 20f * density, boldPaint)
     }
 
+    private fun drawRulerEndpoint(canvas: Canvas, x: Float, y: Float, near: Boolean) {
+        paint.style = Paint.Style.FILL
+        paint.color = panel
+        canvas.drawCircle(x, y, 11f * density, paint)
+        canvas.save()
+        canvas.scale(.57f, .57f, x, y)
+        if (near) drawFlower(canvas, x, y - 3f * density) else drawMountain(canvas, x, y)
+        canvas.restore()
+    }
+
     private fun drawFlower(canvas: Canvas, x: Float, y: Float) {
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1.5f * density
@@ -683,8 +703,8 @@ class DepthOfFieldView(
     private fun updateContentDescription() {
         val current = session.result
         contentDescription = localized(
-            "景深计算，${session.selectedFormat.label}，光圈 ${formatAperture(session.selectedAperture)}，对焦 ${formatDistance(focusDistanceM())}，近界 ${formatDistance(current?.nearLimitM)}，远界 ${formatDistance(current?.farLimitM, current != null)}",
-            "Depth of field, ${session.selectedFormat.englishLabel}, aperture ${formatAperture(session.selectedAperture)}, focus ${formatDistance(focusDistanceM())}, near ${formatDistance(current?.nearLimitM)}, far ${formatDistance(current?.farLimitM, current != null)}",
+            "测距/景深，${session.selectedFormat.label}，光圈 ${formatAperture(session.selectedAperture)}，对焦 ${formatDistance(focusDistanceM())}，近界 ${formatDistance(current?.nearLimitM)}，远界 ${formatDistance(current?.farLimitM, current != null)}",
+            "Distance / depth of field, ${session.selectedFormat.englishLabel}, aperture ${formatAperture(session.selectedAperture)}, focus ${formatDistance(focusDistanceM())}, near ${formatDistance(current?.nearLimitM)}, far ${formatDistance(current?.farLimitM, current != null)}",
         )
     }
 

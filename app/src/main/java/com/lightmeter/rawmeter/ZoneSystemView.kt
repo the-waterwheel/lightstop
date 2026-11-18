@@ -99,6 +99,7 @@ class ZoneSystemView(
     private val chrome = ToolChromeRenderer()
     private val zoomRenderer = ZoomControlRenderer()
     private val modeArrow = ModeGuideArrow()
+    private val modeGuide = ModeGuidePulse()
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
@@ -107,6 +108,7 @@ class ZoneSystemView(
     private val boldPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         typeface = Typeface.create("sans", Typeface.BOLD)
     }
+    private val distanceRenderer = MeterDistanceRenderer(state)
     private val ev100BadgeRenderer = Ev100BadgeRenderer(
         densityProvider = { density },
         textDensityProvider = { layoutTextDensity(LayoutProfile.METER) },
@@ -155,6 +157,7 @@ class ZoneSystemView(
         markerDisplayMotions.clear()
         formatMenuOpen = false
         exitProgress = 0f
+        modeGuide.clear()
         lockAnimator?.cancel()
         lockAnimator = null
         lockSliderFraction = if (state.exposureLockMode == ExposureLockMode.APERTURE) 0f else 1f
@@ -167,6 +170,7 @@ class ZoneSystemView(
         if (!enabled) {
             if (touchTarget == TouchTarget.EXIT) touchTarget = TouchTarget.NONE
             exitProgress = 0f
+            invalidateModeGuide()
         }
         invalidate()
     }
@@ -309,11 +313,14 @@ class ZoneSystemView(
         drawSurfaceOutsidePreview(canvas, g.cameraFrame)
         drawPanels(canvas, g)
         drawCameraOverlay(canvas, g)
+        if (!g.distanceRow.isEmpty) distanceRenderer.drawRuler(canvas, g.distanceRow, density,
+            ExposureMath.apertureValueForCoordinate(currentApertureCoordinate(), state.apertureStep))
         drawExposureRows(canvas, g)
         drawZoneScale(canvas, g)
         drawMarkerRail(canvas, g)
         drawRecords(canvas, g)
         drawInformationLine(canvas)
+        if (parent !is MeterLayout) drawModeGuide(canvas)
     }
 
     private fun drawInformationLine(canvas: Canvas) {
@@ -358,7 +365,8 @@ class ZoneSystemView(
             }
             canvas.drawLine(dividerX, 0f, dividerX, height.toFloat(), paint)
         } else {
-            canvas.drawLine(0f, g.apertureRow.top - 4f * density, width.toFloat(), g.apertureRow.top - 4f * density, paint)
+            val divider = if (g.distanceRow.isEmpty) g.apertureRow.top else g.distanceRow.top
+            canvas.drawLine(0f, divider - 4f * density, width.toFloat(), divider - 4f * density, paint)
         }
     }
 
@@ -505,14 +513,29 @@ class ZoneSystemView(
         } else {
             drawCenteredText(canvas, "normal", g.normalHandle.centerX(), g.normalHandle.centerY(), boldPaint)
         }
+    }
 
-        if (exitProgress > 0f || touchTarget == TouchTarget.EXIT) {
-            if (g.landscape) {
-                val direction=ModeTransitionDirection.normalEntrySign(state.isLeftHanded)
-                modeArrow.draw(canvas,g.normalHandle.centerX()+direction*(g.normalHandle.width()/2+20f*density+exitProgress*18f*density),
-                    g.normalHandle.centerY(),density,direction*90f)
-            } else modeArrow.draw(canvas,g.normalHandle.centerX(),g.normalHandle.bottom+20f*density+exitProgress*18f*density,density,180f)
+    internal fun drawModeGuide(canvas: Canvas) {
+        val g = geometry ?: return
+        val guide = modeGuide.frame(SystemClock.uptimeMillis())
+        if (guide == null && exitProgress <= 0f && touchTarget != TouchTarget.EXIT) return
+        val offset = (20f + (guide?.travel ?: 0f) * 24f + exitProgress * 18f) * density
+        val opacity = (guide?.opacity ?: 1f) * alpha
+        val handle = g.normalHandle
+        if (g.landscape) {
+            val direction = ModeTransitionDirection.normalEntrySign(state.isLeftHanded)
+            modeArrow.draw(canvas, handle.centerX() + direction * (handle.width() / 2 + offset),
+                handle.centerY(), density, direction * 90f, opacity)
+        } else {
+            modeArrow.draw(canvas, handle.centerX(), handle.bottom + offset, density, 180f, opacity)
         }
+        if (guide != null) invalidateModeGuide()
+    }
+
+    private fun beginExitGesture() {
+        exitProgress = 0f
+        modeGuide.clear()
+        invalidateModeGuide()
     }
     private fun drawPreviewMarkers(canvas: Canvas, frame: RectF) {
         val now = SystemClock.uptimeMillis()
@@ -830,6 +853,26 @@ class ZoneSystemView(
         }
     }
 
+    internal fun auxiliaryBadge(index: Int): RectF =
+        (geometry ?: calculateGeometry(width, height)).auxiliaryBadge(index, state.isLeftHanded)
+
+    private fun drawIsoBadge(canvas: Canvas, bounds: RectF) {
+        if (bounds.isEmpty) return
+        val radius = bounds.width() / 2
+        paint.style = Paint.Style.FILL
+        paint.color = InstrumentStyle.control(state.isDarkMode)
+        canvas.drawCircle(bounds.centerX(), bounds.centerY(), radius, paint)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = density
+        paint.color = foreground
+        canvas.drawCircle(bounds.centerX(), bounds.centerY(), radius, paint)
+        boldPaint.color = foreground
+        boldPaint.textSize = radius * .44f
+        drawCenteredText(canvas, "ISO", bounds.centerX(), bounds.centerY() - radius * .32f, boldPaint)
+        boldPaint.textSize = radius * .62f
+        drawCenteredText(canvas, session.iso.toString(), bounds.centerX(), bounds.centerY() + radius * .31f, boldPaint)
+    }
+
     private fun drawRecords(canvas: Canvas, g: Geometry) {
         paint.style = Paint.Style.FILL
         paint.color = surface
@@ -849,6 +892,7 @@ class ZoneSystemView(
             Color.rgb(38, 112, 184),
         )
         drawMarkButton(canvas, g.markButton)
+        drawIsoBadge(canvas, g.auxiliaryBadge(2, state.isLeftHanded))
 
         val rowHeight = 34f * density
         val totalHeight = session.markers.size * rowHeight
@@ -1127,6 +1171,7 @@ class ZoneSystemView(
         val g = geometry ?: return false
         if (previewPinch.consume(event, g.cameraFrame, !state.measuring && !state.meteringInteractionBusy)) {
             cancelMarkButtonLongPress()
+            if (touchTarget == TouchTarget.EXIT) invalidateModeGuide()
             touchTarget = TouchTarget.NONE
             return true
         }
@@ -1167,7 +1212,7 @@ class ZoneSystemView(
                 if (overlayControl != TouchTarget.NONE) {
                     touchTarget = overlayControl
                     when (touchTarget) {
-                        TouchTarget.EXIT -> exitProgress = 0.02f
+                        TouchTarget.EXIT -> beginExitGesture()
                         TouchTarget.ZOOM -> updateZoom(event.x, event.y, g.zoomTrack)
                         else -> Unit
                     }
@@ -1217,7 +1262,7 @@ class ZoneSystemView(
                     }
                     TouchTarget.CLEAR -> clearDragDistance = 0f
                     TouchTarget.LOCK -> beginLockDrag(event.y)
-                    TouchTarget.EXIT -> exitProgress = 0.02f
+                    TouchTarget.EXIT -> beginExitGesture()
                     TouchTarget.ZOOM -> updateZoom(event.x, event.y, g.zoomTrack)
                     TouchTarget.MARK_BUTTON -> scheduleMarkButtonLongPress()
                     else -> Unit
@@ -1247,6 +1292,7 @@ class ZoneSystemView(
                             (dy / (height * 0.16f)).coerceIn(0f, 1f)
                         }
                         listener?.onExitDrag(exitProgress, false)
+                        invalidateModeGuide()
                     }
                     TouchTarget.APERTURE -> {
                         val pixelsPerStop = exposurePixelsPerStop(g.apertureRow, g.lockTrack)
@@ -1298,6 +1344,11 @@ class ZoneSystemView(
                         val commit = !cancelled && exitProgress >= 0.55f
                         listener?.onExitDrag(if (commit) 1f else 0f, true)
                         if (!commit) exitProgress = 0f
+                        if (!cancelled && abs(event.x - touchStartX) < touchSlop &&
+                            abs(event.y - touchStartY) < touchSlop) {
+                            modeGuide.show(SystemClock.uptimeMillis())
+                        }
+                        invalidateModeGuide()
                     }
                     TouchTarget.APERTURE -> {
                         session.setManualAperture(session.apertureCoordinate, snap = true)

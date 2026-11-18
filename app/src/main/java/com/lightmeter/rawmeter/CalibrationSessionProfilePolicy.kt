@@ -7,4 +7,19 @@ internal object CalibrationSessionProfilePolicy {
         MeteringSource.YUV_PREVIEW -> CameraSessionProfile.COMPATIBLE
         MeteringSource.ISP_PREVIEW -> CameraSessionProfile.PREVIEW_ONLY
     }
+
+    fun requiresFreshSession(
+        profile: CameraSessionProfile,
+        activeProfile: CameraSessionProfile?,
+        sessionReady: Boolean,
+        yuvAvailable: Boolean,
+    ): Boolean = !sessionReady || profile != activeProfile ||
+        (profile == CameraSessionProfile.COMPATIBLE && !yuvAvailable)
+
+    fun rawFallbackPreview(
+        failedProfile: CameraSessionProfile?,
+        previousPreview: CameraSessionProfile?,
+    ): CameraSessionProfile? = previousPreview?.takeIf {
+        failedProfile == CameraSessionProfile.RAW_ONLY && it.usesPreview && !it.usesRaw
+    }
 }

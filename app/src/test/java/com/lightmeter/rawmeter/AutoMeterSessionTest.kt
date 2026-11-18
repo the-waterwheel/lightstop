@@ -4,12 +4,17 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class AutoMeterSessionTest {
+    private fun timedSession(intervalMs: Long = 350L): AutoMeterSession {
+        var nowNs = 0L
+        return AutoMeterSession { nowNs += intervalMs * 1_000_000L; nowNs }
+    }
+
     private fun reading(ev: Double,source: MeteringSource = MeteringSource.YUV_PREVIEW) = MeterReading(ev,.18,0.0,1,100,10_000_000,2f,source)
     private fun neural(scene: Double, target: Double) = reading(scene).copy(evaluative =
         EvaluativeMeteringResult(scene, scene + 3, target - scene, 0.0, modelEpoch = 219))
 
     @Test fun unchangedNeuralExposureTargetSurvivesChangesInTheSampledBase() {
-        val session = AutoMeterSession()
+        val session = timedSession()
         session.accept(neural(12.0, 10.0))
         session.accept(neural(10.0, 10.0))
         val result = session.reading!!
@@ -23,14 +28,57 @@ class AutoMeterSessionTest {
     }
 
     @Test fun neuralPreferenceChangesAreFilteredEvenWhenTheBaseDoesNotMove() {
-        val session = AutoMeterSession()
+        val session = timedSession()
         session.accept(neural(10.0, 10.0))
         session.accept(neural(10.0, 14.0))
         val result = session.reading!!
-        assertEquals(11.1, result.sceneEv100 + result.evaluative!!.exposureReductionEv, 1e-9)
+        assertEquals(11.05, result.evaluative!!.recommendedEv100, 1e-9)
     }
+
+    @Test fun alternatingSmallChangesDoNotMoveTheContinuousReadingOrPreviewTarget() {
+        val session = timedSession()
+        assertTrue(session.accept(neural(12.0, 10.0)))
+
+        repeat(8) {
+            assertFalse(session.accept(neural(12.2, 10.2)))
+            assertFalse(session.accept(neural(11.8, 9.8)))
+        }
+
+        assertEquals(12.0, session.reading!!.sceneEv100, 1e-9)
+        assertEquals(10.0, session.reading!!.evaluative!!.recommendedEv100, 1e-9)
+    }
+
+    @Test fun repeatedSmallChangesStillMoveTheContinuousReadingAndPreviewTarget() {
+        val session = timedSession()
+        session.accept(neural(12.0, 10.0))
+
+        assertFalse(session.accept(neural(12.3, 10.3)))
+        assertTrue(session.accept(neural(12.3, 10.3)))
+        repeat(4) { session.accept(neural(12.3, 10.3)) }
+
+        assertEquals(12.3, session.reading!!.sceneEv100, .12)
+        assertEquals(10.3, session.reading!!.evaluative!!.recommendedEv100, .12)
+    }
+
+    @Test fun aLargeChangeFollowsElapsedTimeRatherThanTheNumberOfReadings() {
+        for (intervalMs in listOf(200L, 500L)) {
+            val session = timedSession(intervalMs)
+            session.accept(neural(10.0, 10.0))
+            repeat((1_000 / intervalMs).toInt()) { session.accept(neural(16.0, 16.0)) }
+            assertEquals(13.0, session.reading!!.sceneEv100, 1e-9)
+            assertEquals(13.0, session.reading!!.evaluative!!.recommendedEv100, 1e-9)
+        }
+    }
+
+    @Test fun aLongSamplingGapDoesNotPermitAnUnboundedExposureStep() {
+        val session = timedSession(intervalMs = 5_000L)
+        session.accept(neural(10.0, 10.0))
+        session.accept(neural(20.0, 20.0))
+        assertEquals(13.0, session.reading!!.evaluative!!.recommendedEv100, 1e-9)
+    }
+
     @Test fun liveNoiseHasADeadBandButSceneChangesStillConverge() {
-        val s=AutoMeterSession()
+        val s=timedSession()
         assertTrue(s.accept(reading(10.0)))
         repeat(20) { assertFalse(s.accept(reading(10.04))) }
         assertEquals(10.0,s.reading!!.sceneEv100,0.0)

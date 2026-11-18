@@ -58,7 +58,7 @@ internal object DepthOfFieldGeometryCalculator {
         val rulerInset = max(pad * 1.35f, w * 0.025f)
         val ruler = RectF(rulerInset, rulerTop, w - rulerInset, rulerTop + rulerHeight)
         val trackY = ruler.top + 24f * density
-        val trackInset = 17f * density
+        val trackInset = 34f * density
         val rulerTrack = RectF(
             ruler.left + trackInset,
             trackY - 20f * density,

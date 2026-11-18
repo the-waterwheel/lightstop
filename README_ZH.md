@@ -6,6 +6,12 @@
 
 [下载最新版](https://github.com/the-waterwheel/lightstop/releases/latest) · [更新记录](CHANGELOG.md)
 
+## 0.7.1
+
+改进 RAW、YUV 与预览测光校准的超时恢复、独立 RAW 重试及连续测光稳定性。新增实时距离和景深读数、胶片宽容度卡片。自动测距入口为「工具 → 测距/景深」，效果取决于设备支持。
+
+[版本说明](docs/releases/v0.7.1.md)
+
 ## 可以做什么
 
 - 优先使用 RAW 进行反射式测光，不支持的摄像头可使用预览测光。
@@ -29,7 +35,7 @@
 | --- | --- | --- |
 | ![Normal 模式](docs/screenshots/v0.7.0/normal-average.png) | ![Clear 模式](docs/screenshots/v0.7.0/clear.png) | ![Zone 模式](docs/screenshots/v0.7.0/zone.png) |
 
-以上为 Android 模拟器截图，取景区为空白。[查看各模式与工具的全部截图](docs/screenshots/v0.7.0/README.md)。
+以上为 Android 模拟器截图，取景区为空白。[查看三种模式演示](docs/screenshots/v0.7.0/README.md)。
 
 ## 构建
 
@@ -39,7 +45,7 @@
 .\gradlew.bat :app:testDebugUnitTest :app:assembleDebug
 ```
 
-正式安装包使用 **Build → Generate Signed Bundle / APK → APK → release**，升级版本沿用原有签名密钥。[0.7.0 发布说明](docs/releases/v0.7.0.md) · [OpenCV 构建](tools/opencv-slim/README.md)
+正式安装包使用 **Build → Generate Signed Bundle / APK → APK → release**，升级版本沿用原有签名密钥。[0.7.1 发布说明](docs/releases/v0.7.1.md) · [OpenCV 构建](tools/opencv-slim/README.md)
 
 APK 默认分别输出 arm64、armv7、x86_64 和通用包。[打包步骤](docs/BUILD_RELEASE_APKS_ZH.md)。传入 `-PsplitApks=false` 可只生成通用包。
 

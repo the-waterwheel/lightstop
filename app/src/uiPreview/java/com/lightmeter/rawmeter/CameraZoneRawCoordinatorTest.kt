@@ -16,6 +16,36 @@ import org.robolectric.annotation.LooperMode
 @Config(sdk = [34])
 @LooperMode(LooperMode.Mode.PAUSED)
 class CameraZoneRawCoordinatorTest {
+    @Test fun calibrationDeliversRawAfterRestoreSoTheNextSourceCanStart() {
+        val f = Fixture()
+        f.beginMetering(plan().copy(requestedSource = MeteringSource.RAW, isCalibration = true))
+        val raw = reading()
+        assertTrue(f.owner.onReading(raw))
+        drain()
+        assertTrue(f.listener.readings.isEmpty())
+        assertTrue(f.host.finishes.isEmpty())
+
+        f.owner.onResidentSessionConfigured()
+        f.owner.onResidentSessionConfigured()
+        drain()
+        assertEquals(listOf(true), f.host.finishes)
+        assertEquals(listOf("reading"), f.listener.events)
+        assertSame(raw, f.listener.readings.single())
+        assertFalse(f.owner.isActive)
+    }
+
+    @Test fun failedRawCalibrationReportsItsStageFailureAfterRestore() {
+        val f = Fixture()
+        f.beginMetering(plan().copy(requestedSource = MeteringSource.RAW, isCalibration = true))
+        f.owner.onMeteringError(ZoneRawFailure("RAW unavailable", MeteringMode.CENTER_WEIGHTED, null, null))
+        assertTrue(f.host.errors.isEmpty())
+        f.owner.onResidentSessionConfigured()
+
+        assertEquals(listOf(false), f.host.finishes)
+        assertEquals(listOf("RAW unavailable"), f.host.errors)
+        assertTrue(f.host.fallbacks.isEmpty())
+    }
+
     @Test fun readingIsDeliveredBeforeRestoreFinishesButTheOperationStaysLocked() {
         val f = Fixture()
         f.beginMetering()

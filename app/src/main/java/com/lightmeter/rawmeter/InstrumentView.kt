@@ -112,6 +112,7 @@ class InstrumentView(
     internal fun cancelModeGesture() {
         if(touchTarget==TouchTarget.ZONE_ENTRY)touchTarget=TouchTarget.NONE
         zoneTransitionFraction=0f;autoEntryDrag=false;modeGuide.clear();invalidate()
+        invalidateModeGuide()
     }
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
 
@@ -130,6 +131,8 @@ class InstrumentView(
         invalidate()
     }
 
+    private val distanceRenderer = MeterDistanceRenderer(state)
+
     private val previewPinch = ViewfinderPinch(context) { factor ->
         state.previewZoom *= factor
         listener?.onControlsChanged(false)
@@ -143,6 +146,8 @@ class InstrumentView(
             height,
             density,
             state.isLeftHanded,
+            state.distanceDisplayProgress,
+            state.distanceBesideTools,
         )
         geometry = g
         val motion=clearMotion
@@ -160,9 +165,12 @@ class InstrumentView(
         val panel=motion?.begin(canvas,width,height)?:canvas.save()
         drawParameters(canvas,g)
         canvas.restoreToCount(panel)
+        if (parent !is MeterLayout) drawModeGuide(canvas)
     }
 
     private fun drawParameters(canvas:Canvas,g:LayoutGeometry) {
+        if (!g.distanceRow.isEmpty) distanceRenderer.drawRuler(canvas, g.distanceRow, density,
+            ExposureMath.apertureValueForCoordinate(currentApertureCoordinate(), state.apertureStep))
         drawExposureRows(canvas, g)
         drawDial(canvas, g)
         ev100BadgeRenderer.draw(canvas, g.ev100Badge, Ev100Readouts.normal(state), state.isDarkMode, red)
@@ -196,7 +204,8 @@ class InstrumentView(
             }
             canvas.drawLine(dividerX, 0f, dividerX, height.toFloat(), paint)
         } else {
-            val dividerY = (g.previewPanel.bottom + g.apertureRow.top) / 2f
+            val controlsTop = if (g.distanceRow.isEmpty) g.apertureRow.top else g.distanceRow.top
+            val dividerY = (g.previewPanel.bottom + controlsTop) / 2f
             canvas.drawLine(0f, dividerY, width.toFloat(), dividerY, paint)
         }
         paint.alpha=255
@@ -312,6 +321,7 @@ class InstrumentView(
     fun setZoneTransitionFraction(fraction: Float) {
         zoneTransitionFraction = fraction.coerceIn(0f, 1f)
         invalidate()
+        invalidateModeGuide()
     }
 
     /** Prevents the covered Normal/Zone handle from retaining a partial drag under Tools. */
@@ -320,6 +330,7 @@ class InstrumentView(
         if (!enabled) {
             if (touchTarget == TouchTarget.ZONE_ENTRY) touchTarget = TouchTarget.NONE
             zoneTransitionFraction = 0f
+            invalidateModeGuide()
         }
         invalidate()
     }
@@ -333,7 +344,7 @@ class InstrumentView(
         }
     }
 
-    private fun drawZoneEntryHandle(canvas: Canvas, g: LayoutGeometry) {
+    private fun zoneEntryHandle(g: LayoutGeometry): RectF {
         val rect = RectF(g.zoneEntryHandle)
         val fraction=clearMotion?.progress?:zoneTransitionFraction
         val enteringClear=clearMotion!=null||autoEntryDrag
@@ -343,6 +354,11 @@ class InstrumentView(
         } else {
             rect.offset(0f, (if(enteringClear) 1f else -1f) * fraction * height * 0.16f)
         }
+        return rect
+    }
+
+    private fun drawZoneEntryHandle(canvas: Canvas, g: LayoutGeometry) {
+        val rect = zoneEntryHandle(g)
         paint.style = Paint.Style.FILL
         paint.color = surfaceColor
         canvas.drawRoundRect(rect, 4f * density, 4f * density, paint)
@@ -363,20 +379,31 @@ class InstrumentView(
             drawCenteredText(canvas, "mode", rect.centerX(), rect.centerY(), paint)
         }
 
-        val guide=modeGuide.frame(SystemClock.uptimeMillis())
-        if (clearMotion==null&&(guide!=null || touchTarget == TouchTarget.ZONE_ENTRY || zoneTransitionFraction > 0f)) {
-            val travel=(guide?.travel?:0f)*24f*density
-            val opacity=guide?.opacity?:1f
-            if (g.landscape) {
-                val zoneSign=ModeTransitionDirection.zoneEntrySign(state.isLeftHanded)
-                for(sign in listOf(-1f,1f)) if(guide!=null || (if(autoEntryDrag)-zoneSign else zoneSign)==sign)
-                    modeArrow.draw(canvas,rect.centerX()+sign*(rect.width()/2+20f*density+travel),rect.centerY(),density,sign*90f,opacity)
-            } else {
-                if (guide!=null || !autoEntryDrag) modeArrow.draw(canvas,rect.centerX(),rect.top-20f*density-travel,density,opacity=opacity)
-                if (guide!=null || autoEntryDrag) modeArrow.draw(canvas,rect.centerX(),rect.bottom+20f*density+travel,density,180f,opacity)
+    }
+
+    internal fun drawModeGuide(canvas: Canvas) {
+        val g = geometry ?: return
+        if (clearMotion != null) return
+        val guide = modeGuide.frame(SystemClock.uptimeMillis())
+        if (guide == null && touchTarget != TouchTarget.ZONE_ENTRY && zoneTransitionFraction <= 0f) return
+        val rect = zoneEntryHandle(g)
+        val travel = (guide?.travel ?: 0f) * 24f * density
+        val opacity = (guide?.opacity ?: 1f) * alpha
+        val showBoth = guide != null || zoneTransitionFraction == 0f
+        if (g.landscape) {
+            val zoneSign = ModeTransitionDirection.zoneEntrySign(state.isLeftHanded)
+            val offset = rect.width() / 2 + 20f * density + travel
+            if (showBoth || !autoEntryDrag) {
+                modeArrow.draw(canvas, rect.centerX() + zoneSign * offset, rect.centerY(), density, zoneSign * 90f, opacity)
             }
-            if(guide!=null)postInvalidateOnAnimation()
+            if (showBoth || autoEntryDrag) {
+                modeArrow.draw(canvas, rect.centerX() - zoneSign * offset, rect.centerY(), density, -zoneSign * 90f, opacity)
+            }
+        } else {
+            if (showBoth || !autoEntryDrag) modeArrow.draw(canvas, rect.centerX(), rect.top - 20f * density - travel, density, opacity = opacity)
+            if (showBoth || autoEntryDrag) modeArrow.draw(canvas, rect.centerX(), rect.bottom + 20f * density + travel, density, 180f, opacity)
         }
+        if (guide != null) invalidateModeGuide()
     }
     private fun drawFormatMenu(canvas: Canvas, g: LayoutGeometry) {
         viewfinderControls.options(canvas,InstrumentPresentation.formatOptionRects(g,density),density)
@@ -511,6 +538,8 @@ class InstrumentView(
             height,
             density,
             state.isLeftHanded,
+            state.distanceDisplayProgress,
+            state.distanceBesideTools,
         ).meterButton,
     )
 
@@ -862,7 +891,10 @@ class InstrumentView(
     override fun onTouchEvent(event: MotionEvent): Boolean {
         val g = geometry ?: return false
         if (previewPinch.consume(event, g.cameraFrame, !state.measuring && !state.meteringInteractionBusy)) {
-            if(touchTarget==TouchTarget.ZONE_ENTRY&&autoEntryDrag)listener?.onAutoEntryDrag(0f,true)
+            if (touchTarget == TouchTarget.ZONE_ENTRY) {
+                if (autoEntryDrag) listener?.onAutoEntryDrag(0f, true)
+                invalidateModeGuide()
+            }
             touchTarget = TouchTarget.NONE
             return true
         }
@@ -893,7 +925,8 @@ class InstrumentView(
                         zoneDragStartX = event.x
                         zoneDragStartY = event.y
                         autoEntryDrag = false
-                        modeGuide.show(SystemClock.uptimeMillis())
+                        modeGuide.clear()
+                        invalidateModeGuide()
                         invalidate()
                         return true
                     }
@@ -997,7 +1030,7 @@ class InstrumentView(
                         val crossDistance = if (g.landscape) event.y-zoneDragStartY else event.x-zoneDragStartX
                         // Down in portrait / outward toward the handed edge enters clear.
                         if (autoDistance > touchSlop && autoDistance > abs(crossDistance)*1.2f) autoEntryDrag = true
-                        if(abs(autoDistance)>touchSlop)modeGuide.clear()
+                        invalidateModeGuide()
                         if (autoEntryDrag) {
                             zoneTransitionFraction = (autoDistance / (if(g.landscape) width*.18f else height*.18f)).coerceIn(0f,1f)
                             listener?.onAutoEntryDrag(zoneTransitionFraction,false)
@@ -1033,7 +1066,7 @@ class InstrumentView(
                     )
                 } else if (touchTarget == TouchTarget.ZONE_ENTRY) {
                     if (event.actionMasked == MotionEvent.ACTION_UP && abs(event.x-zoneDragStartX)<touchSlop && abs(event.y-zoneDragStartY)<touchSlop) {
-                        modeGuide.show(SystemClock.uptimeMillis());invalidate()
+                        modeGuide.show(SystemClock.uptimeMillis())
                     } else if (autoEntryDrag) {
                         listener?.onAutoEntryDrag(if(event.actionMasked==MotionEvent.ACTION_CANCEL)0f else zoneTransitionFraction,true)
                         setZoneTransitionFraction(0f)
@@ -1041,6 +1074,7 @@ class InstrumentView(
                         if (event.actionMasked == MotionEvent.ACTION_CANCEL) 0f else zoneTransitionFraction,
                         true,
                     )
+                    invalidateModeGuide()
                 }
                 touchTarget = TouchTarget.NONE
                 performClick()
@@ -1117,7 +1151,7 @@ class InstrumentView(
             haptic();listener?.onControlsChanged(true);invalidate();return true
         }
         return when (virtualViewId) {
-            7 -> { modeGuide.show(SystemClock.uptimeMillis());invalidate();true }
+            7 -> { modeGuide.show(SystemClock.uptimeMillis());invalidateModeGuide();true }
             ACCESSIBILITY_ISO -> {
                 state.isoAdjustMode = !state.isoAdjustMode
                 listener?.onControlsChanged(false)

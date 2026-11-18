@@ -13,6 +13,7 @@ internal data class PreviewBaselineOperation(
     val generation: Long,
     val startedAtElapsedMs: Long,
     val continuation: () -> Unit,
+    val requiresExposureMetadata: Boolean = false,
 )
 
 internal object PreviewBaselinePolicy {

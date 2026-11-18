@@ -14,7 +14,7 @@ internal data class GlobalMeteringPrediction(val compensationEv: Double, val err
  * Negative film has strongly asymmetric latitude. Over-exposure keeps recording
  * separable highlight density well past the metered placement and is normally
  * recoverable in development or scanning; under-exposure starves the shadows of light
- * that no later stage can restore. Given that asymmetry, erring one stop bright costs a
+ * that no later stage can restore. Given that asymmetry, erring half a stop bright costs a
  * negative far less than erring one stop dark, so the app raises the model's final
  * recommendation by this amount instead of reproducing the model's placement exactly.
  *
@@ -25,7 +25,7 @@ internal data class GlobalMeteringPrediction(val compensationEv: Double, val err
  *
  * Positive = brighter. Applied unconditionally, independent of the selected film stock.
  */
-internal const val NEGATIVE_FILM_OVEREXPOSURE_EV = 1.0
+internal const val NEGATIVE_FILM_OVEREXPOSURE_EV = 0.5
 
 /**
  * Target is tied to its own frame metadata, including when a shorter RAW is recaptured.

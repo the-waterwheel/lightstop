@@ -21,6 +21,7 @@ import java.util.concurrent.TimeoutException
 
 internal interface CameraSessionCoordinatorListener {
     fun onCameraOpened(generation: Int)
+    fun onCameraOpenTimedOut(generation: Int, error: TimeoutException)
     fun onSessionConfigured(
         device: CameraDevice,
         session: CameraCaptureSession,
@@ -81,6 +82,7 @@ internal class CameraSessionCoordinator(
     private var trackingOutputActive = false
 
     private var activeGeneration: Int? = null
+    private var cancelOpenTimeout: (() -> Unit)? = null
     private var sessionRevision = 0L
     private var configurationTimeoutHandler: Handler? = null
     private var configurationTimeoutRevision: Long? = null
@@ -118,12 +120,27 @@ internal class CameraSessionCoordinator(
         activeGeneration = generation
         isOpening = true
         try {
+            val timeout = Runnable {
+                if (!isActive(generation) || !isOpening) return@Runnable
+                cancelOpenTimeout = null
+                activeGeneration = null
+                isOpening = false
+                listener.onCameraOpenTimedOut(
+                    generation,
+                    TimeoutException("Camera open callback timed out after $CAMERA_OPEN_TIMEOUT_MS ms"),
+                )
+            }
+            check(handler.postDelayed(timeout, CAMERA_OPEN_TIMEOUT_MS)) {
+                "Camera handler rejected the open timeout task"
+            }
+            cancelOpenTimeout = { handler.removeCallbacks(timeout) }
             cameraManager.openCamera(
                 logicalCameraId,
                 createDeviceCallback(physicalCameraId, generation, handler),
                 handler,
             )
         } catch (error: Exception) {
+            clearOpenTimeout()
             isOpening = false
             activeGeneration = null
             throw error
@@ -177,6 +194,7 @@ internal class CameraSessionCoordinator(
     fun close() {
         activeGeneration = null
         sessionRevision += 1L
+        clearOpenTimeout()
         cancelSessionConfigurationTimeout()
         isOpening = false
         try {
@@ -206,6 +224,7 @@ internal class CameraSessionCoordinator(
                 camera.close()
                 return
             }
+            clearOpenTimeout()
             isOpening = false
             device = camera
             listener.onCameraOpened(generation)
@@ -217,6 +236,7 @@ internal class CameraSessionCoordinator(
                 camera.close()
                 return
             }
+            clearOpenTimeout()
             invalidateCurrentSession()
             camera.close()
             if (device === camera) device = null
@@ -229,12 +249,18 @@ internal class CameraSessionCoordinator(
                 camera.close()
                 return
             }
+            clearOpenTimeout()
             invalidateCurrentSession()
             camera.close()
             if (device === camera) device = null
             isOpening = false
             listener.onCameraError(error, generation)
         }
+    }
+
+    private fun clearOpenTimeout() {
+        cancelOpenTimeout?.invoke()
+        cancelOpenTimeout = null
     }
 
     private fun createSession(
@@ -479,5 +505,6 @@ internal class CameraSessionCoordinator(
         private const val TAG = "CameraSession"
         private const val RAW_READER_MAX_IMAGES = 1
         private const val SESSION_CONFIGURATION_TIMEOUT_MS = 8_000L
+        private const val CAMERA_OPEN_TIMEOUT_MS = 8_000L
     }
 }

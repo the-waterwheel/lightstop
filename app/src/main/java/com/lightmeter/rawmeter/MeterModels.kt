@@ -271,6 +271,37 @@ class MeterState(context: Context) {
     private val cameraCalibrationStore = CameraCalibrationStore(context)
     private val vignettingCalibrationStore = VignettingCalibrationStore(context)
 
+    internal var showDistanceOnMeter: Boolean
+        get() = preferences.getBoolean("show_distance_on_meter", false)
+        set(value) { preferences.edit().putBoolean("show_distance_on_meter", value).apply() }
+
+    internal var distanceDisplayProgressOverride: Float? = null
+    internal val distanceDisplayProgress: Float
+        get() = distanceDisplayProgressOverride ?: if (showDistanceOnMeter) 1f else 0f
+    internal var distanceBesideTools = false
+
+    internal var depthToolFormat: FrameFormat?
+        get() = when (val id = preferences.getString("depth_tool_format", null)) {
+            "custom" -> DepthOfFieldMath.customFormat(
+                preferences.getFloat("depth_tool_width", 0f).toDouble(),
+                preferences.getFloat("depth_tool_height", 0f).toDouble(),
+            )
+            else -> FrameFormat.ALL.firstOrNull { it.id == id && it.id != "none" }
+        }
+        set(value) {
+            if (value == null) return
+            preferences.edit().putString("depth_tool_format", value.id)
+                .putFloat("depth_tool_width", value.widthMm.toFloat())
+                .putFloat("depth_tool_height", value.heightMm.toFloat()).apply()
+        }
+
+    internal var depthToolCircle: Double?
+        get() = preferences.getFloat("depth_tool_circle", Float.NaN).toDouble()
+            .takeIf { it in DepthOfFieldMath.MIN_COC_MM..DepthOfFieldMath.MAX_COC_MM }
+        set(value) {
+            if (value != null) preferences.edit().putFloat("depth_tool_circle", value.toFloat()).apply()
+        }
+
     val isoValues = intArrayOf(
         6, 8, 10, 12, 16, 20, 25, 32, 40, 50, 64, 80,
         100, 125, 160, 200, 250, 320, 400, 500, 640, 800,
@@ -934,6 +965,18 @@ class MeterState(context: Context) {
 
     /** Conventional 135-equivalent focal length retained for compatibility and diagnostics. */
     fun equivalent35mm(): Int? = effectiveFullFrameEquivalentMm()?.toInt()
+
+    internal fun distanceEquivalentFocalLengthMm(): Double? {
+        if (!isUnframed) return effectiveFullFrameEquivalentMm()
+        val visible = previewVisibleSensorSizeMm() ?: return null
+        return PreviewOutputGeometry.fullFrameEquivalentFocalMm(
+            physicalFocalLengthMm = cameraInfo.focalLengthMm.toDouble(),
+            visibleSensorSize = PreviewOutputGeometry.VisibleSensorSizeMm(
+                visible.width / previewZoom,
+                visible.height / previewZoom,
+            ),
+        )
+    }
 
     /** Lens focal length on the selected film format that gives the current preview field of view. */
     fun equivalentFrameFocalMm(): Int? = effectiveFullFrameEquivalentMm()

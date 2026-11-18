@@ -127,6 +127,32 @@ class ExposurePreviewTransitionTest {
         assertEquals(0, f.stalled)
     }
 
+    @Test fun matchingCompensationDoesNotPermitSamplingWhileAeIsStillSearching() {
+        val f = Fixture(manual = false)
+        f.frame(aeState = CaptureResult.CONTROL_AE_STATE_CONVERGED)
+        f.select(f.sourceEv - 1)
+        repeat(60) {
+            if (f.state.isTransitioning) f.frame(aeState = CaptureResult.CONTROL_AE_STATE_SEARCHING)
+        }
+        assertFalse(f.state.isTransitioning)
+        assertEquals(3, f.state.compensationSteps)
+        f.frame(aeState = CaptureResult.CONTROL_AE_STATE_SEARCHING)
+        assertFalse(f.state.readyForContinuousMetering)
+
+        f.frame(aeState = CaptureResult.CONTROL_AE_STATE_CONVERGED)
+        assertTrue(f.state.readyForContinuousMetering)
+    }
+
+    @Test fun aeWithoutStateCanUseThreeFreshStableExposureFrames() {
+        val f = Fixture(manual = false)
+        f.frame(evOffset = -.2, aeState = null)
+        f.frame(aeState = null)
+        f.frame(aeState = null)
+        assertFalse(f.state.readyForContinuousMetering)
+        f.frame(aeState = null)
+        assertTrue(f.state.readyForContinuousMetering)
+    }
+
     @Test fun noLiveFramesDuringTransitionReportFailureWithoutEndingTheFade() {
         val f = Fixture()
         f.select(f.sourceEv + 1)
@@ -372,6 +398,7 @@ class ExposurePreviewTransitionTest {
             matchesCurrentRequest: Boolean = true,
             compensation: Int? = null,
             aeMode: Int? = null,
+            aeState: Int? = CaptureResult.CONTROL_AE_STATE_CONVERGED,
             missingExposureMetadata: Boolean = false,
         ) {
             timestamp += deltaNs
@@ -384,6 +411,7 @@ class ExposurePreviewTransitionTest {
                     shadowOf(it).set(CaptureResult.LENS_APERTURE, 2f)
                 }
                 shadowOf(it).set(CaptureResult.CONTROL_AE_MODE, aeMode ?: if (applied == null || time != null) CaptureResult.CONTROL_AE_MODE_ON else CaptureResult.CONTROL_AE_MODE_OFF)
+                if (aeState != null) shadowOf(it).set(CaptureResult.CONTROL_AE_STATE, aeState)
                 shadowOf(it).set(CaptureResult.CONTROL_AE_EXPOSURE_COMPENSATION, compensation ?: state.compensationSteps)
             }
             state.onPreviewFrame(result, timestamp, advance, matchesCurrentRequest)

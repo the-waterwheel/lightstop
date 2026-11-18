@@ -58,14 +58,25 @@ internal class MeteringCalibrationCoordinator {
         val activeRun = run ?: return MeteringCalibrationTransition.Idle
         val expectedIdentity = expectedCameraIdentity
             ?: return MeteringCalibrationTransition.Idle
-        if (expectedIdentity.conflictsWith(currentCameraIdentity)) {
+        val capturedSignature = reading.calibrationSample?.signature ?: signature
+        val capturedIdentity = capturedSignature?.let {
+            CalibrationCaptureIdentity(
+                routeId = it.selectionRouteId,
+                activePhysicalCameraId = it.confirmedPhysicalCameraId ?: it.configuredPhysicalCameraId,
+            )
+        }
+        val observedIdentity = capturedIdentity?.withReportedPhysicalFrom(currentCameraIdentity)
+            ?: currentCameraIdentity
+        if (expectedIdentity.conflictsWith(observedIdentity) ||
+            capturedIdentity?.conflictsWith(currentCameraIdentity) == true
+        ) {
             clear()
             return MeteringCalibrationTransition.LensChanged
         }
         // A newly opened logical-camera session initially has no active physical id. Learn the
         // first concrete id it reports, but never treat the temporary null state as a lens switch.
-        expectedCameraIdentity = expectedIdentity.withReportedPhysicalFrom(currentCameraIdentity)
-        activeRun.accept(reading, signature)
+        expectedCameraIdentity = expectedIdentity.withReportedPhysicalFrom(observedIdentity)
+        activeRun.accept(reading, capturedSignature)
         return nextOrComplete(terminalError = null)
     }
 
